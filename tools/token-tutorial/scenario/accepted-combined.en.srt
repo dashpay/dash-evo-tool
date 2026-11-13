@@ -1,0 +1,3231 @@
+1
+00:00:03,000 --> 00:00:07,680
+Chad G. P. Taylor: Hello, I'm Chad G. P.
+Taylor. We're going to create tokens in
+
+2
+00:00:07,680 --> 00:00:11,190
+Chad G. P. Taylor: Dash Evolution,
+starting with a simple example and working
+
+3
+00:00:11,190 --> 00:00:12,750
+Chad G. P. Taylor: through the advanced
+controls.
+
+4
+00:00:12,950 --> 00:00:17,160
+Ewa Dashwood: I'm Ewa Dashwood. I'd like
+to understand the choices, especially the
+
+5
+00:00:17,160 --> 00:00:20,987
+Ewa Dashwood: ones I can't change
+afterward. Can we build something small
+
+6
+00:00:20,987 --> 00:00:22,900
+Ewa Dashwood: before tackling all the
+permissions?
+
+7
+00:00:23,100 --> 00:00:26,809
+Chad G. P. Taylor: Absolutely. We'll
+register a small token, then examine a
+
+8
+00:00:26,809 --> 00:00:30,929
+Chad G. P. Taylor: more detailed example.
+I'll explain the switches as we reach
+
+9
+00:00:30,929 --> 00:00:35,050
+Chad G. P. Taylor: them. My confidence may
+arrive slightly ahead of the explanation.
+
+10
+00:00:35,250 --> 00:00:38,930
+Ewa Dashwood: I'll keep an eye on both.
+Let's start with what the token
+
+11
+00:00:38,930 --> 00:00:39,850
+Ewa Dashwood: creator actually does.
+
+12
+00:00:39,867 --> 00:00:44,647
+Ewa Dashwood: Are we registering every
+example we try, or working toward one
+
+13
+00:00:44,647 --> 00:00:45,517
+Ewa Dashwood: final configuration?
+
+14
+00:00:45,717 --> 00:00:50,232
+Chad G. P. Taylor: Two registrations: a
+simple fixed-supply token first, then our
+
+15
+00:00:50,232 --> 00:00:54,246
+Chad G. P. Taylor: final advanced token.
+Between them, we'll experiment with
+
+16
+00:00:54,246 --> 00:00:57,758
+Chad G. P. Taylor: permissions, groups,
+distribution recipes, and document schemas
+
+17
+00:00:57,758 --> 00:01:00,267
+Chad G. P. Taylor: without publishing
+those practice settings.
+
+18
+00:01:00,467 --> 00:01:04,017
+Ewa Dashwood: So I can explore a panel
+without committing to its features?
+
+19
+00:01:04,217 --> 00:01:08,273
+Chad G. P. Taylor: Yes. Opening a panel
+doesn't enable its features, and editing a
+
+20
+00:01:08,273 --> 00:01:11,592
+Chad G. P. Taylor: draft doesn't publish
+it. We will distinguish each experiment
+
+21
+00:01:11,592 --> 00:01:13,067
+Chad G. P. Taylor: from the final
+settings.
+
+22
+00:01:13,067 --> 00:01:17,124
+Chad G. P. Taylor: First, check Testnet in
+Settings and wait for synchronization. We
+
+23
+00:01:17,124 --> 00:01:20,776
+Chad G. P. Taylor: need a funded Platform
+identity with an available Authentication
+
+24
+00:01:20,776 --> 00:01:23,617
+Chad G. P. Taylor: key at High or Critical
+security level.
+
+25
+00:01:23,817 --> 00:01:27,044
+Ewa Dashwood: Does having its public
+identity identifier satisfy
+
+26
+00:01:27,044 --> 00:01:27,967
+Ewa Dashwood: that requirement?
+
+27
+00:01:28,167 --> 00:01:32,775
+Chad G. P. Taylor: No, we also need the
+ability to sign. If that key comes from a
+
+28
+00:01:32,775 --> 00:01:35,079
+Chad G. P. Taylor: wallet, import and
+unlock the wallet beforehand,
+
+29
+00:01:35,079 --> 00:01:36,067
+Chad G. P. Taylor: with recording stopped.
+
+30
+00:01:36,267 --> 00:01:39,117
+Ewa Dashwood: What if I imported an
+identity with its own
+
+31
+00:01:39,117 --> 00:01:40,067
+Ewa Dashwood: available private key?
+
+32
+00:01:40,267 --> 00:01:44,473
+Chad G. P. Taylor: You don't need a
+separate wallet merely to register this
+
+33
+00:01:44,473 --> 00:01:47,837
+Chad G. P. Taylor: contract. Wallet setup,
+identity funding, and secret handling
+
+34
+00:01:47,837 --> 00:01:51,623
+Chad G. P. Taylor: happen before this
+lesson. We'll show the prepared public
+
+35
+00:01:51,623 --> 00:01:54,567
+Chad G. P. Taylor: state, never recovery
+phrases or private keys.
+
+36
+00:01:54,567 --> 00:01:57,444
+Ewa Dashwood: Tokens has several
+destinations. Which one creates
+
+37
+00:01:57,444 --> 00:01:58,267
+Ewa Dashwood: something new?
+
+38
+00:01:58,467 --> 00:02:03,305
+Chad G. P. Taylor: Token Creator, or the
+Create Token shortcut. My Tokens lists
+
+39
+00:02:03,305 --> 00:02:07,176
+Chad G. P. Taylor: tokens you track;
+Search Tokens helps find existing
+
+40
+00:02:07,176 --> 00:02:11,531
+Chad G. P. Taylor: contracts. Import Token
+takes an existing token identifier. It
+
+41
+00:02:11,531 --> 00:02:13,467
+Chad G. P. Taylor: doesn't create a token.
+
+42
+00:02:13,667 --> 00:02:17,167
+Ewa Dashwood: And Refresh updates the
+information already on screen?
+
+43
+00:02:17,367 --> 00:02:20,817
+Chad G. P. Taylor: It fetches current
+information. We'll use it when checking
+
+44
+00:02:20,817 --> 00:02:23,883
+Chad G. P. Taylor: results. The small
+information buttons explain nearby fields,
+
+45
+00:02:23,883 --> 00:02:28,483
+Chad G. P. Taylor: and we can open those
+as reminders. We'll also check what the
+
+46
+00:02:28,483 --> 00:02:31,933
+Chad G. P. Taylor: settings actually do,
+because a short tooltip cannot describe
+
+47
+00:02:31,933 --> 00:02:35,767
+Chad G. P. Taylor: every consequence. For
+now, choose Token Creator and leave the
+
+48
+00:02:35,767 --> 00:02:36,917
+Chad G. P. Taylor: advanced options
+closed.
+
+49
+00:02:36,933 --> 00:02:40,987
+Chad G. P. Taylor: Select the funded
+identity inside this form. It will own the
+
+50
+00:02:40,987 --> 00:02:44,672
+Chad G. P. Taylor: contract. With Show
+Advanced Options off, the app selects a
+
+51
+00:02:44,672 --> 00:02:46,883
+Chad G. P. Taylor: suitable available
+signing key for us.
+
+52
+00:02:47,083 --> 00:02:50,733
+Ewa Dashwood: If the list is empty, is
+Load Identity the next step?
+
+53
+00:02:50,933 --> 00:02:54,710
+Chad G. P. Taylor: Yes, it opens the
+import flow; complete that separately
+
+54
+00:02:54,710 --> 00:02:58,067
+Chad G. P. Taylor: before continuing. For
+our prepared identity, enter CloudCredit
+
+55
+00:02:58,067 --> 00:03:01,844
+Chad G. P. Taylor: as one word and the
+description, A fixed-supply token
+
+56
+00:03:01,844 --> 00:03:02,683
+Chad G. P. Taylor: for learning.
+
+57
+00:03:02,883 --> 00:03:05,383
+Ewa Dashwood: Does the description enforce
+that policy?
+
+58
+00:03:05,583 --> 00:03:09,221
+Chad G. P. Taylor: No. Permissions enforce
+it. Names and descriptions explain the
+
+59
+00:03:09,221 --> 00:03:12,858
+Chad G. P. Taylor: token; they aren't
+unique identifiers or promises of value.
+
+60
+00:03:12,858 --> 00:03:15,283
+Chad G. P. Taylor: We'll configure the
+actual supply next.
+
+61
+00:03:15,300 --> 00:03:19,650
+Ewa Dashwood: Both fields say supply. What
+happens if I put one thousand in each?
+
+62
+00:03:19,850 --> 00:03:22,990
+Chad G. P. Taylor: Initial Supply creates
+one thousand tokens when registration
+
+63
+00:03:22,990 --> 00:03:27,308
+Chad G. P. Taylor: succeeds. Max Supply
+sets a ceiling of one thousand under the
+
+64
+00:03:27,308 --> 00:03:30,840
+Chad G. P. Taylor: rules we choose. These
+inputs use displayed token amounts,
+
+65
+00:03:30,840 --> 00:03:34,372
+Chad G. P. Taylor: including fractions you
+enter; they aren't Dash amounts or
+
+66
+00:03:34,372 --> 00:03:35,550
+Chad G. P. Taylor: raw base units.
+
+67
+00:03:35,750 --> 00:03:38,950
+Ewa Dashwood: Could I leave the maximum
+blank if I haven't decided?
+
+68
+00:03:39,150 --> 00:03:43,301
+Chad G. P. Taylor: An empty maximum, or
+zero where this form treats it as no
+
+69
+00:03:43,301 --> 00:03:46,069
+Chad G. P. Taylor: maximum, leaves no
+numerical ceiling. For CloudCredit, enter
+
+70
+00:03:46,069 --> 00:03:49,528
+Chad G. P. Taylor: one thousand in both
+fields. We'll also remove future minting
+
+71
+00:03:49,528 --> 00:03:51,950
+Chad G. P. Taylor: authority, so the
+ceiling and permissions agree.
+
+72
+00:03:51,967 --> 00:03:55,614
+Chad G. P. Taylor: Presets fill in
+permission bundles. Most Restrictive
+
+73
+00:03:55,614 --> 00:03:59,261
+Chad G. P. Taylor: disables additional
+actions and administrators. Only Emergency
+
+74
+00:03:59,261 --> 00:04:01,867
+Chad G. P. Taylor: Action adds pause and
+resume.
+
+75
+00:04:02,067 --> 00:04:06,017
+Ewa Dashwood: Does Minting and Burning
+grant exactly those two powers?
+
+76
+00:04:06,217 --> 00:04:10,340
+Chad G. P. Taylor: More than its name
+suggests: owner emergency control,
+
+77
+00:04:10,340 --> 00:04:12,917
+Chad G. P. Taylor: convention changes,
+destination-policy changes, marketplace
+
+78
+00:04:12,917 --> 00:04:16,524
+Chad G. P. Taylor: mode changes, and
+direct-purchase pricing too. The
+
+79
+00:04:16,524 --> 00:04:19,617
+Chad G. P. Taylor: comparison table shows
+the full bundle.
+
+80
+00:04:19,817 --> 00:04:22,767
+Ewa Dashwood: What do Advanced Actions and
+All Allowed add?
+
+81
+00:04:22,967 --> 00:04:26,756
+Chad G. P. Taylor: Advanced Actions grants
+broader owner powers, including freeze,
+
+82
+00:04:26,756 --> 00:04:30,546
+Chad G. P. Taylor: destruction of frozen
+balances, and maximum-supply changes. All
+
+83
+00:04:30,546 --> 00:04:34,809
+Chad G. P. Taylor: Allowed also makes
+later rule changes more permissive. We'll
+
+84
+00:04:34,809 --> 00:04:38,125
+Chad G. P. Taylor: inspect performers,
+administrators, and switches in Advanced
+
+85
+00:04:38,125 --> 00:04:40,967
+Chad G. P. Taylor: Options. For
+CloudCredit, choose Most Restrictive.
+
+86
+00:04:40,967 --> 00:04:45,008
+Ewa Dashwood: With Most Restrictive, could
+the owner turn minting back on
+
+87
+00:04:45,008 --> 00:04:45,817
+Ewa Dashwood: after registration?
+
+88
+00:04:46,017 --> 00:04:49,512
+Chad G. P. Taylor: Those extra powers and
+their administrators are disabled. They
+
+89
+00:04:49,512 --> 00:04:53,395
+Chad G. P. Taylor: can't simply be enabled
+later. Together with initial and maximum
+
+90
+00:04:53,395 --> 00:04:56,502
+Chad G. P. Taylor: supply of one thousand,
+that gives this example
+
+91
+00:04:56,502 --> 00:04:57,667
+Chad G. P. Taylor: its fixed
+configuration.
+
+92
+00:04:57,867 --> 00:05:02,317
+Ewa Dashwood: I only entered a singular
+name. Where does the plural come from?
+
+93
+00:05:02,517 --> 00:05:06,642
+Chad G. P. Taylor: Simple mode supplies it
+from the singular. For deliberate plural
+
+94
+00:05:06,642 --> 00:05:09,942
+Chad G. P. Taylor: forms, translations, or
+custom permissions, use Advanced Options
+
+95
+00:05:09,942 --> 00:05:12,829
+Chad G. P. Taylor: before registering.
+We're choosing the simple version
+
+96
+00:05:12,829 --> 00:05:16,129
+Chad G. P. Taylor: deliberately, rather
+than postponing a decision the contract
+
+97
+00:05:16,129 --> 00:05:17,367
+Chad G. P. Taylor: may lock permanently.
+
+98
+00:05:17,367 --> 00:05:21,304
+Chad G. P. Taylor: Click Create Token and
+compare the name, both supplies, and
+
+99
+00:05:21,304 --> 00:05:23,667
+Chad G. P. Taylor: estimated registration
+cost with our plan.
+
+100
+00:05:23,867 --> 00:05:28,617
+Ewa Dashwood: The cost is displayed in
+Dash. Is that a separate wallet payment?
+
+101
+00:05:28,817 --> 00:05:33,074
+Chad G. P. Taylor: It comes from this
+identity's Platform credits; Dash is the
+
+102
+00:05:33,074 --> 00:05:36,906
+Chad G. P. Taylor: displayed equivalent.
+The estimate isn't an exact receipt. Also
+
+103
+00:05:36,906 --> 00:05:39,886
+Chad G. P. Taylor: read the permanent
+marketplace warning: it concerns
+
+104
+00:05:39,886 --> 00:05:42,867
+Chad G. P. Taylor: marketplace sales, not
+ordinary transfers between holders.
+
+105
+00:05:43,067 --> 00:05:46,267
+Ewa Dashwood: If something differs, Cancel
+takes me back to editing?
+
+106
+00:05:46,467 --> 00:05:50,408
+Chad G. P. Taylor: Yes. Otherwise, Confirm
+once and wait for the observed result. We
+
+107
+00:05:50,408 --> 00:05:53,992
+Chad G. P. Taylor: won't treat a slow
+response as an invitation to submit
+
+108
+00:05:53,992 --> 00:05:55,067
+Chad G. P. Taylor: another paid
+registration.
+
+109
+00:05:55,067 --> 00:05:59,367
+Ewa Dashwood: Once success is confirmed,
+what should I check independently?
+
+110
+00:05:59,567 --> 00:06:04,228
+Chad G. P. Taylor: Open My Tokens, select
+CloudCredit, and inspect the balance. For
+
+111
+00:06:04,228 --> 00:06:07,958
+Chad G. P. Taylor: this example, the
+creator identity should receive one
+
+112
+00:06:07,958 --> 00:06:13,086
+Chad G. P. Taylor: thousand tokens. More
+Info shows the full Token ID and Contract
+
+113
+00:06:13,086 --> 00:06:15,417
+Chad G. P. Taylor: ID; save both after
+registration.
+
+114
+00:06:15,617 --> 00:06:18,767
+Ewa Dashwood: Why not just save the name
+or an earlier preview?
+
+115
+00:06:18,967 --> 00:06:22,796
+Chad G. P. Taylor: Different tokens can
+share a display name, and the preview
+
+116
+00:06:22,796 --> 00:06:25,860
+Chad G. P. Taylor: doesn't substitute for
+final identifiers. We're checking the
+
+117
+00:06:25,860 --> 00:06:28,923
+Chad G. P. Taylor: actual registered
+result. The success screen's Back button
+
+118
+00:06:28,923 --> 00:06:33,136
+Chad G. P. Taylor: resets the creator form
+for another example. We'll use a fresh
+
+119
+00:06:33,136 --> 00:06:35,817
+Chad G. P. Taylor: form for CloudPoint and
+its custom permissions.
+
+120
+00:06:35,833 --> 00:06:39,987
+Chad G. P. Taylor: Open a fresh creator
+and enable Show Advanced Options. Check
+
+121
+00:06:39,987 --> 00:06:43,310
+Chad G. P. Taylor: the selected identity
+again, then choose an eligible
+
+122
+00:06:43,310 --> 00:06:46,633
+Chad G. P. Taylor: Authentication key at
+High or Critical security level.
+
+123
+00:06:46,833 --> 00:06:49,983
+Ewa Dashwood: Are we exposing private-key
+material in this selector?
+
+124
+00:06:50,183 --> 00:06:54,380
+Chad G. P. Taylor: No, it lists identity
+keys, not their private bytes. A disabled
+
+125
+00:06:54,380 --> 00:06:58,576
+Chad G. P. Taylor: key or one with the
+wrong purpose won't do. Unlock the
+
+126
+00:06:58,576 --> 00:07:00,483
+Chad G. P. Taylor: relevant wallet
+separately if needed.
+
+127
+00:07:00,683 --> 00:07:03,883
+Ewa Dashwood: Will every setting we
+demonstrate remain in CloudPoint?
+
+128
+00:07:04,083 --> 00:07:08,083
+Chad G. P. Taylor: No. We'll try some
+alternatives, then reset them to a
+
+129
+00:07:08,083 --> 00:07:11,683
+Chad G. P. Taylor: specific final plan.
+Keep that distinction in mind throughout:
+
+130
+00:07:11,683 --> 00:07:14,883
+Chad G. P. Taylor: a configuration
+experiment is useful precisely because we
+
+131
+00:07:14,883 --> 00:07:16,483
+Chad G. P. Taylor: haven't published it
+yet.
+
+132
+00:07:16,500 --> 00:07:21,958
+Ewa Dashwood: Here I can choose the plural
+explicitly. Let's use CloudPoint
+
+133
+00:07:21,958 --> 00:07:23,050
+Ewa Dashwood: and CloudPoints.
+
+134
+00:07:23,250 --> 00:07:26,818
+Chad G. P. Taylor: In the English row,
+yes. Add Language creates another
+
+135
+00:07:26,818 --> 00:07:30,782
+Chad G. P. Taylor: localization. Choose
+Polish and enter Punkt and Punkty for a
+
+136
+00:07:30,782 --> 00:07:34,350
+Chad G. P. Taylor: small example. Avoid
+duplicate entries for the same language.
+
+137
+00:07:34,550 --> 00:07:38,000
+Ewa Dashwood: Does that give Polish users
+a different token or balance?
+
+138
+00:07:38,200 --> 00:07:42,025
+Chad G. P. Taylor: No, those are names for
+the same token and supply. The remove
+
+139
+00:07:42,025 --> 00:07:44,894
+Chad G. P. Taylor: control deletes an
+extra localization from the draft. We'll
+
+140
+00:07:44,894 --> 00:07:47,444
+Chad G. P. Taylor: remove the practice
+translation and keep English for
+
+141
+00:07:47,444 --> 00:07:48,400
+Chad G. P. Taylor: our final example.
+
+142
+00:07:48,400 --> 00:07:52,770
+Chad G. P. Taylor: Base Supply is the
+advanced form's initial supply. Set one
+
+143
+00:07:52,770 --> 00:07:57,578
+Chad G. P. Taylor: thousand, then set Max
+Supply to ten thousand. We'll make that
+
+144
+00:07:57,578 --> 00:08:00,200
+Chad G. P. Taylor: ceiling permanent
+through its permissions later.
+
+145
+00:08:00,400 --> 00:08:04,600
+Ewa Dashwood: If Contract Keywords is
+blank, is the token unsearchable?
+
+146
+00:08:04,800 --> 00:08:08,252
+Chad G. P. Taylor: No. This build still
+registers the singular name as a
+
+147
+00:08:08,252 --> 00:08:11,703
+Chad G. P. Taylor: searchable keyword and
+counts it in the estimate. Try education
+
+148
+00:08:11,703 --> 00:08:14,465
+Chad G. P. Taylor: as an additional
+keyword, then remove it for
+
+149
+00:08:14,465 --> 00:08:15,500
+Chad G. P. Taylor: our final setup.
+
+150
+00:08:15,700 --> 00:08:19,832
+Ewa Dashwood: So an extra keyword adds
+discovery information and another
+
+151
+00:08:19,832 --> 00:08:20,750
+Ewa Dashwood: keyword charge?
+
+152
+00:08:20,950 --> 00:08:24,200
+Chad G. P. Taylor: Exactly. Add a short,
+honest description too.
+
+153
+00:08:24,200 --> 00:08:26,950
+Ewa Dashwood: What does setting Max
+Decimals to two change?
+
+154
+00:08:27,150 --> 00:08:31,324
+Chad G. P. Taylor: One token represents
+one hundred base units; the smallest unit
+
+155
+00:08:31,324 --> 00:08:35,498
+Chad G. P. Taylor: is one hundredth of a
+token. Zero decimals would mean
+
+156
+00:08:35,498 --> 00:08:36,750
+Chad G. P. Taylor: indivisible whole
+tokens.
+
+157
+00:08:36,950 --> 00:08:39,750
+Ewa Dashwood: Should I divide our supply
+entries by a hundred now?
+
+158
+00:08:39,950 --> 00:08:43,185
+Chad G. P. Taylor: No. After changing
+precision, recheck that the displayed
+
+159
+00:08:43,185 --> 00:08:47,634
+Chad G. P. Taylor: fields still read one
+thousand and ten thousand. The form scales
+
+160
+00:08:47,634 --> 00:08:52,487
+Chad G. P. Taylor: them for you. JSON will
+later show one hundred thousand and one
+
+161
+00:08:52,487 --> 00:08:53,700
+Chad G. P. Taylor: million base units.
+
+162
+00:08:53,900 --> 00:08:56,950
+Ewa Dashwood: So the different numbers
+describe the same amounts.
+
+163
+00:08:57,150 --> 00:09:00,085
+Chad G. P. Taylor: Correct. We'll be
+especially careful when distribution
+
+164
+00:09:00,085 --> 00:09:02,600
+Chad G. P. Taylor: fields ask for base
+units directly.
+
+165
+00:09:02,600 --> 00:09:06,552
+Chad G. P. Taylor: Start as paused
+controls the initial transfer state. If we
+
+166
+00:09:06,552 --> 00:09:09,714
+Chad G. P. Taylor: use it, someone needs
+Emergency Action authority to
+
+167
+00:09:09,714 --> 00:09:10,900
+Chad G. P. Taylor: resume transfers later.
+
+168
+00:09:11,100 --> 00:09:14,993
+Ewa Dashwood: Is unchecking Holders can
+send this token to other identities
+
+169
+00:09:14,993 --> 00:09:16,550
+Ewa Dashwood: another kind of pause?
+
+170
+00:09:16,750 --> 00:09:21,924
+Chad G. P. Taylor: No. Transferability can
+change in the draft, but it cannot change
+
+171
+00:09:21,924 --> 00:09:25,217
+Chad G. P. Taylor: after registration.
+Creating a non-transferable token requires
+
+172
+00:09:25,217 --> 00:09:29,450
+Chad G. P. Taylor: a known supported
+protocol version of at least fourteen.
+
+173
+00:09:29,650 --> 00:09:33,100
+Ewa Dashwood: So I mustn't publish it
+expecting an unpause button
+
+174
+00:09:33,100 --> 00:09:34,250
+Ewa Dashwood: to restore transfers.
+
+175
+00:09:34,450 --> 00:09:38,418
+Chad G. P. Taylor: Exactly. If the option
+is unavailable, read its explanation
+
+176
+00:09:38,418 --> 00:09:42,827
+Chad G. P. Taylor: rather than bypassing
+it. Our final token starts unpaused, with
+
+177
+00:09:42,827 --> 00:09:44,150
+Chad G. P. Taylor: ordinary transfers
+enabled.
+
+178
+00:09:44,167 --> 00:09:48,217
+Ewa Dashwood: Does Keep history mean the
+app stores records only on this computer?
+
+179
+00:09:48,417 --> 00:09:53,100
+Chad G. P. Taylor: It's a contract
+configuration choice, not a local privacy
+
+180
+00:09:53,100 --> 00:09:58,304
+Chad G. P. Taylor: switch. Expand Advanced
+to see six ledgers: transfers, freezes and
+
+181
+00:09:58,304 --> 00:10:01,426
+Chad G. P. Taylor: unfreezes, mints,
+burns, direct-pricing changes, and
+
+182
+00:10:01,426 --> 00:10:02,467
+Chad G. P. Taylor: direct purchases.
+
+183
+00:10:02,667 --> 00:10:06,512
+Ewa Dashwood: Can a payment token retain
+transfers while choosing other
+
+184
+00:10:06,512 --> 00:10:07,367
+Ewa Dashwood: ledgers separately?
+
+185
+00:10:07,567 --> 00:10:11,657
+Chad G. P. Taylor: Yes. A token with
+direct sales may also need pricing and
+
+186
+00:10:11,657 --> 00:10:15,376
+Chad G. P. Taylor: purchase records. The
+parent checkbox changes all six; a mixed
+
+187
+00:10:15,376 --> 00:10:19,467
+Chad G. P. Taylor: state means only some
+are selected. We'll keep all six enabled.
+
+188
+00:10:19,667 --> 00:10:21,717
+Ewa Dashwood: And Name should be
+capitalized?
+
+189
+00:10:21,917 --> 00:10:25,394
+Chad G. P. Taylor: Presentation guidance
+for clients. It doesn't change the
+
+190
+00:10:25,394 --> 00:10:27,567
+Chad G. P. Taylor: identifier or add a
+localization.
+
+191
+00:10:27,567 --> 00:10:31,874
+Chad G. P. Taylor: Open Action Rules. The
+preset selector includes Custom, where we
+
+192
+00:10:31,874 --> 00:10:33,167
+Chad G. P. Taylor: choose rules ourselves.
+
+193
+00:10:33,367 --> 00:10:38,021
+Ewa Dashwood: If I select another preset
+after editing, will it preserve my
+
+194
+00:10:38,021 --> 00:10:38,867
+Ewa Dashwood: individual changes?
+
+195
+00:10:39,067 --> 00:10:43,225
+Chad G. P. Taylor: Don't assume so; it can
+overwrite them. Compare the full
+
+196
+00:10:43,225 --> 00:10:46,135
+Chad G. P. Taylor: permission table first.
+Advanced Actions includes substantial
+
+197
+00:10:46,135 --> 00:10:49,877
+Chad G. P. Taylor: owner authority, such
+as changing the supply ceiling and
+
+198
+00:10:49,877 --> 00:10:52,788
+Chad G. P. Taylor: destroying frozen
+balances. All Allowed permits broader
+
+199
+00:10:52,788 --> 00:10:54,867
+Chad G. P. Taylor: changes to the
+authorities themselves.
+
+200
+00:10:55,067 --> 00:10:59,747
+Ewa Dashwood: So the useful comparison is
+who can do what, and who can
+
+201
+00:10:59,747 --> 00:11:00,917
+Ewa Dashwood: change that arrangement.
+
+202
+00:11:01,117 --> 00:11:04,072
+Chad G. P. Taylor: Precisely. We'll
+inspect both, then customize our
+
+203
+00:11:04,072 --> 00:11:04,917
+Chad G. P. Taylor: final setup.
+
+204
+00:11:04,933 --> 00:11:09,333
+Ewa Dashwood: In Manual Mint, what does
+Authorized to perform action select?
+
+205
+00:11:09,533 --> 00:11:14,237
+Chad G. P. Taylor: Its performer. No One
+disables the action. Contract Owner gives
+
+206
+00:11:14,237 --> 00:11:18,941
+Chad G. P. Taylor: it to the identity
+owning the contract. Identity names a
+
+207
+00:11:18,941 --> 00:11:22,233
+Chad G. P. Taylor: particular identity
+using its complete Base58 identifier.
+
+208
+00:11:22,433 --> 00:11:25,933
+Ewa Dashwood: Does the validation check
+mark prove that I control the identity?
+
+209
+00:11:26,133 --> 00:11:29,625
+Chad G. P. Taylor: Only that the
+identifier has the expected format. It
+
+210
+00:11:29,625 --> 00:11:32,729
+Chad G. P. Taylor: doesn't prove
+possession of its keys. A treasury
+
+211
+00:11:32,729 --> 00:11:35,833
+Chad G. P. Taylor: identity could be our
+minting authority, for example.
+
+212
+00:11:36,033 --> 00:11:39,783
+Ewa Dashwood: I see No Groups Added Yet
+rather than a group choice.
+
+213
+00:11:39,983 --> 00:11:44,169
+Chad G. P. Taylor: Those choices appear
+once a group exists. We'll return to Main
+
+214
+00:11:44,169 --> 00:11:46,833
+Chad G. P. Taylor: Group and Group zero
+after creating one.
+
+215
+00:11:46,833 --> 00:11:50,849
+Ewa Dashwood: If a group performs minting
+but the owner can change its rule, is the
+
+216
+00:11:50,849 --> 00:11:52,283
+Ewa Dashwood: group really the final
+authority?
+
+217
+00:11:52,483 --> 00:11:55,733
+Chad G. P. Taylor: The owner may still
+change that arrangement. That's why
+
+218
+00:11:55,733 --> 00:11:57,900
+Chad G. P. Taylor: Authorized to change
+rules matters separately
+
+219
+00:11:57,900 --> 00:11:58,983
+Chad G. P. Taylor: from the performer.
+
+220
+00:11:59,183 --> 00:12:01,583
+Ewa Dashwood: What do these three switches
+constrain?
+
+221
+00:12:01,783 --> 00:12:05,336
+Chad G. P. Taylor: The first allows
+changing the performer to No One,
+
+222
+00:12:05,336 --> 00:12:08,494
+Chad G. P. Taylor: potentially disabling
+the action permanently. The second allows
+
+223
+00:12:08,494 --> 00:12:11,652
+Chad G. P. Taylor: changing the
+administrator to No One, locking future
+
+224
+00:12:11,652 --> 00:12:15,599
+Chad G. P. Taylor: rule updates. The third
+allows an administrator to change its
+
+225
+00:12:15,599 --> 00:12:16,783
+Chad G. P. Taylor: own administrator
+assignment.
+
+226
+00:12:16,983 --> 00:12:19,583
+Ewa Dashwood: They don't grant those
+actions to everybody?
+
+227
+00:12:19,783 --> 00:12:23,863
+Chad G. P. Taylor: No. They constrain
+later authorized updates. Decide both
+
+228
+00:12:23,863 --> 00:12:27,433
+Chad G. P. Taylor: selectors and all three
+switches before registration.
+
+229
+00:12:27,433 --> 00:12:31,283
+Ewa Dashwood: We entered a maximum of ten
+thousand. Which permission makes it
+
+230
+00:12:31,283 --> 00:12:32,333
+Ewa Dashwood: a permanent ceiling?
+
+231
+00:12:32,533 --> 00:12:37,028
+Chad G. P. Taylor: Max Supply Change. Set
+both its performer and administrator to No
+
+232
+00:12:37,028 --> 00:12:40,297
+Chad G. P. Taylor: One, with later
+rule-change switches off. A numerical
+
+233
+00:12:40,297 --> 00:12:44,383
+Chad G. P. Taylor: maximum alone isn't a
+promise that nobody can revise it.
+
+234
+00:12:44,583 --> 00:12:47,283
+Ewa Dashwood: Can the owner still mint
+below that ceiling?
+
+235
+00:12:47,483 --> 00:12:51,608
+Chad G. P. Taylor: Yes, if Manual Mint
+permits it. Those are separate decisions.
+
+236
+00:12:51,608 --> 00:12:55,321
+Chad G. P. Taylor: A project needing an
+adjustable ceiling should instead choose
+
+237
+00:12:55,321 --> 00:12:59,033
+Chad G. P. Taylor: and disclose who can
+change it. Our CloudPoint example
+
+238
+00:12:59,033 --> 00:13:00,683
+Chad G. P. Taylor: deliberately fixes ten
+thousand.
+
+239
+00:13:00,700 --> 00:13:04,488
+Chad G. P. Taylor: Set Manual Mint to
+Contract Owner, with its administrator No
+
+240
+00:13:04,488 --> 00:13:08,656
+Chad G. P. Taylor: One. The owner could
+issue ten reward tokens after a completed
+
+241
+00:13:08,656 --> 00:13:10,550
+Chad G. P. Taylor: task, within the supply
+ceiling.
+
+242
+00:13:10,750 --> 00:13:12,700
+Ewa Dashwood: Where would those new tokens
+go?
+
+243
+00:13:12,900 --> 00:13:15,786
+Chad G. P. Taylor: The destination
+settings choose the owner, a specified
+
+244
+00:13:15,786 --> 00:13:19,754
+Chad G. P. Taylor: default identity, or a
+recipient chosen per mint when allowed. A
+
+245
+00:13:19,754 --> 00:13:23,000
+Chad G. P. Taylor: treasury is a useful
+example of a specific default.
+
+246
+00:13:23,200 --> 00:13:26,000
+Ewa Dashwood: Does that default affect
+only future mints?
+
+247
+00:13:26,200 --> 00:13:29,806
+Chad G. P. Taylor: It can also affect the
+initial allocation. We'll leave the
+
+248
+00:13:29,806 --> 00:13:32,691
+Chad G. P. Taylor: specific treasury
+option visible briefly to inspect its
+
+249
+00:13:32,691 --> 00:13:37,018
+Chad G. P. Taylor: nested rule. Then we'll
+lock that rule and restore the owner as
+
+250
+00:13:37,018 --> 00:13:38,100
+Chad G. P. Taylor: our final default.
+
+251
+00:13:38,100 --> 00:13:41,138
+Ewa Dashwood: Why lock the destination
+rule before switching the default back
+
+252
+00:13:41,138 --> 00:13:42,050
+Ewa Dashwood: to the owner?
+
+253
+00:13:42,250 --> 00:13:46,432
+Chad G. P. Taylor: New Tokens Destination
+Identity Rules is visible only while the
+
+254
+00:13:46,432 --> 00:13:49,777
+Chad G. P. Taylor: specific-identity
+option is enabled. Set its performer and
+
+255
+00:13:49,777 --> 00:13:53,959
+Chad G. P. Taylor: administrator to No
+One, and all three switches off. Then
+
+256
+00:13:53,959 --> 00:13:56,050
+Chad G. P. Taylor: restore the owner as
+default.
+
+257
+00:13:56,250 --> 00:13:59,341
+Ewa Dashwood: Otherwise the hidden rule
+could retain permission to
+
+258
+00:13:59,341 --> 00:14:00,500
+Ewa Dashwood: change that policy?
+
+259
+00:14:00,700 --> 00:14:04,559
+Chad G. P. Taylor: Yes. Hiding a panel
+doesn't reset its values. Now leave
+
+260
+00:14:04,559 --> 00:14:08,033
+Chad G. P. Taylor: per-mint recipient
+choice enabled, but set both selectors in
+
+261
+00:14:08,033 --> 00:14:11,892
+Chad G. P. Taylor: Minting Allow Choosing
+Destination Rules to No One, with all
+
+262
+00:14:11,892 --> 00:14:13,050
+Chad G. P. Taylor: three switches off.
+
+263
+00:14:13,250 --> 00:14:17,375
+Ewa Dashwood: We allow choosing a
+recipient, while locking who can revise
+
+264
+00:14:17,375 --> 00:14:18,200
+Ewa Dashwood: that capability.
+
+265
+00:14:18,200 --> 00:14:21,750
+Ewa Dashwood: With Manual Burn, could the
+owner remove tokens from any holder?
+
+266
+00:14:21,950 --> 00:14:25,356
+Chad G. P. Taylor: This burn action
+reduces the executing identity's own
+
+267
+00:14:25,356 --> 00:14:29,187
+Chad G. P. Taylor: balance and current
+supply. An authorized identity holding one
+
+268
+00:14:29,187 --> 00:14:33,444
+Chad G. P. Taylor: hundred tokens could
+burn ten, leaving ninety. If total supply
+
+269
+00:14:33,444 --> 00:14:36,850
+Chad G. P. Taylor: was one thousand, it
+becomes nine hundred ninety.
+
+270
+00:14:37,050 --> 00:14:40,450
+Ewa Dashwood: That's different from
+sending ten tokens somewhere recoverable.
+
+271
+00:14:40,650 --> 00:14:44,879
+Chad G. P. Taylor: Exactly. Burning isn't
+a transfer to a recovery account, and you
+
+272
+00:14:44,879 --> 00:14:47,954
+Chad G. P. Taylor: shouldn't expect an
+undo. Destroying another frozen identity's
+
+273
+00:14:47,954 --> 00:14:51,799
+Chad G. P. Taylor: balance is a separate
+power, which we'll examine shortly. For
+
+274
+00:14:51,799 --> 00:14:56,412
+Chad G. P. Taylor: CloudPoint, allow the
+owner to burn its own tokens and set the
+
+275
+00:14:56,412 --> 00:14:57,950
+Chad G. P. Taylor: administrator to No
+One.
+
+276
+00:14:57,967 --> 00:15:01,186
+Chad G. P. Taylor: Freeze prevents a
+particular identity from sending this
+
+277
+00:15:01,186 --> 00:15:04,405
+Chad G. P. Taylor: token. The accompanying
+checkbox decides whether that frozen
+
+278
+00:15:04,405 --> 00:15:06,417
+Chad G. P. Taylor: identity can still
+receive transfers.
+
+279
+00:15:06,617 --> 00:15:10,617
+Ewa Dashwood: So a project could suspend
+outgoing account activity while allowing
+
+280
+00:15:10,617 --> 00:15:13,017
+Ewa Dashwood: incoming tokens, or block
+those too?
+
+281
+00:15:13,217 --> 00:15:17,042
+Chad G. P. Taylor: Yes. Unfreeze is a
+separate permission that restores the
+
+282
+00:15:17,042 --> 00:15:20,867
+Chad G. P. Taylor: relevant ability to
+move tokens. Don't assume whoever may
+
+283
+00:15:20,867 --> 00:15:23,417
+Chad G. P. Taylor: freeze automatically
+has permission to unfreeze.
+
+284
+00:15:23,617 --> 00:15:26,667
+Ewa Dashwood: Would our final token allow
+either intervention?
+
+285
+00:15:26,867 --> 00:15:29,933
+Chad G. P. Taylor: No. We'll demonstrate
+both settings and the incoming-transfer
+
+286
+00:15:29,933 --> 00:15:33,383
+Chad G. P. Taylor: checkbox, then set the
+freeze and unfreeze performers and
+
+287
+00:15:33,383 --> 00:15:34,917
+Chad G. P. Taylor: administrators to No
+One.
+
+288
+00:15:34,933 --> 00:15:39,683
+Ewa Dashwood: How much can Destroy Frozen
+Funds remove from a frozen identity?
+
+289
+00:15:39,883 --> 00:15:43,333
+Chad G. P. Taylor: Its entire balance of
+this token. An authorized controller
+
+290
+00:15:43,333 --> 00:15:47,167
+Chad G. P. Taylor: targets another frozen
+identity; there isn't a field here for
+
+291
+00:15:47,167 --> 00:15:49,083
+Chad G. P. Taylor: selecting a small
+partial amount.
+
+292
+00:15:49,283 --> 00:15:52,733
+Ewa Dashwood: And unfreezing afterward
+wouldn't restore those tokens?
+
+293
+00:15:52,933 --> 00:15:55,720
+Chad G. P. Taylor: Correct. This is
+destruction, not a temporary hold.
+
+294
+00:15:55,720 --> 00:15:59,900
+Chad G. P. Taylor: Advanced Actions grants
+the power to the owner, which is why we
+
+295
+00:15:59,900 --> 00:16:03,383
+Chad G. P. Taylor: inspected the preset
+rather than relying on its friendly name.
+
+296
+00:16:03,583 --> 00:16:06,383
+Ewa Dashwood: We don't need that authority
+for our example.
+
+297
+00:16:06,583 --> 00:16:11,143
+Chad G. P. Taylor: Then both selectors
+stay No One. Any project that does need it
+
+298
+00:16:11,143 --> 00:16:14,183
+Chad G. P. Taylor: should explain the
+consequence plainly to holders beforehand.
+
+299
+00:16:14,200 --> 00:16:17,588
+Chad G. P. Taylor: Emergency Action is
+token-wide pause and resume. A project
+
+300
+00:16:17,588 --> 00:16:20,600
+Chad G. P. Taylor: might use it while
+investigating an operational problem.
+
+301
+00:16:20,800 --> 00:16:23,800
+Ewa Dashwood: Unlike Freeze, which singles
+out an identity?
+
+302
+00:16:24,000 --> 00:16:27,122
+Chad G. P. Taylor: Exactly. Our final
+configuration keeps emergency authority
+
+303
+00:16:27,122 --> 00:16:30,690
+Chad G. P. Taylor: with the owner and
+locks its administrator. Conventions
+
+304
+00:16:30,690 --> 00:16:34,258
+Chad G. P. Taylor: Change is different
+again: it concerns naming and
+
+305
+00:16:34,258 --> 00:16:35,150
+Chad G. P. Taylor: decimal conventions.
+
+306
+00:16:35,350 --> 00:16:39,350
+Ewa Dashwood: Could a convention change
+affect how balances look in clients?
+
+307
+00:16:39,550 --> 00:16:43,250
+Chad G. P. Taylor: It can affect
+presentation of names and amounts, so we
+
+308
+00:16:43,250 --> 00:16:45,470
+Chad G. P. Taylor: should decide
+deliberately. We'll set both
+
+309
+00:16:45,470 --> 00:16:48,060
+Chad G. P. Taylor: convention-change
+selectors to No One. Pausing transfers,
+
+310
+00:16:48,060 --> 00:16:51,020
+Chad G. P. Taylor: freezing one holder,
+and changing presentation are three
+
+311
+00:16:51,020 --> 00:16:54,350
+Chad G. P. Taylor: separate choices; none
+should be inferred from the others.
+
+312
+00:16:54,367 --> 00:16:57,530
+Ewa Dashwood: Do these marketplace and
+pricing rules put CloudPoint
+
+313
+00:16:57,530 --> 00:16:58,717
+Ewa Dashwood: on sale immediately?
+
+314
+00:16:58,917 --> 00:17:02,376
+Chad G. P. Taylor: No. Marketplace Trade
+Mode Change controls who may change
+
+315
+00:17:02,376 --> 00:17:04,298
+Chad G. P. Taylor: marketplace
+eligibility. Direct Purchase Pricing
+
+316
+00:17:04,298 --> 00:17:07,757
+Chad G. P. Taylor: Change controls who may
+set or change direct-purchase pricing.
+
+317
+00:17:07,757 --> 00:17:11,217
+Chad G. P. Taylor: Neither publishes a
+sale or chooses a price here.
+
+318
+00:17:11,417 --> 00:17:15,180
+Ewa Dashwood: An owner-managed reward
+token could retain those powers for a
+
+319
+00:17:15,180 --> 00:17:18,567
+Ewa Dashwood: later sale, while a giveaway
+token might forbid them?
+
+320
+00:17:18,767 --> 00:17:23,277
+Chad G. P. Taylor: Yes. We'll retain both
+performers as Contract Owner and set their
+
+321
+00:17:23,277 --> 00:17:26,557
+Chad G. P. Taylor: administrators to No
+One. Remember, marketplace eligibility is
+
+322
+00:17:26,557 --> 00:17:29,017
+Chad G. P. Taylor: separate from normal
+transfers between holders.
+
+323
+00:17:29,033 --> 00:17:32,033
+Ewa Dashwood: Does Main Control Group
+Change create the group that will
+
+324
+00:17:32,033 --> 00:17:32,933
+Ewa Dashwood: govern our token?
+
+325
+00:17:33,133 --> 00:17:37,599
+Chad G. P. Taylor: No, it chooses who may
+replace the contract's main control group.
+
+326
+00:17:37,599 --> 00:17:41,659
+Chad G. P. Taylor: No One disables that
+change. Other choices refer to owner,
+
+327
+00:17:41,659 --> 00:17:43,283
+Chad G. P. Taylor: identity, or group
+authority.
+
+328
+00:17:43,483 --> 00:17:46,746
+Ewa Dashwood: If a group-position field
+appears, do I put an
+
+329
+00:17:46,746 --> 00:17:47,833
+Ewa Dashwood: identity identifier there?
+
+330
+00:17:48,033 --> 00:17:52,022
+Chad G. P. Taylor: Use the group's actual
+position inside this contract, not an
+
+331
+00:17:52,022 --> 00:17:56,011
+Chad G. P. Taylor: identity identifier or
+a group nickname. We'll create a small
+
+332
+00:17:56,011 --> 00:17:59,600
+Chad G. P. Taylor: group next so those
+references become concrete. After the
+
+333
+00:17:59,600 --> 00:18:03,589
+Chad G. P. Taylor: experiment, our final
+example will have no group, no main-group
+
+334
+00:18:03,589 --> 00:18:05,583
+Chad G. P. Taylor: position, and
+main-control-group changes disabled.
+
+335
+00:18:05,600 --> 00:18:09,867
+Chad G. P. Taylor: Click Add New Group and
+expand Group zero. Two member rows already
+
+336
+00:18:09,867 --> 00:18:14,133
+Chad G. P. Taylor: exist: the owner and a
+second row to fill. We don't need
+
+337
+00:18:14,133 --> 00:18:15,200
+Chad G. P. Taylor: Add Member yet.
+
+338
+00:18:15,400 --> 00:18:19,872
+Ewa Dashwood: For a two-person treasury,
+we use two distinct public identity
+
+339
+00:18:19,872 --> 00:18:23,450
+Ewa Dashwood: identifiers, power one each,
+and Required Power two?
+
+340
+00:18:23,650 --> 00:18:26,884
+Chad G. P. Taylor: Exactly. Both members
+are needed to reach that threshold. Zero
+
+341
+00:18:26,884 --> 00:18:29,795
+Chad G. P. Taylor: is this group's
+position within the contract. Set Main
+
+342
+00:18:29,795 --> 00:18:34,000
+Chad G. P. Taylor: Control Group Position
+to zero if this is to be the main group.
+
+343
+00:18:34,200 --> 00:18:36,700
+Ewa Dashwood: Does that assign all token
+permissions to it?
+
+344
+00:18:36,900 --> 00:18:40,006
+Chad G. P. Taylor: No. Each relevant
+action must explicitly reference this
+
+345
+00:18:40,006 --> 00:18:42,335
+Chad G. P. Taylor: group. We're only
+defining membership and
+
+346
+00:18:42,335 --> 00:18:43,500
+Chad G. P. Taylor: the threshold here.
+
+347
+00:18:43,500 --> 00:18:46,731
+Ewa Dashwood: Now can we try adding a
+third member without changing
+
+348
+00:18:46,731 --> 00:18:47,700
+Ewa Dashwood: the two-person example?
+
+349
+00:18:47,900 --> 00:18:52,830
+Chad G. P. Taylor: Add one temporary row,
+then Remove Member to remove it. Keep the
+
+350
+00:18:52,830 --> 00:18:56,117
+Chad G. P. Taylor: threshold reachable:
+two required power with one power-one
+
+351
+00:18:56,117 --> 00:18:57,350
+Chad G. P. Taylor: member wouldn't work.
+
+352
+00:18:57,550 --> 00:18:59,850
+Ewa Dashwood: Where do we assign the group
+to an action?
+
+353
+00:19:00,050 --> 00:19:04,027
+Chad G. P. Taylor: The performer selector
+now offers Group zero and Main Group.
+
+354
+00:19:04,027 --> 00:19:07,607
+Chad G. P. Taylor: Choose the reference
+intentionally, then decide who can change
+
+355
+00:19:07,607 --> 00:19:08,800
+Chad G. P. Taylor: that action rule.
+
+356
+00:19:09,000 --> 00:19:10,550
+Ewa Dashwood: And our final cleanup?
+
+357
+00:19:10,750 --> 00:19:14,446
+Chad G. P. Taylor: Restore the owner-based
+rules, clear group references and the main
+
+358
+00:19:14,446 --> 00:19:18,143
+Chad G. P. Taylor: position, and use
+Remove This Group to delete the practice
+
+359
+00:19:18,143 --> 00:19:21,100
+Chad G. P. Taylor: group. We'll verify
+that no hidden references remain.
+
+360
+00:19:21,100 --> 00:19:24,082
+Ewa Dashwood: Are these distribution
+settings different ways to deliver
+
+361
+00:19:24,082 --> 00:19:25,200
+Ewa Dashwood: the Initial Supply?
+
+362
+00:19:25,400 --> 00:19:27,701
+Chad G. P. Taylor: They describe
+additional allocations. Perpetual
+
+363
+00:19:27,701 --> 00:19:30,924
+Chad G. P. Taylor: Distribution uses
+recurring periods and an emission
+
+364
+00:19:30,924 --> 00:19:32,765
+Chad G. P. Taylor: function.
+Pre-Programmed Distribution lists
+
+365
+00:19:32,765 --> 00:19:36,447
+Chad G. P. Taylor: scheduled allocations
+to specific identities. Once Per Identity
+
+366
+00:19:36,447 --> 00:19:41,050
+Chad G. P. Taylor: offers one claim per
+identity when the network supports it.
+
+367
+00:19:41,250 --> 00:19:45,500
+Ewa Dashwood: If a period passes, will
+tokens automatically appear in my wallet?
+
+368
+00:19:45,700 --> 00:19:48,755
+Chad G. P. Taylor: Recurring and scheduled
+entitlements are collected through the
+
+369
+00:19:48,755 --> 00:19:51,811
+Chad G. P. Taylor: appropriate Claim
+action. A schedule isn't an invisible
+
+370
+00:19:51,811 --> 00:19:54,866
+Chad G. P. Taylor: transfer running on
+this computer. We'll inspect example
+
+371
+00:19:54,866 --> 00:19:59,067
+Chad G. P. Taylor: recipes, not perform
+claims, and all three systems will be off
+
+372
+00:19:59,067 --> 00:20:02,122
+Chad G. P. Taylor: in the final CloudPoint
+registration. Their change permissions
+
+373
+00:20:02,122 --> 00:20:03,650
+Chad G. P. Taylor: will be locked too.
+
+374
+00:20:03,667 --> 00:20:06,120
+Chad G. P. Taylor: Enable Perpetual
+Distribution. Time-Based measures a
+
+375
+00:20:06,120 --> 00:20:10,617
+Chad G. P. Taylor: duration with a unit;
+one day will be our main example.
+
+376
+00:20:10,817 --> 00:20:14,667
+Ewa Dashwood: Why might I choose
+Epoch-Based or Block-Based instead?
+
+377
+00:20:14,867 --> 00:20:18,267
+Chad G. P. Taylor: Epoch-Based follows
+Platform epochs. Don't assume a fixed
+
+378
+00:20:18,267 --> 00:20:22,092
+Chad G. P. Taylor: number of clock hours.
+Block-Based follows block counts: ten
+
+379
+00:20:22,092 --> 00:20:25,917
+Chad G. P. Taylor: blocks is a count, not
+a guaranteed wall-clock duration.
+
+380
+00:20:26,117 --> 00:20:29,517
+Ewa Dashwood: The function then provides
+an amount for each of those periods?
+
+381
+00:20:29,717 --> 00:20:33,767
+Chad G. P. Taylor: Yes. Choose the period
+that matches the policy you intend. We'll
+
+382
+00:20:33,767 --> 00:20:37,817
+Chad G. P. Taylor: show one day, one
+epoch, and ten blocks to distinguish the
+
+383
+00:20:37,817 --> 00:20:40,762
+Chad G. P. Taylor: inputs, then return to
+one-day periods for the
+
+384
+00:20:40,762 --> 00:20:41,867
+Chad G. P. Taylor: ordinary worked
+recipes.
+
+385
+00:20:41,867 --> 00:20:45,067
+Ewa Dashwood: Can recurring emissions go
+somewhere other than the owner?
+
+386
+00:20:45,267 --> 00:20:49,214
+Chad G. P. Taylor: Choose Contract Owner,
+a Specific Identity, or the evonode
+
+387
+00:20:49,214 --> 00:20:51,407
+Chad G. P. Taylor: recipient category.
+Evonodes requires Epoch-Based
+
+388
+00:20:51,407 --> 00:20:55,354
+Chad G. P. Taylor: distribution; selecting
+it with another interval doesn't make that
+
+389
+00:20:55,354 --> 00:20:59,740
+Chad G. P. Taylor: combination valid. Our
+ordinary examples use the owner or a
+
+390
+00:20:59,740 --> 00:21:00,617
+Chad G. P. Taylor: named treasury.
+
+391
+00:21:00,817 --> 00:21:03,267
+Ewa Dashwood: Are these amounts entered
+like Base Supply?
+
+392
+00:21:03,467 --> 00:21:06,721
+Chad G. P. Taylor: Here's the important
+difference: emission amounts use base
+
+393
+00:21:06,721 --> 00:21:10,381
+Chad G. P. Taylor: units. With two
+decimals, one thousand base units means
+
+394
+00:21:10,381 --> 00:21:14,042
+Chad G. P. Taylor: ten tokens. The Supply
+fields scale displayed token amounts;
+
+395
+00:21:14,042 --> 00:21:17,702
+Chad G. P. Taylor: these distribution
+parameters don't all use that widget. Keep
+
+396
+00:21:17,702 --> 00:21:21,363
+Chad G. P. Taylor: the units overlay
+visible as we change functions. A
+
+397
+00:21:21,363 --> 00:21:24,617
+Chad G. P. Taylor: familiar-looking number
+can represent a different amount here.
+
+398
+00:21:24,633 --> 00:21:28,175
+Chad G. P. Taylor: The Function selector
+determines the amount for each period.
+
+399
+00:21:28,175 --> 00:21:31,322
+Chad G. P. Taylor: Information buttons
+explain formulas, and our tables show
+
+400
+00:21:31,322 --> 00:21:33,683
+Chad G. P. Taylor: small worked examples
+in base units.
+
+401
+00:21:33,883 --> 00:21:37,811
+Ewa Dashwood: Can I treat minimum,
+maximum, and trailing amount as
+
+402
+00:21:37,811 --> 00:21:38,683
+Ewa Dashwood: interchangeable safeguards?
+
+403
+00:21:38,883 --> 00:21:42,724
+Chad G. P. Taylor: No, each changes a
+particular part of the calculation. We'll
+
+404
+00:21:42,724 --> 00:21:46,181
+Chad G. P. Taylor: name every parameter we
+enter rather than copying a
+
+405
+00:21:46,181 --> 00:21:47,333
+Chad G. P. Taylor: curve by appearance.
+
+406
+00:21:47,533 --> 00:21:51,283
+Ewa Dashwood: And Start Period Offset
+means a delay after registration?
+
+407
+00:21:51,483 --> 00:21:56,267
+Chad G. P. Taylor: Don't read it that way.
+It isn't simply a number of days to wait.
+
+408
+00:21:56,267 --> 00:21:59,342
+Chad G. P. Taylor: We'll leave the
+optional start field empty in these
+
+409
+00:21:59,342 --> 00:22:01,733
+Chad G. P. Taylor: recipes and use this
+build's precise interpretation.
+
+410
+00:22:01,733 --> 00:22:06,533
+Ewa Dashwood: Our table begins at k equals
+zero. Is that an extra allocation
+
+411
+00:22:06,533 --> 00:22:07,333
+Ewa Dashwood: at registration?
+
+412
+00:22:07,533 --> 00:22:11,639
+Chad G. P. Taylor: No. Initial Supply is
+separate. Here k measures the period index
+
+413
+00:22:11,639 --> 00:22:14,998
+Chad G. P. Taylor: from the registration
+period, with the optional start field
+
+414
+00:22:14,998 --> 00:22:17,983
+Chad G. P. Taylor: empty. We include zero
+to illustrate the formula.
+
+415
+00:22:18,183 --> 00:22:21,533
+Ewa Dashwood: Which values contribute over
+five eligible periods?
+
+416
+00:22:21,733 --> 00:22:24,909
+Chad G. P. Taylor: One through five,
+excluding the starting boundary and
+
+417
+00:22:24,909 --> 00:22:28,085
+Chad G. P. Taylor: including the end.
+Network period indices determine those
+
+418
+00:22:28,085 --> 00:22:31,261
+Chad G. P. Taylor: boundaries. Don't
+interpret the table as a stopwatch
+
+419
+00:22:31,261 --> 00:22:34,833
+Chad G. P. Taylor: promising a first claim
+exactly twenty-four hours after Confirm.
+
+420
+00:22:35,033 --> 00:22:39,247
+Ewa Dashwood: So these are calculation
+examples, not five payments we've
+
+421
+00:22:39,247 --> 00:22:40,183
+Ewa Dashwood: already made.
+
+422
+00:22:40,383 --> 00:22:43,483
+Chad G. P. Taylor: Exactly. No claim is
+being performed here.
+
+423
+00:22:43,500 --> 00:22:47,687
+Chad G. P. Taylor: Choose FixedAmount and
+enter one hundred in Fixed Amount per
+
+424
+00:22:47,687 --> 00:22:51,875
+Chad G. P. Taylor: Interval. Each period
+contributes one hundred base units, or one
+
+425
+00:22:51,875 --> 00:22:53,550
+Chad G. P. Taylor: token at two decimals.
+
+426
+00:22:53,750 --> 00:22:58,577
+Ewa Dashwood: Five eligible periods would
+contribute five hundred base units:
+
+427
+00:22:58,577 --> 00:22:59,650
+Ewa Dashwood: five tokens?
+
+428
+00:22:59,850 --> 00:23:03,191
+Chad G. P. Taylor: Before other applicable
+restrictions, yes. A fixed recurring
+
+429
+00:23:03,191 --> 00:23:06,950
+Chad G. P. Taylor: treasury allowance is a
+straightforward use for this recipe.
+
+430
+00:23:07,150 --> 00:23:10,600
+Ewa Dashwood: Does fixed mean the total
+token supply is fixed too?
+
+431
+00:23:10,800 --> 00:23:14,642
+Chad G. P. Taylor: Only the recurring
+amount is fixed here. Supply limits and
+
+432
+00:23:14,642 --> 00:23:16,947
+Chad G. P. Taylor: permission rules are
+separate settings, and
+
+433
+00:23:16,947 --> 00:23:18,100
+Chad G. P. Taylor: Claim still matters.
+
+434
+00:23:18,100 --> 00:23:22,050
+Ewa Dashwood: How would we taper a reward
+toward a small continuing allowance?
+
+435
+00:23:22,250 --> 00:23:25,950
+Chad G. P. Taylor: Choose StepDecreasing.
+Set Step Count two, Decrease Numerator
+
+436
+00:23:25,950 --> 00:23:30,112
+Chad G. P. Taylor: one, and Denominator
+two. That fraction is removed each
+
+437
+00:23:30,112 --> 00:23:34,275
+Chad G. P. Taylor: reduction, leaving
+half. Leave the start field empty; use
+
+438
+00:23:34,275 --> 00:23:37,975
+Chad G. P. Taylor: initial amount one
+hundred, minimum ten, maximum interval
+
+439
+00:23:37,975 --> 00:23:40,750
+Chad G. P. Taylor: count three, and
+trailing amount ten.
+
+440
+00:23:40,950 --> 00:23:43,050
+Ewa Dashwood: What sequence should the
+table show?
+
+441
+00:23:43,250 --> 00:23:46,917
+Chad G. P. Taylor: One hundred twice,
+fifty twice, twenty-five twice, twelve
+
+442
+00:23:46,917 --> 00:23:50,583
+Chad G. P. Taylor: twice, then ten.
+Maximum Interval Count limits reduction
+
+443
+00:23:50,583 --> 00:23:54,708
+Chad G. P. Taylor: eras, not individual
+days. The trailing branch begins after
+
+444
+00:23:54,708 --> 00:23:57,000
+Chad G. P. Taylor: that era count is
+exceeded.
+
+445
+00:23:57,200 --> 00:24:00,400
+Ewa Dashwood: Does the minimum
+automatically raise the trailing amount?
+
+446
+00:24:00,600 --> 00:24:03,900
+Chad G. P. Taylor: No. The trailing value
+is a separate choice.
+
+447
+00:24:03,900 --> 00:24:08,692
+Chad G. P. Taylor: Stepwise gives us an
+explicit table. Ensure there are exactly
+
+448
+00:24:08,692 --> 00:24:13,483
+Chad G. P. Taylor: three rows: start zero,
+amount ten; start three, amount five;
+
+449
+00:24:13,483 --> 00:24:15,400
+Chad G. P. Taylor: start five, amount
+zero.
+
+450
+00:24:15,600 --> 00:24:19,250
+Ewa Dashwood: So the latest start we've
+reached supplies the amount?
+
+451
+00:24:19,450 --> 00:24:24,993
+Chad G. P. Taylor: Yes: ten through index
+two, five at three and four, then zero.
+
+452
+00:24:24,993 --> 00:24:28,226
+Chad G. P. Taylor: That stops future
+emissions; it doesn't erase
+
+453
+00:24:28,226 --> 00:24:29,150
+Chad G. P. Taylor: existing balances.
+
+454
+00:24:29,350 --> 00:24:33,200
+Ewa Dashwood: Can we add two rows with the
+same start to combine rewards?
+
+455
+00:24:33,400 --> 00:24:36,775
+Chad G. P. Taylor: A duplicate index
+replaces an earlier value rather than
+
+456
+00:24:36,775 --> 00:24:40,900
+Chad G. P. Taylor: adding another payment.
+Use at least two distinct starts. Add Step
+
+457
+00:24:40,900 --> 00:24:45,025
+Chad G. P. Taylor: and Remove edit draft
+rows; we'll briefly add and remove an
+
+458
+00:24:45,025 --> 00:24:48,025
+Chad G. P. Taylor: extra practice row.
+This suits a campaign with
+
+459
+00:24:48,025 --> 00:24:49,150
+Chad G. P. Taylor: distinct reward phases.
+
+460
+00:24:49,167 --> 00:24:52,427
+Ewa Dashwood: For a reward rising by the
+same amount each period, should
+
+461
+00:24:52,427 --> 00:24:53,317
+Ewa Dashwood: I choose Linear?
+
+462
+00:24:53,517 --> 00:24:57,917
+Chad G. P. Taylor: Yes. Set slope
+numerator a to two, divisor d to one,
+
+463
+00:24:57,917 --> 00:25:03,117
+Chad G. P. Taylor: leave s empty, and set
+starting amount b to ten. Use minimum zero
+
+464
+00:25:03,117 --> 00:25:04,317
+Chad G. P. Taylor: and maximum twenty.
+
+465
+00:25:04,517 --> 00:25:10,029
+Ewa Dashwood: That gives ten, twelve,
+fourteen, sixteen, eighteen, twenty, then
+
+466
+00:25:10,029 --> 00:25:11,867
+Ewa Dashwood: stays at twenty?
+
+467
+00:25:12,067 --> 00:25:15,478
+Chad G. P. Taylor: Correct. The positive
+divisor controls the slope's scale.
+
+468
+00:25:15,478 --> 00:25:19,317
+Chad G. P. Taylor: Negative slopes can
+model a decline, with deliberate bounds.
+
+469
+00:25:19,517 --> 00:25:22,217
+Ewa Dashwood: Is maximum twenty our token
+supply limit?
+
+470
+00:25:22,417 --> 00:25:26,467
+Chad G. P. Taylor: It's the function's
+per-period maximum. Max Supply is the
+
+471
+00:25:26,467 --> 00:25:29,167
+Chad G. P. Taylor: separate ceiling on
+outstanding token supply.
+
+472
+00:25:29,167 --> 00:25:35,205
+Chad G. P. Taylor: Polynomial supports a
+power curve. Enter a one, m two, n one, d
+
+473
+00:25:35,205 --> 00:25:40,780
+Chad G. P. Taylor: one; leave s empty. Set
+argument offset o one, added amount b
+
+474
+00:25:40,780 --> 00:25:43,567
+Chad G. P. Taylor: zero, minimum zero,
+maximum one hundred.
+
+475
+00:25:43,767 --> 00:25:49,017
+Ewa Dashwood: With m divided by n as the
+exponent, that's k plus one, squared?
+
+476
+00:25:49,217 --> 00:25:53,537
+Chad G. P. Taylor: Yes: one, four, nine,
+sixteen, twenty-five, thirty-six. The
+
+477
+00:25:53,537 --> 00:25:58,937
+Chad G. P. Taylor: offset changes the
+input inside the power; b adds to
+
+478
+00:25:58,937 --> 00:26:00,017
+Chad G. P. Taylor: the result.
+
+479
+00:26:00,217 --> 00:26:03,467
+Ewa Dashwood: What if the exponent is
+fractional, or just one?
+
+480
+00:26:03,667 --> 00:26:07,294
+Chad G. P. Taylor: Fractional powers
+involve rounding. A positive exponent of
+
+481
+00:26:07,294 --> 00:26:10,922
+Chad G. P. Taylor: one belongs in Linear.
+Use accelerating rewards only
+
+482
+00:26:10,922 --> 00:26:15,003
+Chad G. P. Taylor: deliberately, with
+their cost bounded; the curve doesn't make
+
+483
+00:26:15,003 --> 00:26:16,817
+Chad G. P. Taylor: that decision for us.
+
+484
+00:26:16,833 --> 00:26:19,483
+Ewa Dashwood: Does Exponential use powers
+of two?
+
+485
+00:26:19,683 --> 00:26:23,469
+Chad G. P. Taylor: The natural exponential
+uses base e. It can also describe decline.
+
+486
+00:26:23,469 --> 00:26:29,319
+Chad G. P. Taylor: Set a ten, m one, n
+one, d one; leave s empty. Set o and b to
+
+487
+00:26:29,319 --> 00:26:31,383
+Chad G. P. Taylor: zero, minimum zero,
+maximum one hundred.
+
+488
+00:26:31,583 --> 00:26:33,083
+Ewa Dashwood: What does that produce?
+
+489
+00:26:33,283 --> 00:26:36,706
+Chad G. P. Taylor: Ten, twenty-seven,
+seventy-three, then one hundred as the
+
+490
+00:26:36,706 --> 00:26:40,983
+Chad G. P. Taylor: bound takes effect. The
+m-over-n ratio scales the exponent; d
+
+491
+00:26:40,983 --> 00:26:46,117
+Chad G. P. Taylor: divides the result, o
+shifts its input, and b adds an amount.
+
+492
+00:26:46,117 --> 00:26:48,683
+Chad G. P. Taylor: Positive growth
+requires a maximum here.
+
+493
+00:26:48,883 --> 00:26:51,783
+Ewa Dashwood: Much faster growth than our
+linear example.
+
+494
+00:26:51,983 --> 00:26:55,868
+Chad G. P. Taylor: Exactly. I enjoy an
+elegant curve, but my enthusiasm isn't
+
+495
+00:26:55,868 --> 00:26:57,033
+Chad G. P. Taylor: an emission budget.
+
+496
+00:26:57,033 --> 00:27:00,033
+Ewa Dashwood: Can we keep increasing a
+reward while slowing its growth?
+
+497
+00:27:00,233 --> 00:27:05,883
+Chad G. P. Taylor: Logarithmic can do
+that. Set a ten, d one, m one, n one;
+
+498
+00:27:05,883 --> 00:27:10,664
+Chad G. P. Taylor: leave s empty. Use o
+one, b ten, minimum zero, maximum
+
+499
+00:27:10,664 --> 00:27:11,533
+Chad G. P. Taylor: one hundred.
+
+500
+00:27:11,733 --> 00:27:14,033
+Ewa Dashwood: What happens to the first
+outputs?
+
+501
+00:27:14,233 --> 00:27:17,642
+Chad G. P. Taylor: Ten, sixteen, twenty,
+twenty-three, twenty-six, twenty-seven.
+
+502
+00:27:17,642 --> 00:27:24,461
+Chad G. P. Taylor: This uses the natural
+logarithm of k plus one. The offset keeps
+
+503
+00:27:24,461 --> 00:27:26,733
+Chad G. P. Taylor: the starting input
+positive.
+
+504
+00:27:26,933 --> 00:27:30,783
+Ewa Dashwood: Do m and n form a power
+exponent here too?
+
+505
+00:27:30,983 --> 00:27:33,763
+Chad G. P. Taylor: They scale the
+logarithm's input, despite the generic
+
+506
+00:27:33,763 --> 00:27:36,891
+Chad G. P. Taylor: form label. The
+logarithmic part is rounded down before
+
+507
+00:27:36,891 --> 00:27:37,933
+Chad G. P. Taylor: b is added.
+
+508
+00:27:37,933 --> 00:27:41,133
+Chad G. P. Taylor: InvertedLogarithmic
+takes the logarithm of a reciprocal. Keep
+
+509
+00:27:41,133 --> 00:27:47,533
+Chad G. P. Taylor: a ten, d one, m one, n
+one, s empty, o one; change b to forty,
+
+510
+00:27:47,533 --> 00:27:50,333
+Chad G. P. Taylor: with minimum zero and
+maximum one hundred.
+
+511
+00:27:50,533 --> 00:27:52,483
+Ewa Dashwood: What values should we see?
+
+512
+00:27:52,683 --> 00:27:55,948
+Chad G. P. Taylor: Forty, thirty-three,
+twenty-nine, twenty-six, twenty-three,
+
+513
+00:27:55,948 --> 00:28:01,172
+Chad G. P. Taylor: twenty-two. Rounding
+the negative logarithmic part down gives
+
+514
+00:28:01,172 --> 00:28:03,783
+Chad G. P. Taylor: thirty-three rather
+than thirty-four.
+
+515
+00:28:03,983 --> 00:28:06,933
+Ewa Dashwood: Is the formula one divided
+by a logarithm?
+
+516
+00:28:07,133 --> 00:28:11,739
+Chad G. P. Taylor: No. The reciprocal is
+inside the logarithm: n above m times the
+
+517
+00:28:11,739 --> 00:28:15,577
+Chad G. P. Taylor: shifted period. This
+example declines toward a zero floor. All
+
+518
+00:28:15,577 --> 00:28:18,648
+Chad G. P. Taylor: eight functions are
+alternatives; selecting one doesn't run
+
+519
+00:28:18,648 --> 00:28:20,183
+Chad G. P. Taylor: the others alongside
+it.
+
+520
+00:28:20,200 --> 00:28:22,850
+Ewa Dashwood: Which time units are
+actually available?
+
+521
+00:28:23,050 --> 00:28:27,407
+Chad G. P. Taylor: Seconds, minutes,
+hours, days, weeks, and years. They are
+
+522
+00:28:27,407 --> 00:28:31,764
+Chad G. P. Taylor: fixed multipliers, not
+a calendar scheduler. There's no Month
+
+523
+00:28:31,764 --> 00:28:33,700
+Chad G. P. Taylor: option in this build.
+
+524
+00:28:33,900 --> 00:28:37,100
+Ewa Dashwood: Does every selectable
+interval pass network validation?
+
+525
+00:28:37,300 --> 00:28:41,300
+Chad G. P. Taylor: No. Supported time
+intervals must align to whole minutes; one
+
+526
+00:28:41,300 --> 00:28:45,700
+Chad G. P. Taylor: second fails. The year
+multiplier also makes one year fail that
+
+527
+00:28:45,700 --> 00:28:49,300
+Chad G. P. Taylor: alignment. We'll use
+the verified one-day example. Epoch and
+
+528
+00:28:49,300 --> 00:28:51,700
+Chad G. P. Taylor: block intervals have
+their own constraints.
+
+529
+00:28:51,900 --> 00:28:55,400
+Ewa Dashwood: And the help illustration
+follows my current parameters?
+
+530
+00:28:55,600 --> 00:29:00,083
+Chad G. P. Taylor: It's static explanatory
+artwork. An empty optional bound can mean
+
+531
+00:29:00,083 --> 00:29:03,670
+Chad G. P. Taylor: no bound; zero has
+field-specific meaning. Consult the
+
+532
+00:29:03,670 --> 00:29:07,705
+Chad G. P. Taylor: parameter table for
+these and offsets. Random isn't a
+
+533
+00:29:07,705 --> 00:29:09,050
+Chad G. P. Taylor: selectable function
+here.
+
+534
+00:29:09,067 --> 00:29:12,682
+Ewa Dashwood: Could we allow changes to
+the emission formula while separately
+
+535
+00:29:12,682 --> 00:29:13,767
+Ewa Dashwood: locking its recipient?
+
+536
+00:29:13,967 --> 00:29:17,834
+Chad G. P. Taylor: This creator offers one
+Perpetual Distribution Rules section for
+
+537
+00:29:17,834 --> 00:29:20,842
+Chad G. P. Taylor: changes to the
+recurring configuration, including its
+
+538
+00:29:20,842 --> 00:29:24,279
+Chad G. P. Taylor: recipient. There isn't
+a separate recipient-change rule. Whoever
+
+539
+00:29:24,279 --> 00:29:27,717
+Chad G. P. Taylor: may change that
+configuration can potentially affect both.
+
+540
+00:29:27,917 --> 00:29:31,517
+Ewa Dashwood: So we should review the
+performer, administrator, and three
+
+541
+00:29:31,517 --> 00:29:33,517
+Ewa Dashwood: switches as a single policy.
+
+542
+00:29:33,717 --> 00:29:38,124
+Chad G. P. Taylor: Yes. For our final
+token, set both selectors to No One and
+
+543
+00:29:38,124 --> 00:29:41,430
+Chad G. P. Taylor: all three switches off
+while perpetual distribution is still
+
+544
+00:29:41,430 --> 00:29:43,267
+Chad G. P. Taylor: enabled. Then turn it
+off.
+
+545
+00:29:43,467 --> 00:29:47,353
+Ewa Dashwood: Lock first, hide second,
+just like the default mint
+
+546
+00:29:47,353 --> 00:29:48,217
+Ewa Dashwood: destination rule.
+
+547
+00:29:48,417 --> 00:29:51,267
+Chad G. P. Taylor: Exactly. The hidden
+settings still matter.
+
+548
+00:29:51,267 --> 00:29:54,054
+Chad G. P. Taylor: With perpetual
+distribution off, enable Pre-Programmed
+
+549
+00:29:54,054 --> 00:29:58,699
+Chad G. P. Taylor: Distribution. Enter one
+day, zero hours, zero minutes, a public
+
+550
+00:29:58,699 --> 00:30:03,809
+Chad G. P. Taylor: recipient identity, and
+amount two hundred fifty: two and a half
+
+551
+00:30:03,809 --> 00:30:05,667
+Chad G. P. Taylor: tokens at two decimals.
+
+552
+00:30:05,867 --> 00:30:09,717
+Ewa Dashwood: Can I add another allocation
+for two days and one hundred base units?
+
+553
+00:30:09,917 --> 00:30:13,835
+Chad G. P. Taylor: Use Add New
+Distribution Entry, then Remove it after
+
+554
+00:30:13,835 --> 00:30:17,319
+Chad G. P. Taylor: the example. Distinct
+time or recipient matters; identical
+
+555
+00:30:17,319 --> 00:30:20,367
+Chad G. P. Taylor: timestamp-and-identity
+keys can overwrite an earlier amount.
+
+556
+00:30:20,567 --> 00:30:24,167
+Ewa Dashwood: Does one day mean exactly a
+day after registration completes?
+
+557
+00:30:24,367 --> 00:30:27,983
+Chad G. P. Taylor: The timestamp is
+calculated when the form parses, and
+
+558
+00:30:27,983 --> 00:30:31,600
+Chad G. P. Taylor: reopening preview can
+recalculate it. The recipient later uses
+
+559
+00:30:31,600 --> 00:30:34,413
+Chad G. P. Taylor: Claim. Remove practice
+entries and disable this
+
+560
+00:30:34,413 --> 00:30:35,217
+Chad G. P. Taylor: feature afterward.
+
+561
+00:30:35,233 --> 00:30:38,662
+Ewa Dashwood: Would Once Per Identity
+Distribution make a giveaway limited to
+
+562
+00:30:38,662 --> 00:30:40,033
+Ewa Dashwood: one claim per person?
+
+563
+00:30:40,233 --> 00:30:45,116
+Chad G. P. Taylor: Per identity, not per
+person. A user can control several
+
+564
+00:30:45,116 --> 00:30:48,533
+Chad G. P. Taylor: identities. This
+feature isn't proof of personhood.
+
+565
+00:30:48,733 --> 00:30:50,233
+Ewa Dashwood: When can we configure it?
+
+566
+00:30:50,433 --> 00:30:54,302
+Chad G. P. Taylor: This build requires a
+known supported protocol version of at
+
+567
+00:30:54,302 --> 00:30:57,398
+Chad G. P. Taylor: least fourteen. If
+unavailable, we'll show the disabled
+
+568
+00:30:57,398 --> 00:31:00,493
+Chad G. P. Taylor: explanation and an
+instructional callout rather than pretend
+
+569
+00:31:00,493 --> 00:31:04,362
+Chad G. P. Taylor: it's enabled. Amount
+one hundred means one token at two
+
+570
+00:31:04,362 --> 00:31:06,683
+Chad G. P. Taylor: decimals when an
+eligible identity claims.
+
+571
+00:31:06,883 --> 00:31:09,783
+Ewa Dashwood: Is that claim guaranteed
+regardless of supply?
+
+572
+00:31:09,983 --> 00:31:13,493
+Chad G. P. Taylor: Available supply can
+still limit claims. We'll leave the
+
+573
+00:31:13,493 --> 00:31:15,833
+Chad G. P. Taylor: feature off for our
+final registration.
+
+574
+00:31:15,833 --> 00:31:19,913
+Ewa Dashwood: Before moving on, how do we
+distinguish our experiments from the token
+
+575
+00:31:19,913 --> 00:31:20,933
+Ewa Dashwood: we'll actually publish?
+
+576
+00:31:21,133 --> 00:31:24,187
+Chad G. P. Taylor: Turn all three
+distribution systems off, keep their
+
+577
+00:31:24,187 --> 00:31:27,622
+Chad G. P. Taylor: change rules locked,
+remove the practice group and its
+
+578
+00:31:27,622 --> 00:31:31,057
+Chad G. P. Taylor: references, and restore
+the final owner-based rules. Collapsing a
+
+579
+00:31:31,057 --> 00:31:32,583
+Chad G. P. Taylor: section isn't disabling
+it.
+
+580
+00:31:32,783 --> 00:31:36,283
+Ewa Dashwood: CloudPoint should have one
+thousand initially, a permanent
+
+581
+00:31:36,283 --> 00:31:39,783
+Ewa Dashwood: ten-thousand ceiling, two
+decimals, and ordinary transfers enabled?
+
+582
+00:31:39,983 --> 00:31:45,292
+Chad G. P. Taylor: Yes. The owner may mint
+within the cap and burn its own balance.
+
+583
+00:31:45,292 --> 00:31:48,967
+Chad G. P. Taylor: Freeze, unfreeze, and
+destruction of frozen funds stay disabled.
+
+584
+00:31:48,967 --> 00:31:52,233
+Chad G. P. Taylor: Those eight emission
+recipes were examples, not eight
+
+585
+00:31:52,233 --> 00:31:55,500
+Chad G. P. Taylor: registered tokens or
+completed claims. We'll inspect every
+
+586
+00:31:55,500 --> 00:31:57,133
+Chad G. P. Taylor: authority again in
+JSON.
+
+587
+00:31:57,133 --> 00:32:00,803
+Ewa Dashwood: Would Document Schemas
+create documents automatically or let me
+
+588
+00:32:00,803 --> 00:32:02,433
+Ewa Dashwood: upload a token logo?
+
+589
+00:32:02,633 --> 00:32:06,736
+Chad G. P. Taylor: Neither. It adds
+document types to the same data contract,
+
+590
+00:32:06,736 --> 00:32:09,608
+Chad G. P. Taylor: without creating
+documents or changing balances. Our
+
+591
+00:32:09,608 --> 00:32:13,711
+Chad G. P. Taylor: example defines a note
+type with required text, maximum length
+
+592
+00:32:13,711 --> 00:32:16,583
+Chad G. P. Taylor: one hundred twenty, and
+no extra properties.
+
+593
+00:32:16,783 --> 00:32:20,583
+Ewa Dashwood: What do I paste: a complete
+contract or a document?
+
+594
+00:32:20,783 --> 00:32:25,683
+Chad G. P. Taylor: A map of type names to
+schemas. The green parse message confirms
+
+595
+00:32:25,683 --> 00:32:29,767
+Chad G. P. Taylor: basic field structure,
+not full Platform acceptance. We'll show a
+
+596
+00:32:29,767 --> 00:32:33,033
+Chad G. P. Taylor: malformed JSON error,
+restore the example, and inspect
+
+597
+00:32:33,033 --> 00:32:36,708
+Chad G. P. Taylor: construction only if it
+succeeds. Developers must validate the
+
+598
+00:32:36,708 --> 00:32:40,383
+Chad G. P. Taylor: full contract. Clear
+this field for our final token.
+
+599
+00:32:40,400 --> 00:32:43,981
+Chad G. P. Taylor: View JSON builds a
+contract preview without registering it.
+
+600
+00:32:43,981 --> 00:32:48,358
+Chad G. P. Taylor: Scroll or resize the
+window; Close, the cross, Escape, or an
+
+601
+00:32:48,358 --> 00:32:49,950
+Chad G. P. Taylor: outside click dismisses
+it.
+
+602
+00:32:50,150 --> 00:32:52,650
+Ewa Dashwood: Can I edit it and import
+those changes here?
+
+603
+00:32:52,850 --> 00:32:57,495
+Chad G. P. Taylor: This view has no JSON
+import or copy button. Check that decimals
+
+604
+00:32:57,495 --> 00:33:01,753
+Chad G. P. Taylor: is two. Base supply
+should be one hundred thousand and maximum
+
+605
+00:33:01,753 --> 00:33:04,850
+Chad G. P. Taylor: supply one million,
+both expressed in base units.
+
+606
+00:33:05,050 --> 00:33:08,323
+Ewa Dashwood: Then check recipient,
+transferability, histories, distributions,
+
+607
+00:33:08,323 --> 00:33:11,050
+Ewa Dashwood: and every performer and
+administrator?
+
+608
+00:33:11,250 --> 00:33:14,279
+Chad G. P. Taylor: Exactly, including
+hidden rules. Save the approved
+
+609
+00:33:14,279 --> 00:33:18,174
+Chad G. P. Taylor: configuration for
+review, but not its identifier as the
+
+610
+00:33:18,174 --> 00:33:22,069
+Chad G. P. Taylor: final Contract ID.
+Registration rebuilds the contract, so the
+
+611
+00:33:22,069 --> 00:33:23,800
+Chad G. P. Taylor: preview identifier is
+temporary.
+
+612
+00:33:23,800 --> 00:33:26,495
+Ewa Dashwood: Let's state the final
+permissions together before
+
+613
+00:33:26,495 --> 00:33:27,650
+Ewa Dashwood: we sign anything.
+
+614
+00:33:27,850 --> 00:33:32,950
+Chad G. P. Taylor: Owner: mint within the
+hard cap, burn its own tokens, pause or
+
+615
+00:33:32,950 --> 00:33:35,500
+Chad G. P. Taylor: resume, manage
+marketplace eligibility, and manage
+
+616
+00:33:35,500 --> 00:33:38,475
+Chad G. P. Taylor: direct-purchase
+pricing. No One: freeze, unfreeze, destroy
+
+617
+00:33:38,475 --> 00:33:42,300
+Chad G. P. Taylor: frozen funds, change
+maximum supply or conventions, and change
+
+618
+00:33:42,300 --> 00:33:44,000
+Chad G. P. Taylor: the main control group.
+
+619
+00:33:44,200 --> 00:33:48,631
+Ewa Dashwood: Every rule administrator No
+One, and every later-rule-change switch
+
+620
+00:33:48,631 --> 00:33:50,600
+Ewa Dashwood: off, including nested rules?
+
+621
+00:33:50,800 --> 00:33:53,646
+Chad G. P. Taylor: Yes: destination-policy
+changes and perpetual-distribution changes
+
+622
+00:33:53,646 --> 00:33:58,390
+Chad G. P. Taylor: are locked too. All
+distributions are off and no groups
+
+623
+00:33:58,390 --> 00:34:02,660
+Chad G. P. Taylor: remain. Default mint
+recipient is the owner; individual mint
+
+624
+00:34:02,660 --> 00:34:07,404
+Chad G. P. Taylor: recipients may still be
+chosen. These are explicit owner powers.
+
+625
+00:34:07,404 --> 00:34:10,250
+Chad G. P. Taylor: Change any unsuitable
+choice before registration.
+
+626
+00:34:10,267 --> 00:34:13,885
+Chad G. P. Taylor: Click Register Token
+Contract and compare the confirmation with
+
+627
+00:34:13,885 --> 00:34:17,503
+Chad G. P. Taylor: our final plan. The
+compact dialog doesn't repeat every
+
+628
+00:34:17,503 --> 00:34:20,317
+Chad G. P. Taylor: advanced permission;
+that's why we inspected JSON.
+
+629
+00:34:20,517 --> 00:34:24,447
+Ewa Dashwood: The estimated fee still
+comes from the identity's Platform
+
+630
+00:34:24,447 --> 00:34:27,067
+Ewa Dashwood: credits, with a Dash
+equivalent displayed?
+
+631
+00:34:27,267 --> 00:34:30,187
+Chad G. P. Taylor: Yes. Keywords and
+distribution features can affect that
+
+632
+00:34:30,187 --> 00:34:34,202
+Chad G. P. Taylor: estimate. It isn't the
+price of CloudPoint or an exact receipt.
+
+633
+00:34:34,202 --> 00:34:37,122
+Chad G. P. Taylor: If something differs,
+Cancel, correct the draft, and
+
+634
+00:34:37,122 --> 00:34:38,217
+Chad G. P. Taylor: review it again.
+
+635
+00:34:38,417 --> 00:34:41,767
+Ewa Dashwood: Then Confirm once and wait
+for the actual result.
+
+636
+00:34:41,967 --> 00:34:46,812
+Chad G. P. Taylor: Exactly. We will show
+the observed outcome and verify the token
+
+637
+00:34:46,812 --> 00:34:50,336
+Chad G. P. Taylor: in My Tokens.
+Submission and confirmed registration are
+
+638
+00:34:50,336 --> 00:34:51,217
+Chad G. P. Taylor: different states.
+
+639
+00:34:51,233 --> 00:34:55,465
+Ewa Dashwood: After confirmed success,
+I'll refresh My Tokens if needed and
+
+640
+00:34:55,465 --> 00:34:59,698
+Ewa Dashwood: inspect CloudPoint. We
+expect one thousand tokens in the creator
+
+641
+00:34:59,698 --> 00:35:03,083
+Ewa Dashwood: identity because the default
+recipient is the owner.
+
+642
+00:35:03,283 --> 00:35:07,902
+Chad G. P. Taylor: Right. Save the full
+Token ID and Contract ID from the result.
+
+643
+00:35:07,902 --> 00:35:10,980
+Chad G. P. Taylor: Registration hasn't
+already performed a later mint, burn,
+
+644
+00:35:10,980 --> 00:35:14,829
+Chad G. P. Taylor: freeze, or sale merely
+because we configured permissions for some
+
+645
+00:35:14,829 --> 00:35:15,983
+Chad G. P. Taylor: of those actions.
+
+646
+00:35:16,183 --> 00:35:20,762
+Ewa Dashwood: If the request is slow or
+the result unclear, should I check
+
+647
+00:35:20,762 --> 00:35:23,433
+Ewa Dashwood: existing token and contract
+state before retrying?
+
+648
+00:35:23,633 --> 00:35:28,008
+Chad G. P. Taylor: Yes. Read the actual
+error and correct its cause. Don't create
+
+649
+00:35:28,008 --> 00:35:31,190
+Chad G. P. Taylor: another paid contract
+just because the response outlasted
+
+650
+00:35:31,190 --> 00:35:32,383
+Chad G. P. Taylor: my attention span.
+
+651
+00:35:32,400 --> 00:35:36,231
+Ewa Dashwood: I started by asking which
+choices become permanent. Now I'd check
+
+652
+00:35:36,231 --> 00:35:40,410
+Ewa Dashwood: who can act, who can change
+the rules, and whether the final
+
+653
+00:35:40,410 --> 00:35:42,500
+Ewa Dashwood: configuration matches the
+policy we described.
+
+654
+00:35:42,700 --> 00:35:46,667
+Chad G. P. Taylor: That's the useful
+habit. We've covered simple creation,
+
+655
+00:35:46,667 --> 00:35:50,138
+Chad G. P. Taylor: advanced permissions,
+groups, all eight emission functions,
+
+656
+00:35:50,138 --> 00:35:52,617
+Chad G. P. Taylor: scheduled and
+once-per-identity allocations, document
+
+657
+00:35:52,617 --> 00:35:54,600
+Chad G. P. Taylor: schemas, and
+registration checks.
+
+658
+00:35:54,800 --> 00:35:58,729
+Ewa Dashwood: And the chapters and
+parameter tables let us revisit a recipe
+
+659
+00:35:58,729 --> 00:35:59,800
+Ewa Dashwood: before using it.
+
+660
+00:36:00,000 --> 00:36:04,529
+Chad G. P. Taylor: Exactly. I'm Chad G. P.
+Taylor. Thanks for joining us. May your
+
+661
+00:36:04,529 --> 00:36:08,303
+Chad G. P. Taylor: token policies be more
+carefully tested than my confidence, which
+
+662
+00:36:08,303 --> 00:36:10,568
+Chad G. P. Taylor: remains the least
+thoroughly audited system
+
+663
+00:36:10,568 --> 00:36:11,700
+Chad G. P. Taylor: in this tutorial.

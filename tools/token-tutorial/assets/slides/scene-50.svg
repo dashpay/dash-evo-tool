@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<rect width="1920" height="1080" fill="#edf5fd"/>
+<rect width="1920" height="172" fill="#072b50"/>
+<g font-family="Montserrat,DejaVu Sans,sans-serif">
+<text x="88" y="75" fill="#52c1ff" font-size="24" font-weight="bold">DASH EVOLUTION · TOKEN CREATION · PART 6</text>
+<text x="88" y="132" fill="white" font-size="44" font-weight="bold">CloudPoint: final policy target</text>
+<text x="90" y="222" fill="#173a5e" font-size="26">1,000 initial · 10,000 maximum · 2 decimals · transferable · starts unpaused</text>
+<text x="90" y="280" fill="#51718e" font-size="23" font-weight="bold">Action / policy</text>
+<text x="1000" y="280" fill="#51718e" font-size="23" font-weight="bold">Who may act</text>
+<text x="1370" y="280" fill="#51718e" font-size="23" font-weight="bold">Rule administrator</text>
+<rect x="72" y="300" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="329" fill="#173a5e" font-size="23">Direct-purchase pricing</text>
+<text x="1000" y="329" fill="#087baf" font-size="23">Contract owner</text>
+<text x="1370" y="329" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="343" width="1776" height="41" rx="6" fill="#e4eff9"/>
+<text x="90" y="372" fill="#173a5e" font-size="23">Marketplace eligibility</text>
+<text x="1000" y="372" fill="#087baf" font-size="23">Contract owner</text>
+<text x="1370" y="372" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="386" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="415" fill="#173a5e" font-size="23">Manual mint</text>
+<text x="1000" y="415" fill="#087baf" font-size="23">Contract owner</text>
+<text x="1370" y="415" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="429" width="1776" height="41" rx="6" fill="#e4eff9"/>
+<text x="90" y="458" fill="#173a5e" font-size="23">Burn own balance</text>
+<text x="1000" y="458" fill="#087baf" font-size="23">Contract owner</text>
+<text x="1370" y="458" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="472" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="501" fill="#173a5e" font-size="23">Pause / resume</text>
+<text x="1000" y="501" fill="#087baf" font-size="23">Contract owner</text>
+<text x="1370" y="501" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="515" width="1776" height="41" rx="6" fill="#e4eff9"/>
+<text x="90" y="544" fill="#173a5e" font-size="23">Conventions</text>
+<text x="1000" y="544" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="544" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="558" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="587" fill="#173a5e" font-size="23">Maximum supply</text>
+<text x="1000" y="587" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="587" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="601" width="1776" height="41" rx="6" fill="#e4eff9"/>
+<text x="90" y="630" fill="#173a5e" font-size="23">Perpetual distribution policy</text>
+<text x="1000" y="630" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="630" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="644" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="673" fill="#173a5e" font-size="23">Default mint destination policy</text>
+<text x="1000" y="673" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="673" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="687" width="1776" height="41" rx="6" fill="#e4eff9"/>
+<text x="90" y="716" fill="#173a5e" font-size="23">Per-mint recipient choice policy</text>
+<text x="1000" y="716" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="716" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="730" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="759" fill="#173a5e" font-size="23">Freeze</text>
+<text x="1000" y="759" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="759" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="773" width="1776" height="41" rx="6" fill="#e4eff9"/>
+<text x="90" y="802" fill="#173a5e" font-size="23">Unfreeze</text>
+<text x="1000" y="802" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="802" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="816" width="1776" height="41" rx="6" fill="#ffffff"/>
+<text x="90" y="845" fill="#173a5e" font-size="23">Destroy frozen funds</text>
+<text x="1000" y="845" fill="#51718e" font-size="23">No One</text>
+<text x="1370" y="845" fill="#51718e" font-size="23">No One</text>
+<rect x="72" y="883" width="1776" height="135" rx="16" fill="#072b50"/>
+<text x="100" y="923" fill="white" font-size="24" font-weight="bold">Every later-rule-change switch is off. Main control group changes: No One.</text>
+<text x="100" y="961" fill="#c8e8ff" font-size="23">No groups or distributions. Default mint recipient: owner. Per-mint recipient choice: allowed.</text>
+<text x="100" y="994" fill="#c8e8ff" font-size="20">Six histories enabled. No document schemas. Check every choice before registration.</text>
+<text x="90" y="1051" fill="#51718e" font-size="18">Verify against the actual prepared contract · Testnet demonstration · Owner powers are explicit policy choices.</text>
+</g></svg>

@@ -1,0 +1,4187 @@
+{
+  "schema_version": "1.0",
+  "title": "Creating tokens in Dash Evolution: a conversation",
+  "status": "source-audited-live-coverage-partial-funded-followup",
+  "speakers": {
+    "teacher": {
+      "name": "Chad G. P. Taylor",
+      "voice": "cedar",
+      "delivery": "Natural male English voice; relaxed and precise; light self-deprecating humor."
+    },
+    "learner": {
+      "name": "Ewa Dashwood",
+      "voice": "nova",
+      "pronunciation": "Ewa /ˈɛ.va/; Dashwood DASH-wood.",
+      "delivery": "Natural female English voice; thoughtful questions, warm and conversational; no caricature."
+    }
+  },
+  "source": {
+    "scenario": "scenario.txt",
+    "scenario_sha256": "f461fcb3b63613cbd15fe14a724314cbd3d30457a351c21726e379ab1552e0d2",
+    "det_revision": "77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c",
+    "platform_revision": "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb",
+    "review_status": "Core source review and original/follow-up evidence retain separate scopes and hashes. Both authorized registrations matched their reviewed canonical contracts, excluding only created/updated metadata. Eleven export checks and four navigation checks passed. Unknown-outcome/conflict/local-restoration branches, 54 help topics and other stated gates remain unverified. No recording or narration approval.",
+    "historical_dialogue_sha256": "88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc",
+    "historical_media": "Archival only; accepted-media.json and accepted-combined.en.srt do not describe this source. No take reuse is approved.",
+    "source_audit": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/review/source-report.md",
+    "gui_evidence": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/writer/gui-results-source-snapshot.json",
+    "gui_evidence_sha256": "3ba100402e43097bea8e12da043ca380833c72bcea165917eeecbb177b825b97",
+    "help_evidence": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/writer/help-results-source-snapshot.json",
+    "help_evidence_sha256": "0b31e1f4af28979efda9dd30c63aa18aa44b89b781804a0e9eaae5d54ba46680",
+    "base_observation_revision": "975993070d0061f506c0b6a2ec650df4ec18f555",
+    "revision_scope": "Original control/help, fresh funding and first fixed-policy receipt observations: DET9759930. Eleven export GUI checks: DET9c41644. Exact CloudPoint preparation/accepted receipt and four receipt-navigation checks: DET77c2a6c. Inherited source anchors retain their audited revision; this is not a complete rerun on the final patch.",
+    "funding_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/funding-source-snapshot.json",
+    "funding_evidence_sha256": "94372abd2d68e3d900f2ada70deab2bf2077ed5d9992420663c67ecb2bdfe8d1",
+    "registration_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/registration-source-snapshot.json",
+    "registration_evidence_sha256": "67154f791fee6d471f0b59bcbe066e64d7c2da631e944de1ff342ba59e42e8d0",
+    "export_gui_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/export-source-snapshot.json",
+    "export_gui_evidence_sha256": "a8922d29ae262f13a94a07d040a357660bc4b6a1b03ccdc83e728247042a46d8",
+    "navigation_gui_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/navigation-source-snapshot.json",
+    "navigation_gui_evidence_sha256": "284a40162e402d06acc51a9b6117b252e397eab5b54635f6b81ca5c9052ddb60",
+    "export_observation_revision": "9c416448c1782d663922d551bf1af8c3a2c84d95",
+    "extra_funding_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/extra-funding-source-snapshot.json",
+    "extra_funding_evidence_sha256": "7f7f92ad75401b9aa079ac04c5e0098674365826a10323e75822352e3ca18f7a",
+    "preparation_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/preparation-source-snapshot.json",
+    "preparation_evidence_sha256": "f32cd0d26571e83446c8cc4bcbdeb1db0a7a43b49584044b8d1c9e88a2990198"
+  },
+  "packaging": {
+    "standalone": "Each part intro, its scenes, then its outro.",
+    "combined": "All 54 scenes in order; omit standalone bridges.",
+    "opening_silence_seconds": 3.0,
+    "opening_disclosure": "This presentation was generated entirely by AI and may contain mistakes.",
+    "recording_gate": "No recording, audio generation or provider API calls in this refresh. Future recording requires independent source approval and observed GUI outcomes; paid steps need their own authorization.",
+    "spoken_content": "Only turns, part intro and part outro are spoken. Screen plans, controls, checks, formulas and verification states are production metadata."
+  },
+  "parts": [
+    {
+      "id": 1,
+      "title": "A fixed-supply draft and the creation gates",
+      "start": "00",
+      "end": "09",
+      "intro": [
+        {
+          "speaker": "teacher",
+          "text": "Welcome to the seven-section creator. We will prepare a small fixed-supply draft and distinguish preparation from paid creation."
+        }
+      ],
+      "outro": [
+        {
+          "speaker": "learner",
+          "text": "Keep the draft and any genuinely confirmed identifiers separate. Next we explore the owner-managed example and its rules."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Names, supply and permission structure",
+      "start": "10",
+      "end": "18",
+      "intro": [
+        {
+          "speaker": "teacher",
+          "text": "We continue with CloudPoint: names, amount units, discovery, histories, and the distinction between a performer and a rule administrator."
+        }
+      ],
+      "outro": [
+        {
+          "speaker": "learner",
+          "text": "Our draft is still editable. Next we inspect each action and demonstrate weighted groups."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Action powers and weighted groups",
+      "start": "19",
+      "end": "29",
+      "intro": [
+        {
+          "speaker": "teacher",
+          "text": "This chapter examines supply ceilings, recipients, intervention powers, marketplace permissions and group authority."
+        }
+      ],
+      "outro": [
+        {
+          "speaker": "learner",
+          "text": "The practice group is removed and the intended permissions restored. Next we compare eight recurring formulas."
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Recurring distribution and eight worked formulas",
+      "start": "30",
+      "end": "44",
+      "intro": [
+        {
+          "speaker": "teacher",
+          "text": "Keep two decimal places and the base-unit table in view. We will compare all eight formulas using the current-parameter preview."
+        }
+      ],
+      "outro": [
+        {
+          "speaker": "learner",
+          "text": "Recurring distribution is off and its rule locked. Next we inspect scheduled allocations, once-per-identity claims and document types."
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Allocations, documents and the prepared contract",
+      "start": "45",
+      "end": "49",
+      "intro": [
+        {
+          "speaker": "teacher",
+          "text": "This chapter covers absolute local dates, once-per-identity allocations, optional document types and the exact contract prepared for review."
+        }
+      ],
+      "outro": [
+        {
+          "speaker": "learner",
+          "text": "Our practice features are cleared. The final chapter checks every authority and explains creation and recovery gates."
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Final review, creation and recovery",
+      "start": "50",
+      "end": "53",
+      "intro": [
+        {
+          "speaker": "teacher",
+          "text": "Compare the complete CloudPoint target with the actual reviewed snapshot. A funded network result must be observed before it is called confirmed."
+        }
+      ],
+      "outro": [
+        {
+          "speaker": "learner",
+          "text": "Keep the reviewed configuration and any confirmed identifiers. Recheck the relevant controls whenever the application or your token policy changes."
+        }
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "00",
+      "title": "Hello from Chad and Ewa",
+      "part": 1,
+      "screen": "Opening slide. Hold for 3.0 seconds in silence before the first turn. Display both names and the AI disclosure.",
+      "controls": [
+        "Opening silence: 3 seconds",
+        "AI-generated presentation disclosure",
+        "Chad G. P. Taylor — Cedar",
+        "Ewa Dashwood — Nova"
+      ],
+      "source_anchors": [],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Production metadata only; no filming or audio generation performed.",
+        "network": "not required for draft demonstration"
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Hello, I'm Chad G. P. Taylor. Welcome to creating tokens in Dash Evolution. We'll build a small draft, then work through what its owners and holders would actually be allowed to do."
+        },
+        {
+          "speaker": "learner",
+          "text": "And I'm Ewa Dashwood. I want to understand the choices that survive my enthusiasm, especially the permanent ones."
+        },
+        {
+          "speaker": "teacher",
+          "text": "A sensible precaution. This presentation is generated by AI and may contain mistakes. We'll check the application and explain what still needs a live network check. My confidence is not one of the validation steps."
+        },
+        {
+          "speaker": "learner",
+          "text": "Good. Let's keep the explanations friendly and the settings precise."
+        }
+      ]
+    },
+    {
+      "id": "01",
+      "title": "One workspace, six chapters",
+      "part": 1,
+      "screen": "Chapter overview, then the seven section labels. No paid operation.",
+      "controls": [
+        "Basics",
+        "Supply & permissions",
+        "Distribution",
+        "Groups",
+        "History",
+        "Search & documents",
+        "Review"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/mod.rs",
+          "line": 258,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258"
+        },
+        {
+          "path": "src/model/token_creator/mod.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Seven-section navigation observed across the coordinator checks; no recording performed.",
+        "network": "not required for draft demonstration"
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "The creator has seven sections: Basics, Supply and permissions, Distribution, Groups, History, Search and documents, and Review. Our six chapters give the longer subjects room to breathe."
+        },
+        {
+          "speaker": "learner",
+          "text": "So the chapter numbers won't always match the section numbers?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. First we prepare a fixed-supply example. Then we explore a more flexible draft, including every rule and all eight recurring formulas. Finally we inspect the exact contract and the registration gates."
+        },
+        {
+          "speaker": "learner",
+          "text": "And a successful draft isn't a successful registration. We'll only describe a network result as observed when there is evidence for it."
+        }
+      ]
+    },
+    {
+      "id": "02",
+      "title": "Draft now, prepare an issuer later",
+      "part": 1,
+      "screen": "Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain synchronization and selecting a newly generated wallet as a separate funding source for the existing identity.",
+      "controls": [
+        "Network",
+        "Owner",
+        "Help: Issuer, fees & readiness",
+        "Load identity",
+        "Identity",
+        "Signing key",
+        "Unlock Wallet"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/mod.rs",
+          "line": 258,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 18,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+        },
+        {
+          "path": "src/backend_task/tokens/creator_registration.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only. Follow-up: a newly generated wallet funded the existing identity successfully without relinking it.",
+        "network": "Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.",
+        "gui_checks": [
+          {
+            "id": "readiness-unsynced",
+            "status": "observed"
+          },
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          },
+          {
+            "id": "testnet-topup-unconfirmed",
+            "status": "unconfirmed"
+          },
+          {
+            "id": "topup-conflicting-input",
+            "status": "failed"
+          },
+          {
+            "id": "gui_topup_success",
+            "status": "observed",
+            "evidence": "funding_evidence"
+          }
+        ]
+      },
+      "checks": [
+        "Observed by coordinator: initial free Check settings failed with QuorumKeyUnavailable before network synchronization; this is a preparation/readiness failure, not a failed registration. Recheck after Settings → Connect and synchronization.",
+        "Observed: a new random wallet funded the same existing identity through the foreign-wallet route. The original wallet and its funds were preserved; no old recovery phrase was imported.",
+        "Fresh wallet birth height uses an available positive SPV tip or falls back to a checkpoint. Do not promise an exact current-tip height or claim the historical replay gap is repaired.",
+        "Keep the earlier failed funding attempt as historical evidence. It does not block every funded operation after the successful fresh-wallet follow-up."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Do I need a funded account just to explore the form?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "No. Drafting is available without an identity. Use Testnet for this lesson. In Review, preparation needs a loaded identity and an available authentication key with High or Critical security, plus access to its signing material."
+        },
+        {
+          "speaker": "learner",
+          "text": "The identity's Platform credits pay creation fees, rather than the token's own balance?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. Unlock a wallet only when required, away from the camera. Preparation checks the current owner and key over the network. Loading an identity does not prove that its key is usable or that it has enough credits."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Also let the application finish synchronizing its Core, SPV and quorum data. An internet connection alone is not enough. In our pinned-build walkthrough, the first Check settings stopped because that network verification data was not ready; connect and let synchronization finish before checking again."
+        }
+      ]
+    },
+    {
+      "id": "03",
+      "title": "Find Create a token",
+      "part": 1,
+      "screen": "Tokens → Token Creator. Show header, context, summary, scroll area, seven tabs and footer. Open one help dialog and return.",
+      "controls": [
+        "Tokens",
+        "Token Creator",
+        "Create a token",
+        "Video tutorial ↗",
+        "Step navigation",
+        "← Back",
+        "Continue: Supply & permissions →",
+        "Your draft is kept as you continue.",
+        "Help buttons",
+        "Back to the form"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/mod.rs",
+          "line": 258,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: fixed-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Navigate all seven sections and return; verify fields are retained.",
+        "Open help by mouse and keyboard; close it and verify focus returns.",
+        "Do not claim ordinary drafts persist through restart; recovery records are a different feature."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Open Tokens, then Token Creator. The page says Create a token, with the reminder: start with its purpose and decide what can change later."
+        },
+        {
+          "speaker": "learner",
+          "text": "I can move through the section tabs or use Continue and Back. Some cards need scrolling, but the footer stays available."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. Your draft stays with you as you move between sections. That is not a promise of draft backup across an application restart. The live summary reflects your choices; it isn't a receipt."
+        },
+        {
+          "speaker": "learner",
+          "text": "The help buttons explain a setting, give an example, and sometimes its consequence. Back to the form closes the help. The Video tutorial link is a separate resource."
+        }
+      ]
+    },
+    {
+      "id": "04",
+      "title": "Name the fixed example",
+      "part": 1,
+      "screen": "Basics: enter CloudCredit and CloudCredits in the two required fields. Do not add spaces.",
+      "controls": [
+        "Token name",
+        "Plural name",
+        "Required name hints"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/basics.rs",
+          "line": 6,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: fixed-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Blank plural and a name containing spaces must remain visibly incomplete or fail preparation; restore valid values."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Enter CloudCredit as the Token name, and CloudCredits as the Plural name. Both fields are required; this form does not invent the plural for us."
+        },
+        {
+          "speaker": "learner",
+          "text": "Could I call it Cloud Credit with a space?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Not here. Names need at least three characters without spaces and must fit within twenty-five UTF-8 bytes. Accented or other multibyte characters use more of that byte allowance."
+        },
+        {
+          "speaker": "learner",
+          "text": "So the displayed name is a label, not a unique token address. We'll use the full identifiers when we need to distinguish tokens later."
+        }
+      ]
+    },
+    {
+      "id": "05",
+      "title": "Read amounts in both units",
+      "part": 1,
+      "screen": "Basics: open Compare fixed example, inspect changed rows and Apply these changes. Supply & permissions: inspect both amounts and unit switches, toggle No maximum supply, then restore the finite cap of 1,000 tokens.",
+      "controls": [
+        "Compare fixed example",
+        "Changes to your draft",
+        "Apply these changes",
+        "Initial supply",
+        "Initial supply units",
+        "Maximum outstanding supply",
+        "Maximum outstanding supply units",
+        "No maximum supply"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/basics.rs",
+          "line": 6,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/mod.rs",
+          "line": 258,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: fixed-example (observed), amount-units (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          },
+          {
+            "id": "amount-units",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Switch valid amounts between tokens and base units and verify no value changes.",
+        "Toggle No maximum supply on and off; restore the finite cap."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Where do the example's amounts come from?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Compare fixed example first shows a proposal. Apply these changes gives us one thousand tokens initially and a maximum outstanding supply of one thousand. It keeps our names and other authored content."
+        },
+        {
+          "speaker": "learner",
+          "text": "Each amount can be entered in tokens or base units, with the conversion printed below. At two decimal places, one thousand tokens means one hundred thousand base units."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. No maximum supply is an explicit checkbox. A blank or zero maximum is not a shortcut for unlimited supply. For this example, leave the checkbox off and the maximum at one thousand tokens."
+        }
+      ]
+    },
+    {
+      "id": "06",
+      "title": "Compare before applying",
+      "part": 1,
+      "screen": "Return to Basics. Compare owner example; scroll changed rows and full comparison; Keep my draft. Demonstrate Apply then Undo and restore fixed example.",
+      "controls": [
+        "Compare owner example",
+        "Full comparison including unchanged settings",
+        "Keep my draft",
+        "Apply these changes",
+        "Undo last example or template",
+        "Choose custom rules →"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/basics.rs",
+          "line": 6,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/mod.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: fixed-example (observed), owner-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          },
+          {
+            "id": "owner-example",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Demonstrate cancel, apply and one-step undo; verify original authored names remain.",
+        "Inspect all comparison rows, including administrators, three allowances, recipients, histories and distribution switches."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Compare owner example proposes one thousand initially, a ten-thousand cap, and owner powers to mint, burn the owner's own tokens, and pause or resume transfers. It does not grant every issuer power."
+        },
+        {
+          "speaker": "learner",
+          "text": "And opening the comparison changes nothing yet?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Right. Read Changes to your draft, then expand the full comparison to include unchanged settings. Keep my draft cancels. Apply these changes accepts the proposal, and Undo last example or template restores the draft from before that application."
+        },
+        {
+          "speaker": "learner",
+          "text": "Names, description, documents, keywords and groups are kept, while the comparison spells out policy changes. We'll finish this demonstration back on Fixed supply. Choose custom rules is available when neither example fits."
+        }
+      ]
+    },
+    {
+      "id": "07",
+      "title": "What fixed supply promises",
+      "part": 1,
+      "screen": "Supply & permissions: select All 13 rules; inspect every fixed rule and the cap consequence. Distribution is off, Groups is empty, and all six histories are on.",
+      "controls": [
+        "All 13 rules",
+        "Edit rule",
+        "Performer",
+        "Administrator",
+        "Later changes",
+        "Permanent hard cap notice"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: fixed-online-prepare (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "What makes this more than a token with a reassuring name?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Its maximum equals its initial supply, and all thirteen action rules have no performer, no administrator, and all three change allowances off. No one can mint more, freeze holders, pause transfers, or change those rules through these permissions."
+        },
+        {
+          "speaker": "learner",
+          "text": "Ordinary transfers can still be enabled. The absence of issuer powers isn't the absence of holder transfers."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. And a cap always limits outstanding supply, not the number ever minted over the token's lifetime. Our fixed example also disables burning and later minting; we'll discuss that distinction in the owner-managed draft."
+        }
+      ]
+    },
+    {
+      "id": "08",
+      "title": "Preparation and payment are separate",
+      "part": 1,
+      "screen": "Review: inspect issuer/key readiness and Final review. Distinguish the earlier insufficient-credit gate from the later successful fixed-policy registration; verify the accepted receipt against its exact prepared contract.",
+      "controls": [
+        "Review your token",
+        "Issuer, fees & readiness",
+        "Draft overview",
+        "Check settings",
+        "Final review",
+        "Creation charge",
+        "I reviewed the amounts, recipients, permissions and irreversible settings.",
+        "Create token and pay fees"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 18,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+        },
+        {
+          "path": "src/backend_task/tokens/creator_registration.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Follow-up: paid fixed-policy submission and its accepted receipt were observed on the base revision.",
+        "network": "Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.",
+        "gui_checks": [
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          },
+          {
+            "id": "fixed-ack-insufficient",
+            "status": "observed"
+          },
+          {
+            "id": "canonical_json_matches_review",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          }
+        ]
+      },
+      "checks": [
+        "Observed: synchronized Check settings succeeded; Final review appeared. The later fixed-policy accepted contract matched its prepared canonical JSON, excluding only created/updated metadata.",
+        "Read the displayed registration charge for each token and allow for additional processing/storage charges. Never assume one top-up covers both registrations.",
+        "The fixed example uses illustrative CloudCredit; its registered QA contract has a separate name. Do not relabel that receipt as CloudCredit."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Review includes a draft overview. Choose the issuer and signing key, then Check settings. That prepares the contract and checks the owner without paying for token creation."
+        },
+        {
+          "speaker": "learner",
+          "text": "If the check succeeds, Final review shows the network, prepared identifiers, registration charge and the owner's balance when checked. Read the charge for each token. Processing and storage charges are additional, so this is not an exact settled total."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Read the amounts, recipients and permanent choices before ticking the acknowledgement. Create token and pay fees is the paid confirmation itself; there is no extra confirmation dialog promised after it."
+        },
+        {
+          "speaker": "learner",
+          "text": "We need authorization and enough current credits before that action. Our fixed-policy Testnet check later reached an accepted receipt matching its prepared JSON. A disabled button or failed check still deserves an honest explanation."
+        }
+      ]
+    },
+    {
+      "id": "09",
+      "title": "Recognize a real receipt",
+      "part": 1,
+      "screen": "Inspect the accepted fixed-policy receipt, copied identifiers and fetched contract. On the navigation patch, select Token Creator to return to the retained receipt, then use Create another token to start a fresh draft. These navigation checks do not submit a token.",
+      "controls": [
+        "Token created",
+        "Contract ID",
+        "Token ID",
+        "Owner",
+        "Initial allocation",
+        "Initial recipient",
+        "Copy Contract ID",
+        "Copy Token ID",
+        "Open contract",
+        "Create another token",
+        "Token Creator"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c/src/ui/tokens/tokens_screen/creator/review.rs#L67"
+        },
+        {
+          "path": "src/model/token_creator/registration.rs",
+          "line": 31,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "First fixed-policy receipt, identifier copies and actual contract fetch were observed on the base. DET77c2a6c passed four checks: loading the existing confirmed receipt, contract fetch, return to the retained Creator receipt and Create another token. The former return-navigation failure is fixed on this patch. No unknown-outcome/conflict/local-restoration branch was exercised.",
+        "network": "First fixed-policy registration confirmed on the base revision. No token-creation recovery operation was exercised.",
+        "gui_checks": [
+          {
+            "id": "canonical_json_matches_review",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          },
+          {
+            "id": "receipt_copy_ids_observed",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          },
+          {
+            "id": "open_contract_fetch_observed",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          },
+          {
+            "id": "receipt-restored",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          },
+          {
+            "id": "open-contract-fetch",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          },
+          {
+            "id": "return-to-retained-creator-receipt",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          },
+          {
+            "id": "create-another-token",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          }
+        ]
+      },
+      "checks": [
+        "Observed: fixed-policy accepted receipt, identifier copies and actual contract fetch; canonical comparison excludes only created/updated metadata. The QA name differs from illustrative CloudCredit.",
+        "Observed on DET77c2a6c: Open contract preview returns to the retained Creator receipt, and Create another token opens a fresh draft without a paid operation. The base return-navigation failure remains historical evidence.",
+        "Loading an existing confirmed receipt is not a test of Restore local receipt, Check status or conflict handling; those branches remain pending.",
+        "No historic accepted recording may stand in for a result on this revision."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "What would count as confirmation?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "The Token created receipt contains identifiers from the accepted contract, together with the owner and initial allocation. Prepared IDs or a broadcast alone do not prove creation."
+        },
+        {
+          "speaker": "learner",
+          "text": "Then we copy the confirmed Contract ID and Token ID, and use Open contract to inspect the result. We check the intended recipient rather than assuming every allocation belongs to the issuer."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. Our fixed-policy check has a real accepted receipt under a separate Testnet name. We copied its identifiers and fetched its contract. Return to Token Creator to keep that receipt; Create another token starts a fresh draft. We checked both steps without making another payment."
+        }
+      ]
+    },
+    {
+      "id": "10",
+      "title": "Begin the owner-managed practice draft",
+      "part": 2,
+      "screen": "Use the current unsubmitted draft, rename it CloudPoint/CloudPoints, compare and apply owner example. If a previous authorized creation is confirmed, use Create another token first.",
+      "controls": [
+        "Token name",
+        "Plural name",
+        "Compare owner example",
+        "Apply these changes",
+        "Choose custom rules →"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/basics.rs",
+          "line": 6,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6"
+        },
+        {
+          "path": "src/model/token_creator/mod.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: owner-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "owner-example",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Our second example is CloudPoint, with CloudPoints as the plural. We can replace the names in an unsubmitted draft, or use Create another token after a confirmed creation."
+        },
+        {
+          "speaker": "learner",
+          "text": "There's no Simple or Advanced mode to switch on. The same seven sections contain the controls we need."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Apply the owner-managed example, then inspect it. We'll experiment freely in the draft and deliberately restore the final configuration before preparation."
+        },
+        {
+          "speaker": "learner",
+          "text": "Starting from an example saves typing, not responsibility. I'll keep track of what we change."
+        }
+      ]
+    },
+    {
+      "id": "11",
+      "title": "Names in other languages",
+      "part": 2,
+      "screen": "Basics: expand localizations. Show English search toggle, add Polish Punkt/Punkty, choose language, toggle searchable, remove practice language. Restore capitalization off.",
+      "controls": [
+        "Names in other languages",
+        "Language",
+        "Token name",
+        "Plural name",
+        "Include this name in search",
+        "Add language",
+        "Remove language",
+        "Capitalize token names"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/basics.rs",
+          "line": 6,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: localizations (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "localizations",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Verify duplicate languages are rejected; remove the practice row and restore English search on."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Names in other languages includes the original English row as well as any extra languages. Let's add Polish, with Punkt and Punkty."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Choose the matching language and keep one entry per language. Include this name in search contributes its singular name to the search keywords. It doesn't create another token or another balance."
+        },
+        {
+          "speaker": "learner",
+          "text": "Remove language deletes the extra localization. We'll remove our practice Polish row and keep English searchable."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Capitalize token names is a display convention. For our final example, leave it off. A presentation preference does not change the token's identifier."
+        }
+      ]
+    },
+    {
+      "id": "12",
+      "title": "Supply and discovery belong to different sections",
+      "part": 2,
+      "screen": "Supply & permissions: inspect initial supply 1,000 and maximum 10,000 tokens. In Search & documents, enter the final description, try education as an extra keyword, then remove that extra keyword.",
+      "controls": [
+        "Initial supply",
+        "Maximum outstanding supply",
+        "Description (optional)",
+        "Search keywords",
+        "Search keywords preview"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/documents.rs",
+          "line": 4,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: amount-units (observed), discovery-fields (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "amount-units",
+            "status": "observed"
+          },
+          {
+            "id": "discovery-fields",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Keep one thousand initial tokens and a ten-thousand maximum. Description and Search keywords live in Search and documents, so we can visit that section without losing the supply settings."
+        },
+        {
+          "speaker": "learner",
+          "text": "I'll describe it as: Teaching token for a guided testnet walkthrough. I'll try education as an extra keyword, then remove it for the final example."
+        },
+        {
+          "speaker": "teacher",
+          "text": "The English singular name remains included because we marked it searchable. Keywords are lowercased and deduplicated. There can be at most fifty distinct terms, each three to fifty UTF-8 bytes after lowercasing, without spaces or control characters."
+        },
+        {
+          "speaker": "learner",
+          "text": "The optional description has its own three-to-one-hundred-byte limit. Search terms affect registration cost, but they don't certify that a token is trustworthy."
+        }
+      ]
+    },
+    {
+      "id": "13",
+      "title": "Precision without a hundredfold mistake",
+      "part": 2,
+      "screen": "Supply & permissions: show Decimal places = 2 and amount conversions. Change to 3 and back. Demonstrate an unrepresentable fractional amount, then correct it.",
+      "controls": [
+        "Decimal places",
+        "tokens",
+        "base units",
+        "Amount validation"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/mod.rs",
+          "line": 258,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258"
+        },
+        {
+          "path": "src/model/token_creator/amount.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/amount.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/mod.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: precision-change (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "precision-change",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Decimal places can range from zero to sixteen. Two means one hundred base units per token; zero means whole tokens only."
+        },
+        {
+          "speaker": "learner",
+          "text": "If I change precision, should I manually multiply the token amount?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "No. The editor preserves the displayed token amount while recalculating its base units. It does not silently round an amount that the new precision cannot represent. Invalid text remains available to correct."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll finish at two decimals: one thousand tokens is one hundred thousand base units, and the ten-thousand cap is one million base units. The same distinction will matter in the emission formulas."
+        }
+      ]
+    },
+    {
+      "id": "14",
+      "title": "Transfers, pauses and frozen recipients",
+      "part": 2,
+      "screen": "Supply & permissions: toggle the three transfer-state checkboxes and inspect their consequences. Restore Allow transfers between holders on, Start with transfers paused off, and Allow transfers to frozen identities off.",
+      "controls": [
+        "Allow transfers between holders",
+        "Start with transfers paused",
+        "Allow transfers to frozen identities",
+        "Help: Transferability"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Show warning with pause authority disabled, then restore the owner pause authority and final booleans."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Allow transfers between holders sounds more permanent than Start with transfers paused."
+        },
+        {
+          "speaker": "teacher",
+          "text": "It is. Transferability cannot change after creation, and disabling it requires protocol fourteen or later. Pausing is a separate initial state; a permitted pause-or-resume action can later resume transfers."
+        },
+        {
+          "speaker": "learner",
+          "text": "The form warns if we start paused with nobody able to resume. And distributions or other configured actions can continue while transfers are paused."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Allow transfers to frozen identities controls receiving only; a frozen identity still cannot spend. We'll restore ordinary transfers on, starting paused off, and receiving while frozen off."
+        }
+      ]
+    },
+    {
+      "id": "15",
+      "title": "Choose all six histories explicitly",
+      "part": 2,
+      "screen": "History: show Keep all six histories and its six child checkboxes. Demonstrate a mixed state, then restore all six.",
+      "controls": [
+        "Keep all six histories",
+        "Keep transfers history",
+        "Keep freezes and unfreezes history",
+        "Keep mints history",
+        "Keep burns history",
+        "Keep direct-pricing changes history",
+        "Keep direct purchases history"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/documents.rs",
+          "line": 4,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: history-controls (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "history-controls",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "History has six independent event histories: transfers, freezes and unfreezes, mints, burns, direct-pricing changes, and direct purchases."
+        },
+        {
+          "speaker": "learner",
+          "text": "Turning one off gives the parent checkbox a mixed state. Keep all six histories selects them together again."
+        },
+        {
+          "speaker": "teacher",
+          "text": "These settings concern the contract's event histories. They do not hide the contract, make transactions private, or grant permission to perform the corresponding actions."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll keep all six for our final token, even where a related action is disabled. Records and authority answer different questions."
+        }
+      ]
+    },
+    {
+      "id": "16",
+      "title": "Protocol templates are separate proposals",
+      "part": 2,
+      "screen": "Basics: expand Existing protocol templates. Compare each of the five templates, scroll the full comparison, and Keep my draft each time. Retain the owner-managed example.",
+      "controls": [
+        "Existing protocol templates",
+        "Compare Most restrictive",
+        "Compare Emergency action",
+        "Compare Minting and burning",
+        "Compare Extreme actions",
+        "Compare All advanced actions",
+        "Full comparison including unchanged settings",
+        "Keep my draft"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/basics.rs",
+          "line": 6,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: template-Most restrictive (observed), template-Emergency action (observed), template-Minting and burning (observed), template-All advanced actions (observed), template-Extreme actions (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "template-Most restrictive",
+            "status": "observed"
+          },
+          {
+            "id": "template-Emergency action",
+            "status": "observed"
+          },
+          {
+            "id": "template-Minting and burning",
+            "status": "observed"
+          },
+          {
+            "id": "template-All advanced actions",
+            "status": "observed"
+          },
+          {
+            "id": "template-Extreme actions",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Compare all five templates; inspect full rows including pricing, marketplace, destination and main-group authorities.",
+        "Cancel each; do not assume Most restrictive equals the custom fixed-supply example."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "These five protocol templates aren't the same as the two examples above them?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. Compare Most restrictive, Emergency action, Minting and burning, Extreme actions, and All advanced actions separately. Each is a proposal with a full comparison, not an immediate overwrite."
+        },
+        {
+          "speaker": "learner",
+          "text": "The names are only summaries. Minting and burning can bundle destination controls, pause controls and sale-related powers. All advanced actions adds more powers, including changing the ceiling and destroying frozen funds."
+        },
+        {
+          "speaker": "teacher",
+          "text": "And Extreme actions adds broad rule-change allowances and main-group replacement authority. Read the complete performer, administrator and three-allowance matrix for each template. We'll cancel these comparisons and keep our deliberately limited draft."
+        }
+      ]
+    },
+    {
+      "id": "17",
+      "title": "Who can perform an action",
+      "part": 2,
+      "screen": "Supply & permissions: inspect All 13 rules, Enabled powers and Changeable rules. Edit Mint additional tokens; inspect performer choices. Try Specific identity with an invalid ID, then restore Contract owner.",
+      "controls": [
+        "All 13 rules",
+        "Enabled powers",
+        "Changeable rules",
+        "Edit rule",
+        "Who can perform this action",
+        "No one",
+        "Contract owner",
+        "Specific identity",
+        "Identity ID",
+        "Main group",
+        "Done"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-0 (observed), rule-filters (observed), rule-filter-counts (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-0",
+            "status": "observed"
+          },
+          {
+            "id": "rule-filters",
+            "status": "observed"
+          },
+          {
+            "id": "rule-filter-counts",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Supply and permissions always contains thirteen action rules. The filters show all rules, enabled powers, or changeable rules; a filter does not change the contract."
+        },
+        {
+          "speaker": "learner",
+          "text": "In Edit rule, the performer can be No one, Contract owner, a Specific identity, Main group, or one of the draft groups we've actually added."
+        },
+        {
+          "speaker": "teacher",
+          "text": "A correctly formatted identity ID does not prove that the identity exists on this network or that we control it. Main group also needs a real group selection before preparation can succeed."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll restore Contract owner for minting and close with Done. I want to inspect the administrator separately, not accidentally grant one while choosing the performer."
+        }
+      ]
+    },
+    {
+      "id": "18",
+      "title": "Who can change the rule",
+      "part": 2,
+      "screen": "In the rule editor, inspect the administrator and all three Later changes flags. Temporarily select Contract owner and toggle each allowance, then restore No one and all flags off. Demonstrate Open Groups.",
+      "controls": [
+        "Who can change this rule",
+        "Allow the administrator to remove all action performers",
+        "Allow the administrator to remove all rule administrators",
+        "Allow the administrator to replace itself",
+        "Open Groups",
+        "Done"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-0 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-0",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "The administrator controls who holds the action, rather than automatically being its performer?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. Three separate allowances let the administrator remove all action performers, remove all rule administrators, or replace itself. Those flags are not one master permission switch."
+        },
+        {
+          "speaker": "learner",
+          "text": "If the performer is No one but an administrator remains, the action might be enabled later. And if the administrator is No one, there's currently nobody to use these allowances."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. For our final draft, every rule administrator will be No one and all three allowances off. Open Groups takes us to the group editor; it doesn't create or assign a group automatically."
+        }
+      ]
+    },
+    {
+      "id": "19",
+      "title": "Lock the outstanding-supply ceiling",
+      "part": 3,
+      "screen": "Supply & permissions: edit Change maximum supply. Set performer and administrator to No one and all three allowances off. Inspect the permanent hard-cap notice.",
+      "controls": [
+        "Change maximum supply",
+        "Who can perform this action",
+        "Who can change this rule",
+        "Later changes",
+        "Maximum outstanding supply"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-6 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-6",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "To make the ten-thousand ceiling permanent, inspect Change maximum supply. Its performer and administrator are both No one, and all three change allowances are off."
+        },
+        {
+          "speaker": "learner",
+          "text": "A number in Maximum outstanding supply alone would not prove a permanent cap if somebody could later raise it."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Right. The notice distinguishes a hard cap from a changeable limit. It also distinguishes both from No maximum supply."
+        },
+        {
+          "speaker": "learner",
+          "text": "And burning can free capacity below an outstanding-supply cap. The cap is not a lifetime counter of every token ever minted."
+        }
+      ]
+    },
+    {
+      "id": "20",
+      "title": "Minting and the initial recipient",
+      "part": 3,
+      "screen": "Inspect Mint additional tokens. Show Contract owner, Specific identity and No fixed destination as default recipient choices. Restore owner and enable Allow choosing a recipient on each mint.",
+      "controls": [
+        "Mint additional tokens",
+        "Default recipient for newly created tokens",
+        "Contract owner",
+        "Specific identity",
+        "Recipient identity ID",
+        "No fixed destination",
+        "Initial allocation",
+        "Allow choosing a recipient on each mint"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-0 (observed), mint-recipients (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-0",
+            "status": "observed"
+          },
+          {
+            "id": "mint-recipients",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Mint additional tokens lets the permitted performer create more, within the outstanding-supply limit."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. The default recipient for newly created tokens also receives the initial supply. We can choose the owner or a specific identity. No fixed destination removes the fixed destination for future minting; the initial allocation still falls back to the owner."
+        },
+        {
+          "speaker": "learner",
+          "text": "Allow choosing a recipient on each mint is a separate choice. It doesn't grant minting power by itself."
+        },
+        {
+          "speaker": "teacher",
+          "text": "We'll use the owner as default recipient, permit the owner to mint, and enable per-mint recipient choice for our final custom example. Recheck the Initial allocation line after changing the destination."
+        }
+      ]
+    },
+    {
+      "id": "21",
+      "title": "Lock the two destination policies",
+      "part": 3,
+      "screen": "Edit Change the default mint recipient and Change per-mint recipient choice separately. Set both performers and administrators to No one and all flags off, while keeping Allow choosing a recipient on each mint on.",
+      "controls": [
+        "Change the default mint recipient",
+        "Change per-mint recipient choice",
+        "Who can perform this action",
+        "Who can change this rule",
+        "Later changes"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-9 (observed), rule-10 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-9",
+            "status": "observed"
+          },
+          {
+            "id": "rule-10",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "There are two rules behind those destination settings: Change the default mint recipient, and Change per-mint recipient choice."
+        },
+        {
+          "speaker": "learner",
+          "text": "So allowing a different recipient on each mint is not the same as allowing someone to change whether that option exists."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. We'll lock both policy-changing rules with no performer, no administrator and all allowances off. The chosen owner destination and enabled per-mint choice remain the values we reviewed."
+        },
+        {
+          "speaker": "learner",
+          "text": "I can now explain both the current setting and who could alter it. That's considerably better than saying, 'I clicked the destination thing.'"
+        }
+      ]
+    },
+    {
+      "id": "22",
+      "title": "Burning the performer’s own tokens",
+      "part": 3,
+      "screen": "Edit Burn own tokens: performer Contract owner, administrator No one, all three flags off. Do not execute a burn.",
+      "controls": [
+        "Burn own tokens",
+        "Edit rule",
+        "Who can perform this action",
+        "Who can change this rule",
+        "Later changes"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-1 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-1",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Does allowing the owner to burn mean the owner can delete anyone's balance?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "No. This rule is Burn own tokens. It permits burning from the acting identity's own balance; it is not confiscation from another holder."
+        },
+        {
+          "speaker": "learner",
+          "text": "Our owner can mint and burn its own tokens, but the permanent outstanding cap still constrains future supply."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. We'll retain owner as performer, no administrator, and all change allowances off. We're configuring that power here, not performing a burn."
+        }
+      ]
+    },
+    {
+      "id": "23",
+      "title": "Freeze and unfreeze are separate",
+      "part": 3,
+      "screen": "Edit Freeze an account, then Unfreeze an account. Inspect their actor choices and restore both rules permanently off. Revisit Allow transfers to frozen identities and leave it off.",
+      "controls": [
+        "Freeze an account",
+        "Unfreeze an account",
+        "Allow transfers to frozen identities",
+        "Edit rule"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-2 (observed), rule-3 (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-2",
+            "status": "observed"
+          },
+          {
+            "id": "rule-3",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Freezing prevents a holder from spending. Unfreezing is a separate power, so enabling one doesn't automatically provide the other."
+        },
+        {
+          "speaker": "learner",
+          "text": "That's a potentially awkward combination if someone can freeze a balance and nobody can release it."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. The receiving-while-frozen checkbox controls incoming transfers, not the ability to spend. Read all three choices together."
+        },
+        {
+          "speaker": "learner",
+          "text": "For our final token, freeze and unfreeze both have no performer or administrator, with all allowances off. Receiving while frozen stays off too."
+        }
+      ]
+    },
+    {
+      "id": "24",
+      "title": "Destroying frozen funds is destructive authority",
+      "part": 3,
+      "screen": "Edit Destroy frozen funds and open its help. Restore performer and administrator No one and all allowances off. Do not execute destruction.",
+      "controls": [
+        "Destroy frozen funds",
+        "Help for Destroy frozen funds",
+        "Who can perform this action",
+        "Who can change this rule",
+        "Later changes"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-4 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-4",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Destroy frozen funds sounds stronger than a freeze."
+        },
+        {
+          "speaker": "teacher",
+          "text": "It is. It authorizes destruction of frozen funds, rather than simply stopping their movement. It is distinct from burning the performer's own balance."
+        },
+        {
+          "speaker": "learner",
+          "text": "We should explain that power to holders before choosing it, not bury it behind a friendly preset name."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Agreed. Our final draft leaves its performer and administrator as No one and all three allowances off. We do not execute a destructive operation for this lesson."
+        }
+      ]
+    },
+    {
+      "id": "25",
+      "title": "Pause authority and display conventions",
+      "part": 3,
+      "screen": "Edit Pause or resume transfers with Contract owner as performer. Lock Change names and display conventions off. Verify Start with transfers paused is off.",
+      "controls": [
+        "Pause or resume transfers",
+        "Change names and display conventions",
+        "Start with transfers paused",
+        "Edit rule"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-5 (observed), rule-7 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-5",
+            "status": "observed"
+          },
+          {
+            "id": "rule-7",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Pause or resume transfers is our third retained owner power. It controls transfers, while other configured actions and distributions can continue."
+        },
+        {
+          "speaker": "learner",
+          "text": "Change names and display conventions is a different rule. A holder might care whether the name or precision can change after creation."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. We'll lock convention changes, while keeping owner as the pause-or-resume performer. Both rules have no administrator and all three allowances off."
+        },
+        {
+          "speaker": "learner",
+          "text": "The initial state remains unpaused. I prefer not to introduce our token by explaining why nobody can move it."
+        }
+      ]
+    },
+    {
+      "id": "26",
+      "title": "Marketplace and pricing powers without a sale",
+      "part": 3,
+      "screen": "Inspect Change marketplace trade mode, Change direct-purchase pricing and Marketplace at creation. Set Contract owner as performer for both rules, administrator No one and all three flags off.",
+      "controls": [
+        "Change marketplace trade mode",
+        "Change direct-purchase pricing",
+        "Marketplace at creation",
+        "Edit rule"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        },
+        {
+          "path": "src/model/token_creator/contract.rs",
+          "line": 158,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/contract.rs#L158"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-11 (observed), rule-12 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-11",
+            "status": "observed"
+          },
+          {
+            "id": "rule-12",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Marketplace at creation says no marketplace sale or direct-purchase price is configured. Why are there still two sale-related rules?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Because they govern who could change those settings later. One controls marketplace trade mode; the other controls direct-purchase pricing. A permission to configure a sale is not an active sale."
+        },
+        {
+          "speaker": "learner",
+          "text": "For this custom example, we'll give the owner both powers, with no administrator and no later rule-change allowances. That adds two powers beyond the limited owner example."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. It will be clearly listed in our final authority table. These settings also don't replace ordinary transfers between holders."
+        }
+      ]
+    },
+    {
+      "id": "27",
+      "title": "The main group is an alias",
+      "part": 3,
+      "screen": "Groups: inspect Main group and Who can change the main group. Demonstrate a missing-main-group validation message, then restore No main group and replacement authority No one.",
+      "controls": [
+        "Main control group",
+        "Main group",
+        "No main group",
+        "Who can change the main group",
+        "Main group authority warning"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/groups.rs",
+          "line": 5,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/groups.rs",
+          "line": 34,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/groups.rs#L34"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: groups-validation (observed), group-references (observed), group-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "groups-validation",
+            "status": "observed"
+          },
+          {
+            "id": "group-references",
+            "status": "observed"
+          },
+          {
+            "id": "group-cleanup",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "A rule can refer to Main group instead of a particular numbered group. In Groups, the Main group selection tells that reference which group to follow."
+        },
+        {
+          "speaker": "learner",
+          "text": "Changing that selection could change the people behind several rules at once."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. Who can change the main group is a separate authority. It isn't another copy of the thirteen rule editors with their three flags."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll demonstrate the relationship, then finish with No main group and No one allowed to change it. A Main group reference without a selected group must be fixed before preparation."
+        }
+      ]
+    },
+    {
+      "id": "28",
+      "title": "Build a weighted practice group",
+      "part": 3,
+      "screen": "Add group creates two blank identity rows. Enter two distinct known public Testnet identity IDs, power 1 each, Required power 2. Add a third temporary member row, then remove it.",
+      "controls": [
+        "Add group",
+        "Group name (local only)",
+        "Required power",
+        "Member identity ID",
+        "Power",
+        "Add member",
+        "Remove member",
+        "Power summary"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/groups.rs",
+          "line": 5,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5"
+        },
+        {
+          "path": "src/model/token_creator/groups.rs",
+          "line": 34,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/groups.rs#L34"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: groups-validation (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "groups-validation",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Use public identifiers only, supplied by the operator; never fabricate ownership.",
+        "Demonstrate duplicate member, missing identity and excessive threshold errors, then restore valid practice values."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Add group starts with two blank member identities. It does not automatically insert the owner."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Enter two distinct public identity IDs, give each power one, and set Required power to two. Both must approve to reach that threshold. A weight of two for one member would change that balance."
+        },
+        {
+          "speaker": "learner",
+          "text": "The group needs at least two members. Each power and the required power must be from one to sixty-five thousand five hundred thirty-five, and the requirement cannot exceed the total."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Right. Add and remove one temporary member row to see the controls. The group name is a local label; Review shows the positions actually stored in the contract. An ID-format check still doesn't establish live membership control."
+        }
+      ]
+    },
+    {
+      "id": "29",
+      "title": "Assign, then remove the practice group safely",
+      "part": 3,
+      "screen": "Select the practice group as Main group; temporarily assign Mint to Main group and Burn to the specific draft group. Show Used by and blocked deletion. Clear all references, restore mint/burn performers to owner, select No main group, then Delete group.",
+      "controls": [
+        "Main group",
+        "Specific draft group actor",
+        "Main group actor",
+        "Used by",
+        "Delete group",
+        "Open Groups",
+        "Done"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/groups.rs",
+          "line": 5,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/mod.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: group-references (observed), group-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "group-references",
+            "status": "observed"
+          },
+          {
+            "id": "group-cleanup",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "We can assign a named draft group directly to a rule, or choose Main group and let the main selection resolve it. Performers and administrators both support group authority."
+        },
+        {
+          "speaker": "learner",
+          "text": "The Used by message prevents me from deleting a group that the draft still references."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. Clear the rule references and main-group selection first, including any authority to replace the main group. Then Delete group is available. Stable draft labels and stored contract positions should not be confused."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll restore mint and burn performers to the owner, remove the practice group, and leave no main group. The group lesson changes no published contract."
+        }
+      ]
+    },
+    {
+      "id": "30",
+      "title": "Three independent distribution mechanisms",
+      "part": 4,
+      "screen": "Distribution: show the recurring, scheduled and once-per-identity switches off, including their retained-settings summaries.",
+      "controls": [
+        "Enable recurring distribution",
+        "Enable scheduled distributions",
+        "Enable once-per-identity distribution",
+        "Saved settings"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: recurring-retention (observed), scheduled-retention (observed), once-per-identity (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          },
+          {
+            "id": "scheduled-retention",
+            "status": "observed"
+          },
+          {
+            "id": "once-per-identity",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Distribution offers recurring allocations, scheduled distributions, and once-per-identity distribution. They are independent of each other and of the initial supply."
+        },
+        {
+          "speaker": "learner",
+          "text": "Turning one off keeps its settings in the draft, so I can return to them without rebuilding the example."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. These rules make eligible allocations available to claim. They do not promise an automatic transfer into a wallet, and supply constraints can limit what can be claimed."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll enable them for practice, inspect their rules, and turn them off before our final review. Off doesn't automatically mean nobody can enable a feature later; its authority matters too."
+        }
+      ]
+    },
+    {
+      "id": "31",
+      "title": "Choose time, blocks or epochs",
+      "part": 4,
+      "screen": "Enable recurring distribution. Select each interval basis and inspect every Time unit. Finish on Elapsed time, Repeat every 1, Time unit days.",
+      "controls": [
+        "Interval based on",
+        "Elapsed time",
+        "Blocks",
+        "Platform epochs",
+        "Repeat every",
+        "Time unit",
+        "seconds",
+        "minutes",
+        "hours",
+        "days",
+        "weeks",
+        "years (365 days)"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/mod.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: recurring-intervals-recipients (observed), year-unit (observed), time-unit-validation (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-intervals-recipients",
+            "status": "observed"
+          },
+          {
+            "id": "year-unit",
+            "status": "observed"
+          },
+          {
+            "id": "time-unit-validation",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Try zero interval and 30 seconds, then restore 1 day.",
+        "Inspect every time-unit option; do not retain obsolete year-alignment warning.",
+        "Observed: one second failed protocol validation with a generic message, and restoring one day removed the error. All six time units were inspected; years (365 days) was selected and retained. Zero and thirty-second trials remain source-derived exercises unless separately recorded."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Recurring intervals can use elapsed time, blocks or Platform epochs. Repeat every is a positive whole count in the selected basis."
+        },
+        {
+          "speaker": "teacher",
+          "text": "For elapsed time, choose seconds, minutes, hours, days, weeks, or years of exactly three hundred sixty-five days. There is no calendar-month option. Time intervals must align to full minutes, and the network determines the minimum."
+        },
+        {
+          "speaker": "learner",
+          "text": "So thirty seconds is not a valid minute-aligned interval, and a year here isn't a promise to follow leap years or an anniversary date."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. Blocks and epochs follow the network rather than a guaranteed wall-clock schedule. We'll use one day for the owner-recipient worked examples and read any validation message before proceeding."
+        },
+        {
+          "speaker": "teacher",
+          "text": "For this pinned Testnet configuration, the minimum is ten minutes for time intervals, five blocks for block intervals, or one Platform epoch. A different network can impose different limits, so keep the actual validation message in view."
+        }
+      ]
+    },
+    {
+      "id": "32",
+      "title": "Recurring recipients and amount units",
+      "part": 4,
+      "screen": "Inspect Contract owner, Specific identity and EvoNodes by participation. Show that EvoNodes requires Platform epochs, then restore Contract owner and elapsed time every 1 day.",
+      "controls": [
+        "Recurring recipient",
+        "Contract owner",
+        "Specific identity",
+        "Recipient identity ID",
+        "EvoNodes by participation",
+        "Emission function",
+        "Amount units"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: recurring-intervals-recipients (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-intervals-recipients",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Recurring recipients can be the contract owner, a specific identity, or EvoNodes by participation. EvoNode participation requires Platform epochs as the interval basis."
+        },
+        {
+          "speaker": "learner",
+          "text": "If I select EvoNodes while using elapsed time, the form tells me to choose epochs. We'll restore the owner for these numerical examples."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Amount fields can use tokens or base units. The coefficients a, d, m, n, o and s are raw calculation inputs, not token amounts. Changing precision doesn't turn a coefficient of ten into ten displayed tokens."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll keep two decimal places, so one hundred base units equals one token. That gives us a consistent scale for all eight recipes."
+        }
+      ]
+    },
+    {
+      "id": "33",
+      "title": "A live preview, not a prediction",
+      "part": 4,
+      "screen": "Select an emission function and Restore worked example parameters. Open its help formula and inspect Current-parameter preview. Change one parameter and verify the table updates, then restore the example.",
+      "controls": [
+        "Restore worked example parameters",
+        "Current-parameter preview",
+        "Help for emission function",
+        "Worked example formula",
+        "Period",
+        "Base units",
+        "Tokens",
+        "Cumulative tokens"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: dynamic-preview (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "dynamic-preview",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "This table changes when I edit the current parameters. It isn't just a static tutorial illustration."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Right. The app evaluates the current function with the pinned protocol code. The help dialog's worked formula describes its example, not whatever values happen to be in your draft."
+        },
+        {
+          "speaker": "learner",
+          "text": "Restore worked example parameters resets the selected function's recipe. Each function keeps its own draft values as I switch between them."
+        },
+        {
+          "speaker": "teacher",
+          "text": "We'll show both the formula and the table. The preview demonstrates a calculation; it doesn't prove future eligibility, available supply, or a successful claim."
+        }
+      ]
+    },
+    {
+      "id": "34",
+      "title": "Period zero and the registration reference",
+      "part": 4,
+      "screen": "Leave Assumed registration reference for preview blank to use zero. Inspect rows 0 through 10 and cumulative allocation starting at period 1. Demonstrate an optional start with a nonzero assumed reference, then restore zero reference and blank start.",
+      "controls": [
+        "Assumed registration reference for preview",
+        "s · start index (optional)",
+        "Period 0",
+        "Cumulative tokens"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Leave Assumed registration reference for preview blank to use zero. The table shows period zero through ten, but cumulative allocation starts at period one and excludes the initial supply."
+        },
+        {
+          "speaker": "learner",
+          "text": "So a nonzero row at period zero is illustrative, not a bonus initial payment."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. The optional start index s uses the function's index reference. Blank means absent; entering zero is an explicit value and can behave differently when the registration reference is nonzero."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll use the zero reference and blank start fields for the recipes. The rows are interval indices, not calendar appointment times or guaranteed claim dates."
+        }
+      ]
+    },
+    {
+      "id": "35",
+      "title": "Fixed amount: one token per interval",
+      "part": 4,
+      "screen": "Select Fixed amount, then Restore worked example parameters. Show 1.00 tokens; switch to 100 base units and back. Inspect the preview table.",
+      "controls": [
+        "Fixed amount",
+        "Amount per interval",
+        "Amount per interval units",
+        "Restore worked example parameters"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-0 (observed), function-help (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-0",
+            "status": "observed"
+          },
+          {
+            "id": "function-help",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 500 base units = 5.00 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Fixed amount has just Amount per interval. The restored example is one point zero zero tokens at two decimals, or one hundred base units."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Its formula is f of k equals one hundred base units. Every displayed period has the same amount. There are no minimum or maximum-per-interval fields for this function."
+        },
+        {
+          "speaker": "learner",
+          "text": "Periods one through five therefore allocate one hundred base units each: five hundred cumulatively, or five tokens, excluding the initial supply."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Precisely. A constant formula doesn't remove the token's overall supply cap or the need for recipients to claim."
+        }
+      ],
+      "worked_example": {
+        "function": "Fixed amount",
+        "inputs_at_decimals2": {
+          "amount": "1.00"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "100",
+        "raw_base_units_k0_to10": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "tokens_k0_to10": [
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00"
+        ],
+        "raw_sum_k1_to5": 500,
+        "token_sum_k1_to5": "5.00",
+        "model_anchor": "src/model/token_creator/distributions.rs:177",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:43"
+      }
+    },
+    {
+      "id": "36",
+      "title": "Step decreasing: subtract a fraction",
+      "part": 4,
+      "screen": "Select Step decreasing and Restore worked example parameters. Inspect all eight parameters and preview rows 0 through 10.",
+      "controls": [
+        "Step decreasing",
+        "Intervals per decrease",
+        "Removed fraction numerator",
+        "Removed fraction denominator",
+        "s · start index (optional)",
+        "Initial recurring amount",
+        "Minimum per interval (optional)",
+        "Maximum reduction era count (optional)",
+        "Trailing amount"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-1 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-1",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 250 base units = 2.50 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "This recipe decreases every two intervals. It removes one half, starting from one token, with a ten-base-unit minimum, maximum reduction era count three, and trailing amount ten base units. Leave s blank."
+        },
+        {
+          "speaker": "learner",
+          "text": "In token-mode fields, initial is one point zero zero, minimum zero point one zero, and trailing zero point one zero. The counts and fraction stay two, one, two and three."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. The base-unit rows from zero through ten are one hundred, one hundred, fifty, fifty, twenty-five, twenty-five, twelve, twelve, ten, ten, ten. Each reduction uses integer division; half of twenty-five becomes twelve."
+        },
+        {
+          "speaker": "learner",
+          "text": "The era count is not simply the number of displayed rows. After era three, the trailing amount applies. I should read the removed fraction literally rather than treating it as the fraction retained."
+        }
+      ],
+      "worked_example": {
+        "function": "Step decreasing",
+        "inputs_at_decimals2": {
+          "step_count": "2",
+          "removed_numerator": "1",
+          "removed_denominator": "2",
+          "s": "",
+          "initial": "1.00",
+          "minimum": "0.10",
+          "max_eras": "3",
+          "trailing": "0.10"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "era=floor(k/2); repeated integer halving; trailing after era>3",
+        "raw_base_units_k0_to10": [
+          100,
+          100,
+          50,
+          50,
+          25,
+          25,
+          12,
+          12,
+          10,
+          10,
+          10
+        ],
+        "tokens_k0_to10": [
+          "1.00",
+          "1.00",
+          "0.50",
+          "0.50",
+          "0.25",
+          "0.25",
+          "0.12",
+          "0.12",
+          "0.10",
+          "0.10",
+          "0.10"
+        ],
+        "raw_sum_k1_to5": 250,
+        "token_sum_k1_to5": "2.50",
+        "model_anchor": "src/model/token_creator/distributions.rs:178",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:63"
+      }
+    },
+    {
+      "id": "37",
+      "title": "Stepwise: thresholds and phases",
+      "part": 4,
+      "screen": "Select Stepwise and Restore worked example parameters. Show exactly three phases: 0 / 0.10 tokens, 3 / 0.05 tokens, 5 / 0 tokens. Add and remove a temporary phase. Demonstrate duplicate-index rejection, then restore the recipe.",
+      "controls": [
+        "Stepwise",
+        "Phases",
+        "Starting period index",
+        "Amount until the next phase",
+        "Add phase",
+        "Remove phase"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-2 (observed), emission-invalid-inputs (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-2",
+            "status": "observed"
+          },
+          {
+            "id": "emission-invalid-inputs",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 30 base units = 0.30 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Stepwise has three restored phase rows: index zero with zero point one zero tokens, index three with zero point zero five, and index five with zero."
+        },
+        {
+          "speaker": "teacher",
+          "text": "That means ten base units until index three, five from index three until five, then zero. The first six rows are ten, ten, ten, five, five, zero."
+        },
+        {
+          "speaker": "learner",
+          "text": "Add phase and Remove phase edit the thresholds. We shouldn't add three extra rows when the example already contains three. Duplicate starting indices are rejected rather than silently overwriting a phase."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. There are no separate minimum and maximum fields here. The phase amounts define the steps, and we'll remove our temporary row before continuing."
+        }
+      ],
+      "worked_example": {
+        "function": "Stepwise",
+        "inputs_at_decimals2": {
+          "phases": [
+            [
+              0,
+              "0.10"
+            ],
+            [
+              3,
+              "0.05"
+            ],
+            [
+              5,
+              "0"
+            ]
+          ]
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "latest start<=k; duplicates rejected by DET",
+        "raw_base_units_k0_to10": [
+          10,
+          10,
+          10,
+          5,
+          5,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "tokens_k0_to10": [
+          "0.10",
+          "0.10",
+          "0.10",
+          "0.05",
+          "0.05",
+          "0.00",
+          "0.00",
+          "0.00",
+          "0.00",
+          "0.00",
+          "0.00"
+        ],
+        "raw_sum_k1_to5": 30,
+        "token_sum_k1_to5": "0.30",
+        "model_anchor": "src/model/token_creator/distributions.rs:254",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:113"
+      }
+    },
+    {
+      "id": "38",
+      "title": "Linear: a slope with an interval ceiling",
+      "part": 4,
+      "screen": "Select Linear and Restore worked example parameters. Inspect all six parameters, including Maximum per interval = 0.20 tokens.",
+      "controls": [
+        "Linear",
+        "a · scaling coefficient (base-unit calculation)",
+        "d · positive scaling divisor",
+        "s · start index (optional)",
+        "b · added token amount",
+        "Minimum per interval (optional)",
+        "Maximum per interval (optional)"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-3 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-3",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 80 base units = 0.80 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "For Linear, a is two, d is one, s is blank, b is zero point one zero tokens, minimum zero, and maximum zero point two zero tokens."
+        },
+        {
+          "speaker": "learner",
+          "text": "In base units that is two k plus ten, bounded between zero and twenty. At periods one through five, the results are twelve, fourteen, sixteen, eighteen and twenty."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. The maximum then holds later intervals at twenty base units, or zero point two tokens each. It is a per-interval bound, not the token's overall maximum outstanding supply."
+        },
+        {
+          "speaker": "learner",
+          "text": "And b is an amount while a is a raw coefficient. They're not interchangeable just because both are numbers."
+        }
+      ],
+      "worked_example": {
+        "function": "Linear",
+        "inputs_at_decimals2": {
+          "a": "2",
+          "d": "1",
+          "s": "",
+          "b": "0.10",
+          "min": "0",
+          "max": "0.20"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "min(20,2k+10)",
+        "raw_base_units_k0_to10": [
+          10,
+          12,
+          14,
+          16,
+          18,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20
+        ],
+        "tokens_k0_to10": [
+          "0.10",
+          "0.12",
+          "0.14",
+          "0.16",
+          "0.18",
+          "0.20",
+          "0.20",
+          "0.20",
+          "0.20",
+          "0.20",
+          "0.20"
+        ],
+        "raw_sum_k1_to5": 80,
+        "token_sum_k1_to5": "0.80",
+        "model_anchor": "src/model/token_creator/distributions.rs:189",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:125"
+      }
+    },
+    {
+      "id": "39",
+      "title": "Polynomial: a squared example",
+      "part": 4,
+      "screen": "Select Polynomial and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
+      "controls": [
+        "Polynomial",
+        "a · scaling coefficient (base-unit calculation)",
+        "d · positive scaling divisor",
+        "m · ratio numerator",
+        "n · positive ratio denominator",
+        "s · start index (optional)",
+        "o · input offset (index)",
+        "b · added token amount",
+        "Minimum per interval (optional)",
+        "Maximum per interval (optional)"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-4 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-4",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 90 base units = 0.90 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "The polynomial example uses a one, d one, m two, n one, blank s, offset o one, b zero, minimum zero, and maximum one token."
+        },
+        {
+          "speaker": "teacher",
+          "text": "That gives the square of k plus one, bounded at one hundred base units. Period zero is one; periods one through five are four, nine, sixteen, twenty-five and thirty-six base units."
+        },
+        {
+          "speaker": "learner",
+          "text": "At two decimals, thirty-six base units is zero point three six tokens. The one-token maximum is reached at period nine."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. This is one worked polynomial, not a promise that every combination of exponents and offsets is valid. Keep d and n positive, and use the actual validation and preview for another recipe."
+        }
+      ],
+      "worked_example": {
+        "function": "Polynomial",
+        "inputs_at_decimals2": {
+          "a": "1",
+          "d": "1",
+          "m": "2",
+          "n": "1",
+          "s": "",
+          "o": "1",
+          "b": "0",
+          "min": "0",
+          "max": "1.00"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "min(100,(k+1)^2)",
+        "raw_base_units_k0_to10": [
+          1,
+          4,
+          9,
+          16,
+          25,
+          36,
+          49,
+          64,
+          81,
+          100,
+          100
+        ],
+        "tokens_k0_to10": [
+          "0.01",
+          "0.04",
+          "0.09",
+          "0.16",
+          "0.25",
+          "0.36",
+          "0.49",
+          "0.64",
+          "0.81",
+          "1.00",
+          "1.00"
+        ],
+        "raw_sum_k1_to5": 90,
+        "token_sum_k1_to5": "0.90",
+        "model_anchor": "src/model/token_creator/distributions.rs:197",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:196"
+      }
+    },
+    {
+      "id": "40",
+      "title": "Exponential: base e, then a cap",
+      "part": 4,
+      "screen": "Select Exponential and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
+      "controls": [
+        "Exponential",
+        "a · scaling coefficient (base-unit calculation)",
+        "d · positive scaling divisor",
+        "m · ratio numerator",
+        "n · positive ratio denominator",
+        "s · start index (optional)",
+        "o · input offset (index)",
+        "b · added token amount",
+        "Minimum per interval (optional)",
+        "Maximum per interval (optional)"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-5 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-5",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 400 base units = 4.00 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Exponential uses a ten, d one, m one, n one, blank s, offset zero, b zero, minimum zero, and maximum one token."
+        },
+        {
+          "speaker": "learner",
+          "text": "The example is ten times e to the power k, bounded at one hundred base units and converted to a whole base-unit amount."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Its rows begin ten, twenty-seven, seventy-three, one hundred, one hundred. The per-interval maximum is reached at period three. Exponential means base e here, not automatically doubling every period."
+        },
+        {
+          "speaker": "learner",
+          "text": "A useful place to check the table before admiring the curve. My mental arithmetic has already requested a quieter assignment."
+        }
+      ],
+      "worked_example": {
+        "function": "Exponential",
+        "inputs_at_decimals2": {
+          "a": "10",
+          "d": "1",
+          "m": "1",
+          "n": "1",
+          "s": "",
+          "o": "0",
+          "b": "0",
+          "min": "0",
+          "max": "1.00"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "min(100,floor(10exp(k)))",
+        "raw_base_units_k0_to10": [
+          10,
+          27,
+          73,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "tokens_k0_to10": [
+          "0.10",
+          "0.27",
+          "0.73",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00",
+          "1.00"
+        ],
+        "raw_sum_k1_to5": 400,
+        "token_sum_k1_to5": "4.00",
+        "model_anchor": "src/model/token_creator/distributions.rs:208",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:302"
+      }
+    },
+    {
+      "id": "41",
+      "title": "Logarithmic: positive input and integer rounding",
+      "part": 4,
+      "screen": "Select Logarithmic and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
+      "controls": [
+        "Logarithmic",
+        "a · scaling coefficient (base-unit calculation)",
+        "d · positive scaling divisor",
+        "m · ratio numerator",
+        "n · positive ratio denominator",
+        "s · start index (optional)",
+        "o · input offset (index)",
+        "b · added token amount",
+        "Minimum per interval (optional)",
+        "Maximum per interval (optional)"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-6 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-6",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 112 base units = 1.12 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "For Logarithmic, use a ten, d one, m one, n one, blank s, offset one, b zero point one zero tokens, minimum zero, and maximum one token."
+        },
+        {
+          "speaker": "learner",
+          "text": "In base units, take ten times the natural logarithm of k plus one, round down, then add ten and apply the bounds."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. Rows zero through five are ten, sixteen, twenty, twenty-three, twenty-six and twenty-seven. At period one, floor of ten times log of two is six; adding ten gives sixteen base units."
+        },
+        {
+          "speaker": "learner",
+          "text": "The offset keeps the example's logarithm input positive. Other offsets and ratios need validation; a smooth-looking formula isn't an exemption from its domain."
+        }
+      ],
+      "worked_example": {
+        "function": "Logarithmic",
+        "inputs_at_decimals2": {
+          "a": "10",
+          "d": "1",
+          "m": "1",
+          "n": "1",
+          "s": "",
+          "o": "1",
+          "b": "0.10",
+          "min": "0",
+          "max": "1.00"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "floor(10ln(k+1))+10",
+        "raw_base_units_k0_to10": [
+          10,
+          16,
+          20,
+          23,
+          26,
+          27,
+          29,
+          30,
+          31,
+          33,
+          33
+        ],
+        "tokens_k0_to10": [
+          "0.10",
+          "0.16",
+          "0.20",
+          "0.23",
+          "0.26",
+          "0.27",
+          "0.29",
+          "0.30",
+          "0.31",
+          "0.33",
+          "0.33"
+        ],
+        "raw_sum_k1_to5": 112,
+        "token_sum_k1_to5": "1.12",
+        "model_anchor": "src/model/token_creator/distributions.rs:219",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:370"
+      }
+    },
+    {
+      "id": "42",
+      "title": "Inverted logarithmic: negative floor matters",
+      "part": 4,
+      "screen": "Select Inverted logarithmic and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
+      "controls": [
+        "Inverted logarithmic",
+        "a · scaling coefficient (base-unit calculation)",
+        "d · positive scaling divisor",
+        "m · ratio numerator",
+        "n · positive ratio denominator",
+        "s · start index (optional)",
+        "o · input offset (index)",
+        "b · added token amount",
+        "Minimum per interval (optional)",
+        "Maximum per interval (optional)"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: formula-7 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-7",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
+        "First five allocated periods total 133 base units = 1.33 tokens."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Inverted logarithmic keeps a ten, d one, m one, n one, blank s and offset one, but b becomes zero point four zero tokens. Minimum is zero and maximum one token."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Its worked formula uses ten times the natural logarithm of one divided by k plus one, floors that result, then adds forty base units and applies the bounds."
+        },
+        {
+          "speaker": "learner",
+          "text": "At period one, the logarithmic part is about negative six point nine three. Flooring gives negative seven, so the result is thirty-three base units, not thirty-four."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Right. The rows start forty, thirty-three, twenty-nine, twenty-six, twenty-three and twenty-two. That rounding detail is why we show the evaluated table, not just a persuasive drawing."
+        }
+      ],
+      "worked_example": {
+        "function": "Inverted logarithmic",
+        "inputs_at_decimals2": {
+          "a": "10",
+          "d": "1",
+          "m": "1",
+          "n": "1",
+          "s": "",
+          "o": "1",
+          "b": "0.40",
+          "min": "0",
+          "max": "1.00"
+        },
+        "amount_input_unit": "tokens (only amount/b/min/max/initial/trailing/phase amount); coefficients remain dimensionless/raw calculation",
+        "raw_formula_for_this_recipe": "floor(10ln(1/(k+1)))+40",
+        "raw_base_units_k0_to10": [
+          40,
+          33,
+          29,
+          26,
+          23,
+          22,
+          20,
+          19,
+          18,
+          16,
+          16
+        ],
+        "tokens_k0_to10": [
+          "0.40",
+          "0.33",
+          "0.29",
+          "0.26",
+          "0.23",
+          "0.22",
+          "0.20",
+          "0.19",
+          "0.18",
+          "0.16",
+          "0.16"
+        ],
+        "raw_sum_k1_to5": 133,
+        "token_sum_k1_to5": "1.33",
+        "model_anchor": "src/model/token_creator/distributions.rs:230",
+        "pinned_upstream_anchor": "packages/rs-dpp/src/data_contract/associated_token/token_perpetual_distribution/distribution_function/evaluate.rs:489"
+      }
+    },
+    {
+      "id": "43",
+      "title": "Check boundaries and invalid inputs",
+      "part": 4,
+      "screen": "Inspect optional blank versus zero values. Demonstrate an invalid zero divisor, invalid amount, duplicate phase and invalid preview reference. Read the validation messages, then restore valid example parameters.",
+      "controls": [
+        "Restore worked example parameters",
+        "Blank optional fields",
+        "Minimum per interval (optional)",
+        "Maximum per interval (optional)",
+        "d · positive scaling divisor",
+        "n · positive ratio denominator",
+        "Assumed registration reference for preview",
+        "Validation messages"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/distributions.rs",
+          "line": 12,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12"
+        },
+        {
+          "path": "src/model/token_creator/amount.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/amount.rs#L7"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: emission-invalid-inputs (observed), recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "emission-invalid-inputs",
+            "status": "observed"
+          },
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Before trusting a recipe, distinguish a blank optional minimum, maximum or start index from an explicit zero. A maximum of zero is a real bound, not unlimited emissions."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll demonstrate a zero divisor and an invalid preview reference, read the errors, and restore the valid values. Amount fields also reject text they cannot represent rather than rounding it away."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Good. A small preview covers eleven rows, not every future interval or every possible claim. Per-interval bounds, the overall supply cap, eligibility and actual network progress remain separate constraints."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll finish with valid worked parameters, two decimal places and a zero assumed reference. The preview is a calculation check, not a financial forecast."
+        }
+      ]
+    },
+    {
+      "id": "44",
+      "title": "Who can change recurring distribution later",
+      "part": 4,
+      "screen": "Use Edit permission to change recurring distribution. Demonstrate performer and administrator effects; restore both to No one and all three flags off. Turn Enable recurring distribution off.",
+      "controls": [
+        "Edit permission to change recurring distribution",
+        "Change recurring distribution",
+        "Who can perform this action",
+        "Who can change this rule",
+        "Later changes",
+        "Enable recurring distribution"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/dialogs.rs",
+          "line": 23,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: rule-8 (observed), recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-8",
+            "status": "observed"
+          },
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "The authority notice can say someone may change recurring distribution, or even enable it later when the feature is currently off."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. This one rule governs the recurring configuration and recipient together. Its performer is different from the recipient receiving allocations. An administrator can also keep a route to changing who controls the rule."
+        },
+        {
+          "speaker": "learner",
+          "text": "We'll inspect both authorities and all three allowances, then set both to No one and every allowance off."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Finally turn recurring distribution off. The worked parameters remain saved in the draft, while the locked rule prevents later enabling through that authority. A disabled checkbox alone would not establish that promise."
+        }
+      ]
+    },
+    {
+      "id": "45",
+      "title": "Schedule an absolute local date",
+      "part": 5,
+      "screen": "Enable scheduled distributions and Add scheduled distribution. Enter a future ISO date, hour and minute; inspect the local offset and UTC milliseconds. Inspect owner and specific identity recipients; set 5 tokens. Remove practice rows and turn the feature off.",
+      "controls": [
+        "Enable scheduled distributions",
+        "Add scheduled distribution",
+        "Allocation date and time (your local time)",
+        "YYYY-MM-DD",
+        "Hour",
+        "Minute",
+        "Allocation instant",
+        "Recipient",
+        "Scheduled amount",
+        "Remove scheduled distribution"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/ui/components/local_schedule_input.rs",
+          "line": 26,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/components/local_schedule_input.rs#L26"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        },
+        {
+          "path": "src/model/token_creator/contract.rs",
+          "line": 158,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/contract.rs#L158"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: scheduled-retention (observed), scheduled-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Draft controls observed; no allocation or claim submitted.",
+        "gui_checks": [
+          {
+            "id": "scheduled-retention",
+            "status": "observed"
+          },
+          {
+            "id": "scheduled-cleanup",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Use a future date chosen at walkthrough time; record timezone and unchanged instant on revisit.",
+        "TODO: live scheduled allocation and later claim require separate authorized network observation."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Add scheduled distribution creates a row with a date, hour and minute in your local time zone, a recipient, and an amount. Choose a future instant and read the displayed zone offset and allocation instant."
+        },
+        {
+          "speaker": "learner",
+          "text": "Let's use five tokens for the owner as a practice amount. If I leave the section and return, the date should stay the same; it isn't recalculated as a number of days after my next click."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. The contract stores an absolute instant. Invalid dates, past allocations and duplicate recipient-and-time entries need correction. The time is checked again at submission, so a once-future date can expire while you review."
+        },
+        {
+          "speaker": "learner",
+          "text": "Remove scheduled distribution deletes a row; switching the feature off keeps its rows in the draft. We'll remove the practice rows and leave it off. Allocation still means eligible to claim, not automatic delivery."
+        }
+      ]
+    },
+    {
+      "id": "46",
+      "title": "Once per identity is not once per person",
+      "part": 5,
+      "screen": "Enable once-per-identity distribution; enter 0.50 tokens, inspect the equivalent 50 base units and protocol help, then turn the feature off.",
+      "controls": [
+        "Enable once-per-identity distribution",
+        "Amount per identity",
+        "Amount per identity units"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/model/token_creator/parse.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: once-per-identity (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Draft controls observed; no allocation or claim submitted.",
+        "gui_checks": [
+          {
+            "id": "once-per-identity",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "TODO: live once-per-identity claims are not demonstrated by configuration or preview."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "Once-per-identity distribution sounds like a small welcome allocation."
+        },
+        {
+          "speaker": "teacher",
+          "text": "It can be configured that way. At two decimals, zero point five zero tokens is fifty base units per eligible identity. The feature requires protocol fourteen or later."
+        },
+        {
+          "speaker": "learner",
+          "text": "But one person can control several identities, so this isn't a one-person-one-claim guarantee. Eligible identities must claim, and available supply can limit claims."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. We'll turn it off for the final example. The saved amount remains a draft convenience, not an active allocation."
+        }
+      ]
+    },
+    {
+      "id": "47",
+      "title": "Clear the practice settings deliberately",
+      "part": 5,
+      "screen": "Verify all three distribution switches are off, scheduled rows removed, and Groups empty. Inspect the summary and the locked recurring rule; do not reset the whole draft.",
+      "controls": [
+        "Enable recurring distribution",
+        "Enable scheduled distributions",
+        "Enable once-per-identity distribution",
+        "Saved settings",
+        "Groups count",
+        "Draft summary"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/distribution.rs",
+          "line": 8,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/mod.rs",
+          "line": 258,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/groups.rs",
+          "line": 5,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Evidence: group-cleanup (observed), scheduled-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "group-cleanup",
+            "status": "observed"
+          },
+          {
+            "id": "scheduled-cleanup",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Before we move on, all three distribution switches are off, the scheduled practice rows are removed, and no group remains. The recurring rule is locked off as well."
+        },
+        {
+          "speaker": "learner",
+          "text": "Some inactive function parameters still exist in the draft. That's fine as long as the feature's active state and future authority are explicit."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Yes. We don't need a blanket reset that would erase our carefully chosen permissions. Revisit the summary and the actual sections instead."
+        },
+        {
+          "speaker": "learner",
+          "text": "Our final token will have an initial allocation and the permitted manual actions, without these practice distribution mechanisms."
+        }
+      ]
+    },
+    {
+      "id": "48",
+      "title": "Optional document types and safe JSON input",
+      "part": 5,
+      "screen": "Search & documents: paste the corrected note-type mapping, including text.position = 0. Run free Check settings and inspect note in the prepared JSON. Demonstrate invalid JSON, a top-level array, duplicate keys and external-reference rejection. Clear document types before the final token.",
+      "controls": [
+        "Description (optional)",
+        "Search keywords",
+        "Document types (optional)",
+        "Document types · JSON",
+        "Clear document types"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/documents.rs",
+          "line": 4,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4"
+        },
+        {
+          "path": "src/model/token_creator/document_json.rs",
+          "line": 1,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/document_json.rs#L1"
+        },
+        {
+          "path": "src/model/token_creator/contract.rs",
+          "line": 158,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/contract.rs#L158"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "The original note object parsed locally but failed full preparation because text.position was missing. With position 0, actual Check settings reached Final review and copied canonical JSON contained note.properties.text.position = 0. Invalid-input rejection and clearing were also observed.",
+        "network": "Read-only preparation of the corrected note schema observed; this document-type exercise was not registered.",
+        "gui_checks": [
+          {
+            "id": "discovery-fields",
+            "status": "observed"
+          },
+          {
+            "id": "documents-syntax",
+            "status": "observed"
+          },
+          {
+            "id": "documents-shape",
+            "status": "observed"
+          },
+          {
+            "id": "documents-external",
+            "status": "observed"
+          },
+          {
+            "id": "documents-duplicates",
+            "status": "observed"
+          },
+          {
+            "id": "documents-object",
+            "status": "observed"
+          },
+          {
+            "id": "documents-clear",
+            "status": "observed"
+          },
+          {
+            "id": "documents-full-prepare-initial",
+            "status": "failed-example-corrected"
+          },
+          {
+            "id": "documents-full-prepare-corrected",
+            "status": "observed"
+          }
+        ]
+      },
+      "checks": [
+        "Demonstrate syntax error, non-object top level and external-reference rejection.",
+        "Use the example mapping in current-walkthrough.md, then Clear document types; do not publish practice schema.",
+        "Observed: the original object failed full protocol construction despite local parsing. The corrected example passed Check settings and the prepared canonical JSON contained note.properties.text.position = 0. Clear the practice type before the final CloudPoint preparation."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Document types accepts a JSON object mapping type names to schemas. It is not an import box for a complete token contract. The text property in this example includes position zero, because Platform requires ordered property positions."
+        },
+        {
+          "speaker": "learner",
+          "text": "We can demonstrate a small note type, then an invalid JSON example and the difference between parsing an object and passing the full schema checks."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. Only local fragment references are accepted; external HTTP and file references are never loaded. Preparation performs the document-schema and token-rule checks. A parsed object alone is not approval."
+        },
+        {
+          "speaker": "learner",
+          "text": "Clear document types removes all types from this draft. We'll keep the description and searchable English name, leave additional keywords empty, and include no document types in our final token."
+        }
+      ],
+      "document_example": {
+        "note": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "position": 0,
+              "maxLength": 100
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "document_example_sources": [
+        "https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/common/mod.rs#L858",
+        "https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/native_schema/properties.rs#L321"
+      ]
+    },
+    {
+      "id": "49",
+      "title": "Prepare and inspect the exact contract",
+      "part": 5,
+      "screen": "Review: Check settings, expand Technical details and inspect/copy the complete contract JSON. Open Save contract JSON; enter File path or Browse, then explicitly Save. Exercise Cancel, existing-file replacement and a failed destination separately. No paid action.",
+      "controls": [
+        "Check settings",
+        "Final review",
+        "Technical details",
+        "Contract ID to be signed",
+        "Token ID to be created",
+        "Copy contract JSON",
+        "Save contract JSON",
+        "Inspect complete contract JSON · amounts are base units",
+        "File path",
+        "Browse…",
+        "Cancel file chooser",
+        "Save",
+        "Cancel",
+        "Replace file"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 18,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+        },
+        {
+          "path": "src/backend_task/tokens/creator_registration.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106"
+        },
+        {
+          "path": "src/model/token_creator/registration.rs",
+          "line": 31,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/json_export.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/ui/tokens/tokens_screen/creator/json_export.rs#L7"
+        },
+        {
+          "path": "src/ui/state/token_creator/json_export.rs",
+          "line": 26,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/ui/state/token_creator/json_export.rs#L26"
+        },
+        {
+          "path": "src/backend_task/tokens/json_export.rs",
+          "line": 14,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/backend_task/tokens/json_export.rs#L14"
+        }
+      ],
+      "verification": {
+        "source": "Base preparation inspected at DET9759930; export UI, state and backend inspected at DET9c41644.",
+        "gui": "On DET9c41644, 11 export GUI checks passed from the accepted receipt: modal cancel, direct/native-path saves with exact copied-JSON bytes, explicit replacement, error correction/retry, protected configuration refusal, native cancel, path selection without writing, responsive manual fallback during a stopped portal and discarded late selection. Prepared-state export is source checked; the base dialog failure remains historical.",
+        "network": "Contract export is local and does not submit or register the token.",
+        "gui_checks": [
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          },
+          {
+            "id": "fixed-json",
+            "status": "observed"
+          },
+          {
+            "id": "review-invalidated",
+            "status": "observed"
+          },
+          {
+            "id": "save-json",
+            "status": "blocked-by-desktop-file-dialog"
+          },
+          {
+            "id": "cancel",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "manual-save-exact-bytes",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "overwrite-requires-consent",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "explicit-overwrite",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "write-error-and-retry",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "protected-configuration",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "native-cancel",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "native-selection-is-not-save",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "native-save-exact-bytes",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "unresponsive-portal-fallback",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "late-native-choice-discarded",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          }
+        ]
+      },
+      "checks": [
+        "Observed on the base revision: prepared IDs, valid copied JSON, expanded inspection and editing a name invalidating review. The old file-dialog failure remains historical evidence.",
+        "The new modal captures reviewed JSON. Browse selects a destination only; Save explicitly writes it. Enter an absolute writable private path for the fallback.",
+        "If Browse stalls, Cancel file chooser stops waiting in this modal; close any native chooser separately if it appears. A late chooser reply must not change the manual path or save a file.",
+        "An existing file requires Replace file. Editing the path clears that approval. Cancel the modal before saving and verify no output was created.",
+        "Observed on DET9c41644: all 11 export checks passed using accepted-receipt JSON. Source confirms atomic complete-byte writes and protection of application files. TODO: separately verify export from prepared Final review; receipt-state testing does not establish that live branch."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "After Check settings succeeds, are these contract and token IDs disposable preview numbers?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "No. They belong to the prepared contract the app intends to sign. They are not registered yet. If another operation changes the creation details, the app requires a new review rather than quietly signing a different contract."
+        },
+        {
+          "speaker": "learner",
+          "text": "Inspect complete contract JSON shows base-unit amounts. Copy contract JSON and Save contract JSON export this prepared contract, not proof of acceptance. How do I choose the file?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Save contract JSON opens a window with File path and Browse. Enter a writable destination, or browse for one, check the displayed path, then click Save. Choosing a location alone saves nothing. An existing file needs Replace file; Cancel closes without saving."
+        },
+        {
+          "speaker": "learner",
+          "text": "If the file chooser never appears, Cancel file chooser lets me enter the path myself. I close any native chooser separately if it appears later. I wait for the save result before treating the file as exported."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Correct. Expand Technical details if you need the protocol version. Editing the draft, changing the issuer or key, or changing the network invalidates the prepared review. Check the current settings again before any payment."
+        }
+      ]
+    },
+    {
+      "id": "50",
+      "title": "CloudPoint’s complete final policy",
+      "part": 6,
+      "screen": "Compare the complete CloudPoint policy with its reviewed and accepted canonical contract. Scroll each section; verify the five owner performers and per-mint choice explicitly instead of assuming the limited owner example includes them.",
+      "controls": [
+        "Reviewed Basics",
+        "Reviewed Supply & permissions",
+        "Reviewed Distribution",
+        "Reviewed Groups",
+        "Reviewed History",
+        "Reviewed Search & documents",
+        "All 13 rules",
+        "All 39 change allowances"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 18,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/supply.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7"
+        },
+        {
+          "path": "src/model/token_creator/rules.rs",
+          "line": 22,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "The complete final CloudPoint target passed preparation on the base and fresh preparation/registration on DET77c2a6c. Accepted JSON matched review apart from created/updated metadata: five owner/eight No one performers, 13 No one administrators, 39 flags off, per-mint choice on, 1000 initial/10000 maximum at two decimals, English CloudPoint/CloudPoints and no groups, distributions or document types.",
+        "network": "CloudPoint accepted receipt confirmed on DET77c2a6c; the full prepared and accepted canonical configurations matched except created/updated metadata.",
+        "gui_checks": [
+          {
+            "id": "final-cloudpoint-target",
+            "status": "observed"
+          },
+          {
+            "id": "second-preparation",
+            "status": "observed",
+            "evidence": "preparation_evidence"
+          },
+          {
+            "id": "owner-managed",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          }
+        ]
+      },
+      "checks": [
+        "Compare every target value with both the reviewed and accepted canonical contract; exclude only created/updated metadata in the registration comparison.",
+        "After applying the limited owner example again, explicitly restore both marketplace/pricing performers to Contract owner (scene26) and per-mint recipient choice to on (scene20). The example alone grants only mint/burn/pause and leaves that choice off.",
+        "Observed on DET77c2a6c: fresh preparation and accepted CloudPoint receipt matched the complete five-owner policy. No post-registration token action or distribution claim was exercised."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "Our final target is CloudPoint and CloudPoints in English, searchable, capitalization off, two decimals, one thousand initial tokens and a permanent ten-thousand maximum. The owner receives the initial supply and is the default mint recipient; choosing a recipient on each mint is allowed."
+        },
+        {
+          "speaker": "learner",
+          "text": "Ordinary transfers are on, starting paused is off, and receiving while frozen is off. The owner may mint, burn its own tokens, pause or resume transfers, change marketplace trade mode, and change direct-purchase pricing. No sale or price is configured at creation."
+        },
+        {
+          "speaker": "teacher",
+          "text": "The other eight performers are No one: freeze, unfreeze, destroy frozen funds, change the maximum, change conventions, change recurring distribution, change the default mint recipient, and change per-mint recipient choice. Every rule administrator is No one, and all thirty-nine change allowances are off."
+        },
+        {
+          "speaker": "learner",
+          "text": "No groups, no main group, and No one may replace it. All three distribution mechanisms are off. All six histories are on. There are no document types or extra keywords; the description remains our teaching-token description. We check the full review against that target before acknowledging anything."
+        }
+      ]
+    },
+    {
+      "id": "51",
+      "title": "The paid action and its failure gates",
+      "part": 6,
+      "screen": "Review charge/balance readiness, the historical failed funding attempt and the later successful fresh-wallet funding. Inspect both genuinely accepted registrations; read each current charge and allow additional processing/storage costs.",
+      "controls": [
+        "Registration charge",
+        "Owner balance when checked",
+        "Add identity credits",
+        "I reviewed the amounts, recipients, permissions and irreversible settings.",
+        "Create token and pay fees",
+        "Request running"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 18,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+        },
+        {
+          "path": "src/backend_task/tokens/creator_registration.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Earlier insufficient-credit/failed-funding gates remain historical. Fresh-wallet funding and a separately authorized additional top-up succeeded with independently checked Core inputs. Fixed-policy and exact CloudPoint registrations both reached accepted receipts matching review apart from created/updated metadata.",
+        "network": "Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.",
+        "gui_checks": [
+          {
+            "id": "fixed-ack-insufficient",
+            "status": "observed"
+          },
+          {
+            "id": "testnet-topup-request",
+            "status": "observed"
+          },
+          {
+            "id": "testnet-topup-unconfirmed",
+            "status": "unconfirmed"
+          },
+          {
+            "id": "topup-conflicting-input",
+            "status": "failed"
+          },
+          {
+            "id": "faucet-funds-preserved",
+            "status": "observed"
+          },
+          {
+            "id": "extra-topup-success",
+            "status": "observed",
+            "evidence": "extra_funding_evidence"
+          },
+          {
+            "id": "owner-managed",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          }
+        ]
+      },
+      "checks": [
+        "Observed: both fresh-wallet top-ups succeeded with independently verified deposit/change inputs. The accepted fixed-policy and exact CloudPoint contracts matched their respective prepared JSON except created/updated metadata.",
+        "Never retry a paid action simply to obtain a cleaner demonstration.",
+        "The failed historical-wallet attempt used an already spent input. Current pinned storage lacks historical spend replay; the precise incident sequence is unproven. A new random wallet avoids that old history for its initial funding but does not repair replay.",
+        "An existing identity can use a different wallet as its funding source without moving its identity or keys. Preserve the original wallet and confirm funds and readiness before any separately authorized follow-up."
+      ],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "What could still stop creation after the draft looks valid?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "An unavailable or changed key, the wrong network, insufficient current credits, expired scheduled dates, or changed creation details can require correction and another check. The backend checks again; a previously displayed balance is not a reservation of funds."
+        },
+        {
+          "speaker": "learner",
+          "text": "If the balance is too low, Add identity credits leads to a separate funding flow. Then we prepare again. We don't assume the displayed registration charge covers every processing and storage charge."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait. Our fixed-policy check and CloudPoint both reached accepted receipts matching their reviewed settings. Every new creation needs the same checks."
+        },
+        {
+          "speaker": "learner",
+          "text": "What if adding credits fails before we can create the token? That happened during our Testnet checks."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Stop and check the funding transaction and wallet state before trying again. Our first attempt used an output spent earlier. We preserved that wallet and selected a new random wallet to fund the same identity. After checking available credits for each charge, both registrations succeeded. The original wallet's spending history still needs reconciliation before we use it again."
+        }
+      ]
+    },
+    {
+      "id": "52",
+      "title": "Recover without paying twice",
+      "part": 6,
+      "screen": "Explain pending, unknown, conflicting and confirmed outcomes and local receipt restoration. Show only a branch actually available in the observed app; label other branches as source-based explanations.",
+      "controls": [
+        "Creation not yet confirmed",
+        "Check status · no payment",
+        "Creation conflict",
+        "Token created",
+        "Restore local receipt · no payment",
+        "Open contract",
+        "Create another token",
+        "Go to section error link"
+      ],
+      "source_anchors": [
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/review.rs",
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c/src/ui/tokens/tokens_screen/creator/review.rs#L67"
+        },
+        {
+          "path": "src/backend_task/tokens/creator_registration.rs",
+          "line": 106,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106"
+        },
+        {
+          "path": "src/model/token_creator/registration.rs",
+          "line": 31,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31"
+        }
+      ],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "The first accepted receipt, identifier copies and actual contract fetch were observed. DET77c2a6c also verified returning to the retained Creator receipt and starting a fresh draft. Unknown-outcome Check status, conflict handling and Restore local receipt remain source-checked only; loading the existing receipt does not exercise restoration.",
+        "network": "Both normal registrations confirmed; no unknown-outcome, conflict or Restore local receipt operation was exercised.",
+        "gui_checks": [
+          {
+            "id": "testnet-topup-unconfirmed",
+            "status": "unconfirmed"
+          }
+        ]
+      },
+      "checks": [
+        "TODO: observe unknown-outcome, conflict and local receipt-restoration branches separately; a confirmed normal receipt does not exercise recovery.",
+        "No forced ambiguous broadcast or repeat payment solely for footage.",
+        "Do not treat an identity-funding timeout as evidence that Token Creator submission, receipt recovery, unknown-outcome handling or conflict handling was exercised.",
+        "Observed on DET77c2a6c: the retained receipt remains reachable after Open contract; Create another token opens a fresh draft. The earlier broken return path is historical, not current behavior on the patch."
+      ],
+      "turns": [
+        {
+          "speaker": "teacher",
+          "text": "If the outcome is uncertain, Creation not yet confirmed offers Check status, no payment. The recovery record survives closing the screen or restarting the app and blocks another creation attempt while the result is unresolved."
+        },
+        {
+          "speaker": "learner",
+          "text": "Not finding a contract immediately doesn't make a paid retry safe. And Creation conflict means a contract with that ID contains different settings, so the app won't call it our reviewed token."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Exactly. After confirmed creation, a failed local save can be repaired with Restore local receipt, no payment. That recovers the receipt and local token data without creating another token."
+        },
+        {
+          "speaker": "learner",
+          "text": "For a draft error, follow the link to the affected section, correct it and check again. For a genuine confirmed receipt, preserve the IDs and inspect the contract. We distinguish those paths instead of calling every interruption a failed registration."
+        }
+      ]
+    },
+    {
+      "id": "53",
+      "title": "Leave with a review habit",
+      "part": 6,
+      "screen": "Closing slide with cast, AI reminder and pinned source revision. Do not show a success montage without verified accepted results.",
+      "controls": [
+        "Closing",
+        "Source revision",
+        "AI-generated presentation disclosure"
+      ],
+      "source_anchors": [],
+      "verification": {
+        "source": "checked against pinned source",
+        "gui": "Production metadata only; no filming or audio generation performed.",
+        "network": "not required for draft demonstration"
+      },
+      "checks": [],
+      "turns": [
+        {
+          "speaker": "learner",
+          "text": "I now have a better checklist: amount and unit, recipient, current performer, rule administrator, later changes, and whether an outcome is only prepared or actually confirmed."
+        },
+        {
+          "speaker": "teacher",
+          "text": "That's the habit to keep. Revisit the relevant chapter when the token's purpose changes, and check a newer app against its own controls. This lesson is tied to a particular revision, not a promise that every future screen will look identical."
+        },
+        {
+          "speaker": "learner",
+          "text": "Thanks for joining us. I'm Ewa Dashwood, and this has been a careful tour of token creation in Dash Evolution."
+        },
+        {
+          "speaker": "teacher",
+          "text": "And I'm Chad G. P. Taylor. Review the rules before signing. My confidence may still be plentiful, but your token supply should be exactly the amount you intended."
+        }
+      ]
+    }
+  ],
+  "word_count": {
+    "scenes": 5769,
+    "standalone_extras": 213,
+    "total": 5982
+  }
+}

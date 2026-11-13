@@ -5,6 +5,8 @@ use crate::model::token_creator::{DraftError, Section, TokenDraft};
 use crate::ui::components::local_schedule_input::LocalScheduleInput;
 use std::collections::BTreeMap;
 
+pub(crate) mod json_export;
+
 /// Which authority rows are shown; hidden rules remain part of the draft.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum RuleFilter {
@@ -44,6 +46,7 @@ pub struct CreatorWorkspace {
     pub outcome: Option<crate::model::token_creator::registration::RegistrationOutcome>,
     pub recovery_loaded: bool,
     pub dismissed_receipt: Option<[u8; 32]>,
+    pub(crate) json_export: Option<json_export::ContractJsonExport>,
     pub acknowledged: bool,
     pub error_section: Option<Section>,
     pub last_navigation: Option<(Section, u32)>,

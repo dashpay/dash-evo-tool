@@ -1524,6 +1524,21 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    #[error("Another file chooser is still open. Close it, or enter a file path and save.")]
+    TokenJsonChooserBusy,
+
+    #[error("The file chooser could not open. Enter a file path and save, or try Browse again.")]
+    TokenJsonChooserFailed {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error("The contract file could not be saved. Choose a writable folder, check available disk space and try again.")]
+    TokenJsonSaveFailed {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A serialized token configuration blob could not be decoded.
     #[error("Saved token data is unreadable. Refresh the token list to fetch it again.")]
     TokenConfigEncoding {

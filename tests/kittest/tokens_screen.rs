@@ -446,6 +446,238 @@ fn my_tokens_create_token_button_opens_token_creator() {
     });
 }
 
+fn confirmed_receipt_fixture() -> (
+    Harness<'static, dash_evo_tool::app::AppState>,
+    dash_evo_tool::model::token_creator::registration::RegistrationRecord,
+) {
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    use dash_evo_tool::model::token_creator::{
+        TokenDraft,
+        contract::canonical_contract,
+        registration::{RegistrationOutcome, RegistrationRecord, RegistrationStatus},
+    };
+    use dash_sdk::dpp::data_contract::accessors::{
+        v0::DataContractV0Getters, v1::DataContractV1Getters,
+    };
+    use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
+
+    let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+    harness.state_mut().test_capture_dispatches();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Token name")
+        .focus();
+    harness.event(egui::Event::Text("KeptCoin".into()));
+    harness.run_steps(2);
+    harness.get_by_label("7  Review").click();
+    harness.run_steps(3);
+
+    let network = harness.state().current_app_context().network();
+    let version = PlatformVersion::latest();
+    let owner = Identifier::from([17; 32]);
+    let contract = canonical_contract(
+        owner,
+        3,
+        TokenDraft::example(false)
+            .parse(owner, network, version, 0)
+            .unwrap(),
+        version,
+    )
+    .unwrap();
+    let record = RegistrationRecord {
+        attempt_id: [18; 32],
+        network,
+        owner,
+        contract_id: contract.id(),
+        token_id: contract.token_id(0).unwrap(),
+        nonce: 3,
+        key_id: 0,
+        protocol_version: version.protocol_version,
+        contract_bytes: contract
+            .serialize_to_bytes_with_platform_version(version)
+            .unwrap(),
+        alias: "Receipt fixture".into(),
+        status: RegistrationStatus::Confirmed,
+    };
+    let Screen::TokensScreen(screen) = harness.state_mut().visible_screen_mut() else {
+        panic!("Token Creator must be visible");
+    };
+    let context = screen.begin_token_registration_for_test();
+    screen.display_backend_task_result(
+        &context,
+        BackendTaskSuccessResult::TokenCreationOutcome(Box::new(RegistrationOutcome {
+            record: record.clone(),
+            local_cache_saved: true,
+            journal_saved: true,
+        })),
+    );
+    harness.run_steps(3);
+    harness.get_by_label("Token created");
+    (harness, record)
+}
+
+fn receipt_contract_fetch(
+    harness: &Harness<'_, dash_evo_tool::app::AppState>,
+    contract_id: Identifier,
+    expected_count: usize,
+) -> dash_evo_tool::backend_task::BackendTaskContext {
+    use dash_evo_tool::backend_task::{BackendTask, contract::ContractTask};
+    let dispatches = harness.state().test_captured_dispatches();
+    assert_eq!(dispatches.len(), expected_count);
+    for (task, _) in dispatches {
+        assert!(
+            matches!(task,
+            BackendTask::ContractTask(task)
+                if matches!(task.as_ref(), ContractTask::FetchContractsWithDescriptions(ids)
+                    if ids == &vec![contract_id])),
+            "Receipt navigation must only fetch the selected contract"
+        );
+    }
+    dispatches.last().unwrap().1.clone()
+}
+
+fn open_receipt_contract(harness: &mut Harness<'_, dash_evo_tool::app::AppState>) {
+    harness.get_by_label("Open contract").scroll_to_me();
+    harness.run_steps(5);
+    harness.get_by_label("Open contract").click();
+    harness.run_steps(3);
+}
+
+#[test]
+fn token_receipt_navigation_returns_to_retained_receipt_and_can_create_another() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let (mut harness, record) = confirmed_receipt_fixture();
+        open_receipt_contract(&mut harness);
+        let context = receipt_contract_fetch(&harness, record.contract_id, 1);
+        rt.block_on(
+            harness
+                .state()
+                .task_result_sender
+                .send(TaskResult::Success {
+                    context,
+                    result: Box::new(BackendTaskSuccessResult::ContractsWithDescriptions(
+                        BTreeMap::from([(record.contract_id, (None, vec![]))]),
+                    )),
+                }),
+        )
+        .unwrap();
+        harness.run_steps(3);
+        harness.get_by_label("Tokens:");
+        harness.get_by_label("Token Creator").click();
+        harness.run_steps(3);
+        let Screen::TokensScreen(screen) = harness.state_mut().visible_screen_mut() else {
+            panic!("Token Creator must be visible");
+        };
+        assert!(
+            screen.tokens_subscreen == TokensSubscreen::TokenCreator,
+            "Returning from the receipt's contract must restore the creator, not keyword search"
+        );
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenTokenCreator
+        );
+        assert_eq!(
+            harness
+                .state()
+                .current_app_context()
+                .get_app_settings()
+                .root_screen_type,
+            RootScreenType::RootScreenTokenCreator
+        );
+        let receipt_label = format!(
+            "Contract ID: {}",
+            record.contract_id.to_string(Encoding::Base58)
+        );
+        for via_my_tokens in [false, true] {
+            if via_my_tokens {
+                harness.get_by_label("My Tokens").click();
+                harness.run_steps(3);
+            }
+            harness.get_by_label("Token Creator").click();
+            harness.run_steps(3);
+            harness.get_by_label("7  Review");
+            harness.get_by_label(&receipt_label);
+        }
+        harness.get_by_label("1  Basics").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::TextInput, "Token name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("KeptCoin")
+        );
+        harness.get_by_label("7  Review").click();
+        harness.run_steps(3);
+        harness.get_by_label("Create another token").scroll_to_me();
+        harness.run_steps(5);
+        harness.get_by_label("Create another token").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Token created").is_none());
+        assert_eq!(
+            harness
+                .get_by_role_and_label(egui::accesskit::Role::TextInput, "Token name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("")
+        );
+        receipt_contract_fetch(&harness, record.contract_id, 1);
+    });
+}
+
+#[test]
+fn token_receipt_navigation_ignores_closed_preview_result_and_returns_after_fetch_error() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, error::TaskError};
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let (mut harness, record) = confirmed_receipt_fixture();
+        open_receipt_contract(&mut harness);
+        let closed = receipt_contract_fetch(&harness, record.contract_id, 1);
+        harness.get_by_label("Token Creator").click();
+        harness.run_steps(3);
+        open_receipt_contract(&mut harness);
+        let current = receipt_contract_fetch(&harness, record.contract_id, 2);
+        rt.block_on(
+            harness
+                .state()
+                .task_result_sender
+                .send(TaskResult::Success {
+                    context: closed,
+                    result: Box::new(BackendTaskSuccessResult::ContractsWithDescriptions(
+                        BTreeMap::from([(record.contract_id, (None, vec![]))]),
+                    )),
+                }),
+        )
+        .unwrap();
+        harness.run_steps(3);
+        harness.get_by_label("Loading contract details...");
+        rt.block_on(harness.state().task_result_sender.send(TaskResult::Error {
+            context: current,
+            error: TaskError::NoIdentitiesFound,
+        }))
+        .unwrap();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label("Loading contract details...")
+                .is_none()
+        );
+        harness.get_by_label("Token Creator").click();
+        harness.run_steps(3);
+        harness.get_by_label("Token created");
+        harness.get_by_label("Create another token");
+        receipt_contract_fetch(&harness, record.contract_id, 2);
+    });
+}
+
 /// Ordinary transfer policy remains editable while drafting without an identity.
 #[test]
 fn creator_workspace_transfer_policy_is_available_without_identity() {

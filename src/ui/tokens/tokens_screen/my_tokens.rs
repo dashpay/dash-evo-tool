@@ -986,7 +986,6 @@ impl TokensScreen {
                         body.row(30.0, |mut row| {
                             row.col(|ui| {
                                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                    ui.add_space(-1.0);
                                     // By making the label into a button or using `ui.selectable_label`,
                                     // we can respond to clicks.
                                     if ui.button(token_name).clicked() {
@@ -1110,6 +1109,135 @@ mod tests {
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::platform::Identifier;
     use egui_kittest::{Harness, kittest::Queryable};
+
+    type TokenListHarness = Harness<'static, (TokensScreen, Vec<AppAction>)>;
+
+    fn token_list_fixture(
+        mode: crate::model::settings::ThemeMode,
+        width: f32,
+        font_scale: f32,
+        pixels_per_point: f32,
+    ) -> (tempfile::TempDir, TokenListHarness) {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        for (index, name) in ["Border one", "Border two", "Border three"]
+            .into_iter()
+            .enumerate()
+        {
+            let token_id = Identifier::from([index as u8 + 1; 32]);
+            screen.all_known_tokens.insert(
+                token_id,
+                TokenInfoWithDataContract {
+                    token_id,
+                    token_name: name.into(),
+                    data_contract: context.dpns_contract().as_ref().clone(),
+                    token_position: 0,
+                    token_configuration: TokenConfigurationV0::default_most_restrictive().into(),
+                    description: None,
+                },
+            );
+        }
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(width, 500.0))
+            .with_pixels_per_point(pixels_per_point)
+            .build_ui_state(
+                |ui, (screen, actions): &mut (TokensScreen, Vec<AppAction>)| {
+                    let action = screen.render_my_tokens_subscreen(ui);
+                    if action != AppAction::None {
+                        actions.push(action);
+                    }
+                },
+                (screen, Vec::new()),
+            );
+        harness.ctx.set_fonts(crate::bundled::fonts().unwrap());
+        crate::ui::theme::apply_theme(&harness.ctx, mode);
+        harness.ctx.global_style_mut(|style| {
+            for font in style.text_styles.values_mut() {
+                font.size *= font_scale;
+            }
+            if font_scale > 1.0 {
+                style.spacing.interact_size.y = 40.0;
+            }
+        });
+        harness.run_steps(5);
+        (dir, harness)
+    }
+
+    fn painted_button_bounds(shape: &egui::Shape, button: egui::Rect) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Rect(rect)
+                if !rect.stroke.is_empty()
+                    && rect.rect.center().distance(button.center()) < 0.1
+                    && (rect.rect.width() - button.width()).abs() < 0.1 =>
+            {
+                Some(rect.visual_bounding_rect())
+            }
+            egui::Shape::Vec(shapes) => shapes
+                .iter()
+                .find_map(|shape| painted_button_bounds(shape, button)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn token_list_button_borders_are_visible_in_every_row_and_theme() {
+        use crate::model::settings::ThemeMode;
+        let mut failures = Vec::new();
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            for (width, font_scale, pixels_per_point) in [
+                (600.0, 1.0, 1.0),
+                (1000.0, 1.0, 1.0),
+                (600.0, 1.5, 1.5),
+                (1000.0, 1.5, 2.0),
+            ] {
+                let (_dir, harness) = token_list_fixture(mode, width, font_scale, pixels_per_point);
+                let actions: Vec<_> = harness
+                    .query_all_by_role_and_label(egui::accesskit::Role::Button, "More Info")
+                    .map(|node| node.rect())
+                    .collect();
+                assert_eq!(actions.len(), 3);
+                for (row, name) in ["Border one", "Border two", "Border three"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let button = harness.get_by_label(name).rect();
+                    let (paint, clip) = harness
+                        .output()
+                        .shapes
+                        .iter()
+                        .find_map(|clipped| {
+                            painted_button_bounds(&clipped.shape, button)
+                                .map(|paint| (paint, clipped.clip_rect))
+                        })
+                        .expect("A token name must have a painted button border");
+                    if !clip.expand(0.01).contains_rect(paint) {
+                        failures.push(format!("{mode:?}/{width}/{font_scale}/{pixels_per_point}, row {row}: painted border {paint:?} exceeds clip {clip:?}"));
+                    }
+                    if (button.center().y - actions[row].center().y).abs() > 1.0 {
+                        failures.push(format!("{mode:?}/{width}/{font_scale}/{pixels_per_point}, row {row}: name and action buttons are not vertically aligned"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn token_list_button_borders_keep_name_buttons_selectable() {
+        let (_dir, mut harness) =
+            token_list_fixture(crate::model::settings::ThemeMode::Dark, 600.0, 1.0, 1.0);
+        harness.get_by_label("Border one").click();
+        harness.run_steps(3);
+        let (screen, actions) = harness.state();
+        let expected = Identifier::from([1; 32]);
+        assert_eq!(screen.selected_token, Some(expected));
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], AppAction::BackendTask(BackendTask::TokenTask(task))
+            if matches!(task.as_ref(), TokenTask::QueryTokenPricing(id) if *id == expected))
+        );
+    }
 
     /// A shortened ID is copied from the keyboard (Tab, then Enter) as well as
     /// by mouse, and the copy is confirmed, since the cell itself shows no change.

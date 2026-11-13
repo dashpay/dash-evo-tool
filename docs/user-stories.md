@@ -1219,6 +1219,7 @@ As a developer, I want to create a new token contract with full configuration so
 - Reject duplicate members, unreachable group power, duplicate recipient/time allocations, external document references, and duplicate JSON names without silently replacing input.
 - Prepare an immutable review bound to the current network, owner, signing key and exact contract ID, then acknowledge the irreversible choices separately before paying.
 - Inspect, copy or save the complete reviewed contract; show the protocol registration charge separately from additional processing and storage charges.
+- Save the reviewed JSON through a responsive path form, with optional native browsing, cancellation before saving, direct path entry when browsing is unavailable, and explicit confirmation before replacing an existing file.
 - Sign the reviewed payload unchanged. A changed creation sequence or expired allocation returns to review before any broadcast.
 - Retain a public recovery record before sending. An unconfirmed or conflicting result blocks another paid attempt across navigation and restart; Check status only reads the network. A proven unsent request can be prepared and explicitly confirmed again.
 - Show final token and contract IDs from the accepted contract. A local cache or receipt-save failure does not turn confirmed creation into a failed payment.

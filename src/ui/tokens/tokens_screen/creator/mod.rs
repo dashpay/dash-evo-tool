@@ -5,6 +5,7 @@ mod dialogs;
 mod distribution;
 mod documents;
 mod groups;
+mod json_export;
 mod review;
 mod supply;
 mod wallet;
@@ -252,6 +253,11 @@ impl TokensScreen {
             });
         });
         dialogs::show(context, &mut self.creator_workspace);
+        action |= json_export::show(
+            context,
+            &mut self.creator_workspace.json_export,
+            self.app_context.network,
+        );
         action
     }
 

@@ -369,6 +369,8 @@ impl BackendTask {
                 } => &identity_token_info.identity,
                 TokenTask::PrepareTokenCreation { .. }
                 | TokenTask::CheckTokenCreation
+                | TokenTask::ChooseTokenContractJsonPath(_)
+                | TokenTask::SaveTokenContractJson { .. }
                 | TokenTask::QueryMyTokenBalances
                 | TokenTask::QueryIdentityTokenBalance(_)
                 | TokenTask::StopTrackingTokenBalance(_)
@@ -1355,6 +1357,12 @@ pub enum BackendTaskSuccessResult {
     RegisteredTokenContract,
     TokenCreationPrepared(Box<crate::model::token_creator::registration::PreparedRegistration>),
     TokenCreationOutcome(Box<crate::model::token_creator::registration::RegistrationOutcome>),
+    /// Native selection, delivered only to the requesting export form.
+    TokenContractJsonPath(Option<std::path::PathBuf>),
+    /// The destination requires explicit replacement approval before any write.
+    TokenContractJsonExists(std::path::PathBuf),
+    /// The reviewed JSON was written to this destination.
+    TokenContractJsonSaved(std::path::PathBuf),
     SavedContract,
     ContractNotFound,
     TokenNotFound,

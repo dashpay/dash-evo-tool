@@ -6,7 +6,8 @@ use crate::model::token_creator::{
     TokenDraft,
     registration::{RegistrationStatus, review_json},
 };
-use crate::ui::{MessageType, components::MessageBanner};
+use crate::ui::MessageType;
+use crate::ui::state::token_creator::json_export::ContractJsonExport;
 use dash_sdk::dpp::{
     data_contract::accessors::{v0::DataContractV0Getters, v1::DataContractV1Getters},
     identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
@@ -121,7 +122,12 @@ impl TokensScreen {
                         );
                     }
                     if let Ok(version) = PlatformVersion::get(record.protocol_version) {
-                        json_tools(ui, &contract, version);
+                        json_tools(
+                            ui,
+                            &contract,
+                            version,
+                            &mut self.creator_workspace.json_export,
+                        );
                     }
                 }
             });
@@ -273,7 +279,12 @@ impl TokensScreen {
                 }
                 human_review(ui, &draft);
                 if let Ok(version) = PlatformVersion::get(prepared.protocol_version) {
-                    json_tools(ui, &prepared.contract, version);
+                    json_tools(
+                        ui,
+                        &prepared.contract,
+                        version,
+                        &mut self.creator_workspace.json_export,
+                    );
                 }
                 checkbox(
                     ui,
@@ -317,6 +328,14 @@ impl TokensScreen {
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
+        if self
+            .creator_workspace
+            .json_export
+            .as_mut()
+            .is_some_and(|export| export.result(context, result))
+        {
+            self.creator_workspace.json_export = None;
+        }
         if self.creator_workspace.pending.as_ref() != Some(context) {
             return;
         }
@@ -346,6 +365,9 @@ impl TokensScreen {
         context: &BackendTaskContext,
         error: &TaskError,
     ) {
+        if let Some(export) = &mut self.creator_workspace.json_export {
+            export.error(context, error);
+        }
         if self.creator_workspace.pending.as_ref() != Some(context) {
             return;
         }
@@ -369,16 +391,20 @@ fn copy_id(ui: &mut Ui, caption: &str, id: dash_sdk::platform::Identifier) {
         }
     });
 }
-fn json_tools(ui: &mut Ui, contract: &dash_sdk::platform::DataContract, version: &PlatformVersion) {
+fn json_tools(
+    ui: &mut Ui,
+    contract: &dash_sdk::platform::DataContract,
+    version: &PlatformVersion,
+    export: &mut Option<ContractJsonExport>,
+) {
     match review_json(contract, version) {
         Ok(json) => {
             ui.horizontal(|ui| {
-                if ui.button("Copy contract JSON").clicked(){ui.ctx().copy_text(json.clone());}
-                if ui.button("Save contract JSON").clicked()
-                    && let Some(path) = rfd::FileDialog::new().set_file_name("token-contract.json").add_filter("JSON", &["json"]).save_file()
-                    && let Err(error) = std::fs::write(path, &json)
-                {
-                    MessageBanner::set_global(ui.ctx(), "The contract file could not be saved. Choose a writable folder and try again.", MessageType::Error).with_details(error);
+                if ui.button("Copy contract JSON").clicked() {
+                    ui.ctx().copy_text(json.clone());
+                }
+                if ui.button("Save contract JSON").clicked() {
+                    *export = Some(ContractJsonExport::new(json.clone()));
                 }
             });
             egui::CollapsingHeader::new("Inspect complete contract JSON · amounts are base units")
@@ -441,6 +467,30 @@ fn human_review(ui: &mut Ui, draft: &TokenDraft) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_json_export_opens_cancellable_path_form_without_native_dialog() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = prepared(&context).contract;
+        let mut export = None;
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            json_tools(ui, &contract, PlatformVersion::latest(), &mut export);
+            super::super::json_export::show(ui.ctx(), &mut export, context.network);
+        });
+        harness.get_by_label("Save contract JSON").click();
+        harness.run_steps(2);
+        harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "File path");
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_role_and_label(egui::accesskit::Role::TextInput, "File path")
+                .is_none()
+        );
+    }
+
     fn prepared(
         context: &crate::context::AppContext,
     ) -> crate::model::token_creator::registration::PreparedRegistration {

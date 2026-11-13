@@ -47,6 +47,7 @@ mod claim_tokens;
 mod creator_registration;
 mod destroy_frozen_funds;
 mod freeze_tokens;
+mod json_export;
 mod mint_tokens;
 mod pause_tokens;
 mod purchase_tokens;
@@ -74,6 +75,14 @@ pub enum TokenTask {
         prepared: Box<crate::model::token_creator::registration::PreparedRegistration>,
     },
     CheckTokenCreation,
+    /// Choose an export destination without writing a file.
+    ChooseTokenContractJsonPath(std::path::PathBuf),
+    /// Write the reviewed bytes after explicit save or replacement confirmation.
+    SaveTokenContractJson {
+        path: std::path::PathBuf,
+        json: String,
+        replace: bool,
+    },
 
     RegisterTokenContract {
         identity: QualifiedIdentity,
@@ -274,6 +283,12 @@ impl AppContext {
                 self.submit_token_creation(sdk, *prepared).await
             }
             TokenTask::CheckTokenCreation => self.check_token_creation(sdk).await,
+            TokenTask::ChooseTokenContractJsonPath(path) => json_export::choose_path(path).await,
+            TokenTask::SaveTokenContractJson {
+                path,
+                json,
+                replace,
+            } => json_export::save(self.data_dir().to_owned(), path, json, replace).await,
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,

@@ -84,6 +84,47 @@ impl From<DeletionRefused> for std::io::Error {
     }
 }
 
+/// Refuse protected application files and aliases before an export creates or replaces a file.
+/// As with deletion, a concurrent directory rename between validation and replacement is out of scope.
+pub(crate) fn check_export_destination(path: &Path, data_dir: &Path) -> std::io::Result<()> {
+    let refused =
+        |make: fn(PathBuf) -> DeletionRefused| -> std::io::Error { make(path.to_owned()).into() };
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
+        .to_string_lossy();
+    if is_protected_name(&name) || (cfg!(windows) && is_windows_alias_name(&name)) {
+        return Err(refused(|path| DeletionRefused::ProtectedFile { path }));
+    }
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(metadata) = &metadata {
+        if !metadata.is_file() {
+            return Err(refused(|path| DeletionRefused::NotRegularFile { path }));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 {
+                return Err(refused(|path| DeletionRefused::HardLinked { path }));
+            }
+        }
+    }
+    let located = canonical_location(path)?;
+    if protected_paths_in(data_dir, None).iter().any(|file| {
+        same_location(&located, file)
+            || metadata
+                .as_ref()
+                .is_some_and(|metadata| same_inode(metadata, file))
+    }) {
+        return Err(refused(|path| DeletionRefused::ProtectedFile { path }));
+    }
+    Ok(())
+}
+
 /// Delete the regular file at `path` if every chokepoint check passes.
 ///
 /// # Errors
@@ -264,6 +305,10 @@ fn protected_paths(intent: DeletionIntent<'_>) -> Vec<PathBuf> {
         DeletionIntent::NetworkClear { data_dir, .. } => (data_dir, None),
         DeletionIntent::Log { dir, .. } => (dir, None),
     };
+    protected_paths_in(data_dir, database)
+}
+
+fn protected_paths_in(data_dir: &Path, database: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = vec![
         crate::wallet_backend::app_database_path(data_dir),
         data_dir.join(crate::database::legacy_backups::LEGACY_DATABASE),

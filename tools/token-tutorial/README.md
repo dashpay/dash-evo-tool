@@ -25,13 +25,18 @@ Do not execute narration merely to check this toolkit.
 | `assets/` | Small official logo, editable slide sources, font license and eight emission-example recipes. No font binaries. |
 | `examples/project.json` | Executable configuration for a new private edit under ignored `local/`. |
 
-The current source targets DET `975993070d0061f506c0b6a2ec650df4ec18f555`
-and Platform `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`. The source has an
-independent audit and scoped GUI observations. An authorized funding attempt
-failed before either token registration; paid results and remaining live gates
-are unverified. This source is not approved for recording, audio generation or
-provider API calls. See [author notes](scenario/dialogue-author-notes.md)
-and the [current walkthrough](scenario/current-walkthrough.md).
+The current source targets DET `77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c`
+and Platform `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`. Original source anchors
+and partial GUI/help evidence retain DET `975993070d0061f506c0b6a2ec650df4ec18f555`.
+The fixed-policy registration passed on that base; exact CloudPoint preparation
+and registration passed on DET77c2a6c. Eleven export GUI checks passed on
+[PR1178](https://github.com/dashpay/dash-evo-tool/pull/1178); four receipt-navigation
+checks passed on [PR1179](https://github.com/dashpay/dash-evo-tool/pull/1179).
+Recovery branches and the other stated live gates remain unverified. The fixed
+QA receipt uses a separate name from illustrative CloudCredit; the advanced
+receipt is CloudPoint. This source is not approved for recording, audio generation
+or provider API calls. See [author notes](scenario/dialogue-author-notes.md) and the
+[current walkthrough](scenario/current-walkthrough.md).
 
 Historical dialogue SHA-256
 `88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc`

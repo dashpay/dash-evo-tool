@@ -107,7 +107,7 @@ def test_current_source_inventory_provenance_and_readable_rendering():
     data = json.loads(source.read_text())
     plan = source.parent / data["source"]["scenario"]
     assert project.batch.digest(plan.read_bytes()) == data["source"]["scenario_sha256"]
-    assert data["source"]["det_revision"] == "975993070d0061f506c0b6a2ec650df4ec18f555"
+    assert data["source"]["det_revision"] == "77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c"
     assert data["source"]["platform_revision"] == (
         "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb"
     )

@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "title": "Creating tokens in Dash Evolution: a conversation",
-  "status": "source-audited-live-coverage-partial-funding-blocked",
+  "status": "source-audited-live-coverage-partial-funded-followup",
   "speakers": {
     "teacher": {
       "name": "Chad G. P. Taylor",
@@ -17,17 +17,32 @@
   },
   "source": {
     "scenario": "scenario.txt",
-    "scenario_sha256": "592b2a9d5b29c4ff4abac88f54d721564657a3c941f92bbc35c5833603254215",
-    "det_revision": "975993070d0061f506c0b6a2ec650df4ec18f555",
+    "scenario_sha256": "f461fcb3b63613cbd15fe14a724314cbd3d30457a351c21726e379ab1552e0d2",
+    "det_revision": "77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c",
     "platform_revision": "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb",
-    "review_status": "Independent source/text findings and GUI coverage are recorded separately in the linked review and evidence ledgers. The corrected document example passed live preparation. No recording or narration approval.",
+    "review_status": "Core source review and original/follow-up evidence retain separate scopes and hashes. Both authorized registrations matched their reviewed canonical contracts, excluding only created/updated metadata. Eleven export checks and four navigation checks passed. Unknown-outcome/conflict/local-restoration branches, 54 help topics and other stated gates remain unverified. No recording or narration approval.",
     "historical_dialogue_sha256": "88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc",
     "historical_media": "Archival only; accepted-media.json and accepted-combined.en.srt do not describe this source. No take reuse is approved.",
     "source_audit": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/review/source-report.md",
     "gui_evidence": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/writer/gui-results-source-snapshot.json",
     "gui_evidence_sha256": "3ba100402e43097bea8e12da043ca380833c72bcea165917eeecbb177b825b97",
     "help_evidence": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/writer/help-results-source-snapshot.json",
-    "help_evidence_sha256": "0b31e1f4af28979efda9dd30c63aa18aa44b89b781804a0e9eaae5d54ba46680"
+    "help_evidence_sha256": "0b31e1f4af28979efda9dd30c63aa18aa44b89b781804a0e9eaae5d54ba46680",
+    "base_observation_revision": "975993070d0061f506c0b6a2ec650df4ec18f555",
+    "revision_scope": "Original control/help, fresh funding and first fixed-policy receipt observations: DET9759930. Eleven export GUI checks: DET9c41644. Exact CloudPoint preparation/accepted receipt and four receipt-navigation checks: DET77c2a6c. Inherited source anchors retain their audited revision; this is not a complete rerun on the final patch.",
+    "funding_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/funding-source-snapshot.json",
+    "funding_evidence_sha256": "94372abd2d68e3d900f2ada70deab2bf2077ed5d9992420663c67ecb2bdfe8d1",
+    "registration_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/registration-source-snapshot.json",
+    "registration_evidence_sha256": "67154f791fee6d471f0b59bcbe066e64d7c2da631e944de1ff342ba59e42e8d0",
+    "export_gui_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/export-source-snapshot.json",
+    "export_gui_evidence_sha256": "a8922d29ae262f13a94a07d040a357660bc4b6a1b03ccdc83e728247042a46d8",
+    "navigation_gui_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/navigation-source-snapshot.json",
+    "navigation_gui_evidence_sha256": "284a40162e402d06acc51a9b6117b252e397eab5b54635f6b81ca5c9052ddb60",
+    "export_observation_revision": "9c416448c1782d663922d551bf1af8c3a2c84d95",
+    "extra_funding_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/extra-funding-source-snapshot.json",
+    "extra_funding_evidence_sha256": "7f7f92ad75401b9aa079ac04c5e0098674365826a10323e75822352e3ca18f7a",
+    "preparation_evidence": "http://agentic/dash-evo-tool/2026-11-13/token-qa-fixes/toolkit/preparation-source-snapshot.json",
+    "preparation_evidence_sha256": "f32cd0d26571e83446c8cc4bcbdeb1db0a7a43b49584044b8d1c9e88a2990198"
   },
   "packaging": {
     "standalone": "Each part intro, its scenes, then its outro.",
@@ -240,7 +255,7 @@
       "id": "02",
       "title": "Draft now, prepare an issuer later",
       "part": 1,
-      "screen": "Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain the observed synchronization prerequisite and the later failed authorized funding attempt without exposing private amounts or identifiers.",
+      "screen": "Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain synchronization and selecting a newly generated wallet as a separate funding source for the existing identity.",
       "controls": [
         "Network",
         "Owner",
@@ -269,8 +284,8 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
-        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui": "Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only. Follow-up: a newly generated wallet funded the existing identity successfully without relinking it.",
+        "network": "Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.",
         "gui_checks": [
           {
             "id": "readiness-unsynced",
@@ -287,13 +302,19 @@
           {
             "id": "topup-conflicting-input",
             "status": "failed"
+          },
+          {
+            "id": "gui_topup_success",
+            "status": "observed",
+            "evidence": "funding_evidence"
           }
         ]
       },
       "checks": [
         "Observed by coordinator: initial free Check settings failed with QuorumKeyUnavailable before network synchronization; this is a preparation/readiness failure, not a failed registration. Recheck after Settings → Connect and synchronization.",
-        "Observed: issuer/key selection, initial synchronization block and later successful free preparation. An authorized funding attempt failed; inspect transaction and reconcile wallet state before any further funding attempt.",
-        "Funded Testnet checks were explicitly authorized, but the funding attempt failed before either registration. TODO: reconcile the wallet state and confirm readiness before any separately authorized follow-up; do not narrate a funded result."
+        "Observed: a new random wallet funded the same existing identity through the foreign-wallet route. The original wallet and its funds were preserved; no old recovery phrase was imported.",
+        "Fresh wallet birth height uses an available positive SPV tip or falls back to a checkpoint. Do not promise an exact current-tip height or claim the historical replay gap is repaired.",
+        "Keep the earlier failed funding attempt as historical evidence. It does not block every funded operation after the successful fresh-wallet follow-up."
       ],
       "turns": [
         {
@@ -649,7 +670,7 @@
       "id": "08",
       "title": "Preparation and payment are separate",
       "part": 1,
-      "screen": "Review: inspect issuer/key readiness, Draft overview and the observed successful Check settings after synchronization. Show the insufficient-credit gate honestly; token registration was not submitted.",
+      "screen": "Review: inspect issuer/key readiness and Final review. Distinguish the earlier insufficient-credit gate from the later successful fixed-policy registration; verify the accepted receipt against its exact prepared contract.",
       "controls": [
         "Review your token",
         "Issuer, fees & readiness",
@@ -674,8 +695,8 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
-        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui": "Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Follow-up: paid fixed-policy submission and its accepted receipt were observed on the base revision.",
+        "network": "Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.",
         "gui_checks": [
           {
             "id": "fixed-online-prepare",
@@ -684,12 +705,18 @@
           {
             "id": "fixed-ack-insufficient",
             "status": "observed"
+          },
+          {
+            "id": "canonical_json_matches_review",
+            "status": "observed",
+            "evidence": "registration_evidence"
           }
         ]
       },
       "checks": [
-        "Observed by coordinator: synchronized Check settings succeeded; Final review appeared. Preserve the exact prepared snapshot privately; do not publish actual financial amounts.",
-        "TODO: paid confirmation, waiting and confirmed outcome require separate authorized funded observation."
+        "Observed: synchronized Check settings succeeded; Final review appeared. The later fixed-policy accepted contract matched its prepared canonical JSON, excluding only created/updated metadata.",
+        "Read the displayed registration charge for each token and allow for additional processing/storage charges. Never assume one top-up covers both registrations.",
+        "The fixed example uses illustrative CloudCredit; its registered QA contract has a separate name. Do not relabel that receipt as CloudCredit."
       ],
       "turns": [
         {
@@ -698,7 +725,7 @@
         },
         {
           "speaker": "learner",
-          "text": "If the check succeeds, Final review shows the network, prepared identifiers, registration charge and the owner's balance when checked. Processing and storage charges are additional, so this is not an exact settled total."
+          "text": "If the check succeeds, Final review shows the network, prepared identifiers, registration charge and the owner's balance when checked. Read the charge for each token. Processing and storage charges are additional, so this is not an exact settled total."
         },
         {
           "speaker": "teacher",
@@ -706,7 +733,7 @@
         },
         {
           "speaker": "learner",
-          "text": "We stop before that action unless a funded registration has been separately authorized. A disabled button or a failed check is a real outcome to explain, not a scene to disguise as success."
+          "text": "We need authorization and enough current credits before that action. Our fixed-policy Testnet check later reached an accepted receipt matching its prepared JSON. A disabled button or failed check still deserves an honest explanation."
         }
       ]
     },
@@ -714,7 +741,7 @@
       "id": "09",
       "title": "Recognize a real receipt",
       "part": 1,
-      "screen": "Explain conditional recovery/receipt branches from source. Show only genuinely observed states; do not use old footage as evidence.",
+      "screen": "Inspect the accepted fixed-policy receipt, copied identifiers and fetched contract. On the navigation patch, select Token Creator to return to the retained receipt, then use Create another token to start a fresh draft. These navigation checks do not submit a token.",
       "controls": [
         "Token created",
         "Contract ID",
@@ -725,13 +752,14 @@
         "Copy Contract ID",
         "Copy Token ID",
         "Open contract",
-        "Create another token"
+        "Create another token",
+        "Token Creator"
       ],
       "source_anchors": [
         {
           "path": "src/ui/tokens/tokens_screen/creator/review.rs",
-          "line": 18,
-          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c/src/ui/tokens/tokens_screen/creator/review.rs#L67"
         },
         {
           "path": "src/model/token_creator/registration.rs",
@@ -741,11 +769,50 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result.",
-        "network": "No token registration, accepted receipt or token-creation recovery operation executed."
+        "gui": "First fixed-policy receipt, identifier copies and actual contract fetch were observed on the base. DET77c2a6c passed four checks: loading the existing confirmed receipt, contract fetch, return to the retained Creator receipt and Create another token. The former return-navigation failure is fixed on this patch. No unknown-outcome/conflict/local-restoration branch was exercised.",
+        "network": "First fixed-policy registration confirmed on the base revision. No token-creation recovery operation was exercised.",
+        "gui_checks": [
+          {
+            "id": "canonical_json_matches_review",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          },
+          {
+            "id": "receipt_copy_ids_observed",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          },
+          {
+            "id": "open_contract_fetch_observed",
+            "status": "observed",
+            "evidence": "registration_evidence"
+          },
+          {
+            "id": "receipt-restored",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          },
+          {
+            "id": "open-contract-fetch",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          },
+          {
+            "id": "return-to-retained-creator-receipt",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          },
+          {
+            "id": "create-another-token",
+            "status": "observed",
+            "evidence": "navigation_gui_evidence"
+          }
+        ]
       },
       "checks": [
-        "TODO: observe confirmed receipt, copy controls and Open contract only after an authorized successful registration.",
+        "Observed: fixed-policy accepted receipt, identifier copies and actual contract fetch; canonical comparison excludes only created/updated metadata. The QA name differs from illustrative CloudCredit.",
+        "Observed on DET77c2a6c: Open contract preview returns to the retained Creator receipt, and Create another token opens a fresh draft without a paid operation. The base return-navigation failure remains historical evidence.",
+        "Loading an existing confirmed receipt is not a test of Restore local receipt, Check status or conflict handling; those branches remain pending.",
         "No historic accepted recording may stand in for a result on this revision."
       ],
       "turns": [
@@ -763,7 +830,7 @@
         },
         {
           "speaker": "teacher",
-          "text": "Yes. Create another token starts a fresh creator after a confirmed result. Until that branch has been observed, this is a description of the expected receipt, not a claim that we've created CloudCredit."
+          "text": "Yes. Our fixed-policy check has a real accepted receipt under a separate Testnet name. We copied its identifiers and fetched its contract. Return to Token Creator to keep that receipt; Create another token starts a fresh draft. We checked both steps without making another payment."
         }
       ]
     },
@@ -3586,7 +3653,7 @@
       "verification": {
         "source": "checked against pinned source",
         "gui": "The original note object parsed locally but failed full preparation because text.position was missing. With position 0, actual Check settings reached Final review and copied canonical JSON contained note.properties.text.position = 0. Invalid-input rejection and clearing were also observed.",
-        "network": "Read-only preparation of the corrected note schema observed; no contract or document was registered.",
+        "network": "Read-only preparation of the corrected note schema observed; this document-type exercise was not registered.",
         "gui_checks": [
           {
             "id": "discovery-fields",
@@ -3674,7 +3741,7 @@
       "id": "49",
       "title": "Prepare and inspect the exact contract",
       "part": 5,
-      "screen": "Review: inspect issuer, key and readiness; Check settings when available. In Final review, expand Technical details and the complete contract JSON, then exercise Copy contract JSON. Save contract JSON remains a separate pending check. No paid action.",
+      "screen": "Review: Check settings, expand Technical details and inspect/copy the complete contract JSON. Open Save contract JSON; enter File path or Browse, then explicitly Save. Exercise Cancel, existing-file replacement and a failed destination separately. No paid action.",
       "controls": [
         "Check settings",
         "Final review",
@@ -3683,7 +3750,13 @@
         "Token ID to be created",
         "Copy contract JSON",
         "Save contract JSON",
-        "Inspect complete contract JSON · amounts are base units"
+        "Inspect complete contract JSON · amounts are base units",
+        "File path",
+        "Browse…",
+        "Cancel file chooser",
+        "Save",
+        "Cancel",
+        "Replace file"
       ],
       "source_anchors": [
         {
@@ -3700,12 +3773,27 @@
           "path": "src/model/token_creator/registration.rs",
           "line": 31,
           "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31"
+        },
+        {
+          "path": "src/ui/tokens/tokens_screen/creator/json_export.rs",
+          "line": 7,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/ui/tokens/tokens_screen/creator/json_export.rs#L7"
+        },
+        {
+          "path": "src/ui/state/token_creator/json_export.rs",
+          "line": 26,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/ui/state/token_creator/json_export.rs#L26"
+        },
+        {
+          "path": "src/backend_task/tokens/json_export.rs",
+          "line": 14,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/backend_task/tokens/json_export.rs#L14"
         }
       ],
       "verification": {
-        "source": "checked against pinned source",
-        "gui": "Prepared IDs, copied canonical JSON and expanded inspection were observed; editing a name invalidated Final review. Save contract JSON was clicked twice without a confirmed dialog or file, so file export remains unverified.",
-        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "source": "Base preparation inspected at DET9759930; export UI, state and backend inspected at DET9c41644.",
+        "gui": "On DET9c41644, 11 export GUI checks passed from the accepted receipt: modal cancel, direct/native-path saves with exact copied-JSON bytes, explicit replacement, error correction/retry, protected configuration refusal, native cancel, path selection without writing, responsive manual fallback during a stopped portal and discarded late selection. Prepared-state export is source checked; the base dialog failure remains historical.",
+        "network": "Contract export is local and does not submit or register the token.",
         "gui_checks": [
           {
             "id": "fixed-online-prepare",
@@ -3722,13 +3810,70 @@
           {
             "id": "save-json",
             "status": "blocked-by-desktop-file-dialog"
+          },
+          {
+            "id": "cancel",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "manual-save-exact-bytes",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "overwrite-requires-consent",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "explicit-overwrite",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "write-error-and-retry",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "protected-configuration",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "native-cancel",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "native-selection-is-not-save",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "native-save-exact-bytes",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "unresponsive-portal-fallback",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
+          },
+          {
+            "id": "late-native-choice-discarded",
+            "status": "observed",
+            "evidence": "export_gui_evidence"
           }
         ]
       },
       "checks": [
-        "Observed by coordinator: prepared IDs, valid copied JSON, expanded inspection, and editing a name invalidating the prepared review. No registration was submitted.",
-        "Test save only to a writable private artifact path; capture errors honestly, with no sensitive material.",
-        "Save contract JSON was clicked twice, but no visible file dialog or saved file was confirmed in the QA desktop. TODO: verify the desktop portal and writable destination; do not mark export-to-file as observed."
+        "Observed on the base revision: prepared IDs, valid copied JSON, expanded inspection and editing a name invalidating review. The old file-dialog failure remains historical evidence.",
+        "The new modal captures reviewed JSON. Browse selects a destination only; Save explicitly writes it. Enter an absolute writable private path for the fallback.",
+        "If Browse stalls, Cancel file chooser stops waiting in this modal; close any native chooser separately if it appears. A late chooser reply must not change the manual path or save a file.",
+        "An existing file requires Replace file. Editing the path clears that approval. Cancel the modal before saving and verify no output was created.",
+        "Observed on DET9c41644: all 11 export checks passed using accepted-receipt JSON. Source confirms atomic complete-byte writes and protection of application files. TODO: separately verify export from prepared Final review; receipt-state testing does not establish that live branch."
       ],
       "turns": [
         {
@@ -3741,7 +3886,15 @@
         },
         {
           "speaker": "learner",
-          "text": "Inspect complete contract JSON shows base-unit amounts. Copy contract JSON and Save contract JSON export this prepared contract, not proof of acceptance."
+          "text": "Inspect complete contract JSON shows base-unit amounts. Copy contract JSON and Save contract JSON export this prepared contract, not proof of acceptance. How do I choose the file?"
+        },
+        {
+          "speaker": "teacher",
+          "text": "Save contract JSON opens a window with File path and Browse. Enter a writable destination, or browse for one, check the displayed path, then click Save. Choosing a location alone saves nothing. An existing file needs Replace file; Cancel closes without saving."
+        },
+        {
+          "speaker": "learner",
+          "text": "If the file chooser never appears, Cancel file chooser lets me enter the path myself. I close any native chooser separately if it appears later. I wait for the save result before treating the file as exported."
         },
         {
           "speaker": "teacher",
@@ -3753,7 +3906,7 @@
       "id": "50",
       "title": "CloudPoint’s complete final policy",
       "part": 6,
-      "screen": "Compare the complete final CloudPoint policy against the observed prepared canonical JSON. Scroll through each reviewed section. This prepared contract has not been submitted or registered.",
+      "screen": "Compare the complete CloudPoint policy with its reviewed and accepted canonical contract. Scroll each section; verify the five owner performers and per-mint choice explicitly instead of assuming the limited owner example includes them.",
       "controls": [
         "Reviewed Basics",
         "Reviewed Supply & permissions",
@@ -3783,19 +3936,29 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "The complete final CloudPoint configuration was entered in the GUI, prepared with Check settings and checked in canonical JSON: five owner/eight No one performers, all 13 administrators No one, all 39 change flags off, per-mint recipient choice on, no groups or distributions, six histories on, no document types and the stated names, amounts and description. This is preparation, not an accepted registration.",
-        "network": "No token registration was submitted.",
+        "gui": "The complete final CloudPoint target passed preparation on the base and fresh preparation/registration on DET77c2a6c. Accepted JSON matched review apart from created/updated metadata: five owner/eight No one performers, 13 No one administrators, 39 flags off, per-mint choice on, 1000 initial/10000 maximum at two decimals, English CloudPoint/CloudPoints and no groups, distributions or document types.",
+        "network": "CloudPoint accepted receipt confirmed on DET77c2a6c; the full prepared and accepted canonical configurations matched except created/updated metadata.",
         "gui_checks": [
           {
             "id": "final-cloudpoint-target",
             "status": "observed"
+          },
+          {
+            "id": "second-preparation",
+            "status": "observed",
+            "evidence": "preparation_evidence"
+          },
+          {
+            "id": "owner-managed",
+            "status": "observed",
+            "evidence": "registration_evidence"
           }
         ]
       },
       "checks": [
-        "Compare every target value to the actual prepared snapshot; do not treat this target table as observed evidence.",
-        "If preparation has not succeeded, retain draft-overview/code-only status and do not show an invented Final review.",
-        "Observed: the complete final target passed fresh Check settings and canonical JSON assertions. No token registration was submitted."
+        "Compare every target value with both the reviewed and accepted canonical contract; exclude only created/updated metadata in the registration comparison.",
+        "After applying the limited owner example again, explicitly restore both marketplace/pricing performers to Contract owner (scene26) and per-mint recipient choice to on (scene20). The example alone grants only mint/burn/pause and leaves that choice off.",
+        "Observed on DET77c2a6c: fresh preparation and accepted CloudPoint receipt matched the complete five-owner policy. No post-registration token action or distribution claim was exercised."
       ],
       "turns": [
         {
@@ -3820,7 +3983,7 @@
       "id": "51",
       "title": "The paid action and its failure gates",
       "part": 6,
-      "screen": "Review the observed charge/balance gate without publishing actual financial amounts. Explain the separate authorized funding failure and stop/check-state response. No token registration or paid retry occurred.",
+      "screen": "Review charge/balance readiness, the historical failed funding attempt and the later successful fresh-wallet funding. Inspect both genuinely accepted registrations; read each current charge and allow additional processing/storage costs.",
       "controls": [
         "Registration charge",
         "Owner balance when checked",
@@ -3843,8 +4006,8 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Evidence: fixed-ack-insufficient (observed), testnet-topup-request (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed), faucet-funds-preserved (observed), funded-tests (blocked-by-funding-failure). See the pinned ledger for exact scope; other scene controls remain source checked only.",
-        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui": "Earlier insufficient-credit/failed-funding gates remain historical. Fresh-wallet funding and a separately authorized additional top-up succeeded with independently checked Core inputs. Fixed-policy and exact CloudPoint registrations both reached accepted receipts matching review apart from created/updated metadata.",
+        "network": "Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.",
         "gui_checks": [
           {
             "id": "fixed-ack-insufficient",
@@ -3867,15 +4030,22 @@
             "status": "observed"
           },
           {
-            "id": "funded-tests",
-            "status": "blocked-by-funding-failure"
+            "id": "extra-topup-success",
+            "status": "observed",
+            "evidence": "extra_funding_evidence"
+          },
+          {
+            "id": "owner-managed",
+            "status": "observed",
+            "evidence": "registration_evidence"
           }
         ]
       },
       "checks": [
-        "TODO: funded registration, live signing and resulting fee/outcome remain unobserved unless coordinator supplies exact evidence.",
+        "Observed: both fresh-wallet top-ups succeeded with independently verified deposit/change inputs. The accepted fixed-policy and exact CloudPoint contracts matched their respective prepared JSON except created/updated metadata.",
         "Never retry a paid action simply to obtain a cleaner demonstration.",
-        "Observed operational blocker: the authorized funding transaction failed before token registration. Investigation found a previously spent input. Exact wallet/backend selection cause remains under investigation; no app fix is part of this documentation update. TODO: revalidate funding readiness after reconciliation before either registration."
+        "The failed historical-wallet attempt used an already spent input. Current pinned storage lacks historical spend replay; the precise incident sequence is unproven. A new random wallet avoids that old history for its initial funding but does not repair replay.",
+        "An existing identity can use a different wallet as its funding source without moving its identity or keys. Preserve the original wallet and confirm funds and readiness before any separately authorized follow-up."
       ],
       "turns": [
         {
@@ -3892,7 +4062,7 @@
         },
         {
           "speaker": "teacher",
-          "text": "Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait for its result. In this walkthrough, an unobserved funded step stays pending; we do not announce a creation that has not been confirmed."
+          "text": "Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait. Our fixed-policy check and CloudPoint both reached accepted receipts matching their reviewed settings. Every new creation needs the same checks."
         },
         {
           "speaker": "learner",
@@ -3900,7 +4070,7 @@
         },
         {
           "speaker": "teacher",
-          "text": "Stop and check the funding transaction and the wallet state before trying again. Our authorized funding attempt timed out, and investigation found that it tried to spend an output already spent earlier. The wallet selection problem still needs reconciliation. Neither token registration was submitted, and we have no successful top-up or token receipt to show."
+          "text": "Stop and check the funding transaction and wallet state before trying again. Our first attempt used an output spent earlier. We preserved that wallet and selected a new random wallet to fund the same identity. After checking available credits for each charge, both registrations succeeded. The original wallet's spending history still needs reconciliation before we use it again."
         }
       ]
     },
@@ -3922,8 +4092,8 @@
       "source_anchors": [
         {
           "path": "src/ui/tokens/tokens_screen/creator/review.rs",
-          "line": 18,
-          "url": "https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18"
+          "line": 67,
+          "url": "https://github.com/dashpay/dash-evo-tool/blob/77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c/src/ui/tokens/tokens_screen/creator/review.rs#L67"
         },
         {
           "path": "src/backend_task/tokens/creator_registration.rs",
@@ -3938,8 +4108,8 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result.",
-        "network": "No token registration, accepted receipt or token-creation recovery operation executed.",
+        "gui": "The first accepted receipt, identifier copies and actual contract fetch were observed. DET77c2a6c also verified returning to the retained Creator receipt and starting a fresh draft. Unknown-outcome Check status, conflict handling and Restore local receipt remain source-checked only; loading the existing receipt does not exercise restoration.",
+        "network": "Both normal registrations confirmed; no unknown-outcome, conflict or Restore local receipt operation was exercised.",
         "gui_checks": [
           {
             "id": "testnet-topup-unconfirmed",
@@ -3948,9 +4118,10 @@
         ]
       },
       "checks": [
-        "TODO: observe each recovery/error branch separately with evidence; code coverage is not a claim that the live branch was exercised.",
+        "TODO: observe unknown-outcome, conflict and local receipt-restoration branches separately; a confirmed normal receipt does not exercise recovery.",
         "No forced ambiguous broadcast or repeat payment solely for footage.",
-        "Do not treat an identity-funding timeout as evidence that Token Creator submission, receipt recovery, unknown-outcome handling or conflict handling was exercised."
+        "Do not treat an identity-funding timeout as evidence that Token Creator submission, receipt recovery, unknown-outcome handling or conflict handling was exercised.",
+        "Observed on DET77c2a6c: the retained receipt remains reachable after Open contract; Create another token opens a fresh draft. The earlier broken return path is historical, not current behavior on the patch."
       ],
       "turns": [
         {
@@ -4009,8 +4180,8 @@
     }
   ],
   "word_count": {
-    "scenes": 5665,
+    "scenes": 5769,
     "standalone_extras": 213,
-    "total": 5878
+    "total": 5982
   }
 }

@@ -1,11 +1,11 @@
 TOKEN TUTORIAL — CURRENT SCENE PLAN
-Application: 975993070d0061f506c0b6a2ec650df4ec18f555
+Application: 77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c
 Platform: 575d961fe0c54bd7e01a3cf3823494e58c6c4fdb
 
 Canonical spoken source: dialogue.json. Readable speech: dialogue.txt.
 This file is the current non-spoken scene plan, not a historical narration.
 Opening silence: 3.0 seconds. AI disclosure visible. No recording/audio generation is authorized by this plan.
-Status: source audited; live coverage is partial. Funding failed before token registration; no accepted token result is claimed.
+Status: source audited; live coverage is partial. Fresh-wallet funding and fixed-policy registration succeeded on DET9759930; exact CloudPoint registration succeeded on DET77c2a6c. 11 export GUI checks passed on DET9c41644. Receipt return and Create another token passed on DET77c2a6c; remaining gates are explicit.
 Archive: accepted-media.json and accepted-combined.en.srt belong to the old source; do not reuse them for this revision.
 
 SCENE 00 | PART 1 | Hello from Chad and Ewa
@@ -21,12 +21,13 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67
 
 SCENE 02 | PART 1 | Draft now, prepare an issuer later
-SCREEN: Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain the observed synchronization prerequisite and the later failed authorized funding attempt without exposing private amounts or identifiers.
+SCREEN: Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain synchronization and selecting a newly generated wallet as a separate funding source for the existing identity.
 CONTROLS: Network; Owner; Help: Issuer, fees & readiness; Load identity; Identity; Signing key; Unlock Wallet
-VERIFY: Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
+VERIFY: Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only. Follow-up: a newly generated wallet funded the existing identity successfully without relinking it. Network: Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.
 CHECK: Observed by coordinator: initial free Check settings failed with QuorumKeyUnavailable before network synchronization; this is a preparation/readiness failure, not a failed registration. Recheck after Settings → Connect and synchronization.
-CHECK: Observed: issuer/key selection, initial synchronization block and later successful free preparation. An authorized funding attempt failed; inspect transaction and reconcile wallet state before any further funding attempt.
-CHECK: Funded Testnet checks were explicitly authorized, but the funding attempt failed before either registration. TODO: reconcile the wallet state and confirm readiness before any separately authorized follow-up; do not narrate a funded result.
+CHECK: Observed: a new random wallet funded the same existing identity through the foreign-wallet route. The original wallet and its funds were preserved; no old recovery phrase was imported.
+CHECK: Fresh wallet birth height uses an available positive SPV tip or falls back to a checkpoint. Do not promise an exact current-tip height or claim the historical replay gap is repaired.
+CHECK: Keep the earlier failed funding attempt as historical evidence. It does not block every funded operation after the successful fresh-wallet follow-up.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
@@ -79,21 +80,24 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
 
 SCENE 08 | PART 1 | Preparation and payment are separate
-SCREEN: Review: inspect issuer/key readiness, Draft overview and the observed successful Check settings after synchronization. Show the insufficient-credit gate honestly; token registration was not submitted.
+SCREEN: Review: inspect issuer/key readiness and Final review. Distinguish the earlier insufficient-credit gate from the later successful fixed-policy registration; verify the accepted receipt against its exact prepared contract.
 CONTROLS: Review your token; Issuer, fees & readiness; Draft overview; Check settings; Final review; Creation charge; I reviewed the amounts, recipients, permissions and irreversible settings.; Create token and pay fees
-VERIFY: Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
-CHECK: Observed by coordinator: synchronized Check settings succeeded; Final review appeared. Preserve the exact prepared snapshot privately; do not publish actual financial amounts.
-CHECK: TODO: paid confirmation, waiting and confirmed outcome require separate authorized funded observation.
+VERIFY: Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Follow-up: paid fixed-policy submission and its accepted receipt were observed on the base revision. Network: Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.
+CHECK: Observed: synchronized Check settings succeeded; Final review appeared. The later fixed-policy accepted contract matched its prepared canonical JSON, excluding only created/updated metadata.
+CHECK: Read the displayed registration charge for each token and allow for additional processing/storage charges. Never assume one top-up covers both registrations.
+CHECK: The fixed example uses illustrative CloudCredit; its registered QA contract has a separate name. Do not relabel that receipt as CloudCredit.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 
 SCENE 09 | PART 1 | Recognize a real receipt
-SCREEN: Explain conditional recovery/receipt branches from source. Show only genuinely observed states; do not use old footage as evidence.
-CONTROLS: Token created; Contract ID; Token ID; Owner; Initial allocation; Initial recipient; Copy Contract ID; Copy Token ID; Open contract; Create another token
-VERIFY: Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result. Network: No token registration, accepted receipt or token-creation recovery operation executed.
-CHECK: TODO: observe confirmed receipt, copy controls and Open contract only after an authorized successful registration.
+SCREEN: Inspect the accepted fixed-policy receipt, copied identifiers and fetched contract. On the navigation patch, select Token Creator to return to the retained receipt, then use Create another token to start a fresh draft. These navigation checks do not submit a token.
+CONTROLS: Token created; Contract ID; Token ID; Owner; Initial allocation; Initial recipient; Copy Contract ID; Copy Token ID; Open contract; Create another token; Token Creator
+VERIFY: First fixed-policy receipt, identifier copies and actual contract fetch were observed on the base. DET77c2a6c passed four checks: loading the existing confirmed receipt, contract fetch, return to the retained Creator receipt and Create another token. The former return-navigation failure is fixed on this patch. No unknown-outcome/conflict/local-restoration branch was exercised. Network: First fixed-policy registration confirmed on the base revision. No token-creation recovery operation was exercised.
+CHECK: Observed: fixed-policy accepted receipt, identifier copies and actual contract fetch; canonical comparison excludes only created/updated metadata. The QA name differs from illustrative CloudCredit.
+CHECK: Observed on DET77c2a6c: Open contract preview returns to the retained Creator receipt, and Create another token opens a fresh draft without a paid operation. The base return-navigation failure remains historical evidence.
+CHECK: Loading an existing confirmed receipt is not a test of Restore local receipt, Check status or conflict handling; those branches remain pending.
 CHECK: No historic accepted recording may stand in for a result on this revision.
-SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
+SOURCE: https://github.com/dashpay/dash-evo-tool/blob/77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c/src/ui/tokens/tokens_screen/creator/review.rs#L67
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31
 
 SCENE 10 | PART 2 | Begin the owner-managed practice draft
@@ -448,57 +452,61 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 48 | PART 5 | Optional document types and safe JSON input
 SCREEN: Search & documents: paste the corrected note-type mapping, including text.position = 0. Run free Check settings and inspect note in the prepared JSON. Demonstrate invalid JSON, a top-level array, duplicate keys and external-reference rejection. Clear document types before the final token.
 CONTROLS: Description (optional); Search keywords; Document types (optional); Document types · JSON; Clear document types
-VERIFY: The original note object parsed locally but failed full preparation because text.position was missing. With position 0, actual Check settings reached Final review and copied canonical JSON contained note.properties.text.position = 0. Invalid-input rejection and clearing were also observed. Network: Read-only preparation of the corrected note schema observed; no contract or document was registered.
+VERIFY: The original note object parsed locally but failed full preparation because text.position was missing. With position 0, actual Check settings reached Final review and copied canonical JSON contained note.properties.text.position = 0. Invalid-input rejection and clearing were also observed. Network: Read-only preparation of the corrected note schema observed; this document-type exercise was not registered.
 CHECK: Demonstrate syntax error, non-object top level and external-reference rejection.
 CHECK: Use the example mapping in current-walkthrough.md, then Clear document types; do not publish practice schema.
 CHECK: Observed: the original object failed full protocol construction despite local parsing. The corrected example passed Check settings and the prepared canonical JSON contained note.properties.text.position = 0. Clear the practice type before the final CloudPoint preparation.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/document_json.rs#L1
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/contract.rs#L158
-DOCUMENT EXAMPLE: {"note": {"type": "object", "properties": {"text": {"type": "string", "position": 0, "maxLength": 100}}, "required": ["text"], "additionalProperties": false}}
-SCHEMA SOURCE: https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/common/mod.rs#L858
-SCHEMA SOURCE: https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/native_schema/properties.rs#L321
 
 SCENE 49 | PART 5 | Prepare and inspect the exact contract
-SCREEN: Review: inspect issuer, key and readiness; Check settings when available. In Final review, expand Technical details and the complete contract JSON, then exercise Copy contract JSON. Save contract JSON remains a separate pending check. No paid action.
-CONTROLS: Check settings; Final review; Technical details; Contract ID to be signed; Token ID to be created; Copy contract JSON; Save contract JSON; Inspect complete contract JSON · amounts are base units
-VERIFY: Prepared IDs, copied canonical JSON and expanded inspection were observed; editing a name invalidated Final review. Save contract JSON was clicked twice without a confirmed dialog or file, so file export remains unverified. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
-CHECK: Observed by coordinator: prepared IDs, valid copied JSON, expanded inspection, and editing a name invalidating the prepared review. No registration was submitted.
-CHECK: Test save only to a writable private artifact path; capture errors honestly, with no sensitive material.
-CHECK: Save contract JSON was clicked twice, but no visible file dialog or saved file was confirmed in the QA desktop. TODO: verify the desktop portal and writable destination; do not mark export-to-file as observed.
+SCREEN: Review: Check settings, expand Technical details and inspect/copy the complete contract JSON. Open Save contract JSON; enter File path or Browse, then explicitly Save. Exercise Cancel, existing-file replacement and a failed destination separately. No paid action.
+CONTROLS: Check settings; Final review; Technical details; Contract ID to be signed; Token ID to be created; Copy contract JSON; Save contract JSON; Inspect complete contract JSON · amounts are base units; File path; Browse…; Cancel file chooser; Save; Cancel; Replace file
+VERIFY: On DET9c41644, 11 export GUI checks passed from the accepted receipt: modal cancel, direct/native-path saves with exact copied-JSON bytes, explicit replacement, error correction/retry, protected configuration refusal, native cancel, path selection without writing, responsive manual fallback during a stopped portal and discarded late selection. Prepared-state export is source checked; the base dialog failure remains historical. Network: Contract export is local and does not submit or register the token.
+CHECK: Observed on the base revision: prepared IDs, valid copied JSON, expanded inspection and editing a name invalidating review. The old file-dialog failure remains historical evidence.
+CHECK: The new modal captures reviewed JSON. Browse selects a destination only; Save explicitly writes it. Enter an absolute writable private path for the fallback.
+CHECK: If Browse stalls, Cancel file chooser stops waiting in this modal; close any native chooser separately if it appears. A late chooser reply must not change the manual path or save a file.
+CHECK: An existing file requires Replace file. Editing the path clears that approval. Cancel the modal before saving and verify no output was created.
+CHECK: Observed on DET9c41644: all 11 export checks passed using accepted-receipt JSON. Source confirms atomic complete-byte writes and protection of application files. TODO: separately verify export from prepared Final review; receipt-state testing does not establish that live branch.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31
+SOURCE: https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/ui/tokens/tokens_screen/creator/json_export.rs#L7
+SOURCE: https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/ui/state/token_creator/json_export.rs#L26
+SOURCE: https://github.com/dashpay/dash-evo-tool/blob/9c416448c1782d663922d551bf1af8c3a2c84d95/src/backend_task/tokens/json_export.rs#L14
 
 SCENE 50 | PART 6 | CloudPoint’s complete final policy
-SCREEN: Compare the complete final CloudPoint policy against the observed prepared canonical JSON. Scroll through each reviewed section. This prepared contract has not been submitted or registered.
+SCREEN: Compare the complete CloudPoint policy with its reviewed and accepted canonical contract. Scroll each section; verify the five owner performers and per-mint choice explicitly instead of assuming the limited owner example includes them.
 CONTROLS: Reviewed Basics; Reviewed Supply & permissions; Reviewed Distribution; Reviewed Groups; Reviewed History; Reviewed Search & documents; All 13 rules; All 39 change allowances
-VERIFY: The complete final CloudPoint configuration was entered in the GUI, prepared with Check settings and checked in canonical JSON: five owner/eight No one performers, all 13 administrators No one, all 39 change flags off, per-mint recipient choice on, no groups or distributions, six histories on, no document types and the stated names, amounts and description. This is preparation, not an accepted registration. Network: No token registration was submitted.
-CHECK: Compare every target value to the actual prepared snapshot; do not treat this target table as observed evidence.
-CHECK: If preparation has not succeeded, retain draft-overview/code-only status and do not show an invented Final review.
-CHECK: Observed: the complete final target passed fresh Check settings and canonical JSON assertions. No token registration was submitted.
+VERIFY: The complete final CloudPoint target passed preparation on the base and fresh preparation/registration on DET77c2a6c. Accepted JSON matched review apart from created/updated metadata: five owner/eight No one performers, 13 No one administrators, 39 flags off, per-mint choice on, 1000 initial/10000 maximum at two decimals, English CloudPoint/CloudPoints and no groups, distributions or document types. Network: CloudPoint accepted receipt confirmed on DET77c2a6c; the full prepared and accepted canonical configurations matched except created/updated metadata.
+CHECK: Compare every target value with both the reviewed and accepted canonical contract; exclude only created/updated metadata in the registration comparison.
+CHECK: After applying the limited owner example again, explicitly restore both marketplace/pricing performers to Contract owner (scene26) and per-mint recipient choice to on (scene20). The example alone grants only mint/burn/pause and leaves that choice off.
+CHECK: Observed on DET77c2a6c: fresh preparation and accepted CloudPoint receipt matched the complete five-owner policy. No post-registration token action or distribution claim was exercised.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
 
 SCENE 51 | PART 6 | The paid action and its failure gates
-SCREEN: Review the observed charge/balance gate without publishing actual financial amounts. Explain the separate authorized funding failure and stop/check-state response. No token registration or paid retry occurred.
+SCREEN: Review charge/balance readiness, the historical failed funding attempt and the later successful fresh-wallet funding. Inspect both genuinely accepted registrations; read each current charge and allow additional processing/storage costs.
 CONTROLS: Registration charge; Owner balance when checked; Add identity credits; I reviewed the amounts, recipients, permissions and irreversible settings.; Create token and pay fees; Request running
-VERIFY: Evidence: fixed-ack-insufficient (observed), testnet-topup-request (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed), faucet-funds-preserved (observed), funded-tests (blocked-by-funding-failure). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
-CHECK: TODO: funded registration, live signing and resulting fee/outcome remain unobserved unless coordinator supplies exact evidence.
+VERIFY: Earlier insufficient-credit/failed-funding gates remain historical. Fresh-wallet funding and a separately authorized additional top-up succeeded with independently checked Core inputs. Fixed-policy and exact CloudPoint registrations both reached accepted receipts matching review apart from created/updated metadata. Network: Fixed-policy registration confirmed on DET9759930; exact CloudPoint registration confirmed on DET77c2a6c. Both accepted contracts matched review apart from created/updated metadata.
+CHECK: Observed: both fresh-wallet top-ups succeeded with independently verified deposit/change inputs. The accepted fixed-policy and exact CloudPoint contracts matched their respective prepared JSON except created/updated metadata.
 CHECK: Never retry a paid action simply to obtain a cleaner demonstration.
-CHECK: Observed operational blocker: the authorized funding transaction failed before token registration. Investigation found a previously spent input. Exact wallet/backend selection cause remains under investigation; no app fix is part of this documentation update. TODO: revalidate funding readiness after reconciliation before either registration.
+CHECK: The failed historical-wallet attempt used an already spent input. Current pinned storage lacks historical spend replay; the precise incident sequence is unproven. A new random wallet avoids that old history for its initial funding but does not repair replay.
+CHECK: An existing identity can use a different wallet as its funding source without moving its identity or keys. Preserve the original wallet and confirm funds and readiness before any separately authorized follow-up.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 
 SCENE 52 | PART 6 | Recover without paying twice
 SCREEN: Explain pending, unknown, conflicting and confirmed outcomes and local receipt restoration. Show only a branch actually available in the observed app; label other branches as source-based explanations.
 CONTROLS: Creation not yet confirmed; Check status · no payment; Creation conflict; Token created; Restore local receipt · no payment; Open contract; Create another token; Go to section error link
-VERIFY: Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result. Network: No token registration, accepted receipt or token-creation recovery operation executed.
-CHECK: TODO: observe each recovery/error branch separately with evidence; code coverage is not a claim that the live branch was exercised.
+VERIFY: The first accepted receipt, identifier copies and actual contract fetch were observed. DET77c2a6c also verified returning to the retained Creator receipt and starting a fresh draft. Unknown-outcome Check status, conflict handling and Restore local receipt remain source-checked only; loading the existing receipt does not exercise restoration. Network: Both normal registrations confirmed; no unknown-outcome, conflict or Restore local receipt operation was exercised.
+CHECK: TODO: observe unknown-outcome, conflict and local receipt-restoration branches separately; a confirmed normal receipt does not exercise recovery.
 CHECK: No forced ambiguous broadcast or repeat payment solely for footage.
 CHECK: Do not treat an identity-funding timeout as evidence that Token Creator submission, receipt recovery, unknown-outcome handling or conflict handling was exercised.
-SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
+CHECK: Observed on DET77c2a6c: the retained receipt remains reachable after Open contract; Create another token opens a fresh draft. The earlier broken return path is historical, not current behavior on the patch.
+SOURCE: https://github.com/dashpay/dash-evo-tool/blob/77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c/src/ui/tokens/tokens_screen/creator/review.rs#L67
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31
 

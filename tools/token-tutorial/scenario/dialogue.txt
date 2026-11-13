@@ -51,15 +51,15 @@ Chad G. P. Taylor: Correct. And a cap always limits outstanding supply, not the 
 
 [Scene 08] Preparation and payment are separate
 Chad G. P. Taylor: Review includes a draft overview. Choose the issuer and signing key, then Check settings. That prepares the contract and checks the owner without paying for token creation.
-Ewa Dashwood: If the check succeeds, Final review shows the network, prepared identifiers, registration charge and the owner's balance when checked. Processing and storage charges are additional, so this is not an exact settled total.
+Ewa Dashwood: If the check succeeds, Final review shows the network, prepared identifiers, registration charge and the owner's balance when checked. Read the charge for each token. Processing and storage charges are additional, so this is not an exact settled total.
 Chad G. P. Taylor: Read the amounts, recipients and permanent choices before ticking the acknowledgement. Create token and pay fees is the paid confirmation itself; there is no extra confirmation dialog promised after it.
-Ewa Dashwood: We stop before that action unless a funded registration has been separately authorized. A disabled button or a failed check is a real outcome to explain, not a scene to disguise as success.
+Ewa Dashwood: We need authorization and enough current credits before that action. Our fixed-policy Testnet check later reached an accepted receipt matching its prepared JSON. A disabled button or failed check still deserves an honest explanation.
 
 [Scene 09] Recognize a real receipt
 Ewa Dashwood: What would count as confirmation?
 Chad G. P. Taylor: The Token created receipt contains identifiers from the accepted contract, together with the owner and initial allocation. Prepared IDs or a broadcast alone do not prove creation.
 Ewa Dashwood: Then we copy the confirmed Contract ID and Token ID, and use Open contract to inspect the result. We check the intended recipient rather than assuming every allocation belongs to the issuer.
-Chad G. P. Taylor: Yes. Create another token starts a fresh creator after a confirmed result. Until that branch has been observed, this is a description of the expected receipt, not a claim that we've created CloudCredit.
+Chad G. P. Taylor: Yes. Our fixed-policy check has a real accepted receipt under a separate Testnet name. We copied its identifiers and fetched its contract. Return to Token Creator to keep that receipt; Create another token starts a fresh draft. We checked both steps without making another payment.
 
 [Scene 10] Begin the owner-managed practice draft
 Chad G. P. Taylor: Our second example is CloudPoint, with CloudPoints as the plural. We can replace the names in an unsubmitted draft, or use Create another token after a confirmed creation.
@@ -299,7 +299,9 @@ Ewa Dashwood: Clear document types removes all types from this draft. We'll keep
 [Scene 49] Prepare and inspect the exact contract
 Ewa Dashwood: After Check settings succeeds, are these contract and token IDs disposable preview numbers?
 Chad G. P. Taylor: No. They belong to the prepared contract the app intends to sign. They are not registered yet. If another operation changes the creation details, the app requires a new review rather than quietly signing a different contract.
-Ewa Dashwood: Inspect complete contract JSON shows base-unit amounts. Copy contract JSON and Save contract JSON export this prepared contract, not proof of acceptance.
+Ewa Dashwood: Inspect complete contract JSON shows base-unit amounts. Copy contract JSON and Save contract JSON export this prepared contract, not proof of acceptance. How do I choose the file?
+Chad G. P. Taylor: Save contract JSON opens a window with File path and Browse. Enter a writable destination, or browse for one, check the displayed path, then click Save. Choosing a location alone saves nothing. An existing file needs Replace file; Cancel closes without saving.
+Ewa Dashwood: If the file chooser never appears, Cancel file chooser lets me enter the path myself. I close any native chooser separately if it appears later. I wait for the save result before treating the file as exported.
 Chad G. P. Taylor: Correct. Expand Technical details if you need the protocol version. Editing the draft, changing the issuer or key, or changing the network invalidates the prepared review. Check the current settings again before any payment.
 
 [Scene 50] CloudPoint’s complete final policy
@@ -312,9 +314,9 @@ Ewa Dashwood: No groups, no main group, and No one may replace it. All three dis
 Ewa Dashwood: What could still stop creation after the draft looks valid?
 Chad G. P. Taylor: An unavailable or changed key, the wrong network, insufficient current credits, expired scheduled dates, or changed creation details can require correction and another check. The backend checks again; a previously displayed balance is not a reservation of funds.
 Ewa Dashwood: If the balance is too low, Add identity credits leads to a separate funding flow. Then we prepare again. We don't assume the displayed registration charge covers every processing and storage charge.
-Chad G. P. Taylor: Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait for its result. In this walkthrough, an unobserved funded step stays pending; we do not announce a creation that has not been confirmed.
+Chad G. P. Taylor: Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait. Our fixed-policy check and CloudPoint both reached accepted receipts matching their reviewed settings. Every new creation needs the same checks.
 Ewa Dashwood: What if adding credits fails before we can create the token? That happened during our Testnet checks.
-Chad G. P. Taylor: Stop and check the funding transaction and the wallet state before trying again. Our authorized funding attempt timed out, and investigation found that it tried to spend an output already spent earlier. The wallet selection problem still needs reconciliation. Neither token registration was submitted, and we have no successful top-up or token receipt to show.
+Chad G. P. Taylor: Stop and check the funding transaction and wallet state before trying again. Our first attempt used an output spent earlier. We preserved that wallet and selected a new random wallet to fund the same identity. After checking available credits for each charge, both registrations succeeded. The original wallet's spending history still needs reconciliation before we use it again.
 
 [Scene 52] Recover without paying twice
 Chad G. P. Taylor: If the outcome is uncertain, Creation not yet confirmed offers Check status, no payment. The recovery record survives closing the screen or restarting the app and blocks another creation attempt while the result is unresolved.

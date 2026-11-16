@@ -2532,9 +2532,7 @@ mod tests {
                     screen.broadcast_status = BroadcastStatus::Fetching;
                 }
 
-                let mut harness = Harness::builder()
-                    // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
-                    .with_accessibility_check(false)
+                let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2607,9 +2605,7 @@ mod tests {
                 screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
                 screen.broadcast_status = status;
 
-                let mut harness = Harness::builder()
-                    // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
-                    .with_accessibility_check(false)
+                let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2710,9 +2706,7 @@ mod tests {
         screen.original_doc = Some(DocumentV0::default().into());
         screen.field_inputs.insert("label".into(), "old".into());
 
-        let mut harness = Harness::builder()
-            // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {
@@ -2756,9 +2750,7 @@ mod tests {
         screen.identities_map =
             HashMap::from([(alice.identity.id(), alice), (bob.identity.id(), bob)]);
 
-        let mut harness = Harness::builder()
-            // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {

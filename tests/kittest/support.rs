@@ -40,6 +40,22 @@ pub fn builder_with_app_fonts<State>() -> HarnessBuilder<State> {
     })
 }
 
+/// Switch off kittest's check that every input widget has an accessible name,
+/// for a harness whose screen still has unnamed widgets. Every opt-out goes
+/// through here so the remaining gaps stay in one list.
+//
+// TODO: name these widgets for screen readers, then drop the opt-out for their
+// screens: the entropy grid cells and language / word-count combo boxes (Add
+// New Wallet); the recovery-phrase word fields and word-count combo box
+// (Import Mnemonic); the identity selector combo box; the Key Info
+// sign-message field; the DPNS username field and a button on the registration
+// outcome view; an unlabelled `WalletSelector`; the fund-platform dialog's
+// address combo box; the withdrawal destination field; the Document Query text
+// fields. Unit-test harnesses list theirs in `src/test_support.rs`.
+pub fn allowing_unnamed_widgets<State>(builder: HarnessBuilder<State>) -> HarnessBuilder<State> {
+    builder.with_accessibility_check(false)
+}
+
 /// Step `harness` until root screens exist, then let them settle.
 ///
 /// A test that mounts the real `AppState` and asserts on a screen must wait for
@@ -116,30 +132,33 @@ fn boot_progress(harness: &Harness<'static, dash_evo_tool::app::AppState>) -> (B
 /// seed the DB through `AppContext` methods that spawn tasks) must enter their
 /// own around the call, same as any other kittest.
 pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, dash_evo_tool::app::AppState> {
-    mount_app_with_accessibility_check(root_screen, true)
+    mount_app_with(Harness::builder(), root_screen)
 }
 
-/// [`mount_app`], with kittest's check that every input widget has an
-/// accessible name switched on or off.
-pub fn mount_app_with_accessibility_check(
+/// [`mount_app`] for a root screen that still has unnamed input widgets; see
+/// [`allowing_unnamed_widgets`].
+pub fn mount_app_allowing_unnamed_widgets(
     root_screen: RootScreenType,
-    check_accessibility: bool,
+) -> Harness<'static, dash_evo_tool::app::AppState> {
+    mount_app_with(allowing_unnamed_widgets(Harness::builder()), root_screen)
+}
+
+fn mount_app_with(
+    builder: HarnessBuilder<dash_evo_tool::app::AppState>,
+    root_screen: RootScreenType,
 ) -> Harness<'static, dash_evo_tool::app::AppState> {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
-    let mut harness = Harness::builder()
-        .with_max_steps(100)
-        .with_accessibility_check(check_accessibility)
-        .build_eframe(move |ctx| {
-            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-                .expect("Failed to create AppState")
-                .with_animations(false);
-            app.show_welcome_screen = false;
-            app.welcome_screen = None;
-            app.selected_main_screen = root_screen;
-            app
-        });
+    let mut harness = builder.with_max_steps(100).build_eframe(move |ctx| {
+        let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false);
+        app.show_welcome_screen = false;
+        app.welcome_screen = None;
+        app.selected_main_screen = root_screen;
+        app
+    });
     harness.set_size(egui::vec2(1280.0, 800.0));
     wait_for_wallet_backend(&mut harness);
     harness.run_steps(10);

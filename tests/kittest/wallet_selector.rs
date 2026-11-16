@@ -54,10 +54,8 @@ fn mount(
 ) -> (Harness<'static>, Rc<RefCell<Picked>>) {
     let picked = Rc::new(RefCell::new(Picked::default()));
     let shared = Rc::clone(&picked);
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
         .with_size(egui::vec2(600.0, 400.0))
-        // TODO: give an unlabelled `WalletSelector` combo box an accessible name, then drop this opt-out.
-        .with_accessibility_check(false)
         .build_ui(move |ui| {
             ui.ctx().set_visuals(visuals.clone());
             let mut picked = shared.borrow_mut();

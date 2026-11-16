@@ -129,10 +129,8 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
             fee_result: FeeResult::new(0, 0),
         });
 
-        let mut harness = Harness::builder()
-            // TODO: give the registration outcome's unlabelled button an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
-            .build_ui(move |ui| {
+        let mut harness =
+            crate::support::allowing_unnamed_widgets(Harness::builder()).build_ui(move |ui| {
                 screen.ui(ui);
             });
         harness.run();

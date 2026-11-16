@@ -1127,9 +1127,7 @@ mod wallet_picker_tests {
 
     /// Render the screen and return what hovering the wallet picker shows.
     fn picker_breakdown(screen: &mut AddExistingIdentityScreen, closed_text: &str) -> Vec<String> {
-        let mut harness = Harness::builder()
-            // TODO: give the wallet picker and the identity fields an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

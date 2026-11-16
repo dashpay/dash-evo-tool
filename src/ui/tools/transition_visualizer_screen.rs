@@ -619,9 +619,7 @@ mod tests {
         );
         // Simulate a non-JSON fallback pane: broadcasting must ignore its text.
         parsed.rendered = "Debug representation:\nnot JSON".to_owned();
-        let mut harness = Harness::builder()
-            // TODO: give the transition input field an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .build_ui_state(
                 |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
                     let next = screen.show_output(ui);

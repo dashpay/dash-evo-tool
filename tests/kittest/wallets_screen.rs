@@ -738,10 +738,8 @@ fn fund_platform_dialog_last_popup_row_stays_open_until_fund_is_clicked() {
 
         let funding_tasks = Rc::new(Cell::new(0));
         let task_counter = funding_tasks.clone();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1280.0, 800.0))
-            // TODO: give the fund-platform dialog's address combo box an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
             .build_ui_state(
                 move |ui, screen: &mut WalletsBalancesScreen| {
                     let _runtime = &runtime;

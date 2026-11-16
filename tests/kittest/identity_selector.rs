@@ -128,10 +128,8 @@ fn combo_change_writes_selection_to_app_context() {
         let sel_inner = Rc::clone(&sel);
         let ctx_inner = Arc::clone(&ctx);
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(400.0, 80.0))
-            // TODO: give the identity selector combo box an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
             .build_ui(move |ui| {
                 let mut b = buf_inner.borrow_mut();
                 let mut s = sel_inner.borrow_mut();

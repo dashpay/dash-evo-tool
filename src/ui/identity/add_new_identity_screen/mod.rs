@@ -1943,9 +1943,7 @@ mod funding_method_tests {
             FundingMethod::UsePlatformAddress;
         screen.user_chose_funding_method = true;
 
-        let mut harness = Harness::builder()
-            // TODO: give the funding wallet picker an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

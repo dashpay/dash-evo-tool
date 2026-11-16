@@ -1273,9 +1273,7 @@ mod derived_key_tests {
     }
 
     fn source_harness(screen: AddKeyScreen) -> Harness<'static, AddKeyScreen> {
-        Harness::builder()
-            // TODO: give the key source combo box an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_max_steps(30)
             .build_ui_state(
                 |ui, screen: &mut AddKeyScreen| {
@@ -1793,9 +1791,7 @@ mod derived_key_tests {
         screen.display_message("not saved", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
 
-        let mut harness = Harness::builder()
-            // TODO: give the key source combo box an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_max_steps(30)
             .build_ui_state(
                 |ui, screen: &mut AddKeyScreen| {

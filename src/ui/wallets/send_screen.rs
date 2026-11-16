@@ -5487,9 +5487,7 @@ mod tests {
     }
 
     fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
-        let mut harness = Harness::builder()
-            // TODO: give the identity send form's radio buttons an accessible name, then drop this opt-out.
-            .with_accessibility_check(false)
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .build_ui_state(
                 |ui, screen: &mut WalletSendScreen| {
                     screen.render_unified_send(ui);

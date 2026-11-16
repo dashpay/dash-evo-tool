@@ -102,16 +102,15 @@ pub(crate) fn seed_username_identity(
 }
 
 fn mount(screen: RegisterDpnsNameScreen) -> Harness<'static, RegisterDpnsNameScreen> {
-    let mut harness = crate::support::builder_with_app_fonts()
-        .with_size(egui::vec2(1280.0, 900.0))
-        // TODO: give the username field an accessible name, then drop this opt-out.
-        .with_accessibility_check(false)
-        .build_ui_state(
-            |ui, screen: &mut RegisterDpnsNameScreen| {
-                screen.ui(ui);
-            },
-            screen,
-        );
+    let mut harness =
+        crate::support::allowing_unnamed_widgets(crate::support::builder_with_app_fonts())
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
     harness.run();
     harness
 }

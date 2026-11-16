@@ -25,6 +25,24 @@ pub(crate) fn harness_builder_with_app_fonts<State>() -> egui_kittest::HarnessBu
     })
 }
 
+/// Switch off kittest's check that every input widget has an accessible name,
+/// for a harness whose screen still has unnamed widgets. Every unit-test
+/// opt-out goes through here so the remaining gaps stay in one list.
+//
+// TODO: name these widgets for screen readers, then drop the opt-out for their
+// screens: the amount field (`AmountInput`); the top-up form's wallet selector
+// and amount field; the funding wallet picker (Add New Identity); the wallet
+// picker and identity fields (Add Existing Identity); the add-key source combo
+// box; the identity send form's radio buttons; the document action form's
+// combo boxes and text fields; the transition visualizer input; the DPNS
+// username field. Integration harnesses list theirs in `tests/kittest/support.rs`.
+#[cfg(test)]
+pub(crate) fn allowing_unnamed_widgets<State>(
+    builder: egui_kittest::HarnessBuilder<State>,
+) -> egui_kittest::HarnessBuilder<State> {
+    builder.with_accessibility_check(false)
+}
+
 /// Serializes every unit test that mutates the process-global data directory.
 #[cfg(test)]
 pub(crate) static DASH_EVO_DATA_DIR_LOCK: Mutex<()> = Mutex::new(());

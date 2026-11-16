@@ -15,20 +15,25 @@ hash over migration name, i32 version and rendered SQL. Timestamps and the
 store-generation token are deterministic fixture values.
 
 The production bridge compares the source history and schema in
-`67d4ef3.sql`, and the destination guard `033ecae.sql` described below,
+`67d4ef3.sql`, and the destination guard `0c08eb6.sql` described below,
 before translating data. No code reads `e3cd7cf.sql` any more: it is kept
 as the reference for the V001–V018 migration names and checksums. The
 destination itself is created by the current public `SqlitePersister::open`,
 not by the fixture SQL. Updating either schema revision requires reviewing
 and regenerating these guards.
-The current destination guard is `033ecae.sql`, captured from an empty database
+The current destination guard is `0c08eb6.sql`, the schema of an empty database
 opened by `SqlitePersister::open` at Platform revision
-`033ecaee2f3badc8e04ff8be664062f33516e3e4`. The V001–V018 migration names and
+`0c08eb6c9f2f3ac313f86c88ff0925ee7bad55cc`. The V001–V018 migration names and
 checksums match `e3cd7cf.sql`. V019 adds only the nullable `asset_locks.operation_id`
 column, its unique index and immutability trigger (checksum `1537039181339941563`).
-The snapshot contains no domain rows; history timestamps are normalized. The
-bridge copies existing asset-lock blobs unchanged and leaves the new column NULL.
-A different migration occupying version 19 is not an accepted source history.
+V020 adds only the nullable `asset_locks.shielded_recipient` column and its
+immutability trigger (checksum `13071883127280964199`). The previous guard,
+`033ecae.sql` (V001–V019), is this file without the V020 changes. The snapshot
+contains no domain rows; history timestamps and the store-generation token are
+normalized fixture values, and its schema objects and migration history equal
+those of a database the real runner creates. The bridge copies existing
+asset-lock blobs unchanged and leaves both new columns NULL. A different
+migration occupying version 19 is not an accepted source history.
 Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
 comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.

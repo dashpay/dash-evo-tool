@@ -5826,6 +5826,7 @@ mod tests {
         SdkError::ProtocolVersionNotActive {
             method: "get_contract_fee_pots",
             required: 15,
+            feature: None,
             network: 14,
             pinned: false,
             cause,
@@ -6662,7 +6663,6 @@ mod tests {
     #[test]
     fn from_sdk_error_asset_lock_outpoint_insufficient_balance_via_consensus() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6690,7 +6690,6 @@ mod tests {
     #[test]
     fn from_sdk_error_asset_lock_outpoint_already_consumed_via_consensus() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6707,7 +6706,6 @@ mod tests {
     #[test]
     fn asset_lock_outpoint_already_consumed_display_is_actionable_and_non_retryable() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6728,7 +6726,6 @@ mod tests {
     #[test]
     fn from_sdk_error_asset_lock_outpoint_insufficient_balance_via_broadcast() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6761,7 +6758,6 @@ mod tests {
     #[test]
     fn asset_lock_outpoint_insufficient_balance_display_includes_amounts() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -7855,7 +7851,6 @@ mod tests {
 
     #[test]
     fn asset_lock_finality_timeout_display_is_user_friendly() {
-        use dashcore::hashes::Hash;
         let outpoint = dashcore::OutPoint::new(dashcore::Txid::from_byte_array([0u8; 32]), 0);
         let inner = platform_wallet::error::PlatformWalletError::FinalityTimeout(outpoint);
         let err = TaskError::AssetLockFinalityTimeout {

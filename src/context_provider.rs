@@ -99,16 +99,17 @@ impl SpvProvider {
         }
     }
 
-    /// Attach the `AppContext` and register this provider with the SDK.
+    /// Attach the `AppContext`.
     ///
-    /// After this call the SDK uses this provider for proof verification and
-    /// quorum key resolution.
+    /// Every SDK the context runs is built with a clone of this provider
+    /// ([`initialize_sdk`](crate::sdk_wrapper::initialize_sdk)), and clones
+    /// share the attached context, so the SDK sees it without registering the
+    /// provider again.
     ///
     /// # Thread safety
     /// Called during init and mode-switch only — not on hot paths.
     pub fn bind_app_context(&self, app_context: Arc<AppContext>) {
-        self.app_context.store(Some(app_context.clone()));
-        app_context.sdk.load().set_context_provider(self.clone());
+        self.app_context.store(Some(app_context));
     }
 
     /// Load the bound `AppContext`, or a `Config` "not ready" error if this

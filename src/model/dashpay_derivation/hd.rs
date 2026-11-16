@@ -106,16 +106,16 @@ pub fn calculate_account_reference(
     account: u32,
     version: u32,
 ) -> u32 {
-    use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
+    use dash_sdk::dpp::dashcore::hashes::hmac::HmacEngine;
     use dash_sdk::dpp::dashcore::hashes::sha256;
 
     // Serialize the extended public key
     let xpub_bytes = extended_public_key.encode();
 
     // Create HMAC-SHA256(senderSecretKey, extendedPublicKey)
-    let mut engine = HmacEngine::<sha256::Hash>::new(sender_secret_key);
+    let mut engine = HmacEngine::<sha256::HashEngine>::new(sender_secret_key);
     engine.input(&xpub_bytes);
-    let ask = Hmac::<sha256::Hash>::from_engine(engine);
+    let ask = engine.finalize();
 
     // Take the 28 most significant bits
     let ask_bytes = ask.to_byte_array();

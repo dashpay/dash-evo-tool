@@ -1525,7 +1525,6 @@ fn core_quote_recipient(
     destination: CoreDestinationScript,
 ) -> dash_sdk::dpp::dashcore::Address {
     use dash_sdk::dpp::dashcore::address::Payload;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     let payload = match destination {
         CoreDestinationScript::PubkeyHash => {
             Payload::PubkeyHash(dash_sdk::dpp::dashcore::PubkeyHash::all_zeros())
@@ -1624,7 +1623,6 @@ mod tests {
     use dash_sdk::dpp::dashcore::ScriptBuf;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PublicKey, TxOut, Txid};
     use dash_sdk::dpp::key_wallet::Utxo;
     use dash_sdk::dpp::key_wallet::wallet::Wallet;
@@ -3395,7 +3393,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn core_send_max_is_quoted_for_the_destination_script() {
         use crate::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =

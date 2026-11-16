@@ -323,7 +323,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::platform::Identity;
 use zeroize::Zeroizing;
@@ -2381,7 +2380,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
 
     use super::test_support::{open_wallet as test_wallet, test_seed};
 

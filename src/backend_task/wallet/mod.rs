@@ -19,7 +19,6 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::ecdsa::{EcdsaRecSignature, EcdsaSecretKey};
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::identity::core_script::CoreScript;

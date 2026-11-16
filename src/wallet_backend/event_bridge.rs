@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use dash_sdk::dash_spv::network::NetworkEvent;
-use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
+use dash_sdk::dash_spv::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::{
     PlatformAddressSyncSummary, WalletSyncOutcome,
@@ -222,12 +222,9 @@ impl EventHandler for EventBridge {
     }
 
     fn on_network_event(&self, event: &NetworkEvent) {
-        if let NetworkEvent::PeersUpdated {
-            connected_count, ..
-        } = event
-        {
+        if let NetworkEvent::PeersUpdated { addresses, .. } = event {
             self.connection_status
-                .set_spv_connected_peers((*connected_count).min(u16::MAX as usize) as u16);
+                .set_spv_connected_peers(addresses.len().min(u16::MAX as usize) as u16);
             self.connection_status.refresh_state();
             self.nudge_refresh();
         }
@@ -608,7 +605,6 @@ mod tests {
     /// Shorthand for the platform sync-cursor snapshot handle the helpers wire.
     type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
     use crate::utils::egui_mpsc::EguiMpscAsync;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -800,7 +796,7 @@ mod tests {
     fn manager_error_sets_error_status_and_records_message() {
         let (bridge, cs, mut rx) = make_bridge();
         bridge.on_sync_event(&SyncEvent::ManagerError {
-            manager: dash_sdk::dash_spv::sync::ManagerIdentifier::BlockHeader,
+            manager: dash_sdk::dash_spv::ManagerIdentifier::BlockHeader,
             error: "boom".to_string(),
         });
         assert_eq!(cs.spv_status(), SpvStatus::Error);
@@ -812,9 +808,8 @@ mod tests {
     fn peers_updated_nudges_refresh() {
         let (bridge, _cs, mut rx) = make_bridge();
         bridge.on_network_event(&NetworkEvent::PeersUpdated {
-            connected_count: 3,
             addresses: Vec::new(),
-            best_height: None,
+            best_height: 0,
         });
         // ConnectionStatus has no public peer-count getter; its own tests
         // cover the internal mutation. Here we assert the frame-loop nudge.
@@ -850,7 +845,7 @@ mod tests {
 
     #[test]
     fn progress_publishes_per_phase_heights() {
-        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, ProgressPercentage};
+        use dash_sdk::dash_spv::{BlockHeadersProgress, ProgressPercentage};
 
         let (bridge, cs, mut rx) = make_bridge();
         let mut headers = BlockHeadersProgress::default();
@@ -873,7 +868,7 @@ mod tests {
     /// A `SyncProgress` whose masternode phase is in `state`, headers still
     /// mid-sync (so the overall pipeline is not yet "synced").
     fn progress_with_masternode_state(state: SyncState) -> SyncProgress {
-        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+        use dash_sdk::dash_spv::{BlockHeadersProgress, MasternodesProgress};
 
         let mut headers = BlockHeadersProgress::default();
         headers.set_state(SyncState::Syncing);

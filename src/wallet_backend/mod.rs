@@ -1488,7 +1488,6 @@ impl WalletBackend {
         wallet_id: &WalletId,
     ) -> Result<PersistedTransactionHydration, TaskError> {
         use crate::backend_task::error::WalletTransactionHistoryError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use platform_wallet::changeset::PlatformWalletPersistence;
         use platform_wallet_storage::WalletStorageError;
 
@@ -3592,6 +3591,25 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
+        // Variants introduced by the platform 0c08eb6c repin. None is raised by
+        // an operation this map serves as a Platform rejection or a pending
+        // outcome DET can watch, so they take the generic envelope like their
+        // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
+        // `ShieldedBroadcastUnconfirmed`).
+        | P::AccountNotFound(_)
+        | P::WalletRemovedBeforeSend(_)
+        | P::AssetLockFundsAwaitingFinality { .. }
+        | P::AssetLockRecipientMismatch { .. }
+        | P::ShieldedBroadcastMaybeDelivered(_)
+        | P::DocumentEraseBusy
+        | P::DecisionProposalNotFound { .. }
+        | P::PreparedPaymentAddressTaken(_)
+        | P::PrivateContactPaymentsNotRestored
+        | P::PrivateContactRecoveryUnsupported
+        | P::PrivateContactRequestNeedsPrivateReply(_)
+        | P::PrivateContactRequestPending(_)
+        | P::PrivateContactStoreNotRead(_)
+        | P::PublicContactRequestUnconfirmed(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -3928,6 +3946,25 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
+        // Variants introduced by the platform 0c08eb6c repin. None is raised by
+        // an operation this map serves as a Platform rejection or a pending
+        // outcome DET can watch, so they take the generic envelope like their
+        // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
+        // `ShieldedBroadcastUnconfirmed`).
+        | P::AccountNotFound(_)
+        | P::WalletRemovedBeforeSend(_)
+        | P::AssetLockFundsAwaitingFinality { .. }
+        | P::AssetLockRecipientMismatch { .. }
+        | P::ShieldedBroadcastMaybeDelivered(_)
+        | P::DocumentEraseBusy
+        | P::DecisionProposalNotFound { .. }
+        | P::PreparedPaymentAddressTaken(_)
+        | P::PrivateContactPaymentsNotRestored
+        | P::PrivateContactRecoveryUnsupported
+        | P::PrivateContactRequestNeedsPrivateReply(_)
+        | P::PrivateContactRequestPending(_)
+        | P::PrivateContactStoreNotRead(_)
+        | P::PublicContactRequestUnconfirmed(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
@@ -3940,7 +3977,6 @@ mod tests {
 
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let consensus = dash_sdk::dpp::consensus::ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
@@ -4284,7 +4320,6 @@ mod tests {
     /// sub-variant fired upstream.
     #[test]
     fn map_identity_register_error_classifies_finality_timeout() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
             dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
             0,
@@ -4539,7 +4574,6 @@ mod tests {
     /// funding reuses the shared `AssetLockFinalityTimeout` envelope.
     #[test]
     fn map_platform_address_fund_error_classifies_finality_timeout() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
             dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
             0,
@@ -5096,7 +5130,6 @@ fn membership_from_summaries(
 mod masternode_membership_tests {
     use super::*;
     use dash_sdk::dpp::dashcore::ProTxHash;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use std::str::FromStr;
 
     const DISPLAY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";

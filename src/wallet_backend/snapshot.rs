@@ -1118,7 +1118,6 @@ impl SnapshotStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{

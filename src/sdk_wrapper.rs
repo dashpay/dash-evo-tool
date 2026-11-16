@@ -12,6 +12,8 @@ fn request_settings() -> RequestSettings {
         timeout: Some(Duration::from_secs(10)),
         retries: Some(6),
         ban_failed_address: Some(true),
+        // Upstream default (ban); requests to tightly limited methods opt out.
+        ban_busy_address: None,
         max_decoding_message_size: None,
     }
 }
@@ -81,6 +83,7 @@ mod tests {
         addresses.add(address.clone());
         assert!(!addresses.is_banned(&address));
         let result: ExecutionResult<(), dash_sdk::Error> = Err(ExecutionError {
+            possibly_accepted: false,
             inner: not_ready(),
             retries: 0,
             address: Some(address.clone()),

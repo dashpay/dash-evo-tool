@@ -844,6 +844,7 @@ impl WalletBackend {
                         &address_signer,
                         &asset_lock_signer,
                         settings,
+                        None,
                     )
                     .await
                     .map(|_changeset| ())

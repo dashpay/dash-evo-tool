@@ -1483,7 +1483,7 @@ mod tests {
     use crate::ui::components::ProgressOverlay;
     use crate::ui::components::message_banner::{MAX_BANNERS, global_banner_texts};
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid};
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;

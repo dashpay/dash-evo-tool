@@ -19,7 +19,7 @@ use crate::ui::components::styled::{
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
+use dash_sdk::dash_spv::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Ui};

@@ -72,6 +72,7 @@ impl BootApp {
     /// failure (including app assembly) propagates as an error, aborting boot
     /// exactly as before.
     pub fn new(ctx: egui::Context) -> Result<Self, BootError> {
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         let (data_dir, db) = AppState::boot_inputs()?;
         match classify_open(&data_dir)? {
             BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(

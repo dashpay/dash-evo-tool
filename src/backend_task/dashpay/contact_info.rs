@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn contact_info_fee_estimate_covers_the_largest_details() {
         use crate::model::fee_estimation::PlatformFeeEstimator;
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         for len in [0, 252, 253, 255] {
             let text = (len > 0).then(|| "x".repeat(len));
             let encoded = encode_private_data_bounded(&ContactInfoPrivateData {
@@ -1063,8 +1063,11 @@ mod tests {
             encrypt_to_user_id(&undecryptable.to_buffer(), &key()),
         );
         first.set("privateData", Value::Bytes(vec![0xA5; 48]));
-        let mut second =
-            lookup_contact_info_document(2, 2, encrypt_to_user_id(&undecodable.to_buffer(), &key()));
+        let mut second = lookup_contact_info_document(
+            2,
+            2,
+            encrypt_to_user_id(&undecodable.to_buffer(), &key()),
+        );
         second.set(
             "privateData",
             Value::Bytes(platform_encryption::encrypt_private_data(

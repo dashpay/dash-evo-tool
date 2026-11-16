@@ -420,6 +420,7 @@ impl BackendTask {
                 | DashPayTask::LoadContacts { .. }
                 | DashPayTask::LoadContactsOffline { .. }
                 | DashPayTask::LoadContactRequests { .. }
+                | DashPayTask::LoadContactDetails { .. }
                 | DashPayTask::FetchContactProfile { .. }
                 | DashPayTask::FetchAvatar { .. }
                 | DashPayTask::SearchProfiles { .. }
@@ -2852,9 +2853,9 @@ mod tests {
     /// its stored balance is read back after the task; reads name nobody.
     #[test]
     fn paid_tasks_name_the_identity_that_pays_for_them() {
-        use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
         use crate::backend_task::tokens::TokenContractParams;
-        use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+        use crate::model::dashpay::ContactInfoUpdate;
+        use crate::model::dashpay_contact_qr::ContactQrCode;
         use crate::model::qualified_contract::QualifiedContract;
         use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
         use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -2868,6 +2869,9 @@ mod tests {
         use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
         use dash_sdk::dpp::version::PlatformVersion;
         use dash_sdk::platform::IdentityPublicKey;
+        use platform_wallet::wallet::identity::crypto::auto_accept::{
+            encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+        };
 
         // Every other identity-typed field holds a different identity, so a
         // payer read from the wrong field fails the comparison.
@@ -3115,14 +3119,14 @@ mod tests {
             dashpay(DashPayTask::SendContactRequestWithProof {
                 identity: payer.clone(),
                 signing_key: key.clone(),
-                to_identity_id: other,
-                account_label: None,
-                qr_auto_accept: AutoAcceptProofData {
-                    identity_id: other,
-                    proof_key: [0; 32],
-                    account_reference: 0,
-                    expires_at: 0,
-                },
+                qr_code: ContactQrCode::parse(&encode_dashpay_contact_uri(
+                    "bob",
+                    &encode_auto_accept_key_blob(
+                        &crate::test_support::keys::secret_key(),
+                        1_900_000_000,
+                    ),
+                ))
+                .expect("contact QR code"),
             }),
             dashpay(DashPayTask::AcceptContactRequest {
                 identity: payer.clone(),
@@ -3131,12 +3135,10 @@ mod tests {
             dashpay(DashPayTask::RejectContactRequest {
                 identity: payer.clone(),
                 request_id: other,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             }),
             dashpay(DashPayTask::CancelContactRequest {
                 identity: payer.clone(),
                 request_id: other,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             }),
             dashpay(DashPayTask::UpdateContactInfo {
                 identity: payer.clone(),
@@ -3160,6 +3162,10 @@ mod tests {
             )),
             dashpay(DashPayTask::LoadProfile {
                 identity: payer.clone(),
+            }),
+            dashpay(DashPayTask::LoadContactDetails {
+                identity: payer.clone(),
+                contact_id: other,
             }),
             dashpay(DashPayTask::SendPaymentToContact {
                 identity: payer.clone(),

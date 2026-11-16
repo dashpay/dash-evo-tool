@@ -894,7 +894,7 @@ fn render_banner(
 
 /// Reads the global banner list from egui context data.
 fn get_banners(ctx: &egui::Context) -> Vec<BannerState> {
-    ctx.data(|d| d.get_temp::<Vec<BannerState>>(egui::Id::new(BANNER_STATE_ID)))
+    ctx.data(|d| d.get_temp::<Vec<BannerState>>(egui::Id::unique(BANNER_STATE_ID)))
         .unwrap_or_default()
 }
 
@@ -909,24 +909,24 @@ pub(crate) fn global_banner_texts(ctx: &egui::Context) -> Vec<String> {
 /// Removes the entry entirely when the list is empty.
 fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
     if banners.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<BannerState>>(egui::Id::new(BANNER_STATE_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<BannerState>>(egui::Id::unique(BANNER_STATE_ID)));
     } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_STATE_ID), banners));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(BANNER_STATE_ID), banners));
     }
 }
 
 /// Reads the pending banner-action queue (FIFO) from egui context data.
 fn get_actions(ctx: &egui::Context) -> Vec<String> {
-    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)))
+    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::unique(BANNER_ACTIONS_ID)))
         .unwrap_or_default()
 }
 
 /// Writes the pending banner-action queue. Removes the slot when empty.
 fn set_actions(ctx: &egui::Context, actions: Vec<String>) {
     if actions.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::unique(BANNER_ACTIONS_ID)));
     } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_ACTIONS_ID), actions));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(BANNER_ACTIONS_ID), actions));
     }
 }
 

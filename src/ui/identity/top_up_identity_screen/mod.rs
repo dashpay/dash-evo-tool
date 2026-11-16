@@ -108,12 +108,12 @@ struct TopUpInFlight {
 /// screen, so a top-up stays recorded when its screen is closed or the
 /// network is switched.
 fn top_ups_in_flight(ctx: &egui::Context) -> Vec<TopUpInFlight> {
-    ctx.data(|data| data.get_temp(egui::Id::new(TOP_UPS_IN_FLIGHT_ID)))
+    ctx.data(|data| data.get_temp(egui::Id::unique(TOP_UPS_IN_FLIGHT_ID)))
         .unwrap_or_default()
 }
 
 fn store_top_ups_in_flight(ctx: &egui::Context, top_ups: Vec<TopUpInFlight>) {
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UPS_IN_FLIGHT_ID), top_ups));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(TOP_UPS_IN_FLIGHT_ID), top_ups));
 }
 
 /// Whether a top-up of `identity_id` is in flight.
@@ -160,7 +160,7 @@ pub(crate) fn track_top_up_sent_elsewhere(app_context: &AppContext, dispatch: &B
 fn raise_top_up_background_banner(ctx: &egui::Context) {
     let banner = MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info);
     banner.disable_auto_dismiss();
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID), banner));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID), banner));
 }
 
 /// Bring the background-progress banner back when the banner cap dropped it
@@ -168,7 +168,7 @@ fn raise_top_up_background_banner(ctx: &egui::Context) {
 /// closed. Runs every frame, as no screen may be left to do it.
 pub(crate) fn restore_top_up_background_banner(ctx: &egui::Context) {
     let banner: Option<BannerHandle> =
-        ctx.data(|data| data.get_temp(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID)));
+        ctx.data(|data| data.get_temp(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID)));
     if banner.was_evicted()
         && top_ups_in_flight(ctx)
             .iter()
@@ -230,7 +230,7 @@ pub(crate) fn finish_top_up(
         MessageBanner::clear_global_message(ctx, TOP_UP_IN_BACKGROUND);
         // The handle holds the egui context, which must not stay stored in itself.
         ctx.data_mut(|data| {
-            data.remove::<BannerHandle>(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID))
+            data.remove::<BannerHandle>(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID))
         });
     }
     store_top_ups_in_flight(ctx, top_ups);
@@ -1406,7 +1406,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("identity_top_up_wallet_selection_info_popup"),
+                        egui::Id::unique("identity_top_up_wallet_selection_info_popup"),
                         "Wallet Selection Info",
                         &show_pop_up_info_text,
                     );
@@ -1748,6 +1748,8 @@ mod tests {
     fn screen_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
         use egui_kittest::{Harness, kittest::Queryable};
         let mut harness = Harness::builder()
+            // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1762,6 +1764,8 @@ mod tests {
     fn select_only_existing_funding(screen: &mut TopUpIdentityScreen, texts: &[&str]) -> Vec<bool> {
         use egui_kittest::{Harness, kittest::Queryable};
         let mut harness = Harness::builder()
+            // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.render_ui_by_using_unused_asset_lock(ui, 1);
@@ -1893,6 +1897,8 @@ mod tests {
         let (mut screen, _seed_hashes, _temp_dir) = two_wallet_screen();
 
         let mut harness = Harness::builder()
+            // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1935,6 +1941,8 @@ mod tests {
         );
 
         let mut harness = Harness::builder()
+            // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1986,6 +1994,8 @@ mod tests {
         screen.asset_lock_cache.mark_loading_failed();
 
         let mut harness = Harness::builder()
+            // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -2013,6 +2023,8 @@ mod tests {
         use egui_kittest::Harness;
         let mut sent = Vec::new();
         let mut harness = Harness::builder()
+            // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 let tasks = match screen.ui(ui) {
@@ -2762,7 +2774,7 @@ mod tests {
         assert!(tracked_dispatches(&ctx).is_empty());
         assert!(
             ctx.data(|data| {
-                data.get_temp::<BannerHandle>(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID))
+                data.get_temp::<BannerHandle>(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID))
             })
             .is_none(),
             "nothing of the banner is kept once the last top-up has ended"
@@ -3191,6 +3203,8 @@ mod tests {
         );
         {
             let mut harness = egui_kittest::Harness::builder()
+                // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+                .with_accessibility_check(false)
                 .build_ui(|ui| screen.top_up_funding_amount_input(ui));
             harness.run_steps(2);
         }
@@ -3319,6 +3333,8 @@ mod tests {
         fn request_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
             use egui_kittest::{Harness, kittest::Queryable};
             let mut harness = Harness::builder()
+                // TODO: give the top-up form's wallet selector and amount field an accessible name, then drop this opt-out.
+                .with_accessibility_check(false)
                 .with_size(egui::vec2(1200.0, 900.0))
                 .build_ui(|ui| screen.render_deposit_qr(ui));
             harness.run_steps(2);

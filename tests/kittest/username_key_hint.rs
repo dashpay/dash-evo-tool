@@ -66,7 +66,7 @@ type HubState = (IdentityHubScreen, Vec<AppAction>);
 fn mount_hub_settings(app_context: &Arc<AppContext>) -> Harness<'static, HubState> {
     let mut hub = IdentityHubScreen::new(app_context);
     hub.select_tab(IdentityHubTab::Settings);
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::builder_with_app_fonts()
         .with_size(egui::vec2(1400.0, 1200.0))
         .build_ui_state(
             |ui, state: &mut HubState| {
@@ -120,7 +120,7 @@ fn identity_without_a_suitable_key_is_told_to_add_one() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
         seed_identity_without_keys(&app_context, 0x41);
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(1400.0, 1200.0))
             .build_ui_state(
                 move |ui, tab: &mut SettingsTab| {

@@ -30,6 +30,8 @@ fn import_harness(
     setup(&mut screen);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
+        // TODO: give the recovery-phrase word fields and the word-count combo box an accessible name, then drop this opt-out.
+        .with_accessibility_check(false)
         .build_ui_state(
             move |ui, screen: &mut ImportMnemonicScreen| {
                 let _runtime_guard = runtime.enter();

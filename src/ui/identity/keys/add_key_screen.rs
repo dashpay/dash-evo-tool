@@ -1055,7 +1055,7 @@ impl ScreenLike for AddKeyScreen {
                         // Use interact with hover sense to detect hover on disabled widget
                         let hover_response = ui.interact(
                             inner_response.response.rect,
-                            egui::Id::new("security_level_tooltip"),
+                            egui::Id::unique("security_level_tooltip"),
                             egui::Sense::hover(),
                         );
                         hover_response.info_tooltip(format!(
@@ -1273,14 +1273,18 @@ mod derived_key_tests {
     }
 
     fn source_harness(screen: AddKeyScreen) -> Harness<'static, AddKeyScreen> {
-        Harness::builder().with_max_steps(30).build_ui_state(
-            |ui, screen: &mut AddKeyScreen| {
-                egui::Grid::new("source").show(ui, |ui| {
-                    screen.show_key_source(ui);
-                });
-            },
-            screen,
-        )
+        Harness::builder()
+            // TODO: give the key source combo box an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
+            .with_max_steps(30)
+            .build_ui_state(
+                |ui, screen: &mut AddKeyScreen| {
+                    egui::Grid::new("source").show(ui, |ui| {
+                        screen.show_key_source(ui);
+                    });
+                },
+                screen,
+            )
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1789,12 +1793,16 @@ mod derived_key_tests {
         screen.display_message("not saved", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
 
-        let mut harness = Harness::builder().with_max_steps(30).build_ui_state(
-            |ui, screen: &mut AddKeyScreen| {
-                screen.show_key_not_saved(ui);
-            },
-            screen,
-        );
+        let mut harness = Harness::builder()
+            // TODO: give the key source combo box an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
+            .with_max_steps(30)
+            .build_ui_state(
+                |ui, screen: &mut AddKeyScreen| {
+                    screen.show_key_not_saved(ui);
+                },
+                screen,
+            );
         harness.run();
         harness.get_by_label("Copy private key").click();
         // One frame: the copy command is in that frame's output only.

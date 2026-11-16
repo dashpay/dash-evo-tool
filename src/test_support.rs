@@ -16,6 +16,15 @@ use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::Dup
 #[cfg(test)]
 use dash_sdk::platform::Identifier;
 
+/// A kittest harness builder that installs the app's bundled fonts before the
+/// first frame, so a screen mounted without `AppState` draws every glyph the app can.
+#[cfg(test)]
+pub(crate) fn harness_builder_with_app_fonts<State>() -> egui_kittest::HarnessBuilder<State> {
+    egui_kittest::Harness::builder().with_context_setup(|ctx| {
+        ctx.set_fonts(crate::bundled::fonts().expect("bundled fonts load"));
+    })
+}
+
 /// Serializes every unit test that mutates the process-global data directory.
 #[cfg(test)]
 pub(crate) static DASH_EVO_DATA_DIR_LOCK: Mutex<()> = Mutex::new(());

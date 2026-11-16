@@ -1019,7 +1019,7 @@ impl AddressInput {
                             .selected_type_filter
                             .map(|t| t.display_name())
                             .unwrap_or("All");
-                        egui::ComboBox::from_id_salt(ui.id().with("address_type_filter"))
+                        egui::ComboBox::from_id_salt(ui.scope_id().with("address_type_filter"))
                             .selected_text(current_label)
                             .width(120.0)
                             .show_ui(ui, |ui| {
@@ -1102,7 +1102,7 @@ impl AddressInput {
 
                 if !entries_snapshot.is_empty() {
                     self.autocomplete_open = true;
-                    let popup_id = ui.id().with("address_autocomplete");
+                    let popup_id = ui.scope_id().with("address_autocomplete");
 
                     egui::Area::new(popup_id)
                         .order(egui::Order::Foreground)
@@ -1147,7 +1147,7 @@ impl AddressInput {
                                             );
                                             response.widget_info(|| {
                                                 egui::WidgetInfo::labeled(
-                                                    egui::WidgetType::Button,
+                                                    egui::Role::Button,
                                                     true,
                                                     label.clone(),
                                                 )

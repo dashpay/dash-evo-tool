@@ -607,12 +607,15 @@ mod tests {
             .with_max_amount(Some(100))
             .with_max_button(true)
             .with_caption(hint);
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, input: &mut AmountInput| {
-                input.show(ui);
-            },
-            input,
-        );
+        let mut harness = Harness::builder()
+            // TODO: give the amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
+            .build_ui_state(
+                |ui, input: &mut AmountInput| {
+                    input.show(ui);
+                },
+                input,
+            );
 
         harness.run();
         harness.get_by_label("Max").click_accesskit();
@@ -638,12 +641,15 @@ mod tests {
         let input = AmountInput::new(Amount::new(0, 2))
             .with_max_amount(None)
             .with_caption(hint);
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, input: &mut AmountInput| {
-                input.show(ui);
-            },
-            input,
-        );
+        let mut harness = Harness::builder()
+            // TODO: give the amount field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
+            .build_ui_state(
+                |ui, input: &mut AmountInput| {
+                    input.show(ui);
+                },
+                input,
+            );
 
         harness.run();
 

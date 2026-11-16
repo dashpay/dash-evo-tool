@@ -6,7 +6,7 @@ mod data_dir;
 use dash_evo_tool::app::BootPhase;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::ui::RootScreenType;
-use egui_kittest::Harness;
+use egui_kittest::{Harness, HarnessBuilder};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,14 @@ pub use data_dir::with_isolated_data_dir;
 /// something is genuinely wedged. Do not "optimise" it down to make a slow
 /// machine look fast; the number is deliberately far above any real duration.
 const STORAGE_PREP_STALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A harness builder that installs the app's bundled fonts before the first
+/// frame, so a screen mounted without `AppState` draws every glyph the app can.
+pub fn builder_with_app_fonts<State>() -> HarnessBuilder<State> {
+    Harness::builder().with_context_setup(|ctx| {
+        ctx.set_fonts(dash_evo_tool::bundled::fonts().expect("bundled fonts load"));
+    })
+}
 
 /// Step `harness` until root screens exist, then let them settle.
 ///
@@ -108,11 +116,21 @@ fn boot_progress(harness: &Harness<'static, dash_evo_tool::app::AppState>) -> (B
 /// seed the DB through `AppContext` methods that spawn tasks) must enter their
 /// own around the call, same as any other kittest.
 pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, dash_evo_tool::app::AppState> {
+    mount_app_with_accessibility_check(root_screen, true)
+}
+
+/// [`mount_app`], with kittest's check that every input widget has an
+/// accessible name switched on or off.
+pub fn mount_app_with_accessibility_check(
+    root_screen: RootScreenType,
+    check_accessibility: bool,
+) -> Harness<'static, dash_evo_tool::app::AppState> {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
     let mut harness = Harness::builder()
         .with_max_steps(100)
+        .with_accessibility_check(check_accessibility)
         .build_eframe(move |ctx| {
             let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")

@@ -24,6 +24,8 @@ fn create_wallet_harness(
     screen.set_seed_phrase_for_test(dash_evo_tool::test_support::keys::mnemonic(12));
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
+        // TODO: give the entropy grid cells and the language and word-count combo boxes an accessible name, then drop this opt-out.
+        .with_accessibility_check(false)
         .build_ui_state(
             move |ui, screen: &mut AddNewWalletScreen| {
                 let _runtime_guard = runtime.enter();

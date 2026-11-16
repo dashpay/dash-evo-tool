@@ -55,7 +55,7 @@ pub fn add_subscreen_chooser_panel(
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
-    Panel::left(egui::Id::new(panel_id))
+    Panel::left(panel_id)
         .resizable(resizable)
         .default_size(270.0)
         .frame(

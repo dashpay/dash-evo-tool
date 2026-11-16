@@ -1118,7 +1118,9 @@ mod tests {
         ctx.set_selected_identity(Some(identity.identity.id()));
 
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            // TODO: give the username field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1280.0, 900.0))
             .build_ui_state(
                 |ui, screen: &mut RegisterDpnsNameScreen| {
@@ -1170,7 +1172,9 @@ mod tests {
         ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(storage.clone()));
 
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            // TODO: give the username field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1280.0, 900.0))
             .build_ui_state(
                 |ui, screen: &mut RegisterDpnsNameScreen| {

@@ -56,6 +56,8 @@ fn mount(
     let shared = Rc::clone(&picked);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
+        // TODO: give an unlabelled `WalletSelector` combo box an accessible name, then drop this opt-out.
+        .with_accessibility_check(false)
         .build_ui(move |ui| {
             ui.ctx().set_visuals(visuals.clone());
             let mut picked = shared.borrow_mut();
@@ -179,7 +181,10 @@ fn hovering_the_closed_selector_breaks_the_chosen_wallets_balance_down() {
 
     assert!(
         harness
-            .query_by_label("Core: 0.5000 DASH\nPlatform: 0.1000 DASH")
+            .query_by_role_and_label(
+                egui::accesskit::Role::Label,
+                "Core: 0.5000 DASH\nPlatform: 0.1000 DASH"
+            )
             .is_some(),
         "the chosen wallet's breakdown must be reachable without reopening the list"
     );

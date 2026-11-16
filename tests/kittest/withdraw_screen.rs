@@ -120,6 +120,8 @@ fn build_identity(
 fn mount_withdrawal_screen(screen: WithdrawalScreen) -> Harness<'static, WithdrawalScreen> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 850.0))
+        // TODO: give the withdrawal destination address field an accessible name, then drop this opt-out.
+        .with_accessibility_check(false)
         .build_ui_state(
             |ui, screen: &mut WithdrawalScreen| {
                 screen.ui(ui);

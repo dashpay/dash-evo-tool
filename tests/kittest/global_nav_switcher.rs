@@ -16,7 +16,6 @@ use dash_evo_tool::ui::state::global_nav::{
 use dash_evo_tool::ui::state::hub_selection::HubSelection;
 use dash_evo_tool::ui::state::masternodes_view::masternodes_page_nav_spec;
 use dash_sdk::platform::Identifier;
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
 /// TC-NAV-01 foundation — segment-1 is page-driven: a spec labelled
@@ -25,7 +24,7 @@ use egui_kittest::kittest::Queryable;
 fn segment1_label_is_page_driven() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(900.0, 200.0))
             .build_ui(move |ui| {
                 let mut selection = HubSelection::default();
@@ -53,7 +52,7 @@ fn segment1_label_is_page_driven() {
 fn page_scoped_pill_renders_placeholder_when_empty() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(900.0, 200.0))
             .build_ui(move |ui| {
                 let mut selection = HubSelection::default();
@@ -88,7 +87,7 @@ fn page_scoped_pill_renders_placeholder_when_empty() {
 fn page_scoped_pill_names_the_selected_object() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(900.0, 200.0))
             .build_ui(move |ui| {
                 let mut selection = HubSelection::default();
@@ -140,7 +139,7 @@ fn page_scoped_pill_names_the_selected_object() {
 fn unwired_wallet_pill_renders_placeholder() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(900.0, 200.0))
             .build_ui(move |ui| {
                 let mut selection = HubSelection::default();
@@ -169,7 +168,7 @@ fn unwired_wallet_pill_renders_placeholder() {
 fn masternode_wallet_segment_shows_not_in_a_wallet_indicator() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(900.0, 200.0))
             .build_ui(move |ui| {
                 let mut selection = HubSelection::default();

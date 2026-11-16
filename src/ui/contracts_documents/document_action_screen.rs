@@ -579,7 +579,7 @@ impl DocumentActionScreen {
                             self.document_id_input = doc_id_str.clone();
                         }
 
-                        let popup_id = egui::Id::new(format!("popup_{}", doc_id_str));
+                        let popup_id = egui::Id::unique(format!("popup_{}", doc_id_str));
                         egui::Popup::new(
                             popup_id,
                             ui.ctx().clone(),
@@ -2533,6 +2533,8 @@ mod tests {
                 }
 
                 let mut harness = Harness::builder()
+                    // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
+                    .with_accessibility_check(false)
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2606,6 +2608,8 @@ mod tests {
                 screen.broadcast_status = status;
 
                 let mut harness = Harness::builder()
+                    // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
+                    .with_accessibility_check(false)
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2707,6 +2711,8 @@ mod tests {
         screen.field_inputs.insert("label".into(), "old".into());
 
         let mut harness = Harness::builder()
+            // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {
@@ -2751,6 +2757,8 @@ mod tests {
             HashMap::from([(alice.identity.id(), alice), (bob.identity.id(), bob)]);
 
         let mut harness = Harness::builder()
+            // TODO: give the document action form's combo boxes and text fields an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {

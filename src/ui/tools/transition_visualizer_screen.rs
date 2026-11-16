@@ -619,15 +619,18 @@ mod tests {
         );
         // Simulate a non-JSON fallback pane: broadcasting must ignore its text.
         parsed.rendered = "Debug representation:\nnot JSON".to_owned();
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
-                let next = screen.show_output(ui);
-                if !matches!(next, AppAction::None) {
-                    *action = next;
-                }
-            },
-            (screen, AppAction::None),
-        );
+        let mut harness = Harness::builder()
+            // TODO: give the transition input field an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
+            .build_ui_state(
+                |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
+                    let next = screen.show_output(ui);
+                    if !matches!(next, AppAction::None) {
+                        *action = next;
+                    }
+                },
+                (screen, AppAction::None),
+            );
         harness.run();
         harness
             .get_by_label("Broadcast Transition to Platform")

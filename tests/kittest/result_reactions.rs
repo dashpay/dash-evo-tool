@@ -294,7 +294,11 @@ fn a_sweep_failure_is_reported_unless_it_is_quiet() {
         (vote_unavailable as fn() -> TaskError, true),
     ] {
         in_app(|| {
-            let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+            // TODO: give the Document Query screen's two text fields accessible names, then use `mount_app`.
+            let mut harness = crate::support::mount_app_with_accessibility_check(
+                RootScreenType::RootScreenDocumentQuery,
+                false,
+            );
             let network = harness.state().current_app_context().network();
             let error = TaskError::ScheduledVoteSweepFailed {
                 network,

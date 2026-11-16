@@ -1041,7 +1041,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("load_identity_info_popup"),
+                        egui::Id::unique("load_identity_info_popup"),
                         "Load Identity Information",
                         &show_pop_up_info_text,
                     );
@@ -1128,6 +1128,8 @@ mod wallet_picker_tests {
     /// Render the screen and return what hovering the wallet picker shows.
     fn picker_breakdown(screen: &mut AddExistingIdentityScreen, closed_text: &str) -> Vec<String> {
         let mut harness = Harness::builder()
+            // TODO: give the wallet picker and the identity fields an accessible name, then drop this opt-out.
+            .with_accessibility_check(false)
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

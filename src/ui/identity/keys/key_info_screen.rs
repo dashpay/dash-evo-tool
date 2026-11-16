@@ -1899,6 +1899,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protection_status_includes_retained_import_keys() {
+        let secret_9 = crate::test_support::keys::secret_bytes();
         let (ctx, _dir) = offline_ctx().await;
         let key = public_key(9, Purpose::AUTHENTICATION);
         let qi = identity_with(0x5C, &[]);
@@ -1914,7 +1915,7 @@ mod tests {
                 .store_protected(
                     &MAIN,
                     9,
-                    &[9; 32],
+                    &secret_9,
                     &platform_wallet_storage::secrets::SecretString::new(
                         "synthetic-protection-password",
                     ),
@@ -1992,6 +1993,8 @@ mod tests {
     /// private half, leaving the key the user asked about still on the device.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_one_key_leaves_a_different_key_sharing_its_id_alone() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         // Same id, different keys: purpose is what tells them apart.
@@ -2004,12 +2007,12 @@ mod tests {
             BinaryData::new(vec![0xEE; 20]),
         );
 
-        let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
+        let mut stored = identity_with(0x5A, &[(on_screen.clone(), secret_11)]);
         stored.private_keys.insert_at(
             (VOTER, other.id()),
             (
                 QualifiedIdentityPublicKey::from(other.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
+                PrivateKeyData::Clear(secret_22),
             ),
         );
         app_context
@@ -2050,10 +2053,11 @@ mod tests {
     /// reads its delete set from that same map.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_a_key_also_removes_its_vault_secret() {
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen = public_key(3, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x7C, &[(on_screen.clone(), [0x33; 32])]);
+        let stored = identity_with(0x7C, &[(on_screen.clone(), secret_33)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2067,7 +2071,7 @@ mod tests {
                 .expect("vault read")
                 .as_deref()
                 .copied(),
-            Some([0x33; 32]),
+            Some(secret_33),
             "saving the key put its bytes in the vault",
         );
 
@@ -2118,10 +2122,11 @@ mod tests {
     /// right after a banner said they were back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_finished_restore_refreshes_the_identity_this_screen_writes_back() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2160,10 +2165,11 @@ mod tests {
     /// with no error to show for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restore_that_landed_off_screen_survives_the_next_key_edit() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2315,10 +2321,11 @@ mod tests {
     /// the screen was open — for a private key, silently and irreversibly.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_write_behind_the_screen_survives_a_removal() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x52, &[(on_screen.clone(), [0x11; 32])]);
+        let stored = identity_with(0x52, &[(on_screen.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2355,7 +2362,7 @@ mod tests {
     /// A key and the private key that opens it, so the paste path's validation
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
-        let secret_bytes = [0x2A; 32];
+        let secret_bytes = crate::test_support::keys::secret_bytes();
         let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
         let data = PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
@@ -2424,12 +2431,13 @@ mod tests {
         sealed: &IdentityPublicKey,
         also_published: &[IdentityPublicKey],
     ) -> QualifiedIdentity {
+        let secret_31 = crate::test_support::keys::secret_bytes();
         let identifier = Identifier::from([id_byte; 32]);
         crate::wallet_backend::SecretSeam::new(&app_context.secret_store())
             .put_secret_protected(
                 &platform_wallet_storage::secrets::WalletId::from(identifier.to_buffer()),
                 &crate::wallet_backend::SecretScope::identity_key_label(&MAIN, sealed.id()),
-                &platform_wallet_storage::secrets::SecretBytes::from_slice(&[0x31; 32]),
+                &platform_wallet_storage::secrets::SecretBytes::from_slice(&secret_31),
                 &platform_wallet_storage::secrets::SecretString::new("identity-object-password"),
             )
             .expect("seal the existing key Tier-2");
@@ -2512,17 +2520,18 @@ mod tests {
     /// it still holds rather than declaring anything removed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_removal_that_cannot_persist_keeps_the_key_held() {
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         // Deliberately never inserted: the record is gone by the time the
         // removal runs, the way another screen's identity removal leaves it.
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let identity = identity_with(0x7D, &[(on_screen.clone(), [0x22; 32])]);
+        let identity = identity_with(0x7D, &[(on_screen.clone(), secret_22)]);
 
         let mut screen = KeyInfoScreen::new(
             identity,
             on_screen.clone(),
-            Some((PrivateKeyData::Clear([0x22; 32]), None)),
+            Some((PrivateKeyData::Clear(secret_22), None)),
             &app_context,
         );
         let error = screen
@@ -2632,10 +2641,11 @@ mod tests {
     /// "restored to this identity" about an identity that is not on screen.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_completion_for_another_identity_is_ignored() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), secret_11)]);
         let on_screen_id = on_screen.identity.id();
         app_context
             .insert_local_qualified_identity(&on_screen, &None)
@@ -2686,10 +2696,11 @@ mod tests {
     /// failure may return the offer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_this_restores_own_failure_returns_it_to_its_offer() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), secret_11)]);
         let on_screen_id = on_screen.identity.id();
         app_context
             .insert_local_qualified_identity(&on_screen, &None)

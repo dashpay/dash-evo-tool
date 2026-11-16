@@ -28,23 +28,15 @@ pub(crate) fn assert_no_leak_bytes(rendered: &str, secret: &[u8], context: &str)
     );
 }
 
-/// A recognizable 32-byte secret. A full 32-byte collision with unrelated
+/// A random 32-byte secret key. A full 32-byte collision with unrelated
 /// bytes is astronomically improbable, so finding it anywhere in a rendering
 /// means the raw key bytes leaked.
 pub(crate) fn distinctive_secret_32() -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = 0xA0 ^ (i as u8).wrapping_mul(7);
-    }
-    bytes
+    crate::test_support::keys::secret_bytes()
 }
 
-/// A recognizable 64-byte secret, the seed-length analogue of
+/// A random 64-byte seed, the seed-length analogue of
 /// [`distinctive_secret_32`].
 pub(crate) fn distinctive_secret_64() -> [u8; 64] {
-    let mut bytes = [0u8; 64];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = 0xC0 ^ (i as u8).wrapping_mul(5);
-    }
-    bytes
+    crate::test_support::keys::seed()
 }

@@ -32,7 +32,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
-        let mut fetched_identity: Option<Identity> = None;
+        let mut fetched_identity: Option<(Identity, u64)> = None;
         let mut queried_public_key = None;
         let mut queried_wallet_key_index = None;
 
@@ -52,20 +52,20 @@ impl AppContext {
                 after: None,
             };
 
-            match Identity::fetch(sdk, query).await {
-                Ok(Some(identity)) => {
-                    fetched_identity = Some(identity);
+            match Identity::fetch_with_metadata(sdk, query, None).await {
+                Ok((Some(identity), metadata)) => {
+                    fetched_identity = Some((identity, metadata.height));
                     queried_public_key = Some(public_key);
                     queried_wallet_key_index = Some(key_index);
                     break;
                 }
-                Ok(None) => continue,
+                Ok((None, _)) => continue,
                 Err(e) => return Err(TaskError::from(e)),
             }
         }
 
-        let identity = match fetched_identity {
-            Some(identity) => identity,
+        let (identity, fetched_height) = match fetched_identity {
+            Some(fetched) => fetched,
             None => {
                 return Err(TaskError::WalletIdentityNotFound {
                     identity_index,
@@ -206,6 +206,7 @@ impl AppContext {
             &mut qualified_identity,
             &Some((wallet_seed_hash, identity_index)),
             crate::model::identity_discovery::DiscoveryIntent::UserRequested,
+            crate::model::identity_balance::BalanceProvenance::ObservedAt(fetched_height),
         )?;
 
         {

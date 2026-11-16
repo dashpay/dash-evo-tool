@@ -1,6 +1,5 @@
 //! Dispatch backend tasks from MCP tool handlers.
 
-use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -55,10 +54,12 @@ where
 
 /// Run a single backend task and return its result.
 ///
-/// Creates a throwaway channel because `run_backend_task` requires a sender
-/// for the GUI event loop. In MCP/CLI mode there is no GUI consuming the
-/// receiver, so it is intentionally dropped. The task result is returned
-/// directly from the async call rather than through the channel.
+/// `run_backend_task` reports progress and cache changes to the context's
+/// frame loop as it runs ([`AppContext::frame_loop_sender`]): the GUI's when
+/// the server is embedded in it, so its screens re-read what the task
+/// changed; a sink in a headless process. The wallet backend a task may wire
+/// keeps that sender for the life of the context, so it is never one made
+/// for a request. The outcome is the result returned by the async call alone.
 ///
 /// Uses TaskManager-tracked blocking work plus `block_on` to avoid `Send`
 /// bound issues with platform SDK types across await points. This matches
@@ -85,8 +86,7 @@ where
     let handle = tokio::runtime::Handle::current();
     run_blocking_dispatch(app_context.subtasks.clone(), move || {
         handle.block_on(async move {
-            let (tx, _) = tokio::sync::mpsc::channel::<TaskResult>(32);
-            let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+            let sender = app_context.frame_loop_sender();
             let result = app_context.run_backend_task(task, sender).await?;
             Ok(lifecycle_tail(result).await)
         })
@@ -97,6 +97,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::TaskResult;
     use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -136,6 +137,83 @@ mod tests {
             shutdown.await.expect("shutdown outcome"),
             TaskShutdownOutcome::Complete
         );
+    }
+
+    /// A headless MCP process has no frame loop, yet a task still reports
+    /// cache changes to one as it runs. Those reports go to the context's
+    /// sink, and the task keeps its result instead of failing on a channel
+    /// nobody reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_reporting_cache_changes_keeps_its_result_under_mcp() {
+        use crate::backend_task::identity::IdentityTask;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
+        let result = dispatch_task(
+            &app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
+            ),
+            "{result:?}"
+        );
+        app_context
+            .wallet_backend()
+            .expect("the first wallet-touching task wires the backend")
+            .shutdown()
+            .await;
+    }
+
+    /// With the server embedded in the GUI, a request's reports go to the
+    /// GUI's frame loop, and the wallet backend the request wires reports
+    /// there for good: never to a sender made for the request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dispatch_reports_to_the_installed_frame_loop_and_wires_the_backend_on_it() {
+        use crate::backend_task::identity::IdentityTask;
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut frame_loop) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        app_context.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            app_context.egui_ctx().clone(),
+        ));
+
+        let result = dispatch_task(
+            &app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
+            ),
+            "{result:?}"
+        );
+        let expected = CacheUpdate {
+            network: app_context.network,
+            domain: CacheDomain::Identities,
+        };
+        assert!(
+            std::iter::from_fn(|| frame_loop.try_recv().ok()).any(
+                |report| matches!(report, TaskResult::CacheUpdated(update) if update == expected)
+            ),
+            "the task's cache notification reaches the installed frame loop"
+        );
+        let backend = app_context
+            .wallet_backend()
+            .expect("the first wallet-touching task wires the backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the installed frame loop");
+        assert!(matches!(frame_loop.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
     }
 
     #[tokio::test]

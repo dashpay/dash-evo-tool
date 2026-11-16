@@ -138,13 +138,13 @@ mod tests {
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::SecretKey;
 
-    const TEST_SEED: [u8; 64] = [7u8; 64];
-
     /// A real curve public key keyed off `n`, so its p2pkh address is a valid
     /// point (not a fabricated hash).
     fn pubkey(n: u8) -> PublicKey {
-        let mut sk_bytes = [3u8; 32];
-        sk_bytes[31] = n.max(1);
+        let sk_bytes = crate::test_support::keys::labelled_secret(
+            "qualified_identity_public_key::pubkey",
+            n.into(),
+        );
         let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
         PublicKey::new(sk.public_key())
     }
@@ -165,8 +165,10 @@ mod tests {
     /// receive address `new_from_seed` seeds. Uses a distinct seed per `salt`
     /// so multi-wallet tests get distinct `seed_hash`es.
     fn wallet_with(salt: u8, entries: &[(Address, DerivationPath)]) -> Arc<RwLock<Wallet>> {
-        let mut seed = TEST_SEED;
-        seed[0] = salt;
+        let seed = crate::test_support::keys::labelled_seed(
+            "qualified_identity_public_key::wallet_with",
+            salt.into(),
+        );
         let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
         for (address, path) in entries {
             wallet.known_addresses.insert(address.clone(), path.clone());

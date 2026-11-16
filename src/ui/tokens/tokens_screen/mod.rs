@@ -2733,25 +2733,31 @@ impl TokensScreen {
 impl ScreenLike for TokensScreen {
     fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
         use crate::backend_task::CacheDomain;
-        if update.network != self.app_context.network
-            || !matches!(
-                update.domain,
-                CacheDomain::Tokens | CacheDomain::Identities | CacheDomain::All
-            )
-        {
+        if update.network != self.app_context.network {
             return;
         }
-        self.all_known_tokens = self
-            .app_context
-            .get_all_known_tokens_with_data_contract()
-            .unwrap_or_default();
-        self.identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|identity| (identity.identity.id(), identity))
-            .collect();
+        let tokens_changed = matches!(update.domain, CacheDomain::Tokens | CacheDomain::All);
+        let identities_changed =
+            matches!(update.domain, CacheDomain::Identities | CacheDomain::All);
+        if !tokens_changed && !identities_changed {
+            return;
+        }
+        if tokens_changed {
+            self.all_known_tokens = self
+                .app_context
+                .get_all_known_tokens_with_data_contract()
+                .unwrap_or_default();
+        }
+        if identities_changed {
+            self.identities = self
+                .app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|identity| (identity.identity.id(), identity))
+                .collect();
+        }
+        // My Tokens joins both: one recomputation after whichever side changed.
         self.my_tokens = my_tokens(
             &self.app_context,
             &self.identities,
@@ -3358,16 +3364,52 @@ mod tests {
         assert!(handle.elapsed().is_none());
     }
 
-    #[test]
-    fn token_cache_updates_reload_only_the_matching_network_and_keep_form_state() {
-        use crate::backend_task::{CacheDomain, CacheUpdate};
+    /// A token DET knows about, as the registry would list it, with a contract
+    /// that holds nothing else.
+    fn known_token(token_id: Identifier, context: &AppContext) -> TokenInfoWithDataContract {
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::v1::DataContractV1;
+        let token_configuration =
+            TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive());
+        let data_contract = DataContract::V1(DataContractV1 {
+            id: Identifier::from([0x33; 32]),
+            version: 1,
+            owner_id: Identifier::from([0x34; 32]),
+            document_types: BTreeMap::new(),
+            config: DataContractConfig::default_for_version(context.platform_version())
+                .expect("contract config"),
+            schema_defs: None,
+            groups: BTreeMap::new(),
+            tokens: BTreeMap::from([(0, token_configuration.clone())]),
+            keywords: vec![],
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: None,
+        });
+        TokenInfoWithDataContract {
+            token_id,
+            token_name: "marker".to_owned(),
+            data_contract,
+            token_position: 0,
+            token_configuration,
+            description: None,
+        }
+    }
+
+    /// A screen holding an identity and a token that are not in the store, so
+    /// a re-read of either domain is visible as that entry going away.
+    fn screen_with_unstored_entries()
+    -> (TokensScreen, Identifier, Arc<AppContext>, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
         let marker = Identifier::from([0x32; 32]);
         screen.token_pricing_data.insert(marker, None);
         screen.selected_token = Some(marker);
-        // A removed local identity cache entry must disappear only for this network.
         let identity = QualifiedIdentity {
             identity: Identity::create_basic_identity(marker, context.platform_version()).unwrap(),
             associated_voter_identity: None,
@@ -3385,23 +3427,120 @@ mod tests {
             network: context.network,
         };
         screen.identities.insert(marker, identity);
-        let foreign = if context.network == dash_sdk::dpp::dashcore::Network::Mainnet {
-            dash_sdk::dpp::dashcore::Network::Testnet
+        screen
+            .all_known_tokens
+            .insert(marker, known_token(marker, &context));
+        (screen, marker, context, tmp)
+    }
+
+    fn other_network(network: Network) -> Network {
+        if network == Network::Mainnet {
+            Network::Testnet
         } else {
-            dash_sdk::dpp::dashcore::Network::Mainnet
-        };
+            Network::Mainnet
+        }
+    }
+
+    #[test]
+    fn token_cache_updates_reload_only_the_matching_network_and_keep_form_state() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        let (mut screen, marker, context, _tmp) = screen_with_unstored_entries();
         screen.cached_data_changed(CacheUpdate {
-            network: foreign,
-            domain: CacheDomain::Tokens,
+            network: other_network(context.network),
+            domain: CacheDomain::All,
         });
         assert!(screen.identities.contains_key(&marker));
+        assert!(screen.all_known_tokens.contains_key(&marker));
+
         screen.cached_data_changed(CacheUpdate {
             network: context.network,
-            domain: CacheDomain::Tokens,
+            domain: CacheDomain::All,
         });
         assert!(!screen.identities.contains_key(&marker));
+        assert!(!screen.all_known_tokens.contains_key(&marker));
         assert_eq!(screen.selected_token, Some(marker));
         assert!(screen.token_pricing_data.contains_key(&marker));
+    }
+
+    /// A change to identities re-reads identities alone; a change to tokens
+    /// re-reads tokens alone. Neither touches what the user selected.
+    #[test]
+    fn a_cache_update_re_reads_only_the_domain_it_names() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        for (domain, identities_kept, tokens_kept) in [
+            (CacheDomain::Identities, false, true),
+            (CacheDomain::Tokens, true, false),
+            (CacheDomain::Dpns, true, true),
+        ] {
+            let (mut screen, marker, context, _tmp) = screen_with_unstored_entries();
+            screen.cached_data_changed(CacheUpdate {
+                network: context.network,
+                domain,
+            });
+            assert_eq!(
+                screen.identities.contains_key(&marker),
+                identities_kept,
+                "{domain:?} re-reads identities"
+            );
+            assert_eq!(
+                screen.all_known_tokens.contains_key(&marker),
+                tokens_kept,
+                "{domain:?} re-reads tokens"
+            );
+            assert_eq!(screen.selected_token, Some(marker), "{domain:?}");
+            assert!(
+                screen.token_pricing_data.contains_key(&marker),
+                "{domain:?}"
+            );
+        }
+    }
+
+    /// My Tokens joins identities and tokens, so it is recomputed after a
+    /// change to either domain, or to all; a change to a domain it does not
+    /// join leaves it as it was.
+    #[test]
+    fn my_tokens_is_recomputed_after_a_change_to_a_domain_it_joins() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        for (domain, recomputed) in [
+            (CacheDomain::Identities, true),
+            (CacheDomain::Tokens, true),
+            (CacheDomain::All, true),
+            (CacheDomain::Dpns, false),
+        ] {
+            let (mut screen, marker, context, _tmp) = screen_with_unstored_entries();
+            // A stale entry: the store holds no balance, so a recomputation
+            // drops it.
+            let identity = screen.identities.get(&marker).unwrap().clone();
+            let token = screen.all_known_tokens.get(&marker).unwrap().clone();
+            let stale = IdentityTokenBalance {
+                token_id: marker,
+                token_alias: token.token_name.clone(),
+                token_config: token.token_configuration.clone(),
+                identity_id: marker,
+                balance: 7,
+                estimated_unclaimed_rewards: None,
+                data_contract_id: Identifier::from([0x33; 32]),
+                token_position: 0,
+            };
+            let key = IdentityTokenIdentifier {
+                identity_id: marker,
+                token_id: marker,
+            };
+            screen.my_tokens.insert(
+                key,
+                stale.into_with_actions(&identity, &token.data_contract, false, None),
+            );
+
+            screen.cached_data_changed(CacheUpdate {
+                network: context.network,
+                domain,
+            });
+            assert_eq!(
+                !screen.my_tokens.contains_key(&key),
+                recomputed,
+                "{domain:?} recomputes My Tokens"
+            );
+        }
     }
 
     impl ChangeControlRulesUI {
@@ -4575,8 +4714,9 @@ mod tests {
             "the user's non-transferable choice must not be overwritten"
         );
         assert_eq!(
-            screen.creation_blocked_reason(),
-            Some(TaskError::NonTransferableTokenNotSupported.to_string())
+            screen.creation_blocked_reason().as_deref(),
+            Some(TRANSFERS_OFF_HINT),
+            "the reason must say where the hidden option is"
         );
 
         crate::context::test_support::prove_protocol_version(&app_context, 14);
@@ -4585,17 +4725,101 @@ mod tests {
         assert_eq!(screen.creation_blocked_reason(), None);
     }
 
-    /// The confirmation states whether holders can send the token.
+    /// Why creating is blocked while transfers are off on a network that does
+    /// not accept it, naming where the option is: it is offered only under
+    /// Advanced, so the form may not show it.
+    const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
+
+    /// The confirmation always states the irreversible "holders cannot send"
+    /// choice; the transferable default is stated only with Advanced Options,
+    /// the only place it can be changed.
     #[test]
     fn confirmation_states_whether_holders_can_send_the_token() {
+        const CANNOT: &str =
+            "Holders cannot send this token to other identities. This cannot be changed later.";
+        assert_eq!(TokensScreen::transferability_summary(true, false), None);
         assert_eq!(
-            TokensScreen::transferability_summary(true),
-            "Holders can send this token to other identities."
+            TokensScreen::transferability_summary(true, true),
+            Some("Holders can send this token to other identities.")
         );
         assert_eq!(
-            TokensScreen::transferability_summary(false),
-            "Holders cannot send this token to other identities. This cannot be changed later."
+            TokensScreen::transferability_summary(false, false),
+            Some(CANNOT)
         );
+        assert_eq!(
+            TokensScreen::transferability_summary(false, true),
+            Some(CANNOT)
+        );
+    }
+
+    fn confirmation(
+        transferable: bool,
+        once_per_identity_amount: Option<TokenAmount>,
+        marketplace_locked: bool,
+    ) -> String {
+        TokensScreen::registration_confirmation_message(
+            "QAWk1027",
+            "0",
+            "None",
+            TokensScreen::transferability_summary(transferable, true),
+            once_per_identity_amount,
+            0.402,
+            marketplace_locked,
+        )
+    }
+
+    /// Without Advanced Options the confirmation leaves out the transferable
+    /// default, but always states that holders cannot send the token.
+    #[test]
+    fn simple_mode_confirmation_states_only_the_sending_restriction() {
+        let message = |transferable| {
+            TokensScreen::registration_confirmation_message(
+                "QAWk1027",
+                "0",
+                "None",
+                TokensScreen::transferability_summary(transferable, false),
+                None,
+                0.402,
+                false,
+            )
+        };
+        assert!(
+            message(true).contains("Max Supply: None\n\nEstimated cost"),
+            "the transferable default must leave no empty line behind"
+        );
+        assert!(!message(true).contains("Holders can"));
+        assert!(message(false).contains(
+            "Max Supply: None\nHolders cannot send this token to other identities. This cannot be changed later.\n\nEstimated cost"
+        ));
+    }
+
+    /// Regression: the confirmation did not mention the once-per-identity
+    /// distribution the user is about to sign.
+    #[test]
+    fn confirmation_names_the_once_per_identity_distribution() {
+        assert!(
+            confirmation(false, Some(5), true)
+                .contains("Each identity can claim 5 base tokens of this token, once.")
+        );
+        assert!(!confirmation(false, None, true).contains("Each identity can claim"));
+    }
+
+    /// Regression: a transferable token's confirmation carried a "NotTradeable"
+    /// warning that read as if holders could not send it. The warning is about
+    /// the marketplace only and says so in plain words.
+    #[test]
+    fn marketplace_warning_does_not_read_as_a_sending_restriction() {
+        let locked = confirmation(true, None, true);
+        assert!(locked.contains("Holders can send this token to other identities."));
+        assert!(locked.contains(
+            "WARNING: This token can never be offered for sale on the token marketplace. This cannot be changed later."
+        ));
+        assert!(!locked.contains("NotTradeable"));
+        assert!(!locked.contains("tradeable"));
+
+        let unlocked = confirmation(true, None, false);
+        assert!(!unlocked.contains("WARNING"));
+        assert!(!unlocked.contains("marketplace"));
     }
 
     /// Both modes name the preset first and then a setting the network does not
@@ -4607,7 +4831,7 @@ mod tests {
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
         screen.transferable_input = false;
-        let unsupported = TaskError::NonTransferableTokenNotSupported.to_string();
+        let unsupported = TRANSFERS_OFF_HINT.to_owned();
 
         assert_eq!(
             screen.simple_mode_blocked_reason().as_deref(),

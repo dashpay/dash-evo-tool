@@ -124,6 +124,7 @@ pub mod identity;
 pub mod masternodes;
 pub mod network_chooser_screen;
 pub mod state;
+pub(crate) mod task_feedback;
 pub mod theme;
 pub mod tokens;
 pub mod tools;
@@ -778,6 +779,11 @@ impl Screen {
                 screen.reset_for_network_switch();
                 return;
             }
+            Screen::DocumentActionScreen(screen) => {
+                // Selections and any fetch or broadcast in flight belong to the old network.
+                screen.reset_for_network_switch(app_context);
+                return;
+            }
             Screen::MasternodesScreen(screen) => {
                 screen.app_context = app_context;
                 // A network switch invalidates any open load form or detail view
@@ -805,7 +811,6 @@ impl Screen {
             UsernameRequestScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
-            DocumentActionScreen,
             GroupActionsScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
@@ -834,6 +839,7 @@ impl Screen {
             PauseTokensScreen,
             ResumeTokensScreen;
             skip:
+            DocumentActionScreen,
             MasternodesScreen,
             NetworkChooserScreen,
             AddNewWalletScreen,
@@ -922,10 +928,11 @@ pub trait ScreenLike {
     /// a [`BackendTaskContext::Dispatched`] context reports here even while
     /// the screen is hidden behind another one, so the screen must not assume
     /// it is in view. A dispatched task whose screen was closed reports to no
-    /// screen. Undispatched results go to the screen in view, and `AppState`'s
-    /// dedicated routers bring some of them to hidden roots as well (the
-    /// identity hub, the voting panel, identity removals, the network chooser,
-    /// legacy-recovery hosts).
+    /// screen. Undispatched results go to the screen in view. A persistent
+    /// root that needs another screen's outcome takes it through
+    /// [`observe_backend_result`](Self::observe_backend_result); the banners
+    /// a result earns are decided in its domain's `task_feedback` module,
+    /// wherever the result went.
     fn display_backend_task_result(
         &mut self,
         _context: &BackendTaskContext,

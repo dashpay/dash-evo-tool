@@ -206,7 +206,7 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
         (
             QualifiedIdentityPublicKey::from(key),
-            PrivateKeyData::Clear([byte; 32]),
+            PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
         ),
     )]));
     let node_qi = QualifiedIdentity {
@@ -1587,7 +1587,7 @@ fn seed_node_with_non_voting_purpose_voter_key(
             (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
             (
                 QualifiedIdentityPublicKey::from(voter_key),
-                PrivateKeyData::Clear([byte; 32]),
+                PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
             ),
         )])),
         dpns_names: vec![],
@@ -1719,7 +1719,7 @@ fn seed_node_with_purpose_filed_voting_key(app_context: &Arc<AppContext>, byte: 
             (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voting_key.id()),
             (
                 QualifiedIdentityPublicKey::from(voting_key),
-                PrivateKeyData::Clear([byte; 32]),
+                PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
             ),
         )])),
         dpns_names: vec![],

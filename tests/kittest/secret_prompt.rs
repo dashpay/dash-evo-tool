@@ -424,7 +424,7 @@ fn appstate_migration_prompt_activation_drops_transition_frame_click() {
         // This test activates the prompt explicitly. Seed its wallet only after
         // boot so background wiring cannot also request the fixture's password.
         let password = Secret::new("correct password");
-        let seed = [0xA7; 64];
+        let seed = dash_evo_tool::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(
             seed,
             app_context.network(),

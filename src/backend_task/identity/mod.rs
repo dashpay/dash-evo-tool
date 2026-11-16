@@ -20,6 +20,7 @@ use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::backend_task::TaskResult;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
@@ -933,20 +934,27 @@ impl AppContext {
                 .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
                 .await?),
             IdentityTask::TopUpIdentity(top_up_info) => {
-                Ok(self.top_up_identity(sdk, top_up_info).await?)
+                let result = self.top_up_identity(sdk, top_up_info).await?;
+                self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+                    .await;
+                Ok(result)
             }
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
                 inputs,
                 wallet_seed_hash,
             } => {
-                self.top_up_identity_from_platform_addresses(
-                    sdk,
-                    identity,
-                    inputs,
-                    wallet_seed_hash,
-                )
-                .await
+                let result = self
+                    .top_up_identity_from_platform_addresses(
+                        sdk,
+                        identity,
+                        inputs,
+                        wallet_seed_hash,
+                    )
+                    .await?;
+                self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+                    .await;
+                Ok(result)
             }
             IdentityTask::TransferToAddresses {
                 identity,
@@ -1042,7 +1050,7 @@ impl AppContext {
         let backend = self.wallet_backend()?;
 
         // Execute the top-up
-        let (address_infos, new_balance, _height) = backend
+        let (address_infos, new_balance, height) = backend
             .secret_access()
             .with_secret_session(
                 &SecretScope::HdSeed {
@@ -1077,7 +1085,10 @@ impl AppContext {
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)?;
+        self.update_local_qualified_identity_observed(
+            &mut updated_identity,
+            BalanceProvenance::ObservedAt(height),
+        )?;
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1107,7 +1118,7 @@ impl AppContext {
         let estimated_fee = fee_estimator.estimate_credit_transfer_to_addresses(outputs.len());
 
         // Execute the transfer - qualified_identity is consumed here as the signer
-        let (address_infos, new_balance, _height) = identity
+        let (address_infos, new_balance, height) = identity
             .transfer_credits_to_addresses(
                 sdk,
                 outputs.clone(),
@@ -1153,7 +1164,10 @@ impl AppContext {
         }
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)?;
+        self.update_local_qualified_identity_observed(
+            &mut updated_identity,
+            BalanceProvenance::ObservedAt(height),
+        )?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
@@ -1404,7 +1418,7 @@ mod tests {
     /// rejected or the wallet could not sign for its own identity.
     #[test]
     fn identity_key_entry_public_matches_private_derivation() {
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
 
         for network in [Network::Testnet, Network::Mainnet] {
             let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
@@ -1475,7 +1489,7 @@ mod tests {
     /// expects, with no private key held anywhere in the spec set.
     #[test]
     fn identity_key_specs_roundtrip_public_and_paths() {
-        let seed = [0x11u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let seed_hash = wallet.seed_hash();
@@ -1551,7 +1565,7 @@ mod tests {
     fn a_disallowed_security_level_is_a_typed_key_spec_error() {
         use std::error::Error as _;
 
-        let seed = [0x44u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let transfer = IdentityKeyEntry::from_seed(
@@ -1593,7 +1607,7 @@ mod tests {
     /// version-mismatch error as its source.
     #[test]
     fn unknown_key_structure_keeps_the_typed_protocol_error() {
-        let seed = [0x33u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let master = IdentityKeyEntry::from_seed(
@@ -1638,7 +1652,7 @@ mod tests {
     /// unchanged.
     #[test]
     fn identity_key_specs_build_v0_keys_at_protocols_13_and_14() {
-        let seed = [0x22u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let master = IdentityKeyEntry::from_seed(

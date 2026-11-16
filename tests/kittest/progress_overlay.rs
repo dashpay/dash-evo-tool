@@ -1570,7 +1570,7 @@ fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
         // it finds unlocked, and for a protected one that asks for the
         // password, which nothing here would answer.
         let password = Secret::new("correct password");
-        let seed = [0xA7; 64];
+        let seed = dash_evo_tool::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(
             seed,
             app_context.network(),

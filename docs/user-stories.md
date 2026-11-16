@@ -427,7 +427,7 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Select Core Wallet source and enter a shielded address as destination.
+- Select Core Wallet source and enter a shielded address as destination. Core funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
@@ -448,7 +448,7 @@ As a user, I want to top up an identity directly from the Send screen so that I 
 
 As a developer, I want to shield credits from a Platform address into the shielded pool so that I can make private transactions.
 
-- Select Platform Addresses as source and enter a shielded address as destination.
+- Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only your default private address counts as your own.
 - System auto-selects the highest-balance Platform address.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
@@ -457,7 +457,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
-- Select Shielded Pool as source and enter a Core address as destination.
+- Select Shielded Balance as source and enter a Core address as destination.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
@@ -490,16 +490,17 @@ As a user, I want to transfer identity credits to a Platform address from the Se
 
 As a user, I want a "Max" button on a Core-to-Core send that fills in the largest amount I can actually send so that I can empty a wallet in one go without the transaction failing on fees.
 
-- "Max" sets the amount to the wallet balance minus the estimated network fee, so the send leaves enough to pay the fee and succeeds.
+- "Max" sets the amount to the largest payment the wallet's send build accepts now: it pools the transparent accounts a send draws on (BIP-44, BIP-32 and DashPay receiving funds, never CoinJoin), leaves out inputs another send is still using, and accounts for the network fee and the most inputs one transaction may carry. Nothing is offered until that amount has been checked.
 - The fee reserved is shown next to the amount.
 - When the balance is too low to cover the fee, "Max" produces no amount and a calm message explains why — never an error path.
+- The send itself is checked by the same build, not by the displayed balance, so an amount Max offered is never refused because that display lags behind.
 
 ### SND-015: Unshield credits to a Platform address [Implemented]
 **Persona:** Jordan
 
 As a developer, I want to move credits out of the shielded pool to one of my Platform addresses so that I can use them for ordinary Platform operations.
 
-- Select Shielded Pool as source and enter a Platform address as destination.
+- Select Shielded Balance as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
@@ -509,7 +510,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 
 As a developer, I want to transfer credits privately from my shielded pool to another shielded address so that the transfer amount and parties are not exposed on Platform.
 
-- Select Shielded Pool as source and enter a shielded address as destination.
+- Select Shielded Balance as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
@@ -521,7 +522,7 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 
 - "Max" and amount validation both ask the wallet directly for its actual sendable ceiling, reserving the relevant operation's fee, instead of estimating from the on-screen balance — both derive from the same builder quote, including for an amount typed in by hand rather than produced by the Max button. When the wallet's spendable inputs change after a quote, Max steps back to "Checking the available amount…" and validation waits for a fresh quote rather than accepting a stale ceiling.
 - While the check is running, the amount field shows "Checking the available amount…"; if it fails, "The available amount could not be checked." appears with a "Retry available amount check" button.
-- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
+- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses the send build's own quote and is not covered by this story.
 - The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
 
 ### SND-018: A payment with an unverified outcome resolves itself [Implemented]
@@ -720,7 +721,7 @@ As a user, I want to view all keys associated with my identity so that I can aud
 - A key saved on this device that is on none of the identity's key lists — a saved key whose publication never happened — is listed in its own section below the published keys, so its saved private half can still be opened and removed. The section appears only when such a key exists.
 - The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
 
-### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
+### IDN-013: Password-protect an identity's signing keys [Implemented]
 **Persona:** Priya, Jordan
 
 As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
@@ -859,9 +860,9 @@ As a user, I want to register a username for one of my identities so that others
 
 - Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
 - When the identity cannot register from this device, the disabled button says why and what helps: add a key when the identity has no suitable key; restore keys in place when an earlier version of the app saved the key; use Restore from Previous Version in Settings when the app was updated but nothing is offered in place; otherwise enter the key under the identity's keys. When the key comes from a wallet that is not on this device, the button is disabled and says to import that wallet again; a wallet that is on this device but locked does not disable it.
-- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · taken · locked for good · request window closed · already requested by this identity · can't check. Only the first three allow continuing. Contested and locked names are never reported as available.
-- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee (read from the network: 0.2 DASH before protocol 14, 0.1 DASH from 14) is never returned, and a lock vote means no one gets the name.
-- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. A low balance offers Top up and returns with the name kept. Availability is re-checked on Pay.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. From protocol 14 a vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
+- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.2 DASH before protocol 14; from 14, 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
+- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. Where the DPNS contract picks the first request for a name, the balance must also hold the network's small name-admission reserve (0.001 DASH) on top of the fees; a balance without it is turned away before anything is paid. A low balance offers Top up and returns with the name kept. Availability and the community vote fee are re-checked on Pay; a fee that changed since it was approved is refused as changed terms.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
 - The registration fee shown is the balance the network needs for both registration steps, which is above what it then charges. An identity that holds less than the total cannot pay and is refused before anything is sent, so the first step is never paid for a registration the second step would turn down.
 - While registration runs, a full-window blocking progress overlay prevents a duplicate submission.
@@ -1341,7 +1342,8 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
+- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
+- The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.
@@ -1460,6 +1462,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
+- When the network runs a newer protocol version than this build knows, the current-epoch report advises updating Dash Evo Tool; some features stay unavailable until then.
+- The recent withdrawal history, when it lists a failed withdrawal, notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]
 **Persona:** Priya
@@ -1495,6 +1499,7 @@ As a user, I want to switch between Mainnet, Testnet, Devnet, and Local networks
 - Network chooser screen with all available networks.
 - Per-network data isolation (wallets, identities, contracts).
 - Switch without app restart.
+- While the app opens a network for the first time this session, a progress window names it ("Switching to Testnet…") and blocks the app until the switch finishes. Nothing on the previous network, such as Connect, can be pressed meanwhile, so chain sync never starts on the network being left. A failed switch closes the window and shows why.
 
 ### NET-002: Auto-update from dashmate config [Implemented]
 **Persona:** Jordan
@@ -1630,6 +1635,7 @@ As a user, I want a clear connection indicator and status rows so that I know at
 
 - Top-panel five-state indicator (synced, connecting, syncing, error, disconnected) with a hover tooltip.
 - Settings screen shows Platform (DAPI) availability with jargon-free labels; raw sync errors are offered only on hover. (SPV sync detail is covered by WAL-013.)
+- When wallet sync data could not be saved, the tooltip adds a line saying so and advising a restart of Dash Evo Tool. The indicator colour is not affected by this fault in any connection state.
 
 ### NET-018: Auto-start SPV sync on startup [Implemented]
 **Persona:** Priya, Jordan
@@ -1721,7 +1727,7 @@ As a masternode operator, I want to withdraw my node's Platform credits to Core 
 As a user, while a long operation that is unsafe to interrupt is running (broadcasting a state transition, signing, key import, a multi-step registration, a network migration), I want to see a clear please-wait block over the whole window so that I understand the app is busy and cannot accidentally fire a conflicting second action.
 
 - A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
-- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc or Tab. Enter and Space do nothing either, unless the block is one of the exceptions named below: those designate a single escape, and Enter or Space activate only that.
+- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath. The block is never dismissable by Esc or Tab. Enter and Space do nothing either, unless the block is one of the exceptions named below: those designate a single escape, and Enter or Space activate only that.
 - The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action.
 - The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
 - Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exceptions: the startup/Connect SPV-sync block of UX-002 is unbounded, so it ships a Cancel affordance instead of relying on boundedness. The identity top-up block of IDN-004 can wait on the Dash network without a fixed limit, so after 30 s it offers "Continue in background" as its designated escape. The top-up keeps running, the funding form for that identity stays paused until it ends, and a banner tracks it to its result.)_
@@ -1756,7 +1762,7 @@ As any user, I want the same wallet/identity switcher on every page, so that I c
 As an existing user upgrading into the platform-wallet version, I want a one-time in-app notice explaining what changed — notably that direct funding from a scanned external payment (QR) was removed — so that I understand why a workflow I relied on is gone.
 
 - A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
-- Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
+- Note: not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
 
 ### UX-005: Blocking storage-preparation gate on launch and network switch [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1854,7 +1860,8 @@ As a user, I want to handle my contacts entirely from the Identities hub — ans
 - Sent requests offer Cancel, which withdraws the request (see DPY-014).
 - Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
 - Each contact row offers Pay, which opens the existing send-payment flow for that contact.
-- Contacts the user has hidden do not appear in the list.
+- Contacts the user has hidden do not appear in the main list; they stay available in the collapsed "Show hidden contacts" section (see DPY-009).
+- Selecting a contact shows its details (picture, name, username, bio) and a private note beside the list, or under it on a narrow window (see DPY-005, DPY-009).
 
 ## Masternodes (MN)
 

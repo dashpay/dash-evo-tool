@@ -57,7 +57,7 @@ impl WalletsBalancesScreen {
         let minimum_duffs = Some(
             self.app_context
                 .fee_estimator()
-                .address_funding_min_amount_duffs(true, self.app_context.sdk_platform_version()),
+                .address_funding_min_amount_duffs(true),
         );
         let mut retry_clicked = false;
 

@@ -499,7 +499,11 @@ mod tests {
     use std::future::ready;
     use zeroize::Zeroizing;
 
-    const KEY: [u8; 32] = [7u8; 32];
+    /// The contact-info encryption key the tests encrypt and decrypt with:
+    /// generated at runtime, stable for the whole test process.
+    fn key() -> [u8; 32] {
+        crate::test_support::keys::labelled_secret("dashpay::contact_info::tests::key", 0)
+    }
 
     fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> [u8; 32] {
         platform_encryption::encrypt_enc_to_user_id(key, user_id)
@@ -612,7 +616,7 @@ mod tests {
                 accepted_accounts: Vec::new(),
             })
             .expect("within the bound");
-            let encrypted = platform_encryption::encrypt_private_data(&KEY, &[0; 16], &encoded);
+            let encrypted = platform_encryption::encrypt_private_data(&key(), &[0; 16], &encoded);
             assert!(
                 estimator.estimate_contact_info_write()
                     >= estimator.estimate_document_create_with_size(112 + encrypted.len()),
@@ -883,13 +887,13 @@ mod tests {
     /// A stored contactInfo for `contact` whose note platform-wallet wrote.
     fn saved_note_document(document_id: u8, contact: Identifier, note: &str) -> Document {
         use platform_wallet::wallet::identity::crypto as upstream;
-        let user_id = encrypt_to_user_id(&contact.to_buffer(), &KEY);
+        let user_id = encrypt_to_user_id(&contact.to_buffer(), &key());
         let mut document = lookup_contact_info_document(document_id, document_id.into(), user_id);
         let plaintext = upstream::encode_private_data(&upstream::ContactInfoPrivateData {
             note: Some(note.to_string()),
             ..Default::default()
         });
-        let private_data = platform_encryption::encrypt_private_data(&KEY, &[5; 16], &plaintext);
+        let private_data = platform_encryption::encrypt_private_data(&key(), &[5; 16], &plaintext);
         document.set("privateData", Value::Bytes(private_data));
         document
     }
@@ -944,7 +948,7 @@ mod tests {
                     ),
                 })
             } else {
-                Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))
+                Ok((Zeroizing::new(key()), Zeroizing::new(key())))
             })
         })
         .await
@@ -980,7 +984,7 @@ mod tests {
                     .any(|clause| clause.field == "$updatedAt" && clause.ascending);
                 ready(Ok::<_, TaskError>(pages.pop_front().unwrap_or_default()))
             },
-            |_| ready(Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))),
+            |_| ready(Ok((Zeroizing::new(key()), Zeroizing::new(key())))),
         )
         .await
         .expect("contact details load");
@@ -992,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn the_contact_details_load_reads_every_page() {
         let contact = id(201);
-        let other = encrypt_to_user_id(&id(202).to_buffer(), &KEY);
+        let other = encrypt_to_user_id(&id(202).to_buffer(), &key());
         let first_page = contact_details_page(
             (1..=100).map(|byte| lookup_contact_info_document(byte, byte.into(), other)),
         );
@@ -1056,15 +1060,15 @@ mod tests {
         let mut first = lookup_contact_info_document(
             1,
             1,
-            encrypt_to_user_id(&undecryptable.to_buffer(), &KEY),
+            encrypt_to_user_id(&undecryptable.to_buffer(), &key()),
         );
         first.set("privateData", Value::Bytes(vec![0xA5; 48]));
         let mut second =
-            lookup_contact_info_document(2, 2, encrypt_to_user_id(&undecodable.to_buffer(), &KEY));
+            lookup_contact_info_document(2, 2, encrypt_to_user_id(&undecodable.to_buffer(), &key()));
         second.set(
             "privateData",
             Value::Bytes(platform_encryption::encrypt_private_data(
-                &KEY,
+                &key(),
                 &[5; 16],
                 &[0xFF; 40],
             )),
@@ -1167,9 +1171,9 @@ mod tests {
         contact: Identifier,
         plaintext: &[u8],
     ) -> Document {
-        let user_id = encrypt_to_user_id(&contact.to_buffer(), &KEY);
+        let user_id = encrypt_to_user_id(&contact.to_buffer(), &key());
         let mut document = lookup_contact_info_document(document_id, document_id.into(), user_id);
-        let private_data = platform_encryption::encrypt_private_data(&KEY, &[5; 16], plaintext);
+        let private_data = platform_encryption::encrypt_private_data(&key(), &[5; 16], plaintext);
         document.set("privateData", Value::Bytes(private_data));
         document
     }
@@ -1293,7 +1297,7 @@ mod tests {
 
         let details = legacy_load(
             vec![legacy_plaintext_document(1, owner, &plaintext)],
-            |_| ready(Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))),
+            |_| ready(Ok((Zeroizing::new(key()), Zeroizing::new(key())))),
         )
         .await
         .expect("loaded");
@@ -1474,7 +1478,7 @@ mod tests {
 
             let owner = id(202);
             let details = legacy_load(vec![legacy_plaintext_document(1, owner, &payload)], |_| {
-                ready(Ok((Zeroizing::new(KEY), Zeroizing::new(KEY))))
+                ready(Ok((Zeroizing::new(key()), Zeroizing::new(key()))))
             })
             .await
             .expect("loaded");

@@ -782,7 +782,7 @@ mod tests {
     async fn a_32_byte_hex_private_key_is_imported() {
         let dir = tempfile::tempdir().expect("tempdir");
         let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let key_bytes = [0x2B; 32];
+        let key_bytes = crate::test_support::keys::secret_bytes();
         let expected_address = {
             use dash_sdk::dpp::dashcore::{Address, PrivateKey};
             let private_key = PrivateKey::from_byte_array(&key_bytes, app_context.network())

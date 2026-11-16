@@ -425,7 +425,7 @@ mod tests {
             EncryptedEnvelope, EncryptionError, encrypt_message,
         };
 
-        let seed = [0x42; 64];
+        let seed = crate::test_support::keys::seed();
         let password = "correct horse battery staple";
         let EncryptedEnvelope {
             mut ciphertext,

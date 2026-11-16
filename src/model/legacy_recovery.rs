@@ -601,7 +601,10 @@ mod tests {
     /// A key pair for `purpose`, keyed by `secret_byte` so two fixtures in one
     /// test are genuinely different keys.
     fn test_key(id: KeyID, purpose: Purpose, secret_byte: u8) -> TestKey {
-        let secret = [secret_byte; 32];
+        let secret = crate::test_support::keys::labelled_secret(
+            "legacy_recovery::test_key",
+            secret_byte.into(),
+        );
         let key_type = KeyType::ECDSA_HASH160;
         let data = key_type
             .public_key_data_from_private_key_data(&secret, Network::Testnet)
@@ -1107,7 +1110,7 @@ mod tests {
             &mut legacy,
             M,
             &published,
-            PrivateKeyData::Clear([0x5C; 32]),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
         );
 
         let plan = compute_recovery_plan(&modern, &legacy);

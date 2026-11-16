@@ -536,10 +536,11 @@ mod tests {
         }
     }
 
-    /// A key pair for `purpose`, keyed by `secret_byte`.
-    fn test_key(id: KeyID, purpose: Purpose, secret_byte: u8) -> TestKey {
+    /// A key pair for `purpose`; the same `label` gives the same key.
+    fn test_key(id: KeyID, purpose: Purpose, label: u8) -> TestKey {
         let key_type = KeyType::ECDSA_HASH160;
-        let secret = [secret_byte; 32];
+        let secret =
+            crate::test_support::keys::labelled_secret("recover_legacy_keys", u64::from(label));
         let data = key_type
             .public_key_data_from_private_key_data(&secret, Network::Testnet)
             .expect("derive the public half");

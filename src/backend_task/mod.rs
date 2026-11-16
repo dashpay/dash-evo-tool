@@ -3166,8 +3166,12 @@ mod tests {
             .expect("wire wallet backend");
 
         // The mock reports the latest protocol version, and the system
-        // contracts the queries carry follow it; settle it before building them.
-        let sdk = dash_sdk::Sdk::new_mock();
+        // contracts the queries carry follow it; start the SDK at that version
+        // and prove it before building them.
+        let sdk = crate::context::test_support::mock_sdk_at_for(
+            &context,
+            dash_sdk::dpp::version::LATEST_VERSION,
+        );
         let mut mock = sdk.clone();
         context.sdk.store(Arc::new(sdk));
         crate::context::test_support::prove_protocol_version(

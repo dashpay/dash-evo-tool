@@ -24,7 +24,10 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note};
+use crate::model::dashpay::{
+    ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, contact_details_save_publishes,
+    validate_contact_note,
+};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -54,11 +57,16 @@ pub const DETAIL_HEADING: &str = "Contact details";
 pub const NO_SELECTION: &str = "Select a contact to see their details.";
 pub const NOTE_HEADING: &str = "Private note";
 pub const NOTE_HINT: &str = "Only you can see this note. It is stored encrypted on Dash Platform.";
+/// [`NOTE_HINT`] while DIP-0015 keeps contact details on this device.
+pub const NOTE_HINT_ON_THIS_DEVICE: &str = "Only you can see this note. Until this identity has two contacts, it is stored on this device only.";
 pub const NOTE_PLACEHOLDER: &str = "Add a note that only you can see";
 pub const SAVE_NOTE_LABEL: &str = "Save note";
 pub const SAVING_NOTE_LABEL: &str = "Saving…";
 pub const NOTE_UNCHANGED_TOOLTIP: &str = "There are no changes to save.";
 pub const NOTE_SAVE_TOOLTIP: &str = "Save this note on Dash Platform. Saving costs a small fee.";
+/// [`NOTE_SAVE_TOOLTIP`] while DIP-0015 keeps contact details on this device.
+pub const NOTE_SAVE_ON_THIS_DEVICE_TOOLTIP: &str =
+    "Save this note on this device. Saving is free until this identity has two contacts.";
 pub const NOTE_SAVED: &str = "Your note is saved.";
 /// Shown when contact details are kept on this device only: DIP-0015 holds
 /// them back until the identity has two contacts, and nothing publishes them
@@ -735,6 +743,8 @@ fn note_editor(
     dark_mode: bool,
 ) -> bool {
     let contact_id = contact.identity_id;
+    // With fewer than two contacts the save stays on this device: no fee.
+    let publishes = contact_details_save_publishes(state.contacts_len());
     let saving = state
         .detail()
         .is_writing(&identity.identity.id(), &contact_id);
@@ -749,9 +759,13 @@ fn note_editor(
             .color(DashColors::text_primary(dark_mode)),
     );
     ui.label(
-        RichText::new(NOTE_HINT)
-            .small()
-            .color(DashColors::text_secondary(dark_mode)),
+        RichText::new(if publishes {
+            NOTE_HINT
+        } else {
+            NOTE_HINT_ON_THIS_DEVICE
+        })
+        .small()
+        .color(DashColors::text_secondary(dark_mode)),
     );
     ui.add_space(6.0);
     ui.add_enabled(
@@ -773,13 +787,15 @@ fn note_editor(
     }
 
     ui.add_space(8.0);
-    let fee = app_context.fee_estimator().estimate_contact_info_write();
-    ui.label(
-        RichText::new(note_fee_text(&format_credits_as_dash(fee)))
-            .small()
-            .color(DashColors::text_secondary(dark_mode)),
-    );
-    ui.add_space(6.0);
+    if publishes {
+        let fee = app_context.fee_estimator().estimate_contact_info_write();
+        ui.label(
+            RichText::new(note_fee_text(&format_credits_as_dash(fee)))
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(6.0);
+    }
 
     let dirty = detail.is_dirty(&contact_id);
     let can_save = dirty && invalid.is_none() && !saving;
@@ -790,7 +806,11 @@ fn note_editor(
     };
     let save = ComponentStyles::add_primary_button_enabled(ui, can_save, label);
     let save = if can_save {
-        save.clickable_tooltip(NOTE_SAVE_TOOLTIP)
+        save.clickable_tooltip(if publishes {
+            NOTE_SAVE_TOOLTIP
+        } else {
+            NOTE_SAVE_ON_THIS_DEVICE_TOOLTIP
+        })
     } else if saving {
         save.disabled_tooltip(NOTE_SAVING_TOOLTIP)
     } else if let Some(error) = invalid {
@@ -1657,8 +1677,10 @@ mod tests {
         for line in [
             NO_SELECTION,
             NOTE_HINT,
+            NOTE_HINT_ON_THIS_DEVICE,
             NOTE_UNCHANGED_TOOLTIP,
             NOTE_SAVE_TOOLTIP,
+            NOTE_SAVE_ON_THIS_DEVICE_TOOLTIP,
             NOTE_SAVED,
             SELECT_CONTACT_TOOLTIP,
             NO_RECEIVED_EMPTY,

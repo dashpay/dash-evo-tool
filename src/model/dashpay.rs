@@ -58,6 +58,16 @@ pub fn validate_contact_note(note: &str) -> Result<(), ContactNoteTooLong> {
     Ok(())
 }
 
+/// DIP-0015 publishes contact details only once the owner has this many
+/// established contacts; until then a save stays on this device and is free.
+pub const MIN_CONTACTS_TO_PUBLISH_DETAILS: usize = 2;
+
+/// Whether saving contact details publishes them to Platform, and so pays a
+/// fee, for an owner with `contacts` established contacts.
+pub fn contact_details_save_publishes(contacts: usize) -> bool {
+    contacts >= MIN_CONTACTS_TO_PUBLISH_DETAILS
+}
+
 /// The recipient (`toUserId`) of a DashPay `contactRequest` document.
 ///
 /// Returns `None` when the field is absent or does not hold a readable
@@ -494,6 +504,14 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    #[test]
+    fn contact_details_publish_from_two_contacts() {
+        assert!(!contact_details_save_publishes(0));
+        assert!(!contact_details_save_publishes(1));
+        assert!(contact_details_save_publishes(2));
+        assert!(contact_details_save_publishes(3));
     }
 
     /// A `contactRequest`-shaped document. `to` of `None` omits `toUserId`

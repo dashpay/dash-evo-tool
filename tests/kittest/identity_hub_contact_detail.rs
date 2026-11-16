@@ -15,8 +15,8 @@ use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::identity::IdentityHubTab;
 use dash_evo_tool::ui::identity::contacts::{
-    DETAIL_HEADING, DETAILS_SAVED_ON_THIS_DEVICE, NO_SELECTION, NOTE_HEADING, NOTE_SAVED,
-    SAVE_NOTE_LABEL, SAVING_NOTE_LABEL,
+    DETAIL_HEADING, DETAILS_SAVED_ON_THIS_DEVICE, NO_SELECTION, NOTE_HEADING, NOTE_HINT,
+    NOTE_HINT_ON_THIS_DEVICE, NOTE_SAVED, SAVE_NOTE_LABEL, SAVING_NOTE_LABEL,
 };
 use dash_sdk::platform::Identifier;
 use egui::accesskit::Role;
@@ -59,11 +59,31 @@ fn deliver_all(hub: &mut HubHarness, owner: Identifier, contacts: Vec<ContactDat
     );
 }
 
+/// A second contact, so contact details are published (DIP-0015).
+fn cai() -> ContactData {
+    ContactData {
+        identity_id: Identifier::from([0xC4; 32]),
+        username: Some("cai".into()),
+        display_name: Some("Cai Lin".into()),
+        bio: None,
+        ..bao(None)
+    }
+}
+
 /// The Contacts tab with Bao listed, then Bao selected.
 fn hub_with_bao_selected(
     app_context: &std::sync::Arc<dash_evo_tool::context::AppContext>,
     width: f32,
     note: Option<&'static str>,
+) -> (HubHarness, Identifier) {
+    hub_with_bao_selected_among(app_context, width, vec![bao(note)])
+}
+
+/// The Contacts tab with `contacts` listed, then Bao selected.
+fn hub_with_bao_selected_among(
+    app_context: &std::sync::Arc<dash_evo_tool::context::AppContext>,
+    width: f32,
+    contacts: Vec<ContactData>,
 ) -> (HubHarness, Identifier) {
     let owner = seed_identity_with_usernames(app_context);
     let mut hub = hub_for(
@@ -71,7 +91,7 @@ fn hub_with_bao_selected(
         owner,
         width,
         IdentityHubTab::Contacts,
-        move |hub, owner| deliver(hub, owner, bao(note)),
+        move |hub, owner| deliver_all(hub, owner, contacts),
     );
     hub.get_by_role_and_label(Role::Button, "Bao Nguyen")
         .click();
@@ -240,7 +260,9 @@ fn selecting_a_contact_shows_its_details_beside_the_list() {
 fn save_note_shows_the_fee_first_and_sends_the_note_once() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
-        let (mut hub, owner) = hub_with_bao_selected(&app_context, WIDE, None);
+        let (mut hub, owner) =
+            hub_with_bao_selected_among(&app_context, WIDE, vec![bao(None), cai()]);
+        assert!(hub.query_by_label(NOTE_HINT).is_some());
 
         assert!(
             hub.query_by_label_contains("Estimated fee for saving this note: up to")
@@ -301,6 +323,23 @@ fn save_note_shows_the_fee_first_and_sends_the_note_once() {
             note_editor(&hub).value().as_deref(),
             Some("Met at the meetup")
         );
+    });
+}
+
+/// With one contact the note is kept on this device: no fee is shown, and
+/// the hint does not claim it is stored on Dash Platform.
+#[test]
+fn a_note_with_one_contact_shows_no_fee() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let (hub, _owner) = hub_with_bao_selected(&app_context, WIDE, None);
+        assert!(
+            hub.query_by_label_contains("Estimated fee for saving this note")
+                .is_none(),
+            "a device-only save costs nothing"
+        );
+        assert!(hub.query_by_label(NOTE_HINT_ON_THIS_DEVICE).is_some());
+        assert!(hub.query_by_label(NOTE_HINT).is_none());
     });
 }
 

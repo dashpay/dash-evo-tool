@@ -372,7 +372,10 @@ fn appstate_jit_prompt_activation_drops_transition_frame_click() {
         harness.set_size(egui::vec2(1024.0, 768.0));
         crate::support::wait_for_screens(&mut harness);
 
-        let card_center = harness.get_by_label("Just Explore").rect().center();
+        let card_center = harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Just Explore")
+            .rect()
+            .center();
         harness.hover_at(card_center);
         harness.event(egui::Event::PointerButton {
             pos: card_center,
@@ -441,7 +444,10 @@ fn appstate_migration_prompt_activation_drops_transition_frame_click() {
         wallet.write().expect("wallet lock").wallet_seed.close();
         harness.run_steps(5);
 
-        let card_center = harness.get_by_label("Just Explore").rect().center();
+        let card_center = harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Just Explore")
+            .rect()
+            .center();
         harness.hover_at(card_center);
         harness.event(egui::Event::PointerButton {
             pos: card_center,

@@ -572,8 +572,9 @@ impl AddExistingIdentityScreen {
             };
 
             ui.horizontal(|ui| {
-                ui.label(identity_index_label);
-                ui.text_edit_singleline(&mut self.identity_index_input);
+                let label = ui.label(identity_index_label);
+                ui.text_edit_singleline(&mut self.identity_index_input)
+                    .labelled_by(label.id);
             });
 
             match self.wallet_search_mode {
@@ -710,9 +711,10 @@ impl AddExistingIdentityScreen {
             .num_columns(2)
             .spacing([10.0, 10.0])
             .show(ui, |ui| {
-                ui.label("Username:");
+                let username_label = ui.label("Username:");
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.dpns_name_input);
+                    ui.text_edit_singleline(&mut self.dpns_name_input)
+                        .labelled_by(username_label.id);
                     ui.label(".dash");
                 });
                 ui.end_row();

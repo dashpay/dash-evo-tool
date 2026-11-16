@@ -324,6 +324,7 @@ impl WelcomeScreen {
         });
 
         let response = allocate_card(ui, &frame);
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), title));
         let stroke = if response.has_focus() {
             ComponentStyles::focus_stroke(dark_mode)
         } else {

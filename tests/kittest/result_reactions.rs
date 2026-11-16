@@ -294,9 +294,7 @@ fn a_sweep_failure_is_reported_unless_it_is_quiet() {
         (vote_unavailable as fn() -> TaskError, true),
     ] {
         in_app(|| {
-            let mut harness = crate::support::mount_app_allowing_unnamed_widgets(
-                RootScreenType::RootScreenDocumentQuery,
-            );
+            let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
             let network = harness.state().current_app_context().network();
             let error = TaskError::ScheduledVoteSweepFailed {
                 network,

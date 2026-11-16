@@ -40,6 +40,14 @@ pub fn builder_with_app_fonts<State>() -> HarnessBuilder<State> {
     })
 }
 
+/// Root screens [`mount_app`] mounts without kittest's accessible-name check;
+/// see [`allowing_unnamed_widgets`].
+const ROOTS_WITH_UNNAMED_WIDGETS: &[RootScreenType] = &[
+    RootScreenType::RootScreenDocumentQuery,
+    RootScreenType::RootScreenNetworkChooser,
+    RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+];
+
 /// Switch off kittest's check that every input widget has an accessible name,
 /// for a harness whose screen still has unnamed widgets. Every opt-out goes
 /// through here so the remaining gaps stay in one list.
@@ -50,8 +58,10 @@ pub fn builder_with_app_fonts<State>() -> HarnessBuilder<State> {
 // (Import Mnemonic); the identity selector combo box; the Key Info
 // sign-message field; the DPNS username field and a button on the registration
 // outcome view; an unlabelled `WalletSelector`; the fund-platform dialog's
-// address combo box; the withdrawal destination field; the Document Query text
-// fields. Unit-test harnesses list theirs in `src/test_support.rs`.
+// address combo box; the withdrawal destination field; and, on the root
+// screens in `ROOTS_WITH_UNNAMED_WIDGETS`, the Document Query text fields, the
+// Network Chooser's network selector combo box and the Transition Visualizer
+// input. Unit-test harnesses list theirs in `src/test_support.rs`.
 pub fn allowing_unnamed_widgets<State>(builder: HarnessBuilder<State>) -> HarnessBuilder<State> {
     builder.with_accessibility_check(false)
 }
@@ -131,22 +141,18 @@ fn boot_progress(harness: &Harness<'static, dash_evo_tool::app::AppState>) -> (B
 /// construction only — callers that need a runtime alive afterwards (e.g. to
 /// seed the DB through `AppContext` methods that spawn tasks) must enter their
 /// own around the call, same as any other kittest.
+///
+/// Checks once, after boot, that every input widget on the root screen has an
+/// accessible name. kittest checks on its own only when a run settles, and the
+/// construction-time run reaches the root screen only if storage preparation
+/// finishes within it, so without this the check would depend on timing.
 pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, dash_evo_tool::app::AppState> {
-    mount_app_with(Harness::builder(), root_screen)
-}
-
-/// [`mount_app`] for a root screen that still has unnamed input widgets; see
-/// [`allowing_unnamed_widgets`].
-pub fn mount_app_allowing_unnamed_widgets(
-    root_screen: RootScreenType,
-) -> Harness<'static, dash_evo_tool::app::AppState> {
-    mount_app_with(allowing_unnamed_widgets(Harness::builder()), root_screen)
-}
-
-fn mount_app_with(
-    builder: HarnessBuilder<dash_evo_tool::app::AppState>,
-    root_screen: RootScreenType,
-) -> Harness<'static, dash_evo_tool::app::AppState> {
+    let allows_unnamed = ROOTS_WITH_UNNAMED_WIDGETS.contains(&root_screen);
+    let builder = if allows_unnamed {
+        allowing_unnamed_widgets(Harness::builder())
+    } else {
+        Harness::builder()
+    };
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
@@ -162,6 +168,9 @@ fn mount_app_with(
     harness.set_size(egui::vec2(1280.0, 800.0));
     wait_for_wallet_backend(&mut harness);
     harness.run_steps(10);
+    if !allows_unnamed {
+        harness.check_accessibility();
+    }
     harness
 }
 

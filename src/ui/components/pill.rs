@@ -10,8 +10,8 @@ use crate::model::contested_name::approximate_time_until;
 use crate::model::dpns_usernames::UsernameRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use eframe::egui::{
-    Color32, CornerRadius, FontSelection, Frame, Margin, Response, RichText, Role, Sense, Stroke,
-    StrokeKind, TextWrapMode, Ui, Vec2, WidgetInfo, WidgetText,
+    Color32, CornerRadius, CursorIcon, FontSelection, Frame, Margin, Response, RichText, Role,
+    Sense, Stroke, StrokeKind, TextWrapMode, Ui, Vec2, WidgetInfo, WidgetText,
 };
 
 /// Horizontal padding between a pill's edge and its label, in points.
@@ -101,8 +101,9 @@ pub fn accent_pill_button(
         );
     }
 
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
     match tooltip {
-        Some(text) => response.clickable_tooltip(text),
+        Some(text) => response.on_hover_text(text),
         None => response,
     }
 }
@@ -215,6 +216,29 @@ mod tests {
                 harness
                     .query_by_label(crate::ui::identity::username_copy::phase_label(phase))
                     .is_some()
+            );
+        }
+    }
+
+    /// A pill button shows the pointing-hand cursor on hover, with or without
+    /// a tooltip.
+    #[test]
+    fn pill_button_shows_the_pointing_hand_with_or_without_a_tooltip() {
+        for tooltip in [None, Some("Opens the votes.")] {
+            let mut harness = Harness::builder().build_ui(move |ui| {
+                accent_pill_button(ui, "1 name needs your vote", DashColors::DASH_BLUE, tooltip);
+            });
+            harness.run();
+            let center = harness
+                .get_by_role_and_label(Role::Button, "1 name needs your vote")
+                .rect()
+                .center();
+            harness.hover_at(center);
+            harness.step();
+            assert_eq!(
+                harness.output().platform_output.cursor_icon,
+                eframe::egui::CursorIcon::PointingHand,
+                "tooltip {tooltip:?}"
             );
         }
     }

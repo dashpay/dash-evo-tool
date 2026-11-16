@@ -28,7 +28,7 @@ fn import_harness(
 ) -> Harness<'static, ImportMnemonicScreen> {
     let mut screen = ImportMnemonicScreen::new(app_context);
     setup(&mut screen);
-    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+    let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(
             move |ui, screen: &mut ImportMnemonicScreen| {

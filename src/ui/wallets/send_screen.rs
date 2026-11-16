@@ -2562,16 +2562,14 @@ impl WalletSendScreen {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let mut selected = is_core_selected;
-                    if ui.radio_value(&mut selected, true, "").changed() && selected {
+                    let label = RichText::new("Core Wallet")
+                        .color(DashColors::text_primary(dark_mode))
+                        .strong();
+                    if ui.radio_value(&mut selected, true, label).changed() && selected {
                         self.selected_source = Some(SourceSelection::CoreWallet);
                         self.address_input = None;
                         self.validated_destination = None;
                     }
-                    ui.label(
-                        RichText::new("Core Wallet")
-                            .color(DashColors::text_primary(dark_mode))
-                            .strong(),
-                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             RichText::new(format_duffs_as_dash(core_balance))
@@ -2612,7 +2610,10 @@ impl WalletSendScreen {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected = is_platform_selected;
-                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                        let label = RichText::new("Platform Addresses")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong();
+                        if ui.radio_value(&mut selected, true, label).changed() && selected {
                             // Select all platform addresses
                             let addresses_with_balances: Vec<_> = platform_addresses
                                 .iter()
@@ -2625,11 +2626,6 @@ impl WalletSendScreen {
                             self.address_input = None;
                             self.validated_destination = None;
                         }
-                        ui.label(
-                            RichText::new("Platform Addresses")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format_credits_as_dash(total_platform_balance))
@@ -2680,7 +2676,10 @@ impl WalletSendScreen {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected = is_identity_selected;
-                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                        let label = RichText::new("Identity")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong();
+                        if ui.radio_value(&mut selected, true, label).changed() && selected {
                             if let Some(identity) = self.selected_identity.clone().or_else(|| {
                                 // Default to the identity with the highest balance
                                 identities
@@ -2695,11 +2694,6 @@ impl WalletSendScreen {
                             self.address_input = None;
                             self.validated_destination = None;
                         }
-                        ui.label(
-                            RichText::new("Identity")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        );
                         if let Some(SourceSelection::Identity(qi)) = &self.selected_source {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -2806,17 +2800,15 @@ impl WalletSendScreen {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected = is_shielded_selected;
-                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                        let label = RichText::new("Shielded Balance")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong();
+                        if ui.radio_value(&mut selected, true, label).changed() && selected {
                             self.selected_source =
                                 Some(SourceSelection::Shielded(seed_hash, balance));
                             self.address_input = None;
                             self.validated_destination = None;
                         }
-                        ui.label(
-                            RichText::new("Shielded Balance")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format_credits_as_dash(balance))
@@ -5487,13 +5479,12 @@ mod tests {
     }
 
     fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
-            .build_ui_state(
-                |ui, screen: &mut WalletSendScreen| {
-                    screen.render_unified_send(ui);
-                },
-                screen,
-            );
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_unified_send(ui);
+            },
+            screen,
+        );
         harness.run();
         harness
     }

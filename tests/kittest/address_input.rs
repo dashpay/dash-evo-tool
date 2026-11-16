@@ -304,12 +304,11 @@ fn sibling_inputs_open_only_their_own_type_filter() {
     };
     let inputs = Rc::new(RefCell::new((filter_input(), filter_input())));
     let ui_inputs = Rc::clone(&inputs);
-    let mut harness =
-        crate::support::allowing_unnamed_widgets(Harness::builder()).build_ui(move |ui| {
-            let mut inputs = ui_inputs.borrow_mut();
-            inputs.0.show(ui);
-            inputs.1.show(ui);
-        });
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let mut inputs = ui_inputs.borrow_mut();
+        inputs.0.show(ui);
+        inputs.1.show(ui);
+    });
     harness.run();
 
     let first_filter = harness

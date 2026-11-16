@@ -584,7 +584,7 @@ impl WalletsBalancesScreen {
                 ui.set_min_width(400.0);
 
                 ui.vertical(|ui| {
-                    ui.label(
+                    let address_label = ui.label(
                         RichText::new("Select a Platform address to fund:")
                             .color(DashColors::text_primary(dark_mode)),
                     );
@@ -641,7 +641,9 @@ impl WalletsBalancesScreen {
                                             Some(addr.clone());
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .labelled_by(address_label.id);
                     }
 
                     ui.add_space(15.0);

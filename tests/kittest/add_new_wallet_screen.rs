@@ -22,7 +22,7 @@ fn create_wallet_harness(
     let mut screen = AddNewWalletScreen::new(app_context);
     // Fixed test entropy — never a literal recovery phrase.
     screen.set_seed_phrase_for_test(dash_evo_tool::test_support::keys::mnemonic(12));
-    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+    let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(
             move |ui, screen: &mut AddNewWalletScreen| {

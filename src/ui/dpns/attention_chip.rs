@@ -178,7 +178,7 @@ mod tests {
         );
     }
 
-    /// QA-001: each chip is a button a keyboard user reaches with Tab and
+    /// Each chip is a button a keyboard user reaches with Tab and
     /// activates with Enter or Space, and focus shows on screen.
     #[test]
     fn chips_take_keyboard_focus_and_activate_with_enter_or_space() {

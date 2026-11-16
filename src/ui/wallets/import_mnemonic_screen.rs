@@ -640,8 +640,9 @@ impl ScreenLike for ImportMnemonicScreen {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Optional Password:");
+                        let label = ui.label("Optional Password:");
                         let pw_response = self.password_input.show(ui);
+                        pw_response.response.labelled_by(label.id);
                         if pw_response.changed {
                             if !self.password_input.is_empty() {
                                 let estimate = zxcvbn(self.password_input.text(), &[]);

@@ -309,6 +309,17 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         );
     }
 
+    // Screen readers get a short button name; the explanation is its description.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::accesskit::Role::Button,
+            ui.is_enabled(),
+            "More information",
+        )
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_description(hover_text));
+
     response.clickable_tooltip(hover_text)
 }
 
@@ -1141,6 +1152,25 @@ pub fn show_group_token_success_screen_with_fee(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Screen readers announce the info icon as a button with a short name,
+    /// and its explanation as the description.
+    #[test]
+    fn info_icon_is_a_named_button_described_by_its_explanation() {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        const EXPLANATION: &str = "Explains what this option does.";
+        let harness = Harness::new_ui(|ui| {
+            info_icon_button(ui, EXPLANATION);
+        });
+        let icon = harness.get_by_role_and_label(Role::Button, "More information");
+        assert_eq!(
+            icon.accesskit_node().description().as_deref(),
+            Some(EXPLANATION)
+        );
+    }
 
     /// Switching contract drops a document type of the previous contract, so
     /// no action pairs one contract with another contract's type; a type of

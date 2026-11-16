@@ -439,6 +439,68 @@ pub enum TaskError {
     )]
     WalletPaymentTooManyInputs { count: usize, max: usize },
 
+    /// An asset lock would need more individual unspent outputs than the
+    /// network accepts in one asset-lock transaction. Shared by every
+    /// asset-lock funding path (identity registration and top-up,
+    /// Platform-address funding, shielding, direct locks), so the text names
+    /// no single operation.
+    #[error(
+        "This amount needs to combine {count} small amounts from your wallet into one transaction, which is more than the {max} the network accepts. Try a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
+    )]
+    AssetLockTooManyInputs { count: usize, max: usize },
+
+    /// The wallet's available amount is not quoted while another operation
+    /// that moves the funds it is quoted from is in progress: one that can
+    /// take or release its Core inputs (until it reserves them, no quote can
+    /// see what it will take), or a shield from its Platform balance (until a
+    /// sync pass reads the spend back, the balances still show it).
+    #[error("{}", crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)]
+    SpendInProgress,
+
+    /// A Core send has no amount to offer as Max, for `reason`.
+    #[error("{}", .reason.message())]
+    CoreSendMaxUnavailable {
+        reason: crate::model::spend_limit::CoreSendShortfall,
+    },
+
+    /// The search for the largest Core payment ran out of time before it
+    /// proved any amount.
+    #[error(
+        "Checking the available amount took too long. Try again, or enter the amount yourself."
+    )]
+    SpendLimitTimedOut,
+
+    /// The wallet could not quote the largest amount an operation accepts.
+    #[error("The wallet's available amount could not be checked. Wait a moment and try again.")]
+    SpendLimitQueryFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Shielding from Platform asked for more than the wallet's Platform
+    /// addresses can fund once the shielding fee is kept back.
+    /// `max_shieldable` is the shield planner's own maximum (net of the fee
+    /// reserve), not the gross balance upstream's refusal reports.
+    #[error(
+        "Your Platform balance can shield at most {max_shieldable_dash} at the moment, because part of it pays the shielding fee. Use Max, or enter a smaller amount.",
+        max_shieldable_dash = format_credits_as_dash(*.max_shieldable)
+    )]
+    ShieldFromPlatformCapacityExceeded {
+        max_shieldable: u64,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Shielding from Platform was refused and the planner can shield
+    /// nothing: no Platform address can keep the shielding fee back.
+    #[error(
+        "None of your Platform addresses can cover the shielding fee, so nothing can be shielded right now. Add funds to one of your Platform addresses, then try again."
+    )]
+    ShieldFromPlatformNothingShieldable {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// The network rejected an identity-registration submission. Covers
     /// upstream SDK rejections (consensus errors, invalid IS-lock, key
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections
@@ -1980,6 +2042,16 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The request needs a Platform feature the network does not serve yet
+    /// (SdkError::ProtocolVersionNotActive); the SDK refused it without sending it.
+    #[error(
+        "This feature is not active on the network yet. Try again later, after the network upgrade."
+    )]
+    PlatformFeatureNotActive {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Platform rejected the request (StateTransitionBroadcastError, unclassified cause).
     #[error("The platform rejected this request. Please check your input and try again.")]
     PlatformRejected {
@@ -2357,6 +2429,13 @@ pub enum TaskError {
 
     #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
     UsernameRegistrationTermsChanged,
+
+    /// The name's community vote already holds the most requests the network
+    /// accepts; refused before anything is sent.
+    #[error(
+        "The vote for this username already has {max_contenders} requests, the most it accepts. Nothing was spent. Choose another username."
+    )]
+    UsernameContestFull { max_contenders: u16 },
 
     /// The identity cannot cover both registration documents (and the community
     /// vote fee, when the name needs one); refused before anything is sent.
@@ -2946,8 +3025,11 @@ pub enum TaskError {
     NoUtxosAvailable,
 
     /// The wallet balance is too low to cover the requested amount plus fees.
+    /// Both amounts are in duffs and are shown in Dash.
     #[error(
-        "You do not have enough Dash. You have {available} duffs but need {required} duffs. Please add more funds and retry."
+        "You do not have enough Dash. You have {available_dash} but need {required_dash}. Add more funds, or enter a smaller amount, and try again.",
+        available_dash = format_duffs_as_dash(*.available),
+        required_dash = format_duffs_as_dash(*.required)
     )]
     InsufficientFunds { available: u64, required: u64 },
 
@@ -4795,6 +4877,18 @@ impl From<SdkError> for TaskError {
             SdkError::StaleNode(_) => TaskError::DapiStaleNode {
                 source_error: boxed,
             },
+            // The SDK could not learn the network's version for a reason that
+            // can pass, so the feature may be active already: not an upgrade wait.
+            SdkError::ProtocolVersionNotActive { .. }
+                if boxed.is_transient_protocol_version_refusal() =>
+            {
+                TaskError::DapiUnavailable {
+                    source_error: boxed,
+                }
+            }
+            SdkError::ProtocolVersionNotActive { .. } => TaskError::PlatformFeatureNotActive {
+                source_error: boxed,
+            },
             SdkError::NoAvailableAddressesToRetry(_) => TaskError::DapiAllAddressesExhausted {
                 source: std::sync::Arc::new(TaskError::SdkError {
                     source_error: boxed,
@@ -4929,6 +5023,42 @@ mod tests {
         );
         assert!(!message.to_lowercase().contains("details"), "{message}");
         assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// The pooled build's shortfall is the only balance check a Core send
+    /// gets, so its message states both amounts in Dash, never in duffs.
+    #[test]
+    fn insufficient_funds_message_states_amounts_in_dash() {
+        let message = TaskError::InsufficientFunds {
+            available: 50_000_000,
+            required: 100_000_000,
+        }
+        .to_string();
+        assert!(message.contains("0.5 DASH"), "{message}");
+        assert!(message.contains("1 DASH"), "{message}");
+        assert!(!message.to_lowercase().contains("duff"), "{message}");
+    }
+
+    /// The asset-lock input-cap refusal is shared by identity registration,
+    /// identity top-up, Platform-address funding, shielding and direct asset
+    /// locks, so its text must fit every one of them: it names the counts and
+    /// the fix, never a single operation.
+    #[test]
+    fn asset_lock_too_many_inputs_message_is_operation_neutral() {
+        let message = TaskError::AssetLockTooManyInputs {
+            count: 121,
+            max: 100,
+        }
+        .to_string();
+        assert!(message.contains("121"), "{message}");
+        assert!(message.contains("100"), "{message}");
+        assert!(message.contains("consolidate"), "{message}");
+        for operation_word in ["transfer", "deposit", "platform", "identity", "shield"] {
+            assert!(
+                !message.to_lowercase().contains(operation_word),
+                "must not name one operation ({operation_word}): {message}"
+            );
+        }
     }
 
     /// An unrelated generic protocol error stays the generic SDK variant.
@@ -5731,6 +5861,62 @@ mod tests {
                 }
                 other => panic!("expected PlatformEntryConflict, got {other:?}"),
             }
+        }
+    }
+
+    fn protocol_version_not_active(cause: Option<Box<SdkError>>) -> SdkError {
+        SdkError::ProtocolVersionNotActive {
+            method: "get_contract_fee_pots",
+            required: 15,
+            network: 14,
+            pinned: false,
+            cause,
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_protocol_version_not_active_maps_to_platform_feature_not_active() {
+        // The cause is this SDK's own setup: retrying cannot change the refusal.
+        let permanent_cause = Box::new(SdkError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config("no quorum source".to_string()),
+        ));
+        for sdk_err in [
+            protocol_version_not_active(None),
+            protocol_version_not_active(Some(permanent_cause)),
+        ] {
+            let err = TaskError::from(sdk_err);
+            match &err {
+                TaskError::PlatformFeatureNotActive { source_error } => assert!(
+                    matches!(**source_error, SdkError::ProtocolVersionNotActive { .. }),
+                    "source not preserved: {source_error:?}"
+                ),
+                other => panic!("expected PlatformFeatureNotActive, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_transient_protocol_version_refusal_maps_to_dapi_unavailable() {
+        let sdk_err = protocol_version_not_active(Some(Box::new(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))));
+        assert!(sdk_err.is_transient_protocol_version_refusal());
+        match TaskError::from(sdk_err) {
+            TaskError::DapiUnavailable { source_error } => assert!(
+                matches!(*source_error, SdkError::ProtocolVersionNotActive { .. }),
+                "source not preserved: {source_error:?}"
+            ),
+            other => panic!("expected DapiUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn platform_feature_not_active_display_is_user_friendly() {
+        let msg = TaskError::from(protocol_version_not_active(None)).to_string();
+        assert!(msg.contains("Try again"), "no action in: {msg}");
+        let lower = msg.to_lowercase();
+        for jargon in ["protocol", "sdk", "version", "get_contract_fee_pots", "15"] {
+            assert!(!lower.contains(jargon), "jargon {jargon:?} in: {msg}");
         }
     }
 

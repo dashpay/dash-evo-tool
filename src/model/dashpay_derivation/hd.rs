@@ -286,6 +286,30 @@ mod tests {
         );
     }
 
+    /// Pins DET's DIP-15 account reference: DIP-15 publishes no vector, so the
+    /// inputs are DIP-14 Test Vector 1's published seed and final private key.
+    #[test]
+    fn account_reference_matches_golden_values() {
+        let seed = hex::decode(
+            "b16d3782e714da7c55a397d5f19104cfed7ffa8036ac514509bbb50807f8ac598eeb26f0797bd8cc221a6cbff2168d90a5e9ee025a5bd977977b9eccd97894bb",
+        )
+        .unwrap();
+        let sender_secret =
+            hex::decode("e8781fdef72862968cd9a4d2df34edaf9dcc5b17629ec505f0d2d1a8ed6f9f09")
+                .unwrap();
+        let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).unwrap();
+        let xpub = ExtendedPubKey::from_priv(&master);
+
+        assert_eq!(
+            [
+                calculate_account_reference(&sender_secret, &xpub, 0, 0),
+                calculate_account_reference(&sender_secret, &xpub, 7, 0),
+                calculate_account_reference(&sender_secret, &xpub, 0x0ABC_DEF1, 1),
+            ],
+            [0x08AE_C8F7, 0x08AE_C8F0, 0x1212_1606]
+        );
+    }
+
     #[test]
     fn test_account_reference_version_bits() {
         // Test that version bits are correctly placed

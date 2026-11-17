@@ -355,7 +355,7 @@ pub struct AppContext {
     /// `WalletSeedHash`, written by the coordinator's platform-address sync pass
     /// and read each frame via [`AppContext::platform_sync_info`] to drive the
     /// "Addresses synced" label. Removing a wallet does not evict its entry
-    /// (accepted leak, QA-B-004; never displayed). Must never be written from
+    /// (accepted leak; never displayed). Must never be written from
     /// the frame loop.
     pub(crate) platform_sync_cursors:
         Arc<Mutex<std::collections::HashMap<WalletSeedHash, (u64, u64)>>>,
@@ -959,10 +959,11 @@ impl AppContext {
         seed_hash: WalletSeedHash,
         entries: Vec<PlatformAddressEntry>,
     ) {
-        if let Some(wallet) = self.wallet_context().hd_wallet(&seed_hash)
-            && let Ok(mut wallet) = wallet.write()
-        {
-            wallet.apply_platform_address_entries(&entries, self.network);
+        use crate::wallet_backend::poison::RwLockRecover;
+        if let Some(wallet) = self.wallet_context().hd_wallet(&seed_hash) {
+            wallet
+                .write_recover()
+                .apply_platform_address_entries(&entries, self.network);
         }
     }
 
@@ -977,6 +978,7 @@ impl AppContext {
     /// boot. Both are seeded insert-if-absent, so a live figure that already
     /// landed wins.
     pub(crate) fn warm_start_platform_addresses(&self) {
+        use crate::wallet_backend::poison::RwLockRecover;
         let Ok(backend) = self.wallet_backend() else {
             return;
         };
@@ -986,10 +988,10 @@ impl AppContext {
         }
 
         for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
-            if let Some(wallet) = self.wallet_context().hd_wallet(seed_hash)
-                && let Ok(mut wallet) = wallet.write()
-            {
-                wallet.seed_platform_address_entries(entries, self.network);
+            if let Some(wallet) = self.wallet_context().hd_wallet(seed_hash) {
+                wallet
+                    .write_recover()
+                    .seed_platform_address_entries(entries, self.network);
             }
         }
 
@@ -1954,6 +1956,51 @@ mod tests {
             .get_platform_address_info(&address)
             .expect("address info");
         assert_eq!((info.balance, info.nonce), (41_000, 3));
+    }
+
+    /// A spend still reaches the wallet when its lock was poisoned by an
+    /// earlier panic, as a coordinator pass does.
+    #[test]
+    fn a_spend_reaches_a_wallet_with_a_poisoned_lock() {
+        use crate::model::wallet::{PlatformAddressEntry, Wallet};
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = crate::test_support::keys::seed();
+        let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let dash_sdk::dpp::address_funds::PlatformAddress::P2pkh(hash) =
+            dash_sdk::dpp::address_funds::PlatformAddress::try_from(address).expect("p2pkh")
+        else {
+            panic!("p2pkh address expected");
+        };
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        let poisoner = Arc::clone(&wallet);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.write().expect("wallet");
+            panic!("poison the wallet lock");
+        })
+        .join();
+        assert!(wallet.is_poisoned());
+
+        ctx.apply_platform_address_spend(
+            seed_hash,
+            vec![PlatformAddressEntry {
+                hash,
+                balance: 41_000,
+                nonce: 3,
+                account: 0,
+                index: Some(0),
+                as_of_height: 500,
+            }],
+        );
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 41);
     }
 
     /// Two spends completing out of order: the older result arriving last

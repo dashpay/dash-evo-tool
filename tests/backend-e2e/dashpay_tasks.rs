@@ -844,18 +844,16 @@ async fn tc_045_detect_incoming_contact_payment() {
     // map, and `LoadPaymentHistory` surfaces an unknown counterparty by id.
     let contact_1 = Identifier::from([0x5a; 32]);
 
-    // Two deterministic, network-valid receiving addresses (distinct pubkeys)
-    // standing in for two freshly-derived contact addresses. Derived from fixed
-    // secret keys so the addresses stay stable across runs while remaining valid
-    // curve points — secp256k1 now rejects raw bytes that are not on the curve,
-    // so a hand-written `[0x02; 33]` is no longer a usable public key.
-    let derive_pubkey = |seed: [u8; 32]| {
-        let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(seed)
-            .expect("fixed test secret key is a valid scalar");
-        dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key())
+    // Two network-valid receiving addresses (distinct pubkeys) standing in for
+    // two freshly-derived contact addresses. Derived from runtime-generated
+    // secret keys so they are valid curve points — secp256k1 rejects raw bytes
+    // that are not on the curve, so a hand-written `[0x02; 33]` is no longer a
+    // usable public key.
+    let derive_pubkey = || {
+        dash_sdk::dpp::dashcore::PublicKey::new(dash_evo_tool::test_support::keys::secret_key().public_key())
     };
-    let pubkey_0 = derive_pubkey([0x01; 32]);
-    let pubkey_1 = derive_pubkey([0x02; 32]);
+    let pubkey_0 = derive_pubkey();
+    let pubkey_1 = derive_pubkey();
     let address_0 =
         dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey_0, ctx.app_context.network()).to_string();
     let address_1 =

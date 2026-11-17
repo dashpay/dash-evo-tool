@@ -167,7 +167,7 @@ pub(crate) mod test_support {
     use std::sync::{Arc, RwLock};
 
     pub(crate) fn fixture() -> (QualifiedIdentity, AuthPubkeyCache, WalletSeedHash, [u8; 64]) {
-        let seed = [42; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).unwrap();
         let seed_hash = wallet.seed_hash();
         let mut cache = AuthPubkeyCache::default();

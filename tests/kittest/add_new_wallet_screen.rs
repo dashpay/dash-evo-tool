@@ -6,7 +6,6 @@
 //! real registration path.
 
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use bip39::Mnemonic;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::ui::ScreenLike;
@@ -22,7 +21,7 @@ fn create_wallet_harness(
 ) -> Harness<'static, AddNewWalletScreen> {
     let mut screen = AddNewWalletScreen::new(app_context);
     // Fixed test entropy — never a literal recovery phrase.
-    screen.set_seed_phrase_for_test(Mnemonic::from_entropy(&[0u8; 16]).expect("valid entropy"));
+    screen.set_seed_phrase_for_test(dash_evo_tool::test_support::keys::mnemonic(12));
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(

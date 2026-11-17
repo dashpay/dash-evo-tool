@@ -266,7 +266,7 @@ mod tests {
         let seam = SecretSeam::new(&store);
         let scope = SecretWalletId::from([0x5Au8; 32]);
         let over = SecretString::new("p".repeat(MAX_PASSPHRASE_LEN + 1));
-        let secret = SecretBytes::from_slice(&[0x11u8; 32]);
+        let secret = SecretBytes::from_slice(&crate::test_support::keys::secret_bytes());
 
         let write = seam
             .put_secret_protected(&scope, "seed.raw.v1", &secret, &over)
@@ -289,7 +289,7 @@ mod tests {
         );
     }
 
-    /// TS-RT-01 — HD seed raw round-trip. A known 64-byte seed stored under
+    /// TS-RT-01 — HD seed raw round-trip. A random 64-byte seed stored under
     /// `seed.raw.v1` comes back byte-for-byte. A missing label and a foreign
     /// scope both return `Ok(None)` (scope/label partition).
     #[test]
@@ -298,10 +298,7 @@ mod tests {
         let store = fresh_store(dir.path());
         let seam = SecretSeam::new(&store);
         let scope = SecretWalletId::from([0x11u8; 32]);
-        let mut seed = [0u8; 64];
-        for (i, b) in seed.iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(3).wrapping_add(7);
-        }
+        let seed = crate::test_support::keys::seed();
 
         seam.put_secret(&scope, "seed.raw.v1", &SecretBytes::from_slice(&seed))
             .expect("put");
@@ -338,7 +335,7 @@ mod tests {
         let store = fresh_store(dir.path());
         let seam = SecretSeam::new(&store);
         let scope = crate::wallet_backend::single_key::single_key_namespace_id();
-        let key = [0xABu8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let label = "single_key_priv.yTestAddress";
 
         seam.put_secret(&scope, label, &SecretBytes::from_slice(&key))
@@ -368,8 +365,8 @@ mod tests {
         let seam = SecretSeam::new(&store);
         let identity_a = SecretWalletId::from([0xA1u8; 32]);
         let identity_b = SecretWalletId::from([0xB2u8; 32]);
-        let key0 = [0x01u8; 32];
-        let key1 = [0x02u8; 32];
+        let key0 = crate::test_support::keys::secret_bytes();
+        let key1 = crate::test_support::keys::secret_bytes();
 
         seam.put_secret(
             &identity_a,
@@ -384,7 +381,7 @@ mod tests {
         )
         .unwrap();
         // Same key_id (0) under a different identity scope — distinct value.
-        let key_other = [0x99u8; 32];
+        let key_other = crate::test_support::keys::secret_bytes();
         seam.put_secret(
             &identity_b,
             "identity_key_priv.0.0",
@@ -426,7 +423,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let seam = SecretSeam::new(&store);
         let scope = SecretWalletId::from([0x33u8; 32]);
-        let secret: SecretBytes = SecretBytes::from_slice(&[0x42u8; 32]);
+        let secret: SecretBytes =
+            SecretBytes::from_slice(&crate::test_support::keys::secret_bytes());
         seam.put_secret(&scope, "seed.raw.v1", &secret).unwrap();
         let _back: Option<SecretBytes> = seam.get_secret(&scope, "seed.raw.v1").unwrap();
     }
@@ -440,8 +438,12 @@ mod tests {
         let seam = SecretSeam::new(&store);
         let scope = SecretWalletId::from([0x44u8; 32]);
         seam.delete_secret(&scope, "seed.raw.v1").expect("absent");
-        seam.put_secret(&scope, "seed.raw.v1", &SecretBytes::from_slice(&[1u8; 64]))
-            .unwrap();
+        seam.put_secret(
+            &scope,
+            "seed.raw.v1",
+            &SecretBytes::from_slice(&crate::test_support::keys::seed()),
+        )
+        .unwrap();
         seam.delete_secret(&scope, "seed.raw.v1").expect("first");
         seam.delete_secret(&scope, "seed.raw.v1").expect("second");
         assert!(seam.get_secret(&scope, "seed.raw.v1").unwrap().is_none());

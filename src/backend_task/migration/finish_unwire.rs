@@ -2696,12 +2696,14 @@ mod tests {
     }
 
     fn seed_legacy_single_key(app_context: &AppContext) {
+        let secret_1 = crate::test_support::keys::secret_bytes();
+        let secret_7 = crate::test_support::keys::secret_bytes();
         let path = app_context.db.db_file_path().expect("file-backed database");
         let conn = Connection::open(path).expect("open legacy database");
         seed_legacy_row(
             &conn,
-            &[7u8; 32],
-            &[1u8; 32],
+            &secret_7,
+            &secret_1,
             &[],
             &[],
             "addr",
@@ -3112,10 +3114,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dapi_refresh_discovery_failure_retries_without_failing_migration() {
+        let seed_81 = crate::test_support::keys::seed();
         let _env_guard = CONFIG_ENV_LOCK.lock().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        seed_legacy_wallet(&ctx, &[0x81u8; 64], "funds", ctx.network);
+        seed_legacy_wallet(&ctx, &seed_81, "funds", ctx.network);
         wire_backend(&ctx).await;
         let backend = ctx.wallet_backend().expect("backend wired");
         let calls = AtomicUsize::new(0);
@@ -3963,10 +3966,9 @@ mod tests {
         let conn = Connection::open(&db_path).expect("open legacy db");
         create_legacy_table(&conn);
 
-        // Build a known private key + derived address so the test can
-        // assert on the canonical label.
-        let mut raw = [0u8; 32];
-        raw[31] = 7;
+        // Build a private key + derived address so the test can assert on the
+        // canonical label.
+        let raw = crate::test_support::keys::secret_bytes();
         let priv_key = PrivateKey::from_byte_array(&raw, Network::Testnet).expect("priv");
         let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
@@ -4044,8 +4046,7 @@ mod tests {
         let conn = Connection::open(&db_path).expect("open legacy db");
         create_legacy_table(&conn);
 
-        let mut raw = [0u8; 32];
-        raw[31] = 9;
+        let raw = crate::test_support::keys::secret_bytes();
         let key_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&raw);
         seed_legacy_row(
             &conn,
@@ -4220,14 +4221,16 @@ mod tests {
     #[test]
     fn mainnet_single_key_saved_with_the_dash_spelling_is_copied() {
         use dash_sdk::dpp::dashcore::Network;
+        let secret_ce = crate::test_support::keys::secret_bytes();
+        let secret_4 = crate::test_support::keys::secret_bytes();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
         create_legacy_table(&conn);
         seed_legacy_row(
             &conn,
-            &[4u8; 32],
-            &[0xCE; 32],
+            &secret_4,
+            &secret_ce,
             &[],
             &[],
             "XMainnetOnly",
@@ -4251,6 +4254,8 @@ mod tests {
     #[test]
     fn single_key_copy_leaves_legacy_table_unchanged() {
         use dash_sdk::dpp::dashcore::Network;
+        let secret_cd = crate::test_support::keys::secret_bytes();
+        let secret_3 = crate::test_support::keys::secret_bytes();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("data.db");
@@ -4258,8 +4263,8 @@ mod tests {
         create_legacy_table(&conn);
         seed_legacy_row(
             &conn,
-            &[3u8; 32],
-            &[0xCD; 32],
+            &secret_3,
+            &secret_cd,
             &[],
             &[],
             "yOpenOnly",
@@ -4729,6 +4734,7 @@ mod tests {
     fn tc_w_001_envelope_round_trips_through_view() {
         use crate::wallet_backend::wallet_seed_store::WalletSeedView;
         use dash_sdk::dpp::dashcore::Network;
+        let seed_99 = crate::test_support::keys::seed();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("data.db");
@@ -4739,7 +4745,7 @@ mod tests {
         let ciphertext: [u8; 80] = [0x11; 80];
         let salt: [u8; 16] = [0x01; 16];
         let nonce: [u8; 12] = [0x02; 12];
-        let xpub = valid_xpub([0x99u8; 64], Network::Testnet);
+        let xpub = valid_xpub(seed_99, Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &seed_hash,
@@ -4786,6 +4792,8 @@ mod tests {
     fn tc_w_002_seed_migration_is_idempotent() {
         use crate::wallet_backend::wallet_seed_store::WalletSeedView;
         use dash_sdk::dpp::dashcore::Network;
+        let seed_22 = crate::test_support::keys::seed();
+        let seed_88 = crate::test_support::keys::seed();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("data.db");
@@ -4793,8 +4801,8 @@ mod tests {
         create_legacy_wallet_table_without_core_name(&conn);
 
         let seed_hash: crate::model::wallet::WalletSeedHash = [0xBB; 32];
-        let ciphertext: [u8; 64] = [0x22; 64];
-        let xpub = valid_xpub([0x88u8; 64], Network::Testnet);
+        let ciphertext: [u8; 64] = seed_22;
+        let xpub = valid_xpub(seed_88, Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &seed_hash,
@@ -4845,6 +4853,7 @@ mod tests {
     fn password_protected_envelope_round_trips() {
         use crate::wallet_backend::wallet_seed_store::WalletSeedView;
         use dash_sdk::dpp::dashcore::Network;
+        let seed_77 = crate::test_support::keys::seed();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("data.db");
@@ -4853,7 +4862,7 @@ mod tests {
 
         let seed_hash: crate::model::wallet::WalletSeedHash = [0xCC; 32];
         let ciphertext: [u8; 80] = [0xFF; 80];
-        let xpub = valid_xpub([0x77u8; 64], Network::Testnet);
+        let xpub = valid_xpub(seed_77, Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &seed_hash,
@@ -4940,6 +4949,10 @@ mod tests {
     #[test]
     fn seed_migration_filters_by_network() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_33 = crate::test_support::keys::seed();
+        let seed_44 = crate::test_support::keys::seed();
+        let seed_55 = crate::test_support::keys::seed();
+        let seed_66 = crate::test_support::keys::seed();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("data.db");
@@ -4947,11 +4960,11 @@ mod tests {
         create_legacy_wallet_table_without_core_name(&conn);
 
         let testnet_seed: crate::model::wallet::WalletSeedHash = [0xEE; 32];
-        let testnet_xpub = valid_xpub([0x55u8; 64], Network::Testnet);
+        let testnet_xpub = valid_xpub(seed_55, Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &testnet_seed,
-            &[0x33; 64],
+            &seed_33,
             &[],
             &[],
             &testnet_xpub,
@@ -4960,11 +4973,11 @@ mod tests {
             Network::Testnet,
         );
         let mainnet_seed: crate::model::wallet::WalletSeedHash = [0xEF; 32];
-        let mainnet_xpub = valid_xpub([0x66u8; 64], Network::Mainnet);
+        let mainnet_xpub = valid_xpub(seed_66, Network::Mainnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &mainnet_seed,
-            &[0x44; 64],
+            &seed_44,
             &[],
             &[],
             &mainnet_xpub,
@@ -5023,6 +5036,10 @@ mod tests {
     #[test]
     fn qa_001_unhydratable_unprotected_rows_are_skipped_not_copied() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_11 = crate::test_support::keys::seed();
+        let seed_42 = crate::test_support::keys::seed();
+        let seed_55 = crate::test_support::keys::seed();
+        let secret_66 = crate::test_support::keys::secret_bytes();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
@@ -5031,11 +5048,11 @@ mod tests {
 
         // Good row: valid 64-byte seed + decodable xpub → hydrates → imports.
         let good_hash: crate::model::wallet::WalletSeedHash = [0x01; 32];
-        let good_xpub = valid_xpub([0x42u8; 64], network);
+        let good_xpub = valid_xpub(seed_42, network);
         seed_legacy_wallet_seed_row(
             &conn,
             &good_hash,
-            &[0x42u8; 64],
+            &seed_42,
             &[],
             &[],
             &good_xpub,
@@ -5050,7 +5067,7 @@ mod tests {
         seed_legacy_wallet_seed_row(
             &conn,
             &empty_xpub_hash,
-            &[0x55u8; 64],
+            &seed_55,
             &[],
             &[],
             &[],
@@ -5062,11 +5079,11 @@ mod tests {
         // Adversarial (b): decodable xpub but a 32-byte unprotected seed —
         // hydration drops it via `wallet_from_envelope`'s length check.
         let short_seed_hash: crate::model::wallet::WalletSeedHash = [0x03; 32];
-        let short_xpub = valid_xpub([0x11u8; 64], network);
+        let short_xpub = valid_xpub(seed_11, network);
         seed_legacy_wallet_seed_row(
             &conn,
             &short_seed_hash,
-            &[0x66u8; 32],
+            &secret_66,
             &[],
             &[],
             &short_xpub,
@@ -5112,6 +5129,7 @@ mod tests {
     #[test]
     fn qa_001_protected_row_with_valid_xpub_is_not_seed_length_checked() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_77 = crate::test_support::keys::seed();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
@@ -5119,7 +5137,7 @@ mod tests {
         let network = Network::Testnet;
 
         let hash: crate::model::wallet::WalletSeedHash = [0x04; 32];
-        let xpub = valid_xpub([0x77u8; 64], network);
+        let xpub = valid_xpub(seed_77, network);
         // Protected: 80-byte ciphertext, 16-byte salt, 12-byte nonce.
         seed_legacy_wallet_seed_row(
             &conn,
@@ -5734,7 +5752,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = app_context_for_network(tmp.path(), Network::Mainnet);
         wire_backend(&ctx).await;
-        let raw = [0x36; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
         let password = format!("test-password-{}", tmp.path().display());
         let (meta, _) = ctx
@@ -5787,7 +5805,7 @@ mod tests {
         use dash_sdk::dpp::dashcore::Network;
         let tmp = tempfile::tempdir().unwrap();
         let ctx = app_context_for_network(tmp.path(), Network::Mainnet);
-        let seed = [0x37; 64];
+        let seed = crate::test_support::keys::seed();
         let hash = seed_legacy_wallet(&ctx, &seed, "Old", ctx.network);
         ctx.db
             .execute("UPDATE wallet SET network = 'dash'", [])
@@ -5826,7 +5844,7 @@ mod tests {
         let backend = ctx.wallet_backend().unwrap();
         let conn = Connection::open(ctx.db.db_file_path().unwrap()).unwrap();
         for byte in [0x31, 0x32] {
-            let raw = [byte; 32];
+            let raw = crate::test_support::keys::labelled_secret("finish_unwire", u64::from(byte));
             let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
             let mut imported = backend
                 .single_key()
@@ -5974,7 +5992,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
-        let seed = [0xC5; 64];
+        let seed = crate::test_support::keys::seed();
         let password = "correct horse battery staple";
         let seed_hash = seed_legacy_protected_wallet(&ctx, &seed, password, "Savings", network);
 
@@ -6085,12 +6103,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_wallet_fails_fast_without_an_interactive_prompt() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_d1 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         seed_legacy_protected_wallet(
             &ctx,
-            &[0xD1; 64],
+            &seed_d1,
             "headless-password",
             "Headless savings",
             Network::Testnet,
@@ -6153,13 +6172,15 @@ mod tests {
     async fn supplied_password_finishes_a_headless_storage_update() {
         use crate::wallet_backend::SecretScope;
         use crate::wallet_backend::secret_seam::SecretScheme;
+        let seed_d5 = crate::test_support::keys::seed();
+        let seed_d6 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let password = "shared-headless-password";
         let wallets = [
-            seed_legacy_protected_wallet(&ctx, &[0xD5; 64], password, "Savings", Network::Testnet),
-            seed_legacy_protected_wallet(&ctx, &[0xD6; 64], password, "Spending", Network::Testnet),
+            seed_legacy_protected_wallet(&ctx, &seed_d5, password, "Savings", Network::Testnet),
+            seed_legacy_protected_wallet(&ctx, &seed_d6, password, "Spending", Network::Testnet),
         ];
         let legacy_path = tmp.path().join("data.db");
         let before = std::fs::read(&legacy_path).expect("snapshot legacy database before run");
@@ -6223,13 +6244,15 @@ mod tests {
     /// password.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_password_that_does_not_open_every_wallet_fails_closed() {
+        let seed_d7 = crate::test_support::keys::seed();
+        let seed_d8 = crate::test_support::keys::seed();
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let supplied = "opens-only-the-first-wallet";
-        seed_legacy_protected_wallet(&ctx, &[0xD7; 64], supplied, "Opens", Network::Testnet);
+        seed_legacy_protected_wallet(&ctx, &seed_d7, supplied, "Opens", Network::Testnet);
         let refused = seed_legacy_protected_wallet(
             &ctx,
-            &[0xD8; 64],
+            &seed_d8,
             "a-different-password",
             "Refuses",
             Network::Testnet,
@@ -6286,20 +6309,22 @@ mod tests {
     async fn full_unlock_and_skip_run_leaves_legacy_database_unchanged() {
         use crate::context::WalletUnlockRetention;
         use dash_sdk::dpp::dashcore::Network;
+        let seed_d2 = crate::test_support::keys::seed();
+        let seed_d3 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let unlock_password = "unlock-this-wallet";
         let unlock_hash = seed_legacy_protected_wallet(
             &ctx,
-            &[0xD2; 64],
+            &seed_d2,
             unlock_password,
             "Unlock me",
             Network::Testnet,
         );
         let skip_hash = seed_legacy_protected_wallet(
             &ctx,
-            &[0xD3; 64],
+            &seed_d3,
             "skip-this-wallet",
             "Skip me",
             Network::Testnet,
@@ -6402,7 +6427,8 @@ mod tests {
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
-        let seed_hash = seed_legacy_wallet(&ctx, &[0xA3u8; 64], "funds", network);
+        let seed_hash =
+            seed_legacy_wallet(&ctx, &crate::test_support::keys::seed(), "funds", network);
         let voter = [0x11u8; 32];
         seed_legacy_votes(
             &ctx,
@@ -6474,7 +6500,8 @@ mod tests {
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
-        let seed_hash = seed_legacy_wallet(&ctx, &[0xB4u8; 64], "funds", network);
+        let seed_hash =
+            seed_legacy_wallet(&ctx, &crate::test_support::keys::seed(), "funds", network);
         seed_legacy_votes(&ctx, &[0x22u8; 32], &[("alice", "Lock")], network);
 
         wire_backend(&ctx).await;
@@ -6586,7 +6613,8 @@ mod tests {
         let network = Network::Testnet;
 
         // Funds: a normal legacy wallet, so the drain completes and `moved_data`.
-        let seed_hash = seed_legacy_wallet(&ctx, &[0xD6u8; 64], "funds", network);
+        let seed_hash =
+            seed_legacy_wallet(&ctx, &crate::test_support::keys::seed(), "funds", network);
 
         {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
@@ -6693,13 +6721,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unreadable_top_up_warning_record_does_not_claim_the_app_data_pass_failed() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_d7 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
         // Funds: a normal legacy wallet, so the drain completes and `moved_data`.
-        seed_legacy_wallet(&ctx, &[0xD7u8; 64], "funds", network);
+        seed_legacy_wallet(&ctx, &seed_d7, "funds", network);
 
         {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
@@ -6758,12 +6787,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unreadable_top_up_warning_is_republished_until_acknowledged() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_c5 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
-        seed_legacy_wallet(&ctx, &[0xC5u8; 64], "funds", network);
+        seed_legacy_wallet(&ctx, &seed_c5, "funds", network);
         // The record a discovery pass leaves behind for one undecodable row.
         write_top_up_warning(&ctx.app_kv(), network, 1).expect("pending top-up warning");
 
@@ -6819,12 +6849,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unreadable_identities_do_not_hide_the_unreadable_top_up_warning() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_e7 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
-        seed_legacy_wallet(&ctx, &[0xE7u8; 64], "funds", network);
+        seed_legacy_wallet(&ctx, &seed_e7, "funds", network);
         // The record a discovery pass leaves behind for one undecodable top-up row.
         write_top_up_warning(&ctx.app_kv(), network, 1).expect("pending top-up warning");
         {
@@ -6912,12 +6943,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_deleted_identity_is_not_resurrected_by_an_unreadable_sibling_row() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_9a = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
-        seed_legacy_wallet(&ctx, &[0x9Au8; 64], "funds", network);
+        seed_legacy_wallet(&ctx, &seed_9a, "funds", network);
 
         // One identity that decodes, and one genuinely corrupt row beside it —
         // the row that used to hold the sentinel hostage forever.
@@ -6999,12 +7031,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unreadable_identity_warning_is_republished_until_acknowledged() {
         use dash_sdk::dpp::dashcore::Network;
+        let seed_b4 = crate::test_support::keys::seed();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let network = Network::Testnet;
 
-        seed_legacy_wallet(&ctx, &[0xB4u8; 64], "funds", network);
+        seed_legacy_wallet(&ctx, &seed_b4, "funds", network);
         {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
             identities::insert_identity(&conn, [0x44u8; 32], Some(vec![0xFFu8; 8]), true);
@@ -7070,6 +7103,8 @@ mod tests {
     #[tokio::test]
     async fn run_without_wired_backend_does_not_write_sentinel() {
         use dash_sdk::dpp::dashcore::Network;
+        let secret_1 = crate::test_support::keys::secret_bytes();
+        let secret_7 = crate::test_support::keys::secret_bytes();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
@@ -7082,8 +7117,8 @@ mod tests {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
             seed_legacy_row(
                 &conn,
-                &[7u8; 32],
-                &[1u8; 32],
+                &secret_7,
+                &secret_1,
                 &[],
                 &[],
                 "addr",
@@ -7117,6 +7152,8 @@ mod tests {
     async fn a_failed_migration_never_strands_the_status_on_running() {
         use crate::backend_task::migration::MigrationTask;
         use dash_sdk::dpp::dashcore::Network;
+        let secret_1 = crate::test_support::keys::secret_bytes();
+        let secret_7 = crate::test_support::keys::secret_bytes();
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
@@ -7127,8 +7164,8 @@ mod tests {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
             seed_legacy_row(
                 &conn,
-                &[7u8; 32],
-                &[1u8; 32],
+                &secret_7,
+                &secret_1,
                 &[],
                 &[],
                 "addr",

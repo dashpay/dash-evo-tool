@@ -325,6 +325,7 @@ mod shutdown_tests {
     async fn second_exit_after_async_attempt_does_not_repeat_wallet_teardown() {
         use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
         use zeroize::Zeroizing;
+        let seed_24 = crate::test_support::keys::seed();
 
         let _data_dir = TestDataDir::enter();
         let mut app = AppState::new(egui::Context::default()).expect("test AppState");
@@ -338,7 +339,7 @@ mod shutdown_tests {
         let scope = SecretScope::HdSeed {
             seed_hash: [0x42; 32],
         };
-        let secret = Zeroizing::new([0x24; 64]);
+        let secret = Zeroizing::new(seed_24);
         secret_access.remember_session(
             &scope,
             SecretPlaintext::HdSeed(&secret),

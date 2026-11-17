@@ -147,7 +147,7 @@ fn mount_prepared_app_with_locked_wallet() -> (Harness<'static, AppState>, Walle
     let harness = mount_prepared_app();
     let app_context = harness.state().current_app_context();
     let password = Secret::new("correct password");
-    let seed = [0xA7; 64];
+    let seed = dash_evo_tool::test_support::keys::seed();
     let wallet = Wallet::new_from_seed(
         seed,
         app_context.network(),

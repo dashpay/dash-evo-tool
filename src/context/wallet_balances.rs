@@ -72,7 +72,10 @@ mod tests {
         alias: &str,
     ) -> (crate::model::wallet::WalletSeedHash, Arc<RwLock<Wallet>>) {
         let wallet = Wallet::new_from_seed(
-            [seed_byte; 64],
+            crate::test_support::keys::labelled_seed(
+                "context::wallet_balances::hd_wallet",
+                seed_byte.into(),
+            ),
             Network::Testnet,
             Some(alias.to_string()),
             None,
@@ -114,8 +117,13 @@ mod tests {
         let ctx = test_app_context(dir.path());
         let (seed_hash, wallet) = hd_wallet(0x12, "Main");
         ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
-        let key = SingleKeyWallet::new([0x21; 32], Network::Testnet, None, Some("Key 1".into()))
-            .expect("single-key wallet");
+        let key = SingleKeyWallet::new(
+            crate::test_support::keys::secret_bytes(),
+            Network::Testnet,
+            None,
+            Some("Key 1".into()),
+        )
+        .expect("single-key wallet");
         let key_hash = key.key_hash();
         ctx.wallet_context().insert_test_single_key(
             Network::Testnet,

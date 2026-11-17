@@ -263,7 +263,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x11u8; 32]);
-        let key = [0xAB; 32];
+        let key = crate::test_support::keys::secret_bytes();
 
         view.store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 3, &key)
             .expect("store");
@@ -288,36 +288,39 @@ mod tests {
     /// Distinct targets and identities do not collide.
     #[test]
     fn scopes_and_targets_do_not_collide() {
+        let secret_01 = crate::test_support::keys::secret_bytes();
+        let secret_02 = crate::test_support::keys::secret_bytes();
+        let secret_03 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let a = IdentityKeyView::new(&store, [0xA1u8; 32]);
         let b = IdentityKeyView::new(&store, [0xB2u8; 32]);
 
-        a.store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &[0x01; 32])
+        a.store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &secret_01)
             .unwrap();
-        a.store(&PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0, &[0x02; 32])
+        a.store(&PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0, &secret_02)
             .unwrap();
-        b.store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &[0x03; 32])
+        b.store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &secret_03)
             .unwrap();
 
         assert_eq!(
             *a.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
                 .unwrap()
                 .unwrap(),
-            [0x01; 32]
+            secret_01
         );
         assert_eq!(
             *a.get(&PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0)
                 .unwrap()
                 .unwrap(),
-            [0x02; 32],
+            secret_02,
             "distinct targets under one identity do not collide"
         );
         assert_eq!(
             *b.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
                 .unwrap()
                 .unwrap(),
-            [0x03; 32],
+            secret_03,
             "distinct identity scopes do not collide"
         );
     }
@@ -331,11 +334,11 @@ mod tests {
         let bound: Vec<VaultBoundKey> = vec![
             (
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
-                Zeroizing::new([0x10; 32]),
+                Zeroizing::new(crate::test_support::keys::secret_bytes()),
             ),
             (
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, 2),
-                Zeroizing::new([0x20; 32]),
+                Zeroizing::new(crate::test_support::keys::secret_bytes()),
             ),
         ];
         view.store_all(&bound).expect("store_all");
@@ -366,7 +369,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0xD1u8; 32]);
-        let key = [0xAB; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let pw = SecretString::new("identity-object-passwd");
 
         view.store_protected(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5, &key, &pw)
@@ -393,13 +396,14 @@ mod tests {
     /// oracle), not a storage error.
     #[test]
     fn protected_get_wrong_password_is_typed() {
+        let secret_01 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0xD2u8; 32]);
         view.store_protected(
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x01; 32],
+            &secret_01,
             &SecretString::new("right-password-here"),
         )
         .expect("store_protected");
@@ -424,7 +428,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0xD3u8; 32]);
-        let key = [0x42; 32];
+        let key = crate::test_support::keys::secret_bytes();
 
         view.store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 3, &key)
             .expect("tier-1 store");
@@ -457,6 +461,9 @@ mod tests {
     /// deliberate `store_unprotected` opt-out IS allowed to downgrade.
     #[test]
     fn keyless_store_refuses_to_downgrade_protected_key() {
+        let secret_33 = crate::test_support::keys::secret_bytes();
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0xD4u8; 32]);
@@ -464,14 +471,14 @@ mod tests {
         view.store_protected(
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x11; 32],
+            &secret_11,
             &pw,
         )
         .expect("seal tier-2");
 
         // The guarded keyless path is refused — protection is NOT stripped.
         let err = view
-            .store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &[0x22; 32])
+            .store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &secret_22)
             .expect_err("keyless write over Protected must be refused");
         assert!(
             matches!(err, TaskError::IdentityKeyProtectionDowngrade),
@@ -485,7 +492,7 @@ mod tests {
         );
 
         // The deliberate opt-out downgrade IS allowed.
-        view.store_unprotected(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &[0x33; 32])
+        view.store_unprotected(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &secret_33)
             .expect("intentional downgrade");
         assert_eq!(
             view.scheme(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
@@ -498,7 +505,7 @@ mod tests {
                 .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
                 .unwrap()
                 .unwrap(),
-            [0x33; 32],
+            secret_33,
         );
     }
 
@@ -512,7 +519,7 @@ mod tests {
         let view = IdentityKeyView::new(&store, [0xD5u8; 32]);
         let bound: Vec<VaultBoundKey> = vec![(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, 9),
-            Zeroizing::new([0x55; 32]),
+            Zeroizing::new(crate::test_support::keys::secret_bytes()),
         )];
         view.store_all(&bound).expect("store_all on fresh identity");
         assert_eq!(

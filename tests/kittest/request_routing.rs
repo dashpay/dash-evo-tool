@@ -1219,9 +1219,9 @@ fn insert_wallet(app_context: &AppContext, seed: [u8; 64]) -> WalletSeedHash {
     seed_hash
 }
 
-/// The platform-address balances cached on the wallet `seed_hash` of
-/// `app_context`'s network.
-fn platform_balances(app_context: &AppContext, seed_hash: WalletSeedHash) -> Vec<u64> {
+/// The platform-address `(balance, height pin)` pairs cached on the wallet
+/// `seed_hash` of `app_context`'s network.
+fn platform_balances(app_context: &AppContext, seed_hash: WalletSeedHash) -> Vec<(u64, u64)> {
     let wallets = app_context.wallet_context().wallets();
     let wallet = wallets
         .get(&seed_hash)
@@ -1231,16 +1231,43 @@ fn platform_balances(app_context: &AppContext, seed_hash: WalletSeedHash) -> Vec
     wallet
         .platform_address_info
         .values()
-        .map(|info| info.balance)
+        .map(|info| (info.balance, info.as_of_height))
         .collect()
+}
+
+/// A coordinator push of one platform-address balance pinned at `height`,
+/// sent by the wallet backend of `network`.
+fn balance_push(
+    network: Network,
+    seed_hash: WalletSeedHash,
+    balance: u64,
+    height: u64,
+) -> TaskResult {
+    use dash_evo_tool::model::wallet::PlatformAddressEntry;
+    TaskResult::Success {
+        context: BackendTaskContext::WalletSync { network },
+        result: Box::new(BackendTaskSuccessResult::PlatformAddressSyncPushed {
+            updates: vec![(
+                seed_hash,
+                vec![PlatformAddressEntry {
+                    hash: [0x77; 20],
+                    balance,
+                    nonce: 1,
+                    account: 0,
+                    index: None,
+                    as_of_height: height,
+                }],
+            )],
+        }),
+    }
 }
 
 /// A platform-address balance push the previous network's wallet backend
 /// sends after a switch lands in that network's wallet and leaves the same
-/// wallet on the new network alone.
+/// wallet on the new network alone: neither its balance nor its height pin,
+/// so the new network's own lower-height pushes still apply.
 #[test]
 fn a_balance_push_from_the_previous_network_updates_only_that_networks_wallet() {
-    use dash_evo_tool::model::wallet::PlatformAddressEntry;
     in_app(|| {
         let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
         let previous = harness.state().current_app_context().clone();
@@ -1256,34 +1283,58 @@ fn a_balance_push_from_the_previous_network_updates_only_that_networks_wallet() 
 
         deliver(
             &mut harness,
-            TaskResult::Success {
-                context: BackendTaskContext::WalletSync {
-                    network: previous.network(),
-                },
-                result: Box::new(BackendTaskSuccessResult::PlatformAddressSyncPushed {
-                    updates: vec![(
-                        seed_hash,
-                        vec![PlatformAddressEntry {
-                            hash: [0x77; 20],
-                            balance: 1_234,
-                            nonce: 1,
-                            account: 0,
-                            index: None,
-                            as_of_height: 0,
-                        }],
-                    )],
-                }),
-            },
+            balance_push(previous.network(), seed_hash, 1_234, 1_000_000),
         );
 
         assert_eq!(
             platform_balances(&previous, seed_hash),
-            vec![1_234],
+            vec![(1_234, 1_000_000)],
             "the push lands in the wallet of the network that synced"
         );
         assert!(
             platform_balances(&current, seed_hash).is_empty(),
             "the same wallet on the new network is left alone"
+        );
+
+        deliver(
+            &mut harness,
+            balance_push(current.network(), seed_hash, 500, 10),
+        );
+        assert_eq!(
+            platform_balances(&current, seed_hash),
+            vec![(500, 10)],
+            "the new network's own lower-height push is not refused by the other network's pin"
+        );
+        assert_eq!(
+            platform_balances(&previous, seed_hash),
+            vec![(1_234, 1_000_000)],
+            "the previous network keeps its own figure"
+        );
+    });
+}
+
+/// A balance push from a network the app holds no context for is dropped,
+/// never applied to the active network's copy of the same wallet.
+#[test]
+fn a_balance_push_from_a_network_without_a_context_is_dropped() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let active = harness.state().current_app_context().clone();
+        let seed_hash = insert_wallet(&active, dash_evo_tool::test_support::keys::seed());
+        let unopened = if active.network() == Network::Devnet {
+            Network::Regtest
+        } else {
+            Network::Devnet
+        };
+
+        deliver(
+            &mut harness,
+            balance_push(unopened, seed_hash, 1_234, 1_000_000),
+        );
+
+        assert!(
+            platform_balances(&active, seed_hash).is_empty(),
+            "the active network's wallet is left alone"
         );
     });
 }

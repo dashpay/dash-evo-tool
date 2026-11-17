@@ -116,11 +116,22 @@ impl AppState {
         &self,
         context: &BackendTaskContext,
     ) -> std::sync::Arc<crate::context::AppContext> {
+        self.held_network_context_of(context)
+            .unwrap_or_else(|| self.current_app_context().clone())
+    }
+
+    /// The network context an undispatched result's context names, or `None`
+    /// when the result names no network or the app holds no context for it.
+    /// Never falls back to the active network, whose copy of the same wallet
+    /// must not take another network's figures.
+    pub(super) fn held_network_context_of(
+        &self,
+        context: &BackendTaskContext,
+    ) -> Option<std::sync::Arc<crate::context::AppContext>> {
         context
             .undispatched_network()
             .and_then(|network| self.network_contexts.get(&network))
-            .unwrap_or_else(|| self.current_app_context())
-            .clone()
+            .cloned()
     }
 
     /// Tell the open screen that dispatched a task that the task failed, for an

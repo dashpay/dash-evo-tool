@@ -2320,9 +2320,11 @@ impl App for AppState {
                             // Coordinator push: populate per-address platform_address_info
                             // for the loaded wallets of the network it synced, so the
                             // per-address tab stays current without a manual Refresh.
-                            // No banner — this fires every 15 s.
-                            self.network_context_of(&context)
-                                .apply_platform_address_push(updates);
+                            // No banner — this fires every 15 s. A push for a network
+                            // without a context is dropped; the next pass resends it.
+                            if let Some(event_context) = self.held_network_context_of(&context) {
+                                event_context.apply_platform_address_push(updates);
+                            }
                         }
                         // The sender's own result, with no global banner. No
                         // screen is refreshed for a task whose screen is gone:

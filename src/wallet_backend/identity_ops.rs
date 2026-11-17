@@ -948,7 +948,9 @@ impl WalletBackend {
                     .account(kw)
                     .ok_or(TaskError::WalletStateInconsistent)?;
                 let account_xpub = derived.account_xpub;
-                let managed = ManagedCoreKeysAccount::from_account(derived);
+                let managed = ManagedCoreKeysAccount::from_account(derived).map_err(|source| {
+                    TaskError::IdentityFundingAccountProvisionFailed { source }
+                })?;
                 info.core_wallet
                     .accounts
                     .insert_keys_bearing_account(managed)

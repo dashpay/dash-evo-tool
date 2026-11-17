@@ -239,7 +239,8 @@ async fn materialize_master_key_as_clear(
 
     // Production registers the MASTER key at identity index 0, key index 0.
     let master_path =
-        DerivationPath::identity_authentication_path(network, KeyDerivationType::ECDSA, 0, 0);
+        DerivationPath::identity_authentication_path(network, KeyDerivationType::ECDSA, 0, 0)
+            .expect("identity auth path");
 
     let master_bytes = ctx
         .app_context

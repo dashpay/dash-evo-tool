@@ -58,6 +58,7 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
             security_level,
             None,
         )
+        .expect("identity key entry")
     };
     let signing_keys = if unavailable_hash160 {
         vec![

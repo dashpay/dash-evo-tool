@@ -132,21 +132,22 @@ impl IdentityKeyEntry {
         purpose: Purpose,
         security_level: SecurityLevel,
         contract_bounds: Option<ContractBounds>,
-    ) -> Self {
+    ) -> Result<Self, TaskError> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
             KeyDerivationType::ECDSA,
             identity_index,
             key_index,
-        );
-        Self {
+        )
+        .map_err(crate::database::WalletError::from)?;
+        Ok(Self {
             public_key,
             derivation_path,
             key_type,
             purpose,
             security_level,
             contract_bounds,
-        }
+        })
     }
 
     /// Build an entry by deriving the public key from a borrowed HD seed.
@@ -176,7 +177,7 @@ impl IdentityKeyEntry {
                 key_index,
             )
             .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
-        Ok(Self::from_cached_public_key(
+        Self::from_cached_public_key(
             public_key,
             network,
             identity_index,
@@ -185,7 +186,7 @@ impl IdentityKeyEntry {
             purpose,
             security_level,
             contract_bounds,
-        ))
+        )
     }
 }
 
@@ -1444,7 +1445,8 @@ mod tests {
                         Purpose::AUTHENTICATION,
                         SecurityLevel::HIGH,
                         None,
-                    );
+                    )
+                    .expect("entry");
 
                     // The private key the chokepoint derives at the entry's
                     // path at signing time.

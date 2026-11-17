@@ -2666,11 +2666,11 @@ impl WalletBackend {
     /// [`Self::provision_identity_funding_account`].
     ///
     /// DET rebuilds these monitored accounts from established contacts on every
-    /// cold boot / unlock and skips keys already in the account map. Only
-    /// **newly-added** accounts trigger a
-    /// `bump_monitor_revision`: the `dash-spv` mempool sync manager (shared via
-    /// one `Arc`) checks the aggregate revision on each 100ms tick and rebuilds
-    /// the peer bloom filter when it changes. The tick only runs when the mempool
+    /// cold boot / unlock and skips keys already in the account map. The
+    /// `dash-spv` mempool sync manager (shared via one `Arc`) hashes the
+    /// wallet's monitored addresses on each 100ms tick and rebuilds the peer
+    /// bloom filter when the hash changes, so only **newly-added** accounts
+    /// trigger a rebuild. The tick only runs when the mempool
     /// manager is in `SyncState::Synced`; if registration happens before SPV sync
     /// completes, the accounts are already in the wallet when `activate_all_peers`
     /// sends the initial `FilterLoad` at `SyncEvent::FiltersSyncComplete`, so
@@ -3273,7 +3273,7 @@ impl WalletBackend {
     }
 }
 
-/// Registers contact accounts and bumps each newly inserted account's monitor revision.
+/// Registers contact accounts in managed state and returns how many were newly inserted.
 fn register_contact_accounts_in_managed_wallet(
     info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     accounts: impl IntoIterator<
@@ -3283,17 +3283,10 @@ fn register_contact_accounts_in_managed_wallet(
         ),
     >,
 ) -> usize {
-    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-
     let mut newly_inserted = 0;
     for (account_type, account_xpub) in accounts {
         match add_contact_receiving_account(info, account_type, account_xpub) {
-            Ok(Some(key)) => {
-                newly_inserted += 1;
-                if let Some(account) = info.accounts.dashpay_receival_accounts.get_mut(&key) {
-                    account.bump_monitor_revision();
-                }
-            }
+            Ok(Some(_)) => newly_inserted += 1,
             Ok(None) => {}
             Err(error) => {
                 tracing::debug!(%error, "Skipping contact account: managed insert failed");
@@ -3534,6 +3527,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::IdentityIndexNotSet(_)
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
+        | P::DashpayAccountBuild { .. }
         | P::AssetLockTransaction(_)
         | P::AssetLockNotTracked(_)
         | P::AssetLockAlreadyConsumed(_)
@@ -3863,6 +3857,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ContactRequestNotFound(_)
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
+        | P::DashpayAccountBuild { .. }
         | P::AssetLockTransaction(_)
         | P::AssetLockNotTracked(_)
         | P::AssetLockAlreadyConsumed(_)
@@ -4012,13 +4007,12 @@ mod tests {
         )
     }
 
-    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Covers the managed-state seam after contact xpub derivation, including idempotent re-runs.
     /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
     #[test]
-    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
+    fn contact_registration_inserts_only_new_keys() {
         use dash_sdk::dpp::key_wallet::account::AccountType;
         use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -4057,14 +4051,6 @@ mod tests {
             user_identity_id: [1u8; 32],
             friend_identity_id: [3u8; 32],
         };
-        let max_monitor_revision = |info: &ManagedWalletInfo| {
-            info.accounts
-                .dashpay_receival_accounts
-                .values()
-                .map(ManagedAccountTrait::monitor_revision)
-                .max()
-                .unwrap_or_default()
-        };
         let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
         info.update_synced_height(500);
 
@@ -4074,10 +4060,12 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
         assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .collect::<Vec<_>>(),
+            [&first_key]
         );
 
         assert_eq!(
@@ -4086,10 +4074,12 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
         assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .collect::<Vec<_>>(),
+            [&first_key]
         );
 
         assert_eq!(
@@ -4097,23 +4087,13 @@ mod tests {
             1
         );
         assert_eq!(info.account_generation(), 2);
-        assert_eq!(max_monitor_revision(&info), 1);
         assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .collect::<Vec<_>>(),
+            [&first_key, &second_key]
         );
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&second_key].monitor_revision(),
-            1
-        );
-        let mut revisions = info
-            .accounts
-            .dashpay_receival_accounts
-            .values()
-            .map(ManagedAccountTrait::monitor_revision)
-            .collect::<Vec<_>>();
-        revisions.sort_unstable();
-        assert_eq!(revisions, [1, 1]);
     }
 
     /// The durable wallet databases are siblings of `det-app.sqlite` in the

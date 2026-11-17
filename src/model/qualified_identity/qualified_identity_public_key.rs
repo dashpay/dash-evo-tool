@@ -186,6 +186,7 @@ mod tests {
             identity_index,
             key_index,
         )
+        .expect("auth path")
     }
 
     /// The signing-critical case: a User identity's ECDSA authentication key

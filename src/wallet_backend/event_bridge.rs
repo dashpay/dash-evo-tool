@@ -756,6 +756,7 @@ mod tests {
             balance: WalletCoreBalance::default(),
             account_balances: BTreeMap::new(),
             addresses_derived: Vec::new(),
+            locked_outpoints: Vec::new(),
         }
     }
 
@@ -1071,6 +1072,7 @@ mod tests {
             balance: WalletCoreBalance::default(),
             account_balances: BTreeMap::new(),
             addresses_derived: Vec::new(),
+            locked_outpoints: Vec::new(),
         });
 
         assert_eq!(
@@ -1100,6 +1102,7 @@ mod tests {
             balance: WalletCoreBalance::default(),
             account_balances: BTreeMap::new(),
             addresses_derived: Vec::new(),
+            locked_outpoints: Vec::new(),
         });
 
         let candidates = drained_incoming_candidates(&mut rx)
@@ -1138,6 +1141,7 @@ mod tests {
             balance: WalletCoreBalance::default(),
             account_balances: BTreeMap::new(),
             addresses_derived: Vec::new(),
+            locked_outpoints: Vec::new(),
         });
 
         let addresses = drained_received_utxo_addresses(&mut rx)

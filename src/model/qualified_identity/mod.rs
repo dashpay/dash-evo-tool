@@ -1002,12 +1002,14 @@ impl QualifiedIdentity {
                         return Ok(None);
                     };
                     for identity_index in 0..10u32 {
-                        let correct_path = DP::identity_authentication_path(
+                        let Ok(correct_path) = DP::identity_authentication_path(
                             network,
                             KeyDerivationType::ECDSA,
                             identity_index,
                             key_id,
-                        );
+                        ) else {
+                            continue;
+                        };
                         let Ok(extended_key) =
                             correct_path.derive_priv_ecdsa_for_master_seed(seed, network)
                         else {

@@ -531,8 +531,8 @@ async fn step_register_dashpay_addresses(
 /// `established_contacts` is populated; without it `established_contact_pairs`
 /// returns an empty slice and the step is a silent no-op. Asserts that at least
 /// one account was wired after the first pass. The second pass must also succeed
-/// without newly wiring additional accounts (idempotency check: `bump_monitor_revision`
-/// is skipped on re-registration so no spurious bloom-filter rebuilds occur).
+/// without newly wiring additional accounts (idempotency check: an unchanged
+/// monitored set leaves the bloom filter untouched).
 async fn step_register_contact_receiving_accounts(
     ctx: &crate::framework::harness::BackendTestContext,
     pair: &fixtures::SharedDashPayPair,
@@ -576,8 +576,7 @@ async fn step_register_contact_receiving_accounts(
     );
 
     // Second pass: idempotent re-run must not panic, must not add new accounts
-    // (same contacts → same keys → len unchanged), and must not bump
-    // monitor_revision (which would cause a spurious bloom-filter rebuild).
+    // (same contacts → same keys → len unchanged).
     ctx.app_context
         .bootstrap_wallet_addresses_jit(&pair.wallet_b)
         .await;

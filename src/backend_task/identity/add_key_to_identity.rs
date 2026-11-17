@@ -161,7 +161,8 @@ impl AppContext {
                 KeyDerivationType::ECDSA,
                 identity_index,
                 index,
-            ),
+            )
+            .map_err(crate::database::WalletError::from)?,
         });
         Ok((identity, key))
     }
@@ -682,7 +683,8 @@ mod tests {
                 KeyDerivationType::ECDSA,
                 0,
                 3,
-            ),
+            )
+            .expect("auth path"),
         });
         insert_derived_key(&mut identity, &key).unwrap();
         identity
@@ -1125,7 +1127,8 @@ mod tests {
                 KeyDerivationType::ECDSA,
                 1,
                 1,
-            ),
+            )
+            .expect("auth path"),
         };
         stray.in_wallet_at_derivation_path = Some(stray_path.clone());
         identity
@@ -1244,7 +1247,8 @@ mod tests {
                     KeyDerivationType::ECDSA,
                     0,
                     3,
-                ),
+                )
+                .expect("auth path"),
             })
         );
     }
@@ -1803,7 +1807,8 @@ mod tests {
                 KeyDerivationType::ECDSA,
                 0,
                 3,
-            ),
+            )
+            .expect("auth path"),
         });
         insert_derived_key(&mut snapshot, &key).expect("file the derived key");
         snapshot

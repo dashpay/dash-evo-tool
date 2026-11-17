@@ -2913,6 +2913,29 @@ mod tests {
         assert!(!result.fee_from_amount);
     }
 
+    /// Platform rejects a transfer input below `min_input_amount`
+    /// (`InputBelowMinimumError`), so no input of a planned transfer may be smaller.
+    #[test]
+    fn platform_transfer_inputs_respect_the_minimum_input_amount() {
+        let estimator = PlatformFeeEstimator::latest();
+        let min_input = PlatformVersion::latest()
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_input_amount;
+        // A dust address next to a funded one, as a previous spend can leave.
+        let addresses = addrs(&[(1, 1_000_000_000), (2, min_input / 2)]);
+
+        let max = platform_transfer_max(&estimator, &addresses, None);
+        let max_plan = allocate_platform_transfer(&estimator, &addresses, max, None);
+        assert_eq!(max_plan.shortfall, 0);
+        assert!(
+            max_plan.inputs.values().all(|used| *used >= min_input),
+            "Max plans an input below the minimum: {:?}",
+            max_plan.inputs
+        );
+    }
+
     /// The Platform → Platform Max is the balance one transfer may spend,
     /// and the transfer of it is accepted; nothing when that cannot pay the fee.
     #[test]

@@ -6893,6 +6893,69 @@ mod tests {
     /// above DET's estimate for the same transfer.
     const PLATFORM_PRECHECK_FEE_1_IN_1_OUT: u64 = 15_308_500;
 
+    /// A typed (non-Max) amount that leaves too little for the fee on top
+    /// takes the fee from the amount, and the caption, the fee summary and
+    /// the confirmation dialog all say so before the user confirms.
+    #[test]
+    fn platform_to_platform_typed_amount_shows_the_fee_from_amount_before_confirm() {
+        const BALANCE_CREDITS: u64 = 30_016_840_342;
+        let typed = BALANCE_CREDITS - 5_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source = PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        let addresses = vec![(source, source_core, BALANCE_CREDITS)];
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(addresses.clone()));
+        let destination =
+            PlatformAddress::try_from(testnet_core_address(4)).expect("platform destination");
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination,
+            bech32m: destination.to_bech32m_string(Network::Testnet),
+        });
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_amount_input(ui);
+                screen.render_fee_summary(ui);
+                let _ = screen.render_send_confirmation(ui);
+            },
+            screen,
+        );
+        harness.run();
+        harness.state_mut().amount = Some(Amount::dash_from_credits(typed));
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label_contains("the fee is taken from the amount")
+                .is_some(),
+            "caption"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Recipient receives")
+                .is_some(),
+            "fee summary row"
+        );
+
+        let action = harness
+            .state_mut()
+            .send_platform_to_platform(seed_hash, addresses)
+            .expect("typed amount is accepted");
+        let message = harness.state().simple_send_confirmation_message();
+        harness.state_mut().open_send_confirmation(action, message);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("so the recipient will receive")
+                .is_some(),
+            "confirmation dialog"
+        );
+    }
+
     /// Platform → Platform Max builds a transfer Platform's fee pre-check
     /// accepts: what the fee strategy may draw on covers the worst-case fee
     /// the network demands, not only DET's estimate.

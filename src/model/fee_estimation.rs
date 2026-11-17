@@ -1155,6 +1155,22 @@ pub(crate) struct AddressAllocationResult {
     pub shortfall: u64,
     /// Addresses sorted by balance descending (for UI display)
     pub sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
+    /// The fee is taken out of the single output instead of being kept back
+    /// on the fee payer; see [`allocate_platform_transfer`].
+    pub fee_from_amount: bool,
+}
+
+impl AddressAllocationResult {
+    /// The consensus fee strategy of a transfer built from this allocation.
+    pub(crate) fn fee_strategy(&self) -> Vec<AddressFundsFeeStrategyStep> {
+        if self.fee_from_amount {
+            vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
+        } else {
+            vec![AddressFundsFeeStrategyStep::DeductFromInput(
+                self.fee_payer_index,
+            )]
+        }
+    }
 }
 
 /// Allocates platform addresses for a transfer, using a custom fee calculator.
@@ -1190,6 +1206,7 @@ where
             estimated_fee: fee_for_inputs(&BTreeMap::new()),
             shortfall: amount_credits,
             sorted_addresses: vec![],
+            fee_from_amount: false,
         };
     }
 
@@ -1261,6 +1278,7 @@ where
         estimated_fee,
         shortfall,
         sorted_addresses,
+        fee_from_amount: false,
     }
 }
 
@@ -1292,6 +1310,80 @@ pub(crate) fn allocate_platform_addresses(
         // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
         estimate_platform_fee(estimator, max_inputs.max(1), 1)
     })
+}
+
+/// Allocates a Platform → Platform transfer of `amount_credits`.
+///
+/// As [`allocate_platform_addresses`], the highest-balance address keeps the
+/// fee back when it can, so the recipient gets exactly the amount. When it
+/// cannot (the amount takes all the usable balance, as Max does), the whole
+/// amount comes from the inputs and the fee is taken out of it
+/// (`fee_from_amount`). Platform then checks its worst-case fee against the
+/// amount, not against what the inputs keep back, which DET's estimate can
+/// fall short of. Refused (a shortfall) when the amount cannot pay the fee.
+pub(crate) fn allocate_platform_transfer(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    destination: Option<&PlatformAddress>,
+) -> AddressAllocationResult {
+    let kept_back = allocate_platform_addresses(estimator, addresses, amount_credits, destination);
+    if kept_back.shortfall == 0 {
+        return kept_back;
+    }
+    let mut inputs = BTreeMap::new();
+    let mut remaining = amount_credits;
+    for (address, _, balance) in kept_back
+        .sorted_addresses
+        .iter()
+        .take(estimator.max_platform_inputs())
+    {
+        if remaining == 0 {
+            break;
+        }
+        let used = remaining.min(*balance);
+        if used > 0 {
+            inputs.insert(*address, used);
+            remaining -= used;
+        }
+    }
+    let estimated_fee = estimate_platform_fee(estimator, inputs.len(), 1);
+    if remaining > 0 || amount_credits <= estimated_fee {
+        return kept_back;
+    }
+    AddressAllocationResult {
+        inputs,
+        fee_payer_index: 0,
+        estimated_fee,
+        shortfall: 0,
+        sorted_addresses: kept_back.sorted_addresses,
+        fee_from_amount: true,
+    }
+}
+
+/// The Platform → Platform Max: the balance of the addresses one transfer
+/// may spend, with the fee taken out of it ([`allocate_platform_transfer`]),
+/// or zero when that balance cannot pay the fee.
+pub(crate) fn platform_transfer_max(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+    destination: Option<&PlatformAddress>,
+) -> u64 {
+    let mut balances: Vec<u64> = addresses
+        .iter()
+        .filter(|(address, _, _)| destination != Some(address))
+        .map(|(_, _, balance)| *balance)
+        .collect();
+    balances.sort_unstable_by(|a, b| b.cmp(a));
+    let spendable = balances
+        .iter()
+        .take(estimator.max_platform_inputs())
+        .fold(0u64, |total, balance| total.saturating_add(*balance));
+    if allocate_platform_transfer(estimator, addresses, spendable, destination).shortfall == 0 {
+        spendable
+    } else {
+        0
+    }
 }
 
 /// The rate DET's Core transactions build at: the upstream builder's default.
@@ -2765,6 +2857,90 @@ mod tests {
         assert_eq!(result.shortfall, 0);
         assert_eq!(result.fee_payer_index, 0);
         assert_eq!(result.inputs.get(&pa(1)).copied(), Some(1_000_000));
+    }
+
+    /// A transfer that leaves the fee on the highest-balance address keeps
+    /// paying it from there: the recipient gets exactly the amount.
+    #[test]
+    fn platform_transfer_keeps_the_fee_on_an_input_when_it_fits() {
+        let estimator = PlatformFeeEstimator::latest();
+        let addresses = addrs(&[(1, 10_000_000_000)]);
+        let result = allocate_platform_transfer(&estimator, &addresses, 1_000_000, None);
+
+        assert_eq!(result.shortfall, 0);
+        assert!(!result.fee_from_amount);
+        assert_eq!(
+            result.fee_strategy(),
+            vec![AddressFundsFeeStrategyStep::DeductFromInput(0)]
+        );
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(1_000_000));
+    }
+
+    /// Sending the whole balance takes the fee out of the amount: every
+    /// credit of the amount comes from the inputs and the output pays the fee.
+    #[test]
+    fn platform_transfer_of_the_whole_balance_takes_the_fee_from_the_amount() {
+        let estimator = PlatformFeeEstimator::latest();
+        let addresses = addrs(&[(1, 300_000_000), (2, 200_000_000)]);
+        let result = allocate_platform_transfer(&estimator, &addresses, 500_000_000, None);
+
+        assert_eq!(result.shortfall, 0);
+        assert!(result.fee_from_amount);
+        assert_eq!(
+            result.fee_strategy(),
+            vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
+        );
+        assert_eq!(
+            result.inputs,
+            BTreeMap::from([(pa(1), 300_000_000), (pa(2), 200_000_000)])
+        );
+        assert_eq!(
+            result.estimated_fee,
+            estimate_platform_fee(&estimator, 2, 1)
+        );
+    }
+
+    /// An amount that neither leaves the fee on an input nor covers it
+    /// itself is refused.
+    #[test]
+    fn platform_transfer_refuses_an_amount_too_small_to_pay_the_fee() {
+        let estimator = PlatformFeeEstimator::latest();
+        let fee = estimate_platform_fee(&estimator, 1, 1);
+        let addresses = addrs(&[(1, fee)]);
+        let result = allocate_platform_transfer(&estimator, &addresses, fee, None);
+
+        assert!(result.shortfall > 0);
+        assert!(!result.fee_from_amount);
+    }
+
+    /// The Platform → Platform Max is the balance one transfer may spend,
+    /// and the transfer of it is accepted; nothing when that cannot pay the fee.
+    #[test]
+    fn platform_transfer_max_is_the_spendable_balance() {
+        let estimator = PlatformFeeEstimator::latest();
+        let cap = estimator.max_platform_inputs();
+        let balances: Vec<(u8, u64)> = (1..=u8::try_from(cap + 1).expect("small cap"))
+            .map(|i| (i, 100_000_000 + u64::from(i)))
+            .collect();
+        let addresses = addrs(&balances);
+        let spendable: u64 = balances.iter().rev().take(cap).map(|(_, b)| b).sum();
+
+        let max = platform_transfer_max(&estimator, &addresses, None);
+        assert_eq!(max, spendable, "the input cap bounds the Max");
+        let plan = allocate_platform_transfer(&estimator, &addresses, max, None);
+        assert_eq!(plan.shortfall, 0, "the Max is accepted");
+        assert!(plan.fee_from_amount);
+
+        let fee = estimate_platform_fee(&estimator, 1, 1);
+        assert_eq!(
+            platform_transfer_max(&estimator, &addrs(&[(1, fee)]), None),
+            0
+        );
+        assert_eq!(
+            platform_transfer_max(&estimator, &addrs(&[(1, 900)]), Some(&pa(1))),
+            0,
+            "the destination is not a source"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::wallet::WalletSeedHash;
-use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategy, PlatformAddress};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::ecdsa::{EcdsaRecSignature, EcdsaSecretKey};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -300,9 +300,9 @@ pub enum WalletTask {
         inputs: BTreeMap<PlatformAddress, Credits>,
         /// Destination addresses with amounts
         outputs: BTreeMap<PlatformAddress, Credits>,
-        /// Index of the input to deduct fees from (in BTreeMap order).
-        /// Should be the input with the highest balance to ensure sufficient funds for fees.
-        fee_payer_index: u16,
+        /// Where the network fee comes from: an input (indexed in BTreeMap
+        /// order) or the output.
+        fee_strategy: AddressFundsFeeStrategy,
     },
     /// List the wallet's tracked asset locks. Read through the upstream
     /// `AssetLockManager` (the single source of truth) off the UI thread, so

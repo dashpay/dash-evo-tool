@@ -177,6 +177,27 @@ fn target_reference() -> Result<Connection, UpgradeError> {
     Ok(conn)
 }
 
+/// Copy legacy rows into V020 before upstream's accounting backfill runs.
+pub(super) fn initialize_stage(path: &Path) -> Result<(), UpgradeError> {
+    Connection::open(path)?.execute_batch(TARGET_SCHEMA)?;
+    Ok(())
+}
+
+/// Require the populated stage to match the current public migration runner.
+pub(super) fn verify_current_schema(path: &Path, reference: &Path) -> Result<(), UpgradeError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let target = Connection::open_with_flags(path, flags)?;
+    let reference = Connection::open_with_flags(reference, flags)?;
+    if objects(&target)? != objects(&reference)?
+        || history(&target)? != history(&reference)?
+        || target.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+            != reference.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+    {
+        return Err(UpgradeError::Unrecognized);
+    }
+    verify(&target)
+}
+
 fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeError> {
     let value: Option<Vec<u8>> = conn
         .query_row(
@@ -905,6 +926,13 @@ fn upgrade_with_hook_locked(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    // Publish the schema produced by migrations on the populated stage.
+    let target_objects = objects(&target)?;
+    let new_tables = target_objects
+        .iter()
+        .filter(|o| o.kind == "table")
+        .map(|o| o.name.as_str())
+        .collect::<BTreeSet<_>>();
     // Rebuild under one SQLite transaction; power loss exposes either complete schema.
     for o in existing.iter().filter(|o| o.kind == "trigger") {
         source.execute_batch(&format!("DROP TRIGGER {}", quote(&o.name)))?;

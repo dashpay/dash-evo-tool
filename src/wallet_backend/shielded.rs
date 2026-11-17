@@ -451,21 +451,6 @@ impl WalletBackend {
         self.inner.pwm.shielded_sync_arc().sync_now(force).await;
     }
 
-    /// Total credits platform-wallet holds on this wallet's Platform-payment
-    /// account 0 — the balances a shield from Platform selects its inputs
-    /// from.
-    pub(crate) async fn platform_payment_credits(
-        &self,
-        seed_hash: &WalletSeedHash,
-    ) -> Result<u64, TaskError> {
-        Ok(self
-            .resolve_wallet(seed_hash)
-            .await?
-            .platform()
-            .total_credits()
-            .await)
-    }
-
     /// Run a Platform-address sync pass after an operation spent
     /// Platform-address credits, waiting up to `wait` for it.
     ///

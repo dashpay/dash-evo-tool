@@ -14,6 +14,9 @@ use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 use crate::mcp::tools::WalletIdParams;
+use crate::model::spend_limit::SpendLimitKind;
+use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::WalletBackend;
 
 // ---------------------------------------------------------------------------
 // ShieldedShieldFromCore (Core -> Shielded via asset lock)
@@ -169,22 +172,8 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_shielded_operations_ready(&ctx).await?;
 
-        // Pre-flight against the balances the upstream planner selects the
-        // input addresses from.
-        let total = ctx
-            .wallet_backend()
-            .map_err(McpToolError::TaskFailed)?
-            .platform_payment_credits(&seed_hash)
-            .await
-            .map_err(McpToolError::TaskFailed)?;
-        if total < param.amount_credits {
-            return Err(McpToolError::InvalidParam {
-                message: format!(
-                    "Insufficient platform balance. Total available is {} credits but {} required.",
-                    total, param.amount_credits
-                ),
-            });
-        }
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+        ensure_amount_shieldable(&backend, &seed_hash, param.amount_credits).await?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromBalance {
             seed_hash,
@@ -206,6 +195,29 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
             ))),
         }
     }
+}
+
+/// Refuse an amount above the shield-from-Platform Max before the shield
+/// starts. The Max is the send screen's quote, taken from the planner that
+/// selects the shield's inputs.
+async fn ensure_amount_shieldable(
+    backend: &WalletBackend,
+    seed_hash: &WalletSeedHash,
+    amount_credits: u64,
+) -> Result<(), McpToolError> {
+    let max_credits = backend
+        .spend_limit_credits(seed_hash, SpendLimitKind::ShieldFromPlatform)
+        .await
+        .map_err(McpToolError::TaskFailed)?;
+    if amount_credits > max_credits {
+        return Err(McpToolError::InvalidParam {
+            message: format!(
+                "Insufficient platform balance. At most {max_credits} credits can be shielded \
+                 but {amount_credits} were requested."
+            ),
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -764,6 +776,48 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An amount the wallet's Platform balance holds but the shield planner
+    /// cannot shield (its fee reserve stays on the input) is refused as a
+    /// parameter error before the shield starts; the quoted Max passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_pre_flight_refuses_an_amount_above_the_shieldable_max() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = ctx.wallet_backend().expect("wired backend");
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+        let balance = 100_000_000_000;
+        backend
+            .set_platform_address_balance_for_test(
+                &seed_hash,
+                PlatformP2PKHAddress::new([1; 20]),
+                balance,
+            )
+            .await;
+
+        let refused = ensure_amount_shieldable(&backend, &seed_hash, balance).await;
+        let max = backend
+            .spend_limit_credits(&seed_hash, SpendLimitKind::ShieldFromPlatform)
+            .await
+            .expect("shield quote");
+        let accepted = ensure_amount_shieldable(&backend, &seed_hash, max).await;
+        backend.shutdown().await;
+
+        assert!(
+            matches!(refused, Err(McpToolError::InvalidParam { .. })),
+            "{refused:?}"
+        );
+        assert!(0 < max && max < balance, "max {max}");
+        assert!(accepted.is_ok(), "{accepted:?}");
+    }
 
     /// Automation must be able to tell a transfer that succeeded without a
     /// known amount from one that reports a figure.

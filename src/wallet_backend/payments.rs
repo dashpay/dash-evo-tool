@@ -3085,42 +3085,6 @@ mod tests {
         );
     }
 
-    /// The Platform balance a shield is checked against is platform-wallet's
-    /// own account-0 balance, the one the shield planner selects inputs from.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn platform_payment_credits_reads_the_planners_balances() {
-        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
-
-        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet().await;
-        assert_eq!(
-            backend.platform_payment_credits(&seed_hash).await.ok(),
-            Some(0),
-            "precondition: no Platform balance"
-        );
-
-        {
-            let wallet_id = platform_wallet.wallet_id();
-            let mut manager = platform_wallet.wallet_manager().write().await;
-            let account = manager
-                .get_wallet_info_mut(&wallet_id)
-                .and_then(|info| {
-                    info.core_wallet
-                        .first_platform_payment_managed_account_mut()
-                })
-                .expect("platform-payment account 0");
-            account.set_address_credit_balance(PlatformP2PKHAddress::new([1; 20]), 1_000, None);
-            account.set_address_credit_balance(PlatformP2PKHAddress::new([2; 20]), 5_000, None);
-        }
-
-        assert_eq!(
-            backend.platform_payment_credits(&seed_hash).await.ok(),
-            Some(6_000)
-        );
-        let unknown = backend.platform_payment_credits(&[7; 32]).await;
-        assert!(unknown.is_err(), "{unknown:?}");
-    }
-
     /// After a spend from Platform addresses a sync pass runs, so the shield
     /// planner and DET's per-address balances stop showing the spent credits
     /// and the next shield Max is quoted from the new balances.

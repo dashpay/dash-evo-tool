@@ -248,6 +248,25 @@ opt-level = 3
 [profile.test.package.wide]
 opt-level = 3
 
+# The rest of SPV sync also runs on the tokio workers and is too slow
+# unoptimized: BIP158 filter matching (SipHash, whose code is emitted in
+# `dashcore`, not `dashcore_hashes`) and, from rust-dashcore d85f15ac on, the
+# per-header Dark Gravity Wave check (U256 arithmetic in `bitcoin-internals`).
+# With both at opt-level 3 a debug testnet sync takes about 2 minutes instead of
+# about 9. Measured in dashpay/rust-dashcore#1425.
+# TODO: drop these stanzas if rust-dashcore makes this code cheap unoptimized.
+[profile.dev.package.dashcore]
+opt-level = 3
+
+[profile.test.package.dashcore]
+opt-level = 3
+
+[profile.dev.package.bitcoin-internals]
+opt-level = 3
+
+[profile.test.package.bitcoin-internals]
+opt-level = 3
+
 # Release builds are the distributed binaries (weekly/nightly CI, Flatpak), so
 # they are optimized as far as is reasonable and build time is irrelevant:
 # whole-program fat LTO plus a single codegen unit per crate. opt-level stays at

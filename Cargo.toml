@@ -248,6 +248,13 @@ opt-level = 3
 [profile.test.package.wide]
 opt-level = 3
 
+# TEMPORARY experiment branch (never merged): build tests with release-like
+# optimization so the migration matrix measures SPV sync as users ship it.
+[profile.test]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
 # Release builds are the distributed binaries (weekly/nightly CI, Flatpak), so
 # they are optimized as far as is reasonable and build time is irrelevant:
 # whole-program fat LTO plus a single codegen unit per crate. opt-level stays at

@@ -625,7 +625,6 @@ mod tests {
     type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
     use crate::backend_task::BackendTaskContext;
     use crate::utils::egui_mpsc::EguiMpscAsync;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};

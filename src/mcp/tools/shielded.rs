@@ -169,25 +169,21 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_shielded_operations_ready(&ctx).await?;
 
-        // Pre-flight: verify the wallet's total platform balance can cover the
-        // amount. The upstream coordinator selects the actual input addresses —
-        // DET no longer picks a single `from_address`.
-        {
-            let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
-            let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-            let total: u64 = wallet
-                .platform_address_info
-                .values()
-                .map(|info| info.balance)
-                .sum();
-            if total < param.amount_credits {
-                return Err(McpToolError::InvalidParam {
-                    message: format!(
-                        "Insufficient platform balance. Total available is {} credits but {} required.",
-                        total, param.amount_credits
-                    ),
-                });
-            }
+        // Pre-flight against the balances the upstream planner selects the
+        // input addresses from.
+        let total = ctx
+            .wallet_backend()
+            .map_err(McpToolError::TaskFailed)?
+            .platform_payment_credits(&seed_hash)
+            .await
+            .map_err(McpToolError::TaskFailed)?;
+        if total < param.amount_credits {
+            return Err(McpToolError::InvalidParam {
+                message: format!(
+                    "Insufficient platform balance. Total available is {} credits but {} required.",
+                    total, param.amount_credits
+                ),
+            });
         }
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromBalance {

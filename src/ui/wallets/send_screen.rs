@@ -10,12 +10,13 @@ use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipi
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
-    PlatformFeeEstimator, allocate_platform_addresses, allocate_platform_addresses_with_fee,
-    allocate_platform_transfer, core_send_fee_at_max_duffs,
+    PlatformFeeEstimator, PlatformTransferRefusal, allocate_platform_addresses,
+    allocate_platform_addresses_with_fee, allocate_platform_transfer, core_send_fee_at_max_duffs,
     estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
     estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
     format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
-    max_spendable_credits, platform_transfer_max, shield_from_balance_fee_headroom,
+    max_spendable_credits, min_platform_input, platform_transfer_max,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -187,6 +188,27 @@ impl std::fmt::Display for PlatformFeeStrategy {
             Self::ReduceFirstOutput => write!(f, "Reduce first output"),
             Self::ReduceLastOutput => write!(f, "Reduce last output"),
         }
+    }
+}
+
+/// The user-facing sentence for a Platform → Platform amount the planner
+/// refused for its fee or Platform's input minimum; `None` for an amount
+/// over the Max, which callers describe with the balance details.
+fn platform_transfer_refusal_message(refusal: PlatformTransferRefusal) -> Option<String> {
+    match refusal {
+        PlatformTransferRefusal::BelowFee { fee } => {
+            let fee = format_credits_as_dash(fee);
+            Some(format!(
+                "This amount is too small to pay the network fee of approximately {fee}. Enter an amount above {fee}."
+            ))
+        }
+        PlatformTransferRefusal::InputBelowMinimum { min_input } => {
+            let min_input = format_credits_as_dash(min_input);
+            Some(format!(
+                "Each address used for this transfer must give at least {min_input}. Enter a different amount and try again."
+            ))
+        }
+        PlatformTransferRefusal::ExceedsSpendable { .. } => None,
     }
 }
 
@@ -1497,14 +1519,16 @@ impl WalletSendScreen {
                 .take(max_inputs)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_sendable =
-                platform_transfer_max(&fee_estimator, &allocation.sorted_addresses, None);
-            if amount_credits <= max_sendable {
-                let fee = format_credits_as_dash(estimate_platform_fee(&fee_estimator, 1, 1));
-                return Err(format!(
-                    "This amount is too small to pay the network fee of approximately {fee}. Enter an amount above {fee}."
-                ));
+            if let Some(message) = allocation
+                .refusal
+                .and_then(platform_transfer_refusal_message)
+            {
+                return Err(message);
             }
+            let max_sendable = match allocation.refusal {
+                Some(PlatformTransferRefusal::ExceedsSpendable { max }) => max,
+                _ => platform_transfer_max(&fee_estimator, &allocation.sorted_addresses, None),
+            };
 
             return Err(format!(
                 "Requested amount {} exceeds maximum {} for a single transaction.\n\n\
@@ -1600,6 +1624,7 @@ impl WalletSendScreen {
             amount_credits,
             None,
             max_inputs,
+            min_platform_input(platform_version),
             |inputs| {
                 estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
             },
@@ -3203,7 +3228,10 @@ impl WalletSendScreen {
                 let max_inputs = fee_estimator.max_platform_inputs();
                 let sources = addresses
                     .iter()
-                    .filter(|(addr, _, _)| destination.as_ref() != Some(addr))
+                    .filter(|(addr, _, balance)| {
+                        destination.as_ref() != Some(addr)
+                            && *balance >= fee_estimator.min_platform_input()
+                    })
                     .count();
                 let fee = format_credits_as_dash(estimate_platform_fee(
                     &fee_estimator,
@@ -3240,10 +3268,14 @@ impl WalletSendScreen {
                     .as_ref()
                     .and_then(|v| v.as_platform().copied());
 
-                // Filter out destination and sort by balance descending
+                // Leave out the destination and addresses below Platform's
+                // input minimum; sort by balance descending.
                 let mut sorted_addresses: Vec<_> = addresses
                     .iter()
-                    .filter(|(addr, _, _)| destination.as_ref() != Some(addr))
+                    .filter(|(addr, _, balance)| {
+                        destination.as_ref() != Some(addr)
+                            && *balance >= fee_estimator.min_platform_input()
+                    })
                     .cloned()
                     .collect();
                 sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
@@ -3435,7 +3467,12 @@ impl WalletSendScreen {
                     // Determine if the shortfall is due to address limit or insufficient balance
                     let max_inputs = max_platform_inputs(self.app_context.platform_version());
                     let exceeds_address_limit = allocation.sorted_addresses.len() > max_inputs;
-                    let warning_msg = if exceeds_address_limit {
+                    let warning_msg = if let Some(message) = allocation
+                        .refusal
+                        .and_then(platform_transfer_refusal_message)
+                    {
+                        message
+                    } else if exceeds_address_limit {
                         format!(
                             "Warning: Amount requires more than {} addresses. \
                              Reduce amount or use multiple transactions.",
@@ -3551,6 +3588,7 @@ impl WalletSendScreen {
                     amount_credits,
                     None,
                     max_platform_inputs(platform_version),
+                    min_platform_input(platform_version),
                     |inputs| {
                         estimate_withdrawal_fee_from_transition(
                             platform_version,
@@ -3774,10 +3812,13 @@ impl WalletSendScreen {
                             );
                         });
                     ui.add_space(2.0);
+                    let caption = if self.advanced_fee_reduces_output() == Some(true) {
+                        "Fees are estimated and deducted from the output amount, so the recipient receives less."
+                    } else {
+                        "Fees are estimated and added on top of your output amounts."
+                    };
                     ui.label(
-                        RichText::new(
-                            "Fees are estimated and added on top of your output amounts.",
-                        )
+                        RichText::new(caption)
                         .color(DashColors::text_secondary(dark_mode))
                         .italics()
                         .size(11.0),
@@ -3828,6 +3869,19 @@ impl WalletSendScreen {
         )
     }
 
+    /// Whether the chosen Fee Strategy takes the fee out of the output
+    /// (`Some(true)`) or the inputs (`Some(false)`); `None` when the send
+    /// does not use it (no Platform output).
+    fn advanced_fee_reduces_output(&self) -> Option<bool> {
+        self.advanced_outputs
+            .iter()
+            .any(|output| self.detect_address_kind(&output.address) == Some(AddressKind::Platform))
+            .then_some(matches!(
+                self.fee_strategy,
+                PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
+            ))
+    }
+
     fn advanced_send_confirmation_message(&self) -> String {
         let recipients: Vec<_> = self
             .advanced_outputs
@@ -3862,20 +3916,14 @@ impl WalletSendScreen {
             .collect::<Vec<_>>()
             .join("\n");
         let fee = Self::confirmation_fee_sentence(self.advanced_fee_estimate_credits());
-        let output_fee_effect = if self.advanced_source_type == AdvancedSourceType::Core
-            && self.advanced_outputs.iter().any(|output| {
-                self.detect_address_kind(&output.address) == Some(AddressKind::Platform)
-            }) {
-            if matches!(
-                self.fee_strategy,
-                PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
-            ) {
+        let output_fee_effect = match self.advanced_fee_reduces_output() {
+            Some(true) => {
                 "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount."
-            } else {
+            }
+            Some(false) => {
                 "The network fee will be paid from the selected inputs, so the recipient will receive the entered amount."
             }
-        } else {
-            ""
+            None => "",
         };
         let fee_details = if output_fee_effect.is_empty() {
             fee
@@ -4843,6 +4891,56 @@ impl WalletSendScreen {
         )))
     }
 
+    /// The chosen Fee Strategy as a step of the transition, "first" and
+    /// "last" meaning the rows as entered, located in the transition's sorted
+    /// `inputs` and `outputs`.
+    fn advanced_platform_fee_step(
+        &self,
+        inputs: &BTreeMap<PlatformAddress, Credits>,
+        outputs: &BTreeMap<PlatformAddress, Credits>,
+    ) -> AddressFundsFeeStrategyStep {
+        fn index_of(
+            mut keys: impl Iterator<Item = PlatformAddress>,
+            row: Option<PlatformAddress>,
+        ) -> u16 {
+            row.and_then(|row| keys.position(|key| key == row))
+                .and_then(|index| u16::try_from(index).ok())
+                .unwrap_or(0)
+        }
+        let input_rows = || {
+            self.platform_inputs
+                .iter()
+                .map(|row| row.platform_address)
+                .filter(|address| inputs.contains_key(address))
+        };
+        let output_rows = || {
+            self.advanced_outputs
+                .iter()
+                .filter_map(|row| PlatformAddress::from_bech32m_string(row.address.trim()).ok())
+                .filter(|address| outputs.contains_key(address))
+        };
+        match self.fee_strategy {
+            PlatformFeeStrategy::DeductFromFirstInput => {
+                AddressFundsFeeStrategyStep::DeductFromInput(index_of(
+                    inputs.keys().copied(),
+                    input_rows().next(),
+                ))
+            }
+            PlatformFeeStrategy::DeductFromLastInput => {
+                AddressFundsFeeStrategyStep::DeductFromInput(index_of(
+                    inputs.keys().copied(),
+                    input_rows().next_back(),
+                ))
+            }
+            PlatformFeeStrategy::ReduceFirstOutput => AddressFundsFeeStrategyStep::ReduceOutput(
+                index_of(outputs.keys().copied(), output_rows().next()),
+            ),
+            PlatformFeeStrategy::ReduceLastOutput => AddressFundsFeeStrategyStep::ReduceOutput(
+                index_of(outputs.keys().copied(), output_rows().next_back()),
+            ),
+        }
+    }
+
     /// Advanced Platform to Platform send
     fn send_advanced_platform_to_platform(
         &mut self,
@@ -4862,24 +4960,14 @@ impl WalletSendScreen {
             return Err("No valid Platform outputs specified".to_string());
         }
 
-        // Find the input with the highest amount to be the fee payer.
-        // In advanced mode, user specifies amounts (we don't know balances), so we pick
-        // the input with the largest contribution as fee payer.
-        let fee_payer_index = inputs
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, (_, amount))| *amount)
-            .map(|(idx, _)| idx as u16)
-            .unwrap_or(0);
+        let fee_strategy = vec![self.advanced_platform_fee_step(&inputs, &outputs)];
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
                 seed_hash,
                 inputs,
                 outputs,
-                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(
-                    fee_payer_index,
-                )],
+                fee_strategy,
             },
         )))
     }
@@ -6886,6 +6974,121 @@ mod tests {
             failed_message, loading_message,
             "a permanently failed probe must not be described as still loading"
         );
+    }
+
+    /// Advanced Platform → Platform signs the Fee Strategy the user chose,
+    /// with "first" and "last" meaning the rows as entered, and the
+    /// confirmation says who pays the fee.
+    #[test]
+    fn advanced_platform_transfer_signs_the_chosen_fee_strategy() {
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep::{
+            DeductFromInput, ReduceOutput,
+        };
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        // Rows entered in the reverse of the transition's (sorted) order.
+        let rows = |first: u8| {
+            let mut addresses: Vec<PlatformAddress> = (first..first + 2)
+                .map(|i| PlatformAddress::try_from(testnet_core_address(i)).expect("address"))
+                .collect();
+            addresses.sort();
+            addresses.reverse();
+            addresses
+        };
+        screen.advanced_source_type = AdvancedSourceType::Platform;
+        screen.platform_inputs = rows(5)
+            .into_iter()
+            .map(|platform_address| PlatformAddressInput {
+                platform_address,
+                amount: "0.4".to_string(),
+            })
+            .collect();
+        screen.advanced_outputs = rows(7)
+            .into_iter()
+            .map(|address| AdvancedOutput {
+                address: address.to_bech32m_string(Network::Testnet),
+                amount: "0.4".to_string(),
+            })
+            .collect();
+
+        for (choice, expected) in [
+            (
+                PlatformFeeStrategy::DeductFromFirstInput,
+                DeductFromInput(1),
+            ),
+            (PlatformFeeStrategy::DeductFromLastInput, DeductFromInput(0)),
+            (PlatformFeeStrategy::ReduceFirstOutput, ReduceOutput(1)),
+            (PlatformFeeStrategy::ReduceLastOutput, ReduceOutput(0)),
+        ] {
+            screen.fee_strategy = choice.clone();
+            let action = screen
+                .send_advanced_platform_to_platform(seed_hash)
+                .expect("advanced transfer");
+            let AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::TransferPlatformCredits { fee_strategy, .. },
+            )) = action
+            else {
+                panic!("expected a Platform transfer: {action:?}");
+            };
+            assert_eq!(fee_strategy, vec![expected], "{choice}");
+        }
+
+        screen.fee_strategy = PlatformFeeStrategy::ReduceFirstOutput;
+        let message = screen.advanced_send_confirmation_message();
+        assert!(
+            message.contains("so the recipient will receive less than the entered amount"),
+            "{message}"
+        );
+        screen.fee_strategy = PlatformFeeStrategy::DeductFromLastInput;
+        let message = screen.advanced_send_confirmation_message();
+        assert!(
+            message.contains("so the recipient will receive the entered amount"),
+            "{message}"
+        );
+    }
+
+    /// An amount too small to pay its fee is refused with the fee of the
+    /// plan it needs, not the one-input fee.
+    #[test]
+    fn platform_transfer_too_small_names_the_fee_of_its_plan() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let addresses: Vec<_> = [2u8, 3]
+            .into_iter()
+            .map(|i| {
+                let core = testnet_core_address(i);
+                (
+                    PlatformAddress::try_from(core.clone()).expect("platform source"),
+                    core,
+                    16_000_000,
+                )
+            })
+            .collect();
+        let destination =
+            PlatformAddress::try_from(testnet_core_address(4)).expect("platform destination");
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination,
+            bech32m: destination.to_bech32m_string(Network::Testnet),
+        });
+        // More than the one-input fee, less than the two-input fee it needs.
+        screen.amount = Some(Amount::dash_from_credits(20_000_000));
+
+        let error = screen
+            .send_platform_to_platform(seed_hash, addresses)
+            .expect_err("20M cannot pay a two-input fee");
+        let estimator = screen.app_context.fee_estimator();
+        let fee = format_credits_as_dash(estimate_platform_fee(&estimator, 2, 1));
+        let one_input_fee = format_credits_as_dash(estimate_platform_fee(&estimator, 1, 1));
+        assert!(error.contains("too small"), "{error}");
+        assert!(
+            error.contains(&fee),
+            "names the two-input fee {fee}: {error}"
+        );
+        assert!(!error.contains(&one_input_fee), "{error}");
     }
 
     /// Worst-case fee Platform's pre-check demanded of a one-input,

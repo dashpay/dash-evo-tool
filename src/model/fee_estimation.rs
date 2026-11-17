@@ -3123,6 +3123,98 @@ mod tests {
         );
     }
 
+    /// Reviewer sweep: every accepted plan, kept-back or fee-from-amount,
+    /// spends exactly the amount from at most the cap of inputs, each at or
+    /// above the minimum, never from the destination, and a kept-back payer
+    /// still holds the fee.
+    #[test]
+    fn reviewer_sweep_platform_transfer_plans_are_valid() {
+        let estimator = PlatformFeeEstimator::latest();
+        let min_input = estimator.min_platform_input();
+        let cap = estimator.max_platform_inputs();
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..4_000 {
+            let n = (next() % 20 + 1) as u8;
+            let balances: Vec<(u8, u64)> = (1..=n)
+                .map(|i| {
+                    let b = match next() % 4 {
+                        0 => next() % (2 * min_input),
+                        1 => next() % 40_000_000,
+                        _ => next() % 3_000_000_000,
+                    };
+                    (i, b)
+                })
+                .collect();
+            let addresses = addrs(&balances);
+            let destination = if next() % 3 == 0 { Some(pa(1)) } else { None };
+            let total: u64 = balances.iter().map(|(_, b)| *b).sum();
+            let amount = next() % (total + 2).max(1) + 1;
+            for (amount, label) in [
+                (amount, "random"),
+                (
+                    platform_transfer_max(&estimator, &addresses, destination.as_ref()),
+                    "max",
+                ),
+            ] {
+                if amount == 0 {
+                    continue;
+                }
+                let plan = allocate_platform_transfer(
+                    &estimator,
+                    &addresses,
+                    amount,
+                    destination.as_ref(),
+                );
+                if plan.shortfall > 0 {
+                    assert!(label != "max", "Max refused: {balances:?} {plan:?}");
+                    continue;
+                }
+                assert_eq!(
+                    plan.inputs.values().sum::<u64>(),
+                    amount,
+                    "{label} {balances:?}"
+                );
+                assert!(plan.inputs.len() <= cap);
+                assert!(
+                    plan.inputs.values().all(|v| *v >= min_input),
+                    "{label} {plan:?}"
+                );
+                if let Some(d) = destination.as_ref() {
+                    assert!(!plan.inputs.contains_key(d));
+                }
+                let balance_of = |a: &PlatformAddress| {
+                    addresses
+                        .iter()
+                        .find(|(p, _, _)| p == a)
+                        .map(|x| x.2)
+                        .unwrap()
+                };
+                for (a, used) in &plan.inputs {
+                    assert!(*used <= balance_of(a));
+                }
+                if plan.fee_from_amount {
+                    assert!(amount > plan.estimated_fee);
+                } else {
+                    let payer = plan
+                        .inputs
+                        .keys()
+                        .nth(usize::from(plan.fee_payer_index))
+                        .expect("payer input");
+                    assert!(
+                        balance_of(payer) - plan.inputs[payer] >= plan.estimated_fee,
+                        "{label} payer keeps fee {plan:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A last share no earlier input can spare the minimum for stays unplaced.
     #[test]
     fn split_leaves_a_share_no_input_can_raise_to_the_minimum() {

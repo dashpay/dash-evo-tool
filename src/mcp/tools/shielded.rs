@@ -7,6 +7,7 @@ use rmcp::model::ToolAnnotations;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::backend_task::error::TaskError;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::dispatch_task;
@@ -199,16 +200,21 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
 
 /// Refuse an amount above the shield-from-Platform Max before the shield
 /// starts. The Max is the send screen's quote, taken from the planner that
-/// selects the shield's inputs.
+/// selects the shield's inputs. While another shield from the wallet runs no
+/// Max is quoted; the shield then waits for it and checks the amount itself.
 async fn ensure_amount_shieldable(
     backend: &WalletBackend,
     seed_hash: &WalletSeedHash,
     amount_credits: u64,
 ) -> Result<(), McpToolError> {
-    let max_credits = backend
+    let max_credits = match backend
         .spend_limit_credits(seed_hash, SpendLimitKind::ShieldFromPlatform)
         .await
-        .map_err(McpToolError::TaskFailed)?;
+    {
+        Ok(max_credits) => max_credits,
+        Err(TaskError::SpendInProgress) => return Ok(()),
+        Err(error) => return Err(McpToolError::TaskFailed(error)),
+    };
     if amount_credits > max_credits {
         return Err(McpToolError::InvalidParam {
             message: format!(
@@ -785,15 +791,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let backend = ctx.wallet_backend().expect("wired backend");
-        // Generated per run: no wallet secret is ever committed.
-        let seed: [u8; 64] = rand::random();
-        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
-        backend
-            .register_wallet_from_seed(&seed_hash, &seed, None)
-            .await
-            .expect("register wallet");
+        let (_ctx, backend, seed_hash) = backend_with_registered_wallet(dir.path()).await;
         let balance = 100_000_000_000;
         backend
             .set_platform_address_balance_for_test(
@@ -817,6 +815,48 @@ mod tests {
         );
         assert!(0 < max && max < balance, "max {max}");
         assert!(accepted.is_ok(), "{accepted:?}");
+    }
+
+    /// While a shield from the wallet's Platform balance runs, no Max is
+    /// quoted; the pre-flight leaves the amount to the shield, which waits
+    /// for the running one, rather than failing the request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_pre_flight_defers_to_the_shield_while_another_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (_ctx, backend, seed_hash) = backend_with_registered_wallet(dir.path()).await;
+
+        let running = backend.begin_platform_shield(&seed_hash);
+        let deferred = ensure_amount_shieldable(&backend, &seed_hash, 1).await;
+        drop(running);
+        let checked = ensure_amount_shieldable(&backend, &seed_hash, 1).await;
+        backend.shutdown().await;
+
+        assert!(deferred.is_ok(), "{deferred:?}");
+        assert!(
+            matches!(checked, Err(McpToolError::InvalidParam { .. })),
+            "{checked:?}"
+        );
+    }
+
+    /// A wired test context and its backend with one freshly generated wallet
+    /// registered upstream.
+    async fn backend_with_registered_wallet(
+        dir: &std::path::Path,
+    ) -> (
+        std::sync::Arc<crate::context::AppContext>,
+        std::sync::Arc<WalletBackend>,
+        WalletSeedHash,
+    ) {
+        let ctx = crate::context::test_support::wired_test_app_context(dir).await;
+        let backend = ctx.wallet_backend().expect("wired backend");
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+        (ctx, backend, seed_hash)
     }
 
     /// Automation must be able to tell a transfer that succeeded without a

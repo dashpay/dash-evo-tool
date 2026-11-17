@@ -3221,14 +3221,14 @@ impl WalletSendScreen {
                     (
                         Some(max),
                         Some(format!(
-                            "This transaction is limited to {max_inputs} input addresses. When you send all of their balance, the network fee of approximately {fee} is taken from the amount."
+                            "This transaction is limited to {max_inputs} input addresses. If this amount leaves too little on them to pay the network fee of approximately {fee} on top, the fee is taken from the amount and the recipient receives less."
                         )),
                     )
                 } else {
                     (
                         Some(max),
                         Some(format!(
-                            "When you send your whole balance, the network fee of approximately {fee} is taken from the amount."
+                            "If this amount leaves too little on your Platform addresses to pay the network fee of approximately {fee} on top, the fee is taken from the amount and the recipient receives less."
                         )),
                     )
                 }
@@ -6930,6 +6930,12 @@ mod tests {
             .map(Amount::value)
             .expect("Max sets the amount");
         assert_eq!(max, BALANCE_CREDITS, "Max sends the whole balance");
+        assert!(
+            harness
+                .query_by_label_contains("the fee is taken from the amount")
+                .is_some(),
+            "the amount field says the fee may come out of the amount"
+        );
 
         // The fee is taken from the amount, and the form says so.
         let fee = estimate_platform_fee(&harness.state().app_context.fee_estimator(), 1, 1);

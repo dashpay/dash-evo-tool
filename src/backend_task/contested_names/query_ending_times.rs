@@ -92,7 +92,7 @@ impl AppContext {
 }
 
 /// What one page of the end-date index says about DPNS contests.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct EndTimesPage {
     /// Contested names and when their contests end.
     names: BTreeMap<String, TimestampMillis>,
@@ -102,8 +102,9 @@ struct EndTimesPage {
     polls: usize,
 }
 
-/// Read a page of the end-date index. The index holds the contests of every contract,
-/// so only polls on the DPNS `domain` document type name a contested username.
+/// Read a page of the end-date index. The index holds every vote poll kind and the
+/// contests of every contract, so only contests on the DPNS `domain` document type name
+/// a contested username; the rest count only towards `polls` and `last_end_time`.
 fn dpns_end_times_page(
     page: impl IntoIterator<Item = (TimestampMillis, Vec<VotePoll>)>,
     dpns_contract_id: Identifier,
@@ -118,7 +119,10 @@ fn dpns_end_times_page(
                 document_type_name,
                 index_values,
                 ..
-            }) = vote_poll;
+            }) = vote_poll
+            else {
+                continue;
+            };
             if contract_id != dpns_contract_id || document_type_name != "domain" {
                 continue;
             }
@@ -170,6 +174,9 @@ fn next_page_start(
 mod tests {
     use super::*;
     use dash_sdk::dpp::platform_value::Value;
+    use dash_sdk::dpp::voting::vote_polls::yes_no_vote_poll::{
+        YesNoMinimumVotingPower, YesNoVotePoll,
+    };
     use std::collections::BTreeSet;
 
     fn contest(contract_id: Identifier, document_type: &str, name: &str) -> VotePoll {
@@ -182,6 +189,66 @@ mod tests {
                 Value::Text(name.to_string()),
             ],
         })
+    }
+
+    const DPNS_CONTRACT: Identifier = Identifier::new([1; 32]);
+
+    fn yes_no_poll() -> VotePoll {
+        VotePoll::YesNoVotePoll(YesNoVotePoll {
+            resource_path: vec![vec![1u8, 2, 3].into()],
+            supermajority_numerator: 2,
+            supermajority_denominator: 3,
+            minimum_voting_power: YesNoMinimumVotingPower::Absolute { voting_power: 400 },
+        })
+    }
+
+    fn dpns_contest(name: &str) -> VotePoll {
+        contest(DPNS_CONTRACT, "domain", name)
+    }
+
+    #[test]
+    fn end_times_page_keeps_dpns_contests_and_skips_yes_no_polls() {
+        let page = vec![
+            (100, vec![dpns_contest("alice"), yes_no_poll()]),
+            (200, vec![dpns_contest("bob")]),
+        ];
+
+        let result = dpns_end_times_page(page, DPNS_CONTRACT);
+
+        assert_eq!(
+            result.names,
+            BTreeMap::from([("alice".to_string(), 100), ("bob".to_string(), 200)])
+        );
+        assert_eq!(result.last_end_time, Some(200));
+    }
+
+    #[test]
+    fn end_times_page_of_only_yes_no_polls_still_advances_the_walk() {
+        let page = vec![
+            (100, vec![dpns_contest("alice")]),
+            (300, vec![yes_no_poll()]),
+        ];
+
+        let result = dpns_end_times_page(page, DPNS_CONTRACT);
+
+        assert_eq!(result.names, BTreeMap::from([("alice".to_string(), 100)]));
+        assert_eq!(
+            result.last_end_time,
+            Some(300),
+            "the next page must start after the yes/no poll, not after alice"
+        );
+
+        let only_yes_no = dpns_end_times_page(vec![(400, vec![yes_no_poll()])], DPNS_CONTRACT);
+        assert!(only_yes_no.names.is_empty());
+        assert_eq!(only_yes_no.last_end_time, Some(400));
+    }
+
+    #[test]
+    fn empty_end_times_page_ends_the_walk() {
+        assert_eq!(
+            dpns_end_times_page(Vec::new(), DPNS_CONTRACT),
+            EndTimesPage::default()
+        );
     }
 
     #[test]

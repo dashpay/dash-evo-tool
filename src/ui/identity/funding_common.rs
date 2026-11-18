@@ -1,6 +1,9 @@
 use crate::backend_task::error::TaskError;
 use crate::model::address::AddressKind;
-use crate::model::asset_lock::{asset_lock_user_amount_range, validate_asset_lock_minimum};
+use crate::model::asset_lock::{
+    AssetLockAmountError, asset_lock_user_amount_range, validate_asset_lock_amount,
+    validate_asset_lock_minimum,
+};
 use crate::model::fee_estimation::{estimate_asset_lock_core_fee_duffs, format_duffs_as_dash};
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -222,7 +225,13 @@ pub fn network_fee_refusal(
     if asset_lock_user_amount_range(ceiling_duffs, reserve_duffs, minimum_duffs).is_none() {
         return Some(FUNDING_FEE_NOT_COVERED.to_string());
     }
-    validate_asset_lock_minimum(amount_duffs, minimum_duffs)
+    below_network_fee_refusal(amount_duffs, Some(minimum_duffs))
+}
+
+/// Refuse an amount smaller than the network fee taken from it; `None` when
+/// it covers the fee or the fee is unknown.
+fn below_network_fee_refusal(amount_duffs: u64, minimum_duffs: Option<u64>) -> Option<String> {
+    validate_asset_lock_minimum(amount_duffs, minimum_duffs?)
         .err()
         .map(|error| {
             TaskError::AssetLockAmountBelowNetworkFee {
@@ -231,6 +240,40 @@ pub fn network_fee_refusal(
             }
             .to_string()
         })
+}
+
+/// Refuse an explicit asset-lock amount before dispatch, or `None` to send it.
+///
+/// With the builder ceiling known, the amount must fit under it once
+/// `reserve_duffs` is kept back. With none (`ceiling_duffs` is `None`), because
+/// another transaction from the wallet is in progress and no quote can see its
+/// reservations, only the network-fee minimum is checked here. The backend's
+/// reservation-aware dry run and the build itself then decide.
+pub fn asset_lock_amount_refusal(
+    amount_duffs: u64,
+    ceiling_duffs: Option<u64>,
+    reserve_duffs: u64,
+    minimum_duffs: Option<u64>,
+) -> Option<String> {
+    let Some(ceiling_duffs) = ceiling_duffs else {
+        return below_network_fee_refusal(amount_duffs, minimum_duffs);
+    };
+    if let Some(message) =
+        network_fee_refusal(amount_duffs, ceiling_duffs, reserve_duffs, minimum_duffs)
+    {
+        return Some(message);
+    }
+    let error = validate_asset_lock_amount(amount_duffs, reserve_duffs, ceiling_duffs).err()?;
+    let maximum_amount_duffs = match error {
+        AssetLockAmountError::Overflow => ceiling_duffs,
+        AssetLockAmountError::ExceedsMaximum {
+            maximum_amount_duffs,
+        } => maximum_amount_duffs,
+    };
+    let maximum = format_duffs_as_dash(maximum_amount_duffs);
+    Some(format!(
+        "You can use up to {maximum} from this wallet right now. Choose a smaller amount or wait for more funds."
+    ))
 }
 
 /// Shown under a list of existing funding transactions when none of them
@@ -463,6 +506,29 @@ pub fn actionable_asset_locks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::asset_lock::asset_lock_user_max_amount;
+
+    /// The refusal is shared by adding funds to a Platform address, creating
+    /// and topping up an identity, and moving funds to a private balance, so it
+    /// names no single operation, only the amount this wallet can use.
+    #[test]
+    fn asset_lock_limit_refusal_is_operation_neutral() {
+        let ceiling_duffs = 1_000_000;
+        let reserve_duffs = 10_000;
+        let maximum_duffs = asset_lock_user_max_amount(ceiling_duffs, reserve_duffs);
+
+        let message =
+            asset_lock_amount_refusal(ceiling_duffs, Some(ceiling_duffs), reserve_duffs, None)
+                .expect("an amount above the ceiling is refused");
+
+        assert_eq!(
+            message,
+            format!(
+                "You can use up to {} from this wallet right now. Choose a smaller amount or wait for more funds.",
+                format_duffs_as_dash(maximum_duffs)
+            )
+        );
+    }
 
     #[test]
     fn status_label_is_user_facing_for_every_variant() {

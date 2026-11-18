@@ -38,6 +38,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 pub use events::{CacheDomain, CacheUpdate, TaskResult};
+pub(crate) use events::{as_request, in_current_request};
 use futures::future::join_all;
 use grovestark::GroveSTARKTask;
 use migration::MigrationTask;
@@ -515,6 +516,12 @@ pub enum BackendTaskContext {
         snapshot_generation: u64,
         request_id: u64,
     },
+    /// Spending-limit quote for one wallet and operation kind.
+    SpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
+        request_id: u64,
+    },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
     /// A wallet payment broadcast, bound to the network it was dispatched on.
@@ -541,6 +548,22 @@ pub enum BackendTaskContext {
     LegacyRecoveryOnNetwork {
         network: Network,
         operation: Box<BackendTaskContext>,
+    },
+    /// An event one network's wallet backend raised from chain sync — a
+    /// received payment, a balance push, Platform becoming reachable — rather
+    /// than from a request. The backend outlives a switch away from its
+    /// network, so this is the only record of the network the event belongs to.
+    WalletSync { network: Network },
+    /// A report `request` sent while still running on `network` — progress,
+    /// a partial result, or one step's failure. It has no dispatch id of its
+    /// own, so the request's sender stays on record until the request's own
+    /// result arrives, and no screen's wait for that request ends on it:
+    /// [`Self::operation`] leaves it wrapped, so it matches no request's
+    /// context. `request` is `Unknown` when the report was sent outside a
+    /// dispatch.
+    Interim {
+        network: Network,
+        request: Box<BackendTaskContext>,
     },
     /// Building the context of a network the app switches to. Every failure
     /// of the switch, including a task that stops without a result, must
@@ -594,12 +617,34 @@ impl BackendTaskContext {
         }
     }
 
-    /// The network a scheduled-vote sweep runs on, or `None` for every other
-    /// operation. The app starts sweeps itself, undispatched, so this is the
-    /// only record of the network their outcome belongs to.
-    pub(crate) fn scheduled_vote_sweep_network(&self) -> Option<Network> {
+    /// The network an operation no screen dispatched runs on, or `None` when
+    /// the context does not name one. The app's own sweeps and background
+    /// refreshes, and the wallet backend's chain-sync events, have no sender
+    /// on record, so this is the only record of the network their results
+    /// belong to.
+    pub(crate) fn undispatched_network(&self) -> Option<Network> {
         match self {
-            Self::ScheduledVoteSweep { network } => Some(*network),
+            Self::ScheduledVoteSweep { network }
+            | Self::DpnsBackgroundRefresh { network }
+            | Self::WalletSync { network }
+            | Self::Interim { network, .. } => Some(*network),
+            _ => None,
+        }
+    }
+
+    /// The context of a report sent by a request still running: see
+    /// [`Self::Interim`].
+    pub(crate) fn interim(network: Network, request: BackendTaskContext) -> Self {
+        Self::Interim {
+            network,
+            request: Box::new(request),
+        }
+    }
+
+    /// The request an interim report was sent from, or `None` for a result.
+    pub(crate) fn interim_request(&self) -> Option<&BackendTaskContext> {
+        match self {
+            Self::Interim { request, .. } => Some(request),
             _ => None,
         }
     }
@@ -626,6 +671,9 @@ impl BackendTaskContext {
         match self {
             Self::Dispatched { dispatch_id, .. } => Some(*dispatch_id),
             Self::LegacyRecoveryOnNetwork { operation, .. } => operation.dispatch_id(),
+            // A mid-task report is not the request's arrival: the request's
+            // sender stays on record until its own result takes it.
+            Self::Interim { .. } => None,
             _ => None,
         }
     }
@@ -742,6 +790,23 @@ impl BackendTaskContext {
                 snapshot_generation,
                 request_id,
             } => Some((*seed_hash, *snapshot_generation, *request_id)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn spend_limit_request(
+        &self,
+    ) -> Option<(
+        WalletSeedHash,
+        crate::model::spend_limit::SpendLimitKind,
+        u64,
+    )> {
+        match self.operation() {
+            Self::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            } => Some((*seed_hash, *kind, *request_id)),
             _ => None,
         }
     }
@@ -916,6 +981,15 @@ impl From<&BackendTask> for BackendTaskContext {
                 snapshot_generation: *snapshot_generation,
                 request_id: *request_id,
             },
+            BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            }) => Self::SpendLimit {
+                seed_hash: *seed_hash,
+                kind: *kind,
+                request_id: *request_id,
+            },
             BackendTask::WalletTask(
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
@@ -940,10 +1014,12 @@ pub enum BackendTaskSuccessResult {
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
-    /// By convention, the app routes `Progress` results to the visible screen's
-    /// `display_task_result` without creating a global banner at the app level
-    /// (unlike `Message`). Screens may create a banner handle on first receipt
-    /// and update it in-place on subsequent updates to avoid stacking.
+    /// Sent mid-task with [`TaskResult::interim_success`], so the app routes
+    /// them to the screen that started the task, in view or not, and to no
+    /// screen once that screen is closed or its network switched away from —
+    /// without creating a global banner at the app level (unlike `Message`).
+    /// Screens may create a banner handle on first receipt and update it
+    /// in-place on subsequent updates to avoid stacking.
     Progress {
         /// Human-readable progress message
         message: String,
@@ -1107,6 +1183,17 @@ pub enum BackendTaskSuccessResult {
         amount_duffs: u64,
         observed_inputs: crate::wallet_backend::AssetLockInputState,
         is_partial: bool,
+    },
+    /// The largest amount, in credits, the upstream builder for `kind`
+    /// accepts from the wallet.
+    SpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
+        request_id: u64,
+        max_credits: u64,
+        /// For a Core send, what the Max was proven against; prices the fee
+        /// shown beside it.
+        core_fee: Option<crate::model::spend_limit::CoreSendQuoteFee>,
     },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
@@ -1349,6 +1436,9 @@ pub enum BackendTaskSuccessResult {
     UsernameAvailability {
         label: String,
         availability: crate::model::dpns_usernames::UsernameAvailability,
+        /// The community vote fee registering `label` pays now, in credits;
+        /// 0 when it opens or joins no vote.
+        contest_fund: u64,
     },
     /// Every loaded identity's username requests were refreshed and stored.
     MyUsernameRequestsRefreshed,
@@ -1909,6 +1999,19 @@ impl AppContext {
                     observed_inputs: quote.observed_inputs,
                     is_partial: quote.is_partial,
                 }),
+            WalletTask::GetSpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            } => backend.spend_limit(&seed_hash, kind).await.map(|quote| {
+                BackendTaskSuccessResult::SpendLimit {
+                    seed_hash,
+                    kind,
+                    request_id,
+                    max_credits: quote.max_credits,
+                    core_fee: quote.core_fee,
+                }
+            }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }
@@ -2445,6 +2548,25 @@ mod tests {
     }
 
     #[test]
+    fn backend_task_context_preserves_spend_limit_request_identity() {
+        let seed_hash = [0x3a; 32];
+        let task = BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            seed_hash,
+            kind: crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+            request_id: 43,
+        });
+
+        assert_eq!(
+            BackendTaskContext::from(&task).spend_limit_request(),
+            Some((
+                seed_hash,
+                crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+                43
+            ))
+        );
+    }
+
+    #[test]
     fn backend_task_context_identifies_network_database_clear() {
         let task = BackendTask::SystemTask(SystemTask::ClearNetworkDatabase);
 
@@ -2545,6 +2667,27 @@ mod tests {
             None
         );
         assert_eq!(BackendTaskContext::Unknown.dispatch_id(), None);
+    }
+
+    /// A report a request sends mid-task names the request without taking
+    /// its place: it has no dispatch id, matches no request's operation, and
+    /// names the network it runs on.
+    #[test]
+    fn an_interim_report_names_its_request_without_its_dispatch_id() {
+        let refresh = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
+            ContestedResourceTask::QueryDPNSContests,
+        ));
+        let interim = BackendTaskContext::interim(Network::Testnet, refresh.clone());
+
+        assert_eq!(interim.dispatch_id(), None);
+        assert_eq!(interim.interim_request(), Some(&refresh));
+        assert_eq!(interim.undispatched_network(), Some(Network::Testnet));
+        assert!(refresh.is_dpns_contest_refresh());
+        assert!(
+            !interim.is_dpns_contest_refresh(),
+            "the report matches no request's context"
+        );
+        assert_eq!(refresh.interim_request(), None);
     }
 
     /// `is_wallet_touching` covers every task family that funnels
@@ -3102,8 +3245,12 @@ mod tests {
             .expect("wire wallet backend");
 
         // The mock reports the latest protocol version, and the system
-        // contracts the queries carry follow it; settle it before building them.
-        let sdk = dash_sdk::Sdk::new_mock();
+        // contracts the queries carry follow it; start the SDK at that version
+        // and prove it before building them.
+        let sdk = crate::context::test_support::mock_sdk_at_for(
+            &context,
+            dash_sdk::dpp::version::LATEST_VERSION,
+        );
         let mut mock = sdk.clone();
         context.sdk.store(Arc::new(sdk));
         crate::context::test_support::prove_protocol_version(

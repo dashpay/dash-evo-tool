@@ -39,12 +39,11 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
-        super::contract::validate_contract_signing_key(&identity, &signing_key)?;
+        let signing_time =
+            super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
         // Estimate fee for contract update
         let estimated_fee = self.fee_estimator().estimate_contract_update();
 
-        // Increment the version of the data contract
-        data_contract.increment_version();
         let contract_id = data_contract.id();
 
         // Fetch the identity contract nonce
@@ -52,6 +51,8 @@ impl AppContext {
             .get_identity_contract_nonce(identity.identity.id(), data_contract.id(), true, None)
             .await
             .map_err(TaskError::from)?;
+
+        data_contract.increment_version();
 
         // Update UI
         sender
@@ -71,6 +72,12 @@ impl AppContext {
 
         let mut state_transition = StateTransition::DataContractUpdate(contract_update_transition);
 
+        super::contract::validate_contract_signing_key(
+            &identity,
+            &signing_key,
+            sdk.protocol_version_info().verified_version,
+            signing_time,
+        )?;
         state_transition
             .sign_external_with_options(
                 &signing_key,
@@ -85,6 +92,9 @@ impl AppContext {
             )
             .await
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
+
+        // Unlocking can outlive an expiry or activation; confirm a fresh block before sending.
+        super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
 
         match state_transition
             .broadcast_and_wait_for_affected_state::<DataContract>(sdk, None)

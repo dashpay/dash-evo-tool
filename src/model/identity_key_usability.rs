@@ -43,8 +43,9 @@ pub enum SigningScope<'a> {
     /// withdrawal or masternode vote. Platform refuses a contract-bound key
     /// on any of them. Contract create/update uses `DataContract` instead.
     NonBatch,
-    /// A data contract create or update: no contract bounds, budget or expiry.
-    DataContract,
+    /// A contract create or update, using the network's proof-verified version.
+    /// Unknown versions use the rule shared by supported networks.
+    DataContract { protocol_version: Option<u32> },
     /// A document transition on `document_type_name` of `contract_id`.
     Document {
         contract_id: Identifier,
@@ -67,7 +68,7 @@ pub enum KeyCaveat {
     Expired { expired_at: TimestampMillis },
     /// The key is bound to a different contract or document type.
     OutOfBounds,
-    /// A budgeted or expiring key cannot create or update a contract.
+    /// The verified protocol (or its absence) prohibits limited contract keys.
     ContractRequiresUnlimitedKey,
     /// The key is bound to a contract group; whether the group covers this
     /// contract is only known to Platform.
@@ -103,7 +104,7 @@ impl KeyCaveat {
 pub fn bounds_permit(bounds: Option<&ContractBounds>, scope: SigningScope<'_>) -> Option<bool> {
     match (bounds, scope) {
         (None, _) => Some(true),
-        (Some(_), SigningScope::NonBatch | SigningScope::DataContract) => Some(false),
+        (Some(_), SigningScope::NonBatch | SigningScope::DataContract { .. }) => Some(false),
         (
             Some(ContractBounds::SingleContract { id }),
             SigningScope::Document { contract_id, .. } | SigningScope::ContractWide { contract_id },
@@ -130,10 +131,11 @@ pub fn bounds_permit(bounds: Option<&ContractBounds>, scope: SigningScope<'_>) -
 }
 
 /// Whether the key's budget and expiry permit signing in `scope`.
-/// DET applies Platform's PV15 contract rule on all supported protocols (14+).
+/// Protocol 14 accepts limited keys; protocol 15 and unconfirmed networks do not.
 /// See <https://github.com/dashpay/platform/pull/5861>.
 pub fn limits_permit(key: &IdentityPublicKey, scope: SigningScope<'_>) -> bool {
-    scope != SigningScope::DataContract || !key.has_limits()
+    !matches!(scope, SigningScope::DataContract { protocol_version } if protocol_version != Some(14))
+        || !key.has_limits()
 }
 
 /// Everything the user should know about signing with `key` in `scope` at
@@ -416,7 +418,9 @@ mod tests {
     fn an_unbound_key_covers_every_scope() {
         for scope in [
             SigningScope::NonBatch,
-            SigningScope::DataContract,
+            SigningScope::DataContract {
+                protocol_version: Some(15),
+            },
             doc_scope(),
             SigningScope::ContractWide {
                 contract_id: CONTRACT,
@@ -562,16 +566,26 @@ mod tests {
         assert!(is_auto_selectable(&limited, SigningScope::NonBatch, NOW));
         assert!(!is_auto_selectable(
             &limited,
-            SigningScope::DataContract,
+            SigningScope::DataContract {
+                protocol_version: Some(15)
+            },
             NOW
         ));
-        let caveats = key_caveats(&limited, SigningScope::DataContract, NOW);
+        let caveats = key_caveats(
+            &limited,
+            SigningScope::DataContract {
+                protocol_version: Some(15),
+            },
+            NOW,
+        );
         assert_eq!(caveats[0], KeyCaveat::ContractRequiresUnlimitedKey);
         assert!(caveats[0].blocks_signing());
         assert_eq!(
             bounds_permit(
                 Some(&ContractBounds::SingleContract { id: CONTRACT }),
-                SigningScope::DataContract
+                SigningScope::DataContract {
+                    protocol_version: Some(15)
+                }
             ),
             Some(false)
         );

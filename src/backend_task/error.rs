@@ -1818,6 +1818,12 @@ pub enum TaskError {
     )]
     ContractSigningKeyHasLimits,
 
+    #[error("The network's signing rules are not confirmed yet. Wait for the connection to refresh and try again.")]
+    ContractSigningProtocolUnconfirmed,
+
+    #[error("This key is disabled, expired or restricted to another action. Choose an active key allowed to sign this contract and try again.")]
+    ContractSigningKeyUnavailable,
+
     /// No active key this app can sign with was available for a masternode or
     /// evonode withdrawal, which may be signed with the payout (transfer) key
     /// or, failing that, the owner key — the chosen key may have been disabled,

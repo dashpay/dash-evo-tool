@@ -858,7 +858,8 @@ As a user, I want the app to sign with a key that can actually sign the action, 
 
 - On supported Platform networks (protocol 14 and newer), automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
 - Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
-- Creating or updating a contract (including registering a token contract) requires a key without a spending limit or expiry date, even if the expiry is in the future. Automatic selection and the manual chooser enforce this on both protocol 14 and protocol 15.
+- Creating or updating a contract (including registering a token contract) accepts a key with a spending limit or future expiry on verified protocol 14. On protocol 15, or before the network version is verified, both automatic and manual selection require a key without either restriction. Open forms follow newly verified network rules; the backend confirms them again before signing and sending.
+- Signing eligibility never hides imported identities, keys, contracts, documents, token prices or configuration. Disabled voting keys remain importable for history and key management but cannot cast votes.
 - For other actions where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
 
 ## DPNS (DPN)
@@ -1889,7 +1890,7 @@ As a masternode operator, I want to load my masternode by its ProTxHash and DIP3
 
 As a masternode operator, I want a card list of my loaded masternodes showing type, voter readiness, key status, and voting status, so that I can assess each node in seconds.
 
-- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a username-voting status line, and an identity status dot with a text label.
+- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voting-key presence ("Voting key loaded" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a username-voting status line, and an identity status dot with a text label.
 - An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
 - The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
 

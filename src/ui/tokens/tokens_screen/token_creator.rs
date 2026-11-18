@@ -1,3 +1,4 @@
+use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
@@ -19,7 +20,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::identity_key_usability::KeyRequirements;
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
     distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
@@ -53,6 +54,14 @@ impl TokensScreen {
     }
 
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
+        if crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        ) {
+            self.update_selected_wallet();
+        }
         let mut action = AppAction::None;
         self.reconcile_selected_preset();
 
@@ -94,7 +103,7 @@ impl TokensScreen {
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
-                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.is_empty()).collect::<Vec<_>>(),
+                            Ok(identities) => identities,
                             Err(error) => {
                                 tracing::error!(?error, "Token-creator identity loading failed");
                                 ui.colored_label(
@@ -195,7 +204,7 @@ impl TokensScreen {
                                         .signing_key_now(KeyRequirements::new(
                                             Purpose::AUTHENTICATION,
                                             &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
-                                            SigningScope::DataContract,
+                                            self.app_context.contract_signing_scope(),
                                         ))
                                         .cloned();
 
@@ -210,9 +219,8 @@ impl TokensScreen {
                                 ui.add_space(5.0);
                                 ui.colored_label(
                                     egui::Color32::from_rgb(200, 100, 100),
-                                    "This identity has no key on this device that can create a contract. Add or load a suitable key without a spending limit or expiry date, or select another identity.",
+                                    crate::ui::helpers::contract_signing_key_notice(&self.app_context, self.selected_identity.as_ref(), &[SecurityLevel::HIGH, SecurityLevel::CRITICAL]),
                                 );
-                                return;
                             }
 
                             if self.selected_identity.is_none() {
@@ -226,9 +234,7 @@ impl TokensScreen {
                             ui.separator();
 
                             // Wallet unlock check for simple mode
-                            if !self.ensure_wallet_unlocked(ui) {
-                                return;
-                            }
+                            self.ensure_wallet_unlocked(ui);
                         } else {
                             // =====================================================
                             // ADVANCED MODE - Full identity and key selection
@@ -249,7 +255,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
-                                SigningScope::DataContract,
+                                self.app_context.contract_signing_scope(),
                             );
                             let after_id = self
                                 .selected_identity
@@ -265,17 +271,12 @@ impl TokensScreen {
                             // If a key was selected, set the wallet reference
                             self.update_selected_wallet();
 
-                            if self.selected_key.is_none() {
-                                return;
-                            }
 
                             ui.add_space(10.0);
                             ui.separator();
 
                             // Wallet unlock check for advanced mode
-                            if !self.ensure_wallet_unlocked(ui) {
-                                return;
-                            }
+                            self.ensure_wallet_unlocked(ui);
                         }
 
                         // Continue with mode-specific content
@@ -415,7 +416,8 @@ impl TokensScreen {
                             ui.horizontal(|ui| {
                                 let mut response = ComponentStyles::add_primary_button_enabled(
                                     ui,
-                                    blocked_reason.is_none(),
+                                    blocked_reason.is_none() && self.selected_key.is_some()
+                                    && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)),
                                     "Create Token",
                                 );
                                 if let Some(reason) = &blocked_reason {
@@ -824,7 +826,8 @@ impl TokensScreen {
                             let blocked_reason = self.advanced_mode_blocked_reason();
                             let mut register = ComponentStyles::add_primary_button_enabled(
                                 ui,
-                                blocked_reason.is_none(),
+                                blocked_reason.is_none() && self.selected_key.is_some()
+                                    && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)),
                                 "Register Token Contract",
                             );
                             if let Some(reason) = &blocked_reason {
@@ -891,7 +894,8 @@ impl TokensScreen {
                         } // Close advanced mode else block
 
         // 7) If the user pressed "Register Token Contract," show a popup confirmation
-        if self.show_token_creator_confirmation_popup {
+        if self.show_token_creator_confirmation_popup && self.selected_key.is_some()
+            && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)) {
             action |= self.render_token_creator_confirmation_popup(ui);
         }
 
@@ -914,22 +918,12 @@ impl TokensScreen {
     }
 
     fn update_selected_wallet(&mut self) {
-        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
-            let wallet_changed = match (&self.selected_wallet, &new_wallet) {
-                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
-                (None, None) => false,
-                _ => true,
-            };
-            if wallet_changed {
-                self.wallet_open_attempted = false;
-            }
-            self.selected_wallet = new_wallet;
-        }
+        crate::ui::identity::sync_signing_wallet(
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
     }
 
     fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {

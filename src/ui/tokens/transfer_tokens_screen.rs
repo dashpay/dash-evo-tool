@@ -515,7 +515,8 @@ impl ScreenLike for TransferTokensScreen {
                         &self.app_context,
                     )));
                 }
-            } else {
+            }
+            {
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
@@ -534,7 +535,6 @@ impl ScreenLike for TransferTokensScreen {
                         if ui.button("Unlock Wallet").clicked() {
                             self.wallet_unlock_popup.open();
                         }
-                        return AppAction::None;
                     }
                 }
 
@@ -563,6 +563,12 @@ impl ScreenLike for TransferTokensScreen {
                     ui.add_space(10.0);
                 }
 
+                crate::ui::identity::sync_signing_wallet(
+                    Some(identity),
+                    self.selected_key.as_ref(),
+                    &mut self.selected_wallet,
+                    &mut self.wallet_open_attempted,
+                );
                 // Input the amount to transfer
                 let step_num = if self.show_advanced_options { "2" } else { "1" };
                 ui.heading(format!("{}. Input the amount to transfer", step_num));
@@ -629,9 +635,16 @@ impl ScreenLike for TransferTokensScreen {
 
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
-                let ready = self.amount.is_some()
+                let ready = matches!(
+                    key_status,
+                    SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                ) && self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
+                    && self
+                        .selected_wallet
+                        .as_ref()
+                        .is_none_or(|wallet| !wallet_needs_unlock(wallet))
                     && has_enough_balance;
                 let hover_text = if !has_enough_balance {
                     format!(
@@ -675,7 +688,7 @@ impl ScreenLike for TransferTokensScreen {
                     }
                 }
 
-                if self.confirmation_dialog.is_some() {
+                if ready && self.confirmation_dialog.is_some() {
                     return self.show_confirmation_popup(ui);
                 }
 
@@ -714,5 +727,72 @@ impl ScreenLike for TransferTokensScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_transfer_cannot_confirm_after_the_signing_key_expires() {
+        use crate::ui::tokens::tests::identity_with_expired_key;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use std::cell::Cell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut identity = identity_with_expired_key();
+        identity.identity.set_balance(1_000_000_000_000);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Example".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: ctx.dpns_contract().id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &ctx);
+        screen.amount = Some(Amount::new(1, 0));
+        screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        screen.selected_key = identity.identity.public_keys().get(&1).cloned();
+        assert!(screen.selected_key.is_some());
+        screen.confirmation_dialog = Some(
+            ConfirmationDialog::new("Confirm Transfer", "Send the token?")
+                .confirm_text(Some("Confirm pending transfer")),
+        );
+        let dispatched = Cell::new(false);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferTokensScreen| {
+                    if let AppAction::BackendTask(BackendTask::TokenTask(task)) = screen.ui(ui)
+                        && matches!(*task, TokenTask::TransferTokens { .. })
+                    {
+                        dispatched.set(true);
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        assert!(harness.query_by_label("Confirm pending transfer").is_none());
+        assert!(harness.query_all_by_label("Transfer").any(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+        assert!(!dispatched.get());
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

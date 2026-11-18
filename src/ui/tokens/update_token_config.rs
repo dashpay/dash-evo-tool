@@ -158,7 +158,7 @@ impl UpdateTokenConfigScreen {
         self.is_unilateral_group_member = auth.is_unilateral_group_member;
     }
 
-    fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_token_config_updater(&mut self, ui: &mut Ui, signing_available: bool) -> AppAction {
         let mut action = AppAction::None;
         // Step 1 (choosing the signing key) only shows in advanced mode.
         let first_step = if self.show_advanced_options { 2 } else { 1 };
@@ -714,7 +714,14 @@ impl UpdateTokenConfigScreen {
             &self.group_action_id,
         );
 
-        if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
+        if signing_available
+            && self.signing_key.is_some()
+            && self
+                .selected_wallet
+                .as_ref()
+                .is_none_or(|wallet| !wallet_needs_unlock(wallet))
+            && (self.app_context.user_role().at_least(UserRole::Power)
+                || !button_text.contains("Test"))
             && change_item_can_be_submitted(
                 &self.change_item,
                 &self.text_input_error,
@@ -974,7 +981,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 });
                 ui.add_space(10.0);
 
-                // Open the form only when the action's key choice picks a key.
+                // Signing eligibility affects submission, not reads or previews.
                 let key_status = super::token_action_key_status(
                     &self.app_context,
                     &self.identity,
@@ -1022,7 +1029,8 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             &self.app_context,
                         )));
                     }
-                } else {
+                }
+                {
                     // Possibly handle locked wallet scenario (similar to TransferTokens)
                     if let Some(wallet) = &self.selected_wallet {
                         if !self.wallet_open_attempted {
@@ -1042,7 +1050,6 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             if ui.button("Unlock Wallet").clicked() {
                                 self.wallet_unlock_popup.open();
                             }
-                            return;
                         }
                     }
 
@@ -1069,7 +1076,19 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     }
                     ui.add_space(10.0);
 
-                    action |= self.render_token_config_updater(ui);
+                    crate::ui::identity::sync_signing_wallet(
+                        Some(&self.identity),
+                        self.signing_key.as_ref(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
+                    );
+                    action |= self.render_token_config_updater(
+                        ui,
+                        matches!(
+                            key_status,
+                            SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                        ),
+                    );
                 }
             }); // end of ScrollArea
         });
@@ -1208,6 +1227,49 @@ fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str 
 #[cfg(test)]
 mod sdk_adapter_tests {
     use super::*;
+
+    #[test]
+    fn interop_token_configuration_remains_visible_without_a_signing_key() {
+        use crate::model::qualified_contract::QualifiedContract;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: crate::ui::tokens::tests::identity_with_expired_key(),
+            data_contract: QualifiedContract {
+                contract: ctx.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = UpdateTokenConfigScreen::new(info, &ctx);
+        screen.change_item = TokenConfigurationChangeItem::MaxSupply(Some(123_456));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateTokenConfigScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("1. Select the item to update")
+                .is_some()
+        );
+        assert!(harness.query_all_by_value("123456").next().is_some());
+        assert!(harness.query_all_by_label("Update Config").all(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+    }
 
     #[test]
     fn shielded_pool_configuration_cannot_be_submitted_from_this_editor() {

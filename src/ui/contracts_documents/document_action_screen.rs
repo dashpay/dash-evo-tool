@@ -1067,7 +1067,13 @@ impl DocumentActionScreen {
         };
 
         // A second click while the first action is being sent would pay for it twice.
-        let idle = self.broadcast_status != BroadcastStatus::Broadcasting;
+        let idle = self.broadcast_status != BroadcastStatus::Broadcasting
+            && self.selected_identity.is_some()
+            && self.selected_key.is_some()
+            && self
+                .wallet
+                .as_ref()
+                .is_none_or(|wallet| !wallet_needs_unlock(wallet));
         if ComponentStyles::add_primary_button_enabled(ui, idle, button_text).clicked()
             && self.can_broadcast()
         {
@@ -2034,16 +2040,12 @@ impl DocumentActionScreen {
                 // Step 2: Identity and Key Selection
                 self.render_identity_and_key_selection(ui);
 
-                if self.selected_identity.is_none() {
-                    return action;
-                }
                 if self.selected_key.is_none() {
                     let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(NO_SIGNING_KEY_NOTICE)
                             .color(DashColors::warning_color(dark_mode)),
                     );
-                    return action;
                 }
 
                 ui.separator();
@@ -2085,7 +2087,6 @@ impl DocumentActionScreen {
                         if ui.button("Unlock Wallet").clicked() {
                             self.wallet_unlock_popup.open();
                         }
-                        return action;
                     }
                 }
 
@@ -3093,5 +3094,76 @@ mod tests {
             harness.query_by_label(NO_SIGNING_KEY_NOTICE).is_some(),
             "the missing key is explained"
         );
+    }
+    #[test]
+    fn interop_document_purchase_reads_price_without_a_signing_key() {
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use std::cell::RefCell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let contract = dpns();
+        let contract_id = contract.contract.id();
+        let mut screen = DocumentActionScreen::new(ctx, None, DocumentActionType::Purchase);
+        screen.selected_document_type = Some(owned_document_type(&contract, "domain"));
+        screen.selected_contract = Some(contract);
+        screen.selected_identity = Some(identity_holding(&[]));
+        let id = Identifier::new([9; 32]);
+        screen.document_id_input = id.to_string(Encoding::Base58);
+
+        let dispatch = RefCell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 840.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    let action = screen.render_main_content(ui);
+                    if !matches!(action, AppAction::None) {
+                        dispatch.replace(Some(action));
+                    }
+                },
+                screen,
+            );
+
+        harness.run_steps(4);
+        assert!(harness.state().selected_key.is_none());
+        let fetch = harness.get_by_label("Fetch Document Price");
+        assert!(!fetch.accesskit_node().is_disabled());
+        fetch.click();
+        harness.run_steps(4);
+        let Some(AppAction::BackendTaskWithContext { task, context }) = dispatch.take() else {
+            panic!("the price button must dispatch a contextual read");
+        };
+        let BackendTask::DocumentTask(task) = task else {
+            panic!("document task")
+        };
+        let DocumentTask::FetchDocuments(query) = *task else {
+            panic!("document fetch")
+        };
+        assert_eq!(query.data_contract.id(), contract_id);
+        assert_eq!(query.document_type_name, "domain");
+        assert!(query.where_clauses.iter().any(|where_clause| {
+            where_clause.field == "$id" && where_clause.value == Value::Identifier(id.into())
+        }));
+
+        harness
+            .state_mut()
+            .display_backend_task_result(&context, fetched(7));
+        harness.run_steps(4);
+        assert!(
+            harness
+                .query_by_label("Document price: 7 credits")
+                .is_some()
+        );
+        let send = harness.query_by_label("Purchase document");
+        assert!(send.is_none_or(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+        assert!(dispatch.take().is_none());
     }
 }

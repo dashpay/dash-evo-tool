@@ -1166,6 +1166,15 @@ impl AppContext {
         info
     }
 
+    /// Contract signing rules from this network's verified SDK response.
+    pub fn contract_signing_scope(
+        &self,
+    ) -> crate::model::identity_key_usability::SigningScope<'static> {
+        crate::model::identity_key_usability::SigningScope::DataContract {
+            protocol_version: self.protocol_version_info().verified_version,
+        }
+    }
+
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
         // Signing override: only the Developer role may relax the security-level
         // and purpose checks when signing a state transition.

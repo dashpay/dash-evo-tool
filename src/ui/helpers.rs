@@ -421,6 +421,66 @@ impl TransactionType {
     }
 }
 
+/// Re-evaluate a contract key when the network confirms or changes its rules.
+/// A manually selected key is retained while the active protocol permits its limits.
+pub(crate) fn refresh_contract_signing_key(
+    app_context: &AppContext,
+    identity: Option<&QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+    security_levels: &[SecurityLevel],
+) -> bool {
+    let scope = app_context.contract_signing_scope();
+    if selected_key.as_ref().is_some_and(|key| {
+        !key_caveats(key, scope, now_ms())
+            .iter()
+            .any(KeyCaveat::blocks_signing)
+    }) {
+        return false;
+    }
+    let next = identity
+        .and_then(|identity| {
+            identity.signing_key_now(crate::model::identity_key_usability::KeyRequirements::new(
+                Purpose::AUTHENTICATION,
+                security_levels,
+                scope,
+            ))
+        })
+        .cloned();
+    if *selected_key == next {
+        return false;
+    }
+    *selected_key = next;
+    true
+}
+
+/// Explain why contract signing cannot proceed before the network is known.
+pub(crate) fn contract_signing_key_notice(
+    app_context: &AppContext,
+    identity: Option<&QualifiedIdentity>,
+    security_levels: &[SecurityLevel],
+) -> &'static str {
+    if app_context
+        .protocol_version_info()
+        .verified_version
+        .is_none()
+        && identity.is_some_and(|identity| {
+            identity
+                .signing_key_now(crate::model::identity_key_usability::KeyRequirements::new(
+                    Purpose::AUTHENTICATION,
+                    security_levels,
+                    SigningScope::DataContract {
+                        protocol_version: Some(14),
+                    },
+                ))
+                .is_some()
+        })
+    {
+        "The network's signing rules are not confirmed yet. Wait for the connection to refresh and try again."
+    } else {
+        "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity."
+    }
+}
+
 /// What a key chooser offers for one transaction: the purposes, security
 /// levels and key types the transaction accepts, and the scope its key signs
 /// in. The "no eligible key" gate and the list entries both judge keys by it,
@@ -442,6 +502,7 @@ impl<'a> KeyFilter<'a> {
         purposes: &'a [Purpose],
         security_levels: &'a [SecurityLevel],
         scope: SigningScope<'a>,
+        protocol_version: Option<u32>,
     ) -> Self {
         Self {
             purposes,
@@ -449,7 +510,7 @@ impl<'a> KeyFilter<'a> {
             key_types: transaction_type.allowed_key_types(),
             scope: match transaction_type {
                 TransactionType::RegisterContract | TransactionType::UpdateContract => {
-                    SigningScope::DataContract
+                    SigningScope::DataContract { protocol_version }
                 }
                 _ => scope,
             },
@@ -470,7 +531,11 @@ impl<'a> KeyFilter<'a> {
     /// key bound to another contract or document type, so no mode offers
     /// them.
     fn may_sign(&self, key: &IdentityPublicKey, now: TimestampMillis) -> bool {
-        !key.is_disabled() && offered_for_manual_choice(&key_caveats(key, self.scope, now))
+        let caveats = key_caveats(key, self.scope, now);
+        !key.is_disabled()
+            && offered_for_manual_choice(&caveats)
+            && (!matches!(self.scope, SigningScope::DataContract { .. })
+                || !caveats.iter().any(KeyCaveat::blocks_signing))
     }
 
     /// Whether `key` is listed outside developer mode.
@@ -631,7 +696,8 @@ fn render_key_combo(
 /// Whether a key with `caveats` is offered for the user to pick: every key
 /// but one whose bounds tie it to another contract or document type, which
 /// Platform is certain to refuse here. Contract create/update also excludes
-/// every key with a budget or expiry. Other actions retain their warnings.
+/// expired keys and, unless protocol 14 is verified, every key with a budget
+/// or expiry. Other actions retain their warnings.
 fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
     !caveats.iter().any(|caveat| {
         matches!(
@@ -787,6 +853,7 @@ pub fn add_key_chooser_with_security_levels(
         &allowed_purposes,
         allowed_security_levels,
         scope,
+        app_context.protocol_version_info().verified_version,
     );
 
     let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
@@ -906,6 +973,7 @@ where
                     &allowed_purposes,
                     &allowed_security_levels,
                     scope,
+                    app_context.protocol_version_info().verified_version,
                 );
 
                 // Show the "no eligible key" notice instead of the combo when the selected
@@ -1326,6 +1394,79 @@ pub fn show_group_token_success_screen_with_fee(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn interop_contract_manual_choice_does_not_offer_expired_keys_on_protocol14() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let identity = identity_holding(&[expired]);
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            let filter =
+                KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, Some(14));
+            for dev in [false, true] {
+                assert_eq!(listed_keys(&identity, filter, dev, 2).count(), 0);
+            }
+        }
+    }
+    #[test]
+    fn interop_contract_key_choice_tracks_verified_protocol_changes() {
+        use crate::context::test_support::{
+            auth_key, identity_holding, prove_protocol_version, test_app_context,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let key =
+            auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(200_000_000_000), Some(u64::MAX));
+        let identity = identity_holding(&[key]);
+        let mut selected = None;
+        let levels = [SecurityLevel::CRITICAL];
+        assert!(!refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert!(selected.is_none(), "a seed is not network confirmation");
+        prove_protocol_version(&ctx, 14);
+        assert!(refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert_eq!(selected.as_ref().map(|key| key.id()), Some(1));
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            for (version, expected) in [(None, 0), (Some(14), 1), (Some(15), 0)] {
+                let filter =
+                    KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, version);
+                for dev in [false, true] {
+                    assert_eq!(listed_keys(&identity, filter, dev, 1).count(), expected);
+                }
+            }
+        }
+        prove_protocol_version(&ctx, 15);
+        assert!(refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert!(
+            selected.is_none(),
+            "activation invalidates a previous limited choice"
+        );
+    }
+
     #[test]
     fn pv15_contract_manual_chooser_rejects_any_limits() {
         use crate::context::test_support::{auth_key, identity_holding};
@@ -1335,7 +1476,8 @@ mod tests {
         ] {
             let purposes = action.allowed_purposes();
             let levels = action.allowed_security_levels();
-            let filter = KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch);
+            let filter =
+                KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, Some(15));
             for (budget, expiry) in [
                 (Some(0), None),
                 (Some(1_000), None),
@@ -1371,7 +1513,7 @@ mod tests {
         let action = TransactionType::DocumentAction;
         let purposes = action.allowed_purposes();
         let levels = action.allowed_security_levels();
-        let filter = KeyFilter::new(action, &purposes, &levels, scope);
+        let filter = KeyFilter::new(action, &purposes, &levels, scope, Some(15));
         assert_eq!(
             listed_keys(&identity, filter, false, 1)
                 .map(|key| key.id())

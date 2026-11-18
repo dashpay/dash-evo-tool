@@ -648,12 +648,20 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
-    /// Whether a voter identity and a matching signing-key reference are loaded.
-    /// Secret availability is checked by the signer at submission time.
-    pub fn can_cast_masternode_vote(&self) -> bool {
+    /// A loaded voting key that has not been disabled on its voter identity.
+    /// A disabled key stays available for history and key management.
+    pub fn active_masternode_voting_key(&self) -> Option<&IdentityPublicKey> {
         self.associated_voter_identity
             .as_ref()
-            .is_some_and(|(_, key)| self.can_sign_with(key))
+            .map(|(_, key)| key)
+            .filter(|key| !key.is_disabled())
+    }
+
+    /// Whether an enabled voting key and its matching private-key reference are loaded.
+    /// Secret availability is checked by the signer at submission time.
+    pub fn can_cast_masternode_vote(&self) -> bool {
+        self.active_masternode_voting_key()
+            .is_some_and(|key| self.can_sign_with(key))
     }
 
     /// Which masternode/evonode key roles are loaded for this identity.

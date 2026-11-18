@@ -46,8 +46,8 @@ Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
 `6323a430c731a14bbec1d7a18466ca28bb083316` leave the migrations untouched.
 
 
-The current Platform pin is `f5195d311cf1dd5f6d30a423aecfd09f2462d9df`
-on `v5.2-dev` (merge of Platform #5948). It adds V021
+The current Platform pin is `2651f7e2e11b491b4b2818aeb93d07f846856d78`
+on `v5.2-dev`. Since Platform #5948 that line carries V021
 `core_transaction_accounting`, including a Rust backfill that indexes historical
 inputs and repairs wallet-level transaction amounts while preserving original
 records. V001–V020 are unchanged. Keep the intermediate guard at V020 so V021

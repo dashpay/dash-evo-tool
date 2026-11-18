@@ -95,6 +95,7 @@ pub fn render(
             }
         };
         action |= render_stop_tracking_dialog(ui, state);
+        action |= render_claim_dialog(ui, app_context, state);
         return action;
     }
 
@@ -139,6 +140,7 @@ pub fn render(
     }
 
     action |= render_stop_tracking_dialog(ui, state);
+    action |= render_claim_dialog(ui, app_context, state);
     if home.receive_open {
         action |= super::home::render_receive(ui, app_context, identity, home);
     }
@@ -375,7 +377,7 @@ fn render_list(
                     if index > 0 {
                         ui.separator();
                     }
-                    action |= render_row(ui, app_context, state, row, &context);
+                    action |= render_row(ui, app_context, identity, state, row, &context);
                 }
             });
             ui.add_space(Spacing::SM);
@@ -391,6 +393,7 @@ fn render_list(
 fn render_row(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
     state: &mut IdentityTokensState,
     row: &TokenRow,
     context: &RowContext,
@@ -479,6 +482,7 @@ fn render_row(
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 action |= render_row_menu(ui, app_context, state, row, context);
+                action |= render_claim_button(ui, app_context, identity, state, row);
             });
         });
     });
@@ -753,4 +757,50 @@ fn render_all_dismissed(
         });
     });
     action
+}
+
+/// The same claim entry point on the list and the token detail page.
+pub(super) fn render_claim_button(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    state: &mut IdentityTokensState,
+    row: &TokenRow,
+) -> AppAction {
+    if state.claim.is_pending_for(app_context, row.pair()) {
+        ui.label("Claiming token rewards…");
+    } else if !state.claim.offered(app_context, row, identity).is_empty() {
+        let enabled = !state.claim.is_pending(app_context)
+            && app_context.connection_status().masternodes_ready()
+            && !identity.private_keys.is_empty();
+        if ComponentStyles::add_primary_button_enabled(ui, enabled, "Claim")
+            .disabled_tooltip(
+                "Wait for any pending claim and the network connection, and add a signing key to this identity.",
+            )
+            .clicked()
+        {
+            return state.claim.open(app_context, identity, row);
+        }
+    }
+    AppAction::None
+}
+
+fn render_claim_dialog(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    state: &mut IdentityTokensState,
+) -> AppAction {
+    let Some(dialog) = &mut state.claim.dialog else {
+        return AppAction::None;
+    };
+    let response = dialog.show(ui).inner;
+    let navigation = dialog.take_navigation();
+    if !matches!(navigation, AppAction::None) {
+        state.claim.close();
+        return navigation;
+    }
+    match response.decision {
+        Some(decision) => state.claim.decide(app_context, decision),
+        None => AppAction::None,
+    }
 }

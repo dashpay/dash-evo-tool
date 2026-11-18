@@ -411,6 +411,7 @@ impl IdentityHubScreen {
     pub fn select_tab(&mut self, tab: IdentityHubTab) {
         if self.selected_tab != tab {
             self.tokens_state.detail = None;
+            self.tokens_state.claim.close();
         }
         self.selected_tab = tab;
     }
@@ -987,6 +988,15 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        if crate::ui::tokens::task_feedback::record_success(
+            self.app_context.egui_ctx(),
+            context,
+            &result,
+        )
+        .is_some()
+        {
+            self.tokens_state.invalidate_rows();
+        }
         if let Some((network, identity_id, _)) = context.contacts_load()
             && !self.contacts_state.owns_load((network, identity_id))
         {
@@ -1173,7 +1183,19 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        matches!(
+            context.operation(),
+            BackendTaskContext::TokenRewardEstimate(_)
+        ) && !self.tokens_state.claim.owns_estimate(context)
+    }
+
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        crate::ui::tokens::task_feedback::record_error(self.app_context.egui_ctx(), context, error);
         self.tokens_state.record_error(context, error);
         self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
             && !self.is_own_contact_info_dispatch(context);

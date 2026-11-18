@@ -55,6 +55,7 @@ pub mod settings;
 pub mod social_profile_gate_card;
 pub mod tabs;
 pub(crate) mod task_feedback;
+pub mod token_claim;
 pub mod token_copy;
 pub mod token_detail;
 pub mod tokens_tab;

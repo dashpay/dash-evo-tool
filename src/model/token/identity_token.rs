@@ -386,6 +386,72 @@ pub fn is_recurring_distribution_recipient(
     perpetual_recipient || is_pre_programmed_recipient(token_configuration, &identity.identity.id())
 }
 
+/// Distributions this identity may claim. The once-only receipt is local;
+/// recurring availability is ultimately checked by the existing backend task.
+pub fn claimable_distributions(
+    config: &TokenConfiguration,
+    owner: Identifier,
+    identity: &QualifiedIdentity,
+    once_claimed: bool,
+    scheduled_through: Option<u64>,
+    now_ms: u64,
+) -> Vec<
+    dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType,
+> {
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+    let mut offered = Vec::new();
+    if !once_claimed && super::once_per_identity_amount(config).is_some() {
+        offered.push(TokenDistributionType::OncePerIdentity);
+    }
+    if config
+        .distribution_rules()
+        .perpetual_distribution()
+        .is_some_and(|dist| {
+            is_perpetual_distribution_recipient(owner, dist.distribution_recipient(), identity)
+        })
+    {
+        offered.push(TokenDistributionType::Perpetual);
+    }
+    if config
+        .distribution_rules()
+        .pre_programmed_distribution()
+        .is_some_and(|schedule| {
+            schedule.distributions().iter().any(|(at, recipients)| {
+                *at <= now_ms
+                    && scheduled_through.is_none_or(|claimed| *at > claimed)
+                    && recipients
+                        .get(&identity.identity.id())
+                        .is_some_and(|amount| *amount > 0)
+            })
+        })
+    {
+        offered.push(TokenDistributionType::PreProgrammed);
+    }
+    offered
+}
+
+/// Oldest due installment after the local confirmed cursor. One claim consumes
+/// one installment, including a zero installment; the cursor is a lower bound
+/// when other devices also claim.
+pub fn next_scheduled_claim(
+    config: &TokenConfiguration,
+    identity: Identifier,
+    claimed_through: Option<u64>,
+    now_ms: u64,
+) -> Option<u64> {
+    config
+        .distribution_rules()
+        .pre_programmed_distribution()?
+        .distributions()
+        .iter()
+        .find_map(|(at, recipients)| {
+            (*at <= now_ms
+                && claimed_through.is_none_or(|claimed| *at > claimed)
+                && recipients.contains_key(&identity))
+            .then_some(*at)
+        })
+}
+
 /// The actions `identity` may take on a token, from its configuration rules,
 /// the contract's groups and ownership, and the identity's known balance.
 ///

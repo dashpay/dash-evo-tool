@@ -20,6 +20,7 @@ use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
 };
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::{
     TokenConfigurationV0Getters, TokenConfigurationV0Setters,
@@ -239,7 +240,7 @@ fn the_tokens_tab_sits_between_contacts_and_profile() {
 }
 
 #[test]
-fn rows_show_balance_zero_and_checking_states_with_send_only_where_held() {
+fn rows_show_balance_zero_and_checking_states_without_send() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let identity = seed_signing_identity(&app_context, 0xA2);
@@ -261,9 +262,9 @@ fn rows_show_balance_zero_and_checking_states_with_send_only_where_held() {
             "an unsynced balance is never shown as zero"
         );
         assert_eq!(
-            hub.query_all_by_label(token_copy::SEND_LABEL).count(),
-            1,
-            "only the held token offers Send"
+            hub.query_all_by_label("Send").count(),
+            0,
+            "the hub does not offer Send"
         );
         assert!(
             hub.query_by_label(token_copy::REFRESH_LABEL).is_some(),
@@ -383,7 +384,7 @@ fn stop_tracking_asks_first_then_dispatches_and_drops_the_row() {
 }
 
 #[test]
-fn a_once_per_identity_claim_opens_the_claim_screen() {
+fn a_once_per_identity_claim_is_shown_without_a_claim_action() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let identity = seed_signing_identity(&app_context, 0xA6);
@@ -400,37 +401,16 @@ fn a_once_per_identity_claim_opens_the_claim_screen() {
             vec![airdrop],
         );
         set_balance(&app_context, identity, tokens[0], 0);
-        let mut hub = mount_tokens_tab(&app_context);
+        let hub = mount_tokens_tab(&app_context);
 
         assert!(
             hub.query_by_label("You can claim 1 AirDrop once.")
                 .is_some(),
             "the once-per-identity amount is shown in the token's decimals"
         );
-        assert!(
-            hub.query_by_label(token_copy::SEND_LABEL).is_none(),
-            "nothing to send"
-        );
-        let tab_row_y = hub
-            .get_by_role_and_label(Role::Button, "Home")
-            .rect()
-            .center()
-            .y;
-        assert!(
-            hub.query_all_by_label("1")
-                .any(|node| (node.rect().center().y - tab_row_y).abs() < 4.0),
-            "the tab badge on the tab row counts the pending claim"
-        );
-        hub.state_mut().1.clear();
-        hub.get_by_label(token_copy::CLAIM_LABEL).click();
-        hub.run_steps(2);
-        assert!(
-            hub.state()
-                .1
-                .iter()
-                .any(|action| matches!(action, AppAction::AddScreen(Screen::ClaimTokensScreen(_)))),
-            "Claim pushes the claim screen scoped to this identity"
-        );
+        assert!(hub.query_by_label("Send").is_none(), "nothing to send");
+        assert!(hub.query_by_label("1").is_none());
+        assert!(hub.query_by_label("Claim").is_none());
     });
 }
 
@@ -626,7 +606,7 @@ fn the_send_screen_uses_send_wording() {
         harness.run();
         assert!(harness.query_by_label("Send DashCoffee").is_some());
         assert!(
-            harness.query_all_by_label(token_copy::SEND_LABEL).count() >= 1,
+            harness.query_all_by_label("Send").count() >= 1,
             "the breadcrumb and the primary button say Send"
         );
         assert!(
@@ -934,7 +914,7 @@ fn the_detail_page_opens_from_the_row_and_goes_back() {
             .is_some(),
             "the full token ID is shown for copying"
         );
-        assert!(hub.query_by_label(token_copy::SEND_LABEL).is_some());
+        assert!(hub.query_by_label("Send").is_none());
         assert!(
             hub.query_by_label(token_copy::MANAGE_LABEL).is_none(),
             "no admin permission, no Manage link"
@@ -1419,7 +1399,7 @@ fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
             "nothing held and nothing to claim: no Home card"
         );
         let hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label(token_copy::CLAIM_LABEL).is_none());
+        assert!(hub.query_by_label("Claim").is_none());
         assert!(hub.query_by_label(token_copy::STATUS_REWARDS).is_none());
     });
 }
@@ -1509,17 +1489,12 @@ fn a_view_only_identity_is_told_to_add_a_key_and_cannot_send() {
         seed_three_tokens(&app_context, identity);
         let hub = mount_tokens_tab(&app_context);
         assert!(hub.query_by_label(token_copy::STATUS_ADD_KEY).is_some());
-        assert!(
-            hub.get_by_label(token_copy::SEND_LABEL)
-                .accesskit_node()
-                .is_disabled(),
-            "nothing can be signed on this device"
-        );
+        assert!(hub.query_by_label("Send").is_none());
     });
 }
 
 #[test]
-fn a_token_that_cannot_be_sent_shows_the_badge_and_a_disabled_send() {
+fn a_token_that_cannot_be_sent_shows_the_badge_without_send() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let identity = seed_signing_identity(&app_context, 0xD6);
@@ -1534,12 +1509,7 @@ fn a_token_that_cannot_be_sent_shows_the_badge_and_a_disabled_send() {
         set_balance(&app_context, identity, tokens[0], 500);
         let hub = mount_tokens_tab(&app_context);
         assert!(hub.query_by_label(token_copy::CANT_BE_SENT_BADGE).is_some());
-        assert!(
-            hub.get_by_label(token_copy::SEND_LABEL)
-                .accesskit_node()
-                .is_disabled(),
-            "Send stays visible for a held token but cannot be used"
-        );
+        assert!(hub.query_by_label("Send").is_none());
     });
 }
 
@@ -1654,7 +1624,7 @@ fn find_a_token_by_name_opens_token_search() {
 }
 
 #[test]
-fn the_home_card_shows_for_a_claim_alone_and_claims_right_there() {
+fn the_home_card_shows_a_claim_as_information() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let identity = seed_signing_identity(&app_context, 0xDA);
@@ -1671,7 +1641,7 @@ fn the_home_card_shows_for_a_claim_alone_and_claims_right_there() {
             vec![airdrop],
         );
         set_balance(&app_context, identity, tokens[0], 0);
-        let mut hub = mount_hub_on(
+        let hub = mount_hub_on(
             &app_context,
             egui::vec2(1280.0, 900.0),
             IdentityHubTab::Home,
@@ -1685,16 +1655,7 @@ fn the_home_card_shows_for_a_claim_alone_and_claims_right_there() {
             hub.query_by_label("You can claim 1 AirDrop once.")
                 .is_some()
         );
-        hub.state_mut().1.clear();
-        hub.get_by_label(token_copy::CLAIM_LABEL).click();
-        hub.run_steps(2);
-        assert!(
-            hub.state()
-                .1
-                .iter()
-                .any(|action| matches!(action, AppAction::AddScreen(Screen::ClaimTokensScreen(_)))),
-            "Claim on the Home card claims; it does not merely switch tabs"
-        );
+        assert!(hub.query_by_label("Claim").is_none());
         assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Home);
     });
 }
@@ -1809,7 +1770,7 @@ fn the_send_screen_confirms_sends_and_reports_in_send_wording() {
         // The breadcrumb's current item is a "Send" button too; the primary
         // button comes last.
         harness
-            .get_all_by_role_and_label(Role::Button, token_copy::SEND_LABEL)
+            .get_all_by_role_and_label(Role::Button, "Send")
             .rfind(|node| !node.accesskit_node().is_disabled())
             .expect("an enabled Send button")
             .click();
@@ -1888,10 +1849,7 @@ fn absent_balance_after_success_shows_no_balance_found_and_no_send() {
         hub.run_steps(2);
         assert!(hub.query_by_label("No balance found.").is_some());
         assert!(hub.query_by_label("0 TKN").is_none());
-        assert!(
-            hub.query_by_role_and_label(Role::Button, token_copy::SEND_LABEL)
-                .is_none()
-        );
+        assert!(hub.query_by_role_and_label(Role::Button, "Send").is_none());
         hub.get_by_label(token_copy::REFRESH_LABEL).click();
         hub.run_steps(2);
         assert!(hub.query_by_label(token_copy::FIRST_LOAD).is_none());
@@ -1939,10 +1897,7 @@ fn balance_after_refresh(balance: Option<u64>, checking: bool, hide_zero: bool) 
                 };
                 assert!(hub.query_by_label(status).is_some());
                 assert!(hub.query_by_label("0 TKN").is_none());
-                assert!(
-                    hub.query_by_role_and_label(Role::Button, token_copy::SEND_LABEL)
-                        .is_none()
-                );
+                assert!(hub.query_by_role_and_label(Role::Button, "Send").is_none());
             }
             Some(0) => assert_eq!(hub.query_by_label("0 TKN").is_some(), !hide_zero),
             _ => unreachable!(),
@@ -2213,5 +2168,362 @@ fn a_pair_check_failure_on_a_visible_row_reaches_the_banner_but_a_refusal_does_n
             hub.state_mut().0.display_task_error(&busy),
             "a refusal is no failure: the check is sent again later"
         );
+    });
+}
+
+fn regression_claim_hub(app_context: &Arc<AppContext>) -> HubHarness {
+    let identity = seed_signing_identity(app_context, 0xA6);
+    let mut token = token_config("AirDrop", false);
+    let TokenDistributionRules::V0(rules) = token.distribution_rules().clone() else {
+        panic!("version 0 preset");
+    };
+    token.set_distribution_rules(distribution_rules_with_once_per_identity(rules, Some(100)));
+    let tokens = seed_contract(app_context, 0xC2, Identifier::from([0xEE; 32]), vec![token]);
+    set_balance(app_context, identity, tokens[0], 100);
+    mount_tokens_tab(app_context)
+}
+
+#[test]
+fn regression_tokens_tab_has_no_claim_count_badge() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let hub = regression_claim_hub(&ctx);
+        assert!(
+            hub.query_by_label("You can claim 1 AirDrop once.")
+                .is_some()
+        );
+        assert!(
+            hub.query_by_label("1").is_none(),
+            "no count badge beside Tokens"
+        );
+    });
+}
+
+#[test]
+fn regression_returning_to_tokens_opens_the_list() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        hub.get_by_role_and_label(Role::Button, "Home").click();
+        hub.run_steps(3);
+        let tab_y = hub
+            .get_by_role_and_label(Role::Button, "Home")
+            .rect()
+            .center()
+            .y;
+        hub.get_all_by_role_and_label(Role::Button, "Tokens")
+            .find(|node| (node.rect().center().y - tab_y).abs() < 2.0)
+            .expect("Tokens tab")
+            .click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+    });
+}
+
+#[test]
+fn regression_token_breadcrumb_links_to_identity_token_list() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        let home_y = hub.get_by_role_and_label(Role::Button, "Home").rect().top();
+        let token_crumb = hub
+            .query_all_by_label("Tokens")
+            .find(|node| node.rect().bottom() < home_y)
+            .expect("Tokens breadcrumb above the tab bar");
+        assert!(
+            hub.query_all_by_label("DashCoffee")
+                .any(|node| node.rect().bottom() < home_y),
+            "token name in breadcrumb"
+        );
+        token_crumb.click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+    });
+}
+
+#[test]
+fn regression_hub_token_views_do_not_offer_claim() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        assert!(hub.query_by_label("Claim").is_none(), "list has no Claim");
+        hub.get_by_label("AirDrop").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("Claim").is_none(), "detail has no Claim");
+        hub.get_by_role_and_label(Role::Button, "Home").click();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label("Claim").is_none(),
+            "Home card has no Claim"
+        );
+    });
+}
+
+#[test]
+fn regression_hub_token_list_and_detail_do_not_offer_send() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        assert!(hub.query_by_label("Send").is_none(), "list has no Send");
+        hub.get_by_label("AirDrop").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("Send").is_none(), "detail has no Send");
+    });
+}
+
+#[test]
+fn regression_import_by_id_restores_a_dismissed_token() {
+    with_isolated_data_dir(|| {
+        let (runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let tokens = seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::STOP_TRACKING_LABEL).click();
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::STOP_TRACKING_LABEL).click();
+        hub.run_steps(3);
+        let pair = hub
+            .state()
+            .1
+            .iter()
+            .find_map(|action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    ..
+                } => {
+                    if let TokenTask::StopTrackingTokenBalance(pair) = **task {
+                        Some(pair)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .expect("stop-tracking request");
+        ctx.mark_token_balance_untracked(pair)
+            .expect("persist dismissal");
+        assert!(
+            ctx.get_all_known_tokens()
+                .expect("global registry")
+                .contains_key(&tokens[0])
+        );
+        hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::ADD_BY_ID_LABEL).click();
+        hub.run_steps(2);
+        let screen = hub
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::AddScreen(Screen::AddTokenById(screen)) => Some(screen),
+                _ => None,
+            })
+            .expect("hub opens import-by-ID");
+        let contract = ctx.get_contract_by_token_id(&tokens[0]).unwrap().unwrap();
+        let mut import = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui,
+                 state: &mut (
+                    dash_evo_tool::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen,
+                    Vec<AppAction>,
+                )| {
+                    let action = state.0.ui(ui);
+                    state.1.push(action);
+                },
+                (screen, Vec::new()),
+            );
+        import.state_mut().0.display_task_result(
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+                contract.contract,
+                0,
+            ),
+        );
+        import.run_steps(3);
+        import
+            .get_all_by_role_and_label(Role::Button, "Import Token")
+            .last()
+            .expect("import form button")
+            .click();
+        import.run_steps(2);
+        let task = import
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::BackendTasks(tasks, _) => {
+                    tasks.into_iter().find_map(|task| match task {
+                        BackendTask::ContractTask(task) => Some(*task),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("import saves contract");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        runtime
+            .block_on(ctx.run_contract_task(
+                task,
+                &ctx.sdk(),
+                dash_evo_tool::utils::egui_mpsc::SenderAsync::new(sender, egui::Context::default()),
+            ))
+            .unwrap();
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label("DashCoffee").is_some(),
+            "import restores the identity's row"
+        );
+    });
+}
+
+#[test]
+fn regression_search_can_reimport_a_dismissed_known_token() {
+    with_isolated_data_dir(|| {
+        let (runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let tokens = seed_three_tokens(&ctx, identity);
+        let pair = IdentityTokenIdentifier {
+            identity_id: identity,
+            token_id: tokens[0],
+        };
+        ctx.mark_token_balance_untracked(pair).unwrap();
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::FIND_BY_NAME_LABEL).click();
+        hub.run_steps(2);
+        assert!(hub.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch)
+        )));
+        let contract = ctx.get_contract_by_token_id(&tokens[0]).unwrap().unwrap();
+        let contract_id = contract.contract.id();
+        let token = dash_evo_tool::ui::tokens::tokens_screen::TokenInfo {
+            token_id: tokens[0],
+            token_name: "DashCoffee".into(),
+            data_contract_id: contract_id,
+            token_position: 0,
+            token_configuration: contract.contract.tokens()[&0].clone(),
+            description: None,
+        };
+        let mut screen = TokensScreen::new(&ctx, TokensSubscreen::SearchTokens);
+        screen.selected_contract_id = Some(contract_id);
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::ContractsWithDescriptions(
+                BTreeMap::from([(contract_id, (None, vec![token]))]),
+            ),
+        );
+        let mut search = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, state: &mut (TokensScreen, Vec<AppAction>)| {
+                    let action = state.0.ui(ui);
+                    state.1.push(action);
+                },
+                (screen, Vec::new()),
+            );
+        search.run_steps(3);
+        search.get_by_label("Add to My Tokens").click();
+        search.run_steps(2);
+        let task = search
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::BackendTasks(tasks, _) => {
+                    tasks.into_iter().find_map(|task| match task {
+                        BackendTask::TokenTask(task)
+                            if matches!(*task, TokenTask::SaveTokenLocally(_)) =>
+                        {
+                            Some(*task)
+                        }
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("a dismissed known token can be imported again");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        runtime
+            .block_on(ctx.run_token_task(
+                task,
+                &ctx.sdk(),
+                dash_evo_tool::utils::egui_mpsc::SenderAsync::new(sender, egui::Context::default()),
+            ))
+            .unwrap();
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("DashCoffee").is_some());
+    });
+}
+
+#[test]
+fn regression_token_breadcrumb_does_not_reload_the_identity_roster() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
+        let reads = |hub: &mut HubHarness| {
+            let before = AppContext::roster_loads_on_this_thread();
+            hub.step();
+            AppContext::roster_loads_on_this_thread() - before
+        };
+        let home_reads = reads(&mut hub);
+        hub.state_mut().0.select_tab(IdentityHubTab::Tokens);
+        hub.run_steps(4);
+        assert_eq!(
+            reads(&mut hub),
+            home_reads,
+            "the token list reuses the hub roster"
+        );
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert_eq!(
+            reads(&mut hub),
+            home_reads,
+            "the detail breadcrumb uses cached rows"
+        );
+    });
+}
+
+#[test]
+fn regression_token_breadcrumb_is_hidden_on_the_identity_picker() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        // Returning from Wallets with a wallet that has no identities opens the picker.
+        ctx.set_selected_hd_wallet(Some([0xEE; 32]));
+        assert_eq!(ctx.selected_identity_id(), None);
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+        assert!(
+            hub.query_by_label("DashCoffee").is_none(),
+            "the picker has no stale token crumb"
+        );
+        assert!(hub.query_by_role_and_label(Role::Link, "Tokens").is_none());
     });
 }

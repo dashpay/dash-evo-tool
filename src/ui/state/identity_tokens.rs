@@ -15,9 +15,8 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, cmp_displayed_quantity};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::token::{
-    IdentityTokenBalance, IdentityTokenBasicInfo, IdentityTokenIdentifier,
-    IdentityTokenMaybeBalanceWithActions, IdentityTokensViewPrefs, TokenListSort,
-    get_available_token_actions_for_identity, is_recurring_distribution_recipient,
+    IdentityTokenIdentifier, IdentityTokenMaybeBalanceWithActions, IdentityTokensViewPrefs,
+    TokenListSort, get_available_token_actions_for_identity, is_recurring_distribution_recipient,
     once_per_identity_amount, token_display_name,
 };
 use crate::ui::components::confirmation_dialog::ConfirmationDialog;
@@ -108,18 +107,6 @@ impl TokenRow {
     /// `value` in the token's decimals, with the name as unit.
     pub fn amount(&self, value: TokenAmount) -> Amount {
         self.token.amount_of(value)
-    }
-
-    /// The balance as the Send screen expects it, once known.
-    pub fn balance_record(&self) -> Option<IdentityTokenBalance> {
-        self.token
-            .balance
-            .map(|balance| self.token.to_token_balance(balance))
-    }
-
-    /// The handles the Claim screen expects.
-    pub fn basic_info(&self) -> IdentityTokenBasicInfo {
-        (&self.token).into()
     }
 
     /// The token ID as users copy and compare it.
@@ -431,22 +418,6 @@ impl IdentityTokensState {
         Arc::clone(&self.rows)
     }
 
-    /// How many of the identity's tokens have something to claim, for the tab
-    /// badge on every tab. Reads the registry only when the rows were never
-    /// read or were invalidated by an event; the time-based re-read is left
-    /// to the surfaces that show the rows.
-    pub fn badge_pending_claims(
-        &mut self,
-        app_context: &AppContext,
-        identity: &QualifiedIdentity,
-    ) -> usize {
-        self.reconcile_owner(app_context, identity);
-        if self.rows_read_at.is_none() {
-            self.reread_rows(app_context, identity);
-        }
-        self.pending_claims()
-    }
-
     fn reread_rows(&mut self, app_context: &AppContext, identity: &QualifiedIdentity) {
         match self.read_rows(app_context, identity) {
             Ok((rows, registry_has_tokens)) => {
@@ -551,9 +522,16 @@ impl IdentityTokensState {
         self.registry_has_tokens
     }
 
-    /// How many of the cached rows have something to claim.
-    pub fn pending_claims(&self) -> usize {
-        self.rows.iter().filter(|row| row.claim_available()).count()
+    /// The open detail's cached name, without reading the identity roster or registry.
+    pub fn detail_name(&self, selected_identity: Identifier) -> Option<&str> {
+        let pair = self.detail?;
+        if selected_identity != pair.identity_id {
+            return None;
+        }
+        self.rows
+            .iter()
+            .find(|row| row.pair() == pair)
+            .map(TokenRow::name)
     }
 
     /// The list controls, read from the device on first use.
@@ -1085,7 +1063,6 @@ mod tests {
             RowStatus::Checking
         );
         assert_eq!(token.balance(), None);
-        assert!(token.balance_record().is_none());
 
         let request = dispatched(state.dispatch_pair_check(token.pair()));
         assert_eq!(
@@ -1376,6 +1353,22 @@ mod tests {
     }
 
     #[test]
+    fn detail_name_belongs_to_the_selected_identity_and_cached_token() {
+        let token = row("Coffee", Some(1));
+        let pair = token.pair();
+        let mut state = IdentityTokensState {
+            rows: vec![token].into(),
+            ..Default::default()
+        };
+        assert_eq!(state.detail_name(pair.identity_id), None);
+        state.detail = Some(pair);
+        assert_eq!(state.detail_name(pair.identity_id), Some("Coffee"));
+        assert_eq!(state.detail_name(Identifier::from([99; 32])), None);
+        state.rows = Vec::new().into();
+        assert_eq!(state.detail_name(pair.identity_id), None);
+    }
+
+    #[test]
     fn arrival_refresh_is_due_when_never_or_old() {
         let two_minutes = ARRIVAL_REFRESH_AFTER.as_millis() as u64;
         assert!(arrival_refresh_due(true, 0, None));
@@ -1384,28 +1377,14 @@ mod tests {
         assert!(!arrival_refresh_due(false, two_minutes, Some(0)));
     }
 
-    #[test]
-    fn pending_claims_counts_claimable_rows_only() {
-        let mut state = IdentityTokensState::default();
-        let taken = once_only(row("B", Some(0)), Some(1));
-        state.rows = vec![claimable(row("A", Some(0))), taken, row("C", Some(4))].into();
-        assert_eq!(state.pending_claims(), 1);
-    }
-
     /// A token may pay ongoing rewards beside a once-per-identity airdrop:
     /// taking the airdrop leaves the rewards claimable, on every surface.
     #[test]
     fn a_taken_once_claim_leaves_recurring_rewards_claimable() {
         let both = claimable(once_only(row("Both", Some(5)), Some(1_700_000_000_000)));
-        assert!(both.claim_available(), "Claim stays offered");
+        assert!(both.claim_available(), "recurring rewards remain available");
         assert_eq!(row_status(&both, false), RowStatus::RewardsMayBeWaiting);
         assert!(home_card_shows(std::slice::from_ref(&both)));
-        let state = IdentityTokensState {
-            rows: vec![both].into(),
-            ..Default::default()
-        };
-        assert_eq!(state.pending_claims(), 1, "the badge still counts it");
-
         let open = claimable(once_only(row("Both", Some(5)), None));
         assert_eq!(
             row_status(&open, false),

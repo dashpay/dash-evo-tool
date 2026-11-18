@@ -7,7 +7,7 @@
 use super::token_copy::*;
 use super::tokens_tab::{
     DETAIL_MONOGRAM_SIZE, RowContext, manage_action, open_stop_tracking_dialog,
-    paint_token_monogram, refresh_block_reason, render_row_actions, render_row_status,
+    paint_token_monogram, refresh_block_reason, render_row_status,
 };
 use crate::app::AppAction;
 use crate::context::AppContext;
@@ -64,10 +64,6 @@ pub fn render(
                 }
                 let status = state.row_status(app_context, row, context.view_only);
                 action |= render_row_status(ui, app_context, row, &status, &context, state);
-                ui.add_space(Spacing::SM);
-                ui.horizontal_wrapped(|ui| {
-                    action |= render_row_actions(ui, app_context, row, &context);
-                });
             });
             ui.add_space(Spacing::MD);
             super::home::card(ui, |ui| {

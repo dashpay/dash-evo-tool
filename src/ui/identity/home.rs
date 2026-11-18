@@ -17,7 +17,7 @@ use crate::ui::identity::token_copy::{
     ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT, SEE_ALL_TOKENS_LABEL, TOKENS_CARD_HEADING,
     can_claim_once_text, pending_claims_text,
 };
-use crate::ui::identity::tokens_tab::{RowContext, render_claim_button, render_failure};
+use crate::ui::identity::tokens_tab::render_failure;
 pub use crate::ui::state::identity_home::HomeState;
 use crate::ui::state::identity_tokens::{
     IdentityTokensState, TokenRow, home_card_shows, sort_rows,
@@ -417,7 +417,7 @@ fn render_tokens_card(
     let rows = tokens.rows(app_context, identity);
     // Shown whether or not the card is: unread tokens may be why it is not.
     super::tokens_tab::render_row_load_failure(ui, tokens);
-    let mut action = if rows.is_empty() {
+    let action = if rows.is_empty() {
         AppAction::None
     } else {
         render_failure(ui, app_context, tokens)
@@ -431,7 +431,6 @@ fn render_tokens_card(
     sort_rows(&mut held, TokenListSort::BalanceHighToLow);
     let claimable: Vec<&TokenRow> = rows.iter().filter(|row| row.claim_available()).collect();
     let pending_claims = claimable.len();
-    let context = RowContext::new(app_context, identity);
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.strong(TOKENS_CARD_HEADING);
@@ -455,7 +454,6 @@ fn render_tokens_card(
             ui.horizontal_wrapped(|ui| {
                 let text = single_claim_text(only);
                 ui.label(RichText::new(text).color(DashColors::success_color(dark)));
-                action |= render_claim_button(ui, app_context, only, &context);
             });
         } else if pending_claims > 1 {
             ui.label(

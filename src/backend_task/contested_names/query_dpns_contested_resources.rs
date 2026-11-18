@@ -840,6 +840,122 @@ mod tests {
             .expect("contender expectation");
     }
 
+    #[tokio::test]
+    async fn refresh_stores_contenders_from_the_second_page() {
+        use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
+        use dash_sdk::dpp::document::{Document, DocumentV0};
+        use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocumentV0;
+        use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
+        use std::collections::BTreeMap;
+
+        let name = "busy";
+        let (_dir, context, mut sdk) = context_listing(&[name.to_owned()]).await;
+        context.seed_dpns_contest_for_test(
+            name,
+            Some(crate::utils::time::now_ms() + 600_000),
+            false,
+        );
+        let contract = context.dpns_contract();
+        let document_type = contract
+            .document_type_for_name("domain")
+            .expect("domain type");
+        let vote_poll =
+            crate::model::dpns_voting::dpns_vote_poll(&contract, name).expect("vote poll");
+        let id = |index: u16| {
+            let mut bytes = [0; 32];
+            bytes[..2].copy_from_slice(&index.to_be_bytes());
+            Identifier::from(bytes)
+        };
+        let contender = |index| {
+            let identity_id = id(index);
+            let document = Document::V0(DocumentV0 {
+                id: id(index + 1000),
+                owner_id: identity_id,
+                created_at: Some(100),
+                updated_at: Some(100),
+                transferred_at: Some(100),
+                properties: BTreeMap::from([
+                    ("label".into(), Value::from(name)),
+                    ("normalizedLabel".into(), Value::from(name)),
+                    ("normalizedParentDomainName".into(), Value::from("dash")),
+                    ("preorderSalt".into(), Value::Bytes32([0; 32])),
+                    (
+                        "records".into(),
+                        Value::Map(vec![(
+                            Value::from("identity"),
+                            Value::Identifier(identity_id.to_buffer()),
+                        )]),
+                    ),
+                    (
+                        "subdomainRules".into(),
+                        Value::Map(vec![(Value::from("allowSubdomains"), Value::Bool(false))]),
+                    ),
+                ]),
+                ..Default::default()
+            });
+            let serialized_document = document
+                .serialize(document_type, &contract, context.platform_version())
+                .expect("serialize a valid domain document");
+            (
+                identity_id,
+                ContenderWithSerializedDocument::V0(ContenderWithSerializedDocumentV0 {
+                    identity_id,
+                    serialized_document: Some(serialized_document),
+                    vote_tally: Some(u32::from(index)),
+                }),
+            )
+        };
+        for (start_at, indices) in [
+            (None, 1..=DEFAULT_QUERY_LIMIT),
+            (
+                Some((id(DEFAULT_QUERY_LIMIT).to_buffer(), false)),
+                DEFAULT_QUERY_LIMIT + 1..=DEFAULT_QUERY_LIMIT + 1,
+            ),
+        ] {
+            sdk.mock()
+                .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                    ContestedDocumentVotePollDriveQuery {
+                        vote_poll: vote_poll.clone(),
+                        result_type:
+                            ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+                        allow_include_locked_and_abstaining_vote_tally: true,
+                        start_at,
+                        limit: Some(DEFAULT_QUERY_LIMIT),
+                        offset: None,
+                    },
+                    Some(Contenders {
+                        contenders: indices.map(contender).collect(),
+                        abstain_vote_tally: start_at.is_none().then_some(7),
+                        lock_vote_tally: start_at.is_none().then_some(9),
+                        winner: None,
+                    }),
+                )
+                .await
+                .expect("contender page expectation");
+        }
+
+        run_pass(&context, &sdk).await.expect("refresh pass");
+
+        let contest = context
+            .all_contested_names()
+            .expect("stored contests")
+            .into_iter()
+            .find(|contest| contest.normalized_contested_name == name)
+            .expect("the open contest");
+        let contestants = contest.contestants.expect("stored contenders");
+        let second_page_id = id(DEFAULT_QUERY_LIMIT + 1);
+        let second = contestants
+            .iter()
+            .find(|contender| contender.id == second_page_id)
+            .expect("the second-page contender must be stored");
+        assert_eq!(second.name, name);
+        assert_eq!(second.document_id, id(DEFAULT_QUERY_LIMIT + 1001));
+        assert_eq!(second.votes, u32::from(DEFAULT_QUERY_LIMIT) + 1);
+        assert_eq!(contestants.len(), usize::from(DEFAULT_QUERY_LIMIT) + 1);
+        assert_eq!(contest.abstain_votes, Some(7));
+        assert_eq!(contest.locked_votes, Some(9));
+    }
+
     /// Start a pass that hands its reports to a channel with room for one. A
     /// pass waits until each report is taken, so it gets only as far as the
     /// reports the test takes let it.

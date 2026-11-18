@@ -535,3 +535,69 @@ fn a_narrow_window_keeps_the_hub_on_screen_and_stacks_the_profile() {
         );
     });
 }
+
+#[test]
+fn home_header_identity_id_is_below_usernames_and_copies_in_both_themes() {
+    for (dark, width) in [(false, 640.0), (true, 1280.0)] {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_with_usernames(&app_context);
+            let full =
+                owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+            let mut hub = mount_hub(&app_context, width);
+            hub.ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            hub.run();
+            let short = format!("{}…{}", &full[..5], &full[full.len() - 3..]);
+            let id_rect = hub.get_by_label(&short).rect();
+            assert!(id_rect.top() >= hub.get_by_label("@alex, @alexander").rect().bottom());
+            let copy = hub.get_by_role_and_label(Role::Button, "Copy full identity ID");
+            assert!(copy.rect().right() <= width);
+            copy.focus();
+            hub.run();
+            hub.key_down(egui::Key::Enter);
+            hub.step();
+            assert!(hub.output().platform_output.commands.iter().any(|command| {
+                matches!(command, egui::OutputCommand::CopyText(text) if text == &full)
+            }));
+            hub.key_up(egui::Key::Enter);
+            hub.run();
+            assert!(
+                hub.query_by_label("The identity ID was copied to the clipboard.")
+                    .is_some()
+            );
+        });
+    }
+}
+
+#[test]
+fn home_header_identity_id_without_username_is_not_added_to_other_tabs() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_identity_named(&app_context, &[]);
+        let mut hub = mount_hub(&app_context, 1280.0);
+        hub.run();
+        assert!(hub.query_by_label("No username yet").is_some());
+        assert!(
+            hub.query_by_role_and_label(Role::Button, "Copy full identity ID")
+                .is_some()
+        );
+        for tab in [IdentityHubTab::Contacts, IdentityHubTab::Settings] {
+            hub.state_mut().0.select_tab(tab);
+            hub.run();
+            assert!(
+                hub.query_by_role_and_label(Role::Button, "Copy full identity ID")
+                    .is_none()
+            );
+        }
+        hub.state_mut().0.select_tab(IdentityHubTab::Home);
+        hub.run();
+        assert!(
+            hub.query_by_role_and_label(Role::Button, "Copy full identity ID")
+                .is_some()
+        );
+    });
+}

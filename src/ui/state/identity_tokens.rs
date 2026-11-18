@@ -299,6 +299,7 @@ enum PairCheckResult {
 /// What the Tokens tab shows and waits on for the selected identity.
 #[derive(Default)]
 pub struct IdentityTokensState {
+    pub claim: super::token_claim::TokenClaimState,
     owner: Option<(Network, Identifier)>,
     rows: Arc<[TokenRow]>,
     rows_read_at: Option<Instant>,
@@ -358,7 +359,9 @@ impl IdentityTokensState {
     /// the in-flight requests (so a late answer is still this tab's), and the
     /// time of the last refresh with the identities it covered.
     pub fn reset_for_identity_change(&mut self) {
+        self.claim.close();
         *self = Self {
+            claim: std::mem::take(&mut self.claim),
             prefs: self.prefs.take(),
             prefs_dirty: self.prefs_dirty,
             refresh: std::mem::take(&mut self.refresh),
@@ -692,6 +695,16 @@ impl IdentityTokensState {
     /// caller asks only on a frame nothing else produced an action.
     pub fn load_action(&mut self, app_context: &AppContext, now_ms: u64) -> AppAction {
         let refresh_running = self.refreshing(app_context);
+        if crate::ui::tokens::task_feedback::refresh_owed(app_context)
+            && !refresh_running
+            && Self::can_read(app_context)
+        {
+            let action = self.refresh_action(app_context);
+            if !matches!(action, AppAction::None) {
+                crate::ui::tokens::task_feedback::refresh_dispatched(app_context);
+            }
+            return action;
+        }
         match self.arrival(now_ms, Self::can_read(app_context), refresh_running) {
             Arrival::NotDue => {
                 self.arriving = false;
@@ -821,6 +834,10 @@ impl IdentityTokensState {
         result: &BackendTaskSuccessResult,
         now_ms: u64,
     ) -> bool {
+        if self.claim.record_result(context, result) {
+            self.invalidate_rows();
+            return true;
+        }
         // Only the full refresh fetched every identity's balances; "track
         // again" refreshed the selected identity's watch set alone.
         if let Some(covers) = self.refresh.settle(context) {
@@ -879,6 +896,7 @@ impl IdentityTokensState {
     /// failure: the request is owed again once it can go out, and no banner
     /// shows. Anything else is shown inline and by the default banner.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.claim.record_error(context, error);
         let in_progress = matches!(
             error,
             TaskError::TokenBalanceRefreshInProgress | TaskError::MasternodeListSyncPending

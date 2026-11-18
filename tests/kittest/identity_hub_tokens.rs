@@ -38,6 +38,8 @@ use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers
 use dash_sdk::dpp::data_contract::config::DataContractConfig;
 use dash_sdk::dpp::data_contract::v1::DataContractV1;
 use dash_sdk::dpp::identity::Purpose;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
@@ -384,7 +386,7 @@ fn stop_tracking_asks_first_then_dispatches_and_drops_the_row() {
 }
 
 #[test]
-fn a_once_per_identity_claim_is_shown_without_a_claim_action() {
+fn a_once_per_identity_claim_is_shown_with_a_claim_action() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let identity = seed_signing_identity(&app_context, 0xA6);
@@ -410,7 +412,7 @@ fn a_once_per_identity_claim_is_shown_without_a_claim_action() {
         );
         assert!(hub.query_by_label("Send").is_none(), "nothing to send");
         assert!(hub.query_by_label("1").is_none());
-        assert!(hub.query_by_label("Claim").is_none());
+        assert!(hub.query_by_label("Claim").is_some());
     });
 }
 
@@ -2253,14 +2255,12 @@ fn regression_token_breadcrumb_links_to_identity_token_list() {
 }
 
 #[test]
-fn regression_hub_token_views_do_not_offer_claim() {
+fn regression_home_card_does_not_offer_claim() {
     with_isolated_data_dir(|| {
         let (_runtime, ctx) = fresh_app_context();
         let mut hub = regression_claim_hub(&ctx);
-        assert!(hub.query_by_label("Claim").is_none(), "list has no Claim");
         hub.get_by_label("AirDrop").click();
         hub.run_steps(3);
-        assert!(hub.query_by_label("Claim").is_none(), "detail has no Claim");
         hub.get_by_role_and_label(Role::Button, "Home").click();
         hub.run_steps(3);
         assert!(
@@ -2525,5 +2525,534 @@ fn regression_token_breadcrumb_is_hidden_on_the_identity_picker() {
             "the picker has no stale token crumb"
         );
         assert!(hub.query_by_role_and_label(Role::Link, "Tokens").is_none());
+    });
+}
+
+#[test]
+fn token_claim_opens_from_list_and_detail_in_both_themes() {
+    for dark in [false, true] {
+        for detail in [false, true] {
+            with_isolated_data_dir(|| {
+                let (_runtime, ctx) = fresh_app_context();
+                let mut hub = regression_claim_hub(&ctx);
+                hub.ctx.set_visuals(if dark {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                });
+                if detail {
+                    hub.get_by_label("AirDrop").click();
+                    hub.run_steps(3);
+                }
+                hub.state_mut().1.clear();
+                hub.get_by_role_and_label(Role::Button, "Claim").click();
+                hub.run_steps(3);
+                assert!(hub.query_by_label("Claim token rewards").is_some());
+                assert!(hub.query_by_label("Once per identity").is_some());
+                assert!(
+                    hub.query_all_by_label("You can claim 1 AirDrop once.")
+                        .count()
+                        >= 1
+                );
+                assert!(
+                    hub.state().1.iter().all(|a| !matches!(
+                        a,
+                        AppAction::AddScreen(_) | AppAction::SetMainScreen(_)
+                    ))
+                );
+                hub.get_by_role_and_label(Role::Button, "Cancel").click();
+                hub.run_steps(3);
+                assert!(hub.query_by_label("Claim token rewards").is_none());
+            });
+        }
+    }
+}
+
+#[test]
+fn token_claim_absent_without_distribution_or_after_once_claim() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA6);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        assert!(hub.query_by_label("Claim").is_none());
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("Claim").is_none());
+    });
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let hub = regression_claim_hub(&ctx);
+        drop(hub);
+        let contract = ctx
+            .get_contract_by_id(&Identifier::from([0xC2; 32]))
+            .unwrap()
+            .unwrap();
+        ctx.record_once_per_identity_claim(
+            &contract.contract.token_id(0).unwrap(),
+            &Identifier::from([0xA6; 32]),
+            1,
+        )
+        .unwrap();
+        let hub = mount_tokens_tab(&ctx);
+        assert!(hub.query_by_label("Claim").is_none());
+    });
+}
+
+fn submit_hub_claim(hub: &mut HubHarness, ctx: &Arc<AppContext>) -> BackendTaskContext {
+    submit_hub_claim_for(hub, ctx, dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType::OncePerIdentity)
+}
+
+fn submit_hub_claim_for(
+    hub: &mut HubHarness,
+    ctx: &Arc<AppContext>,
+    expected: dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType,
+) -> BackendTaskContext {
+    hub.get_by_role_and_label(Role::Button, "Claim").click();
+    hub.run_steps(3);
+    hub.get_by_value("Select Key…").click();
+    hub.run_steps(2);
+    let identity = ctx.load_local_qualified_identities().unwrap().remove(0);
+    let key = identity.identity.get_public_key_by_id(1).unwrap();
+    let label = dash_evo_tool::ui::helpers::format_key_label(key);
+    hub.get_by_label(&label).click();
+    hub.run_steps(2);
+    hub.get_by_role_and_label(Role::Button, "Review claim")
+        .click();
+    hub.run_steps(3);
+    assert!(
+        hub.query_by_role_and_label(Role::Button, "Confirm claim")
+            .is_some()
+    );
+    hub.state_mut().1.clear();
+    hub.get_by_role_and_label(Role::Button, "Confirm claim")
+        .click();
+    hub.run_steps(3);
+    let (task, context) = hub
+        .state()
+        .1
+        .iter()
+        .find_map(|a| match a {
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::TokenTask(task),
+                context,
+            } if matches!(task.as_ref(), TokenTask::ClaimTokens { .. }) => Some((task, context)),
+            _ => None,
+        })
+        .expect("claim dispatch");
+    let TokenTask::ClaimTokens {
+        data_contract,
+        token_position,
+        actor_identity,
+        distribution_type,
+        signing_key,
+        public_note,
+    } = task.as_ref()
+    else {
+        unreachable!()
+    };
+    assert_eq!(data_contract.id(), Identifier::from([0xC2; 32]));
+    assert_eq!(*token_position, 0);
+    assert_eq!(actor_identity.identity.id(), Identifier::from([0xA6; 32]));
+    assert_eq!(*distribution_type, expected);
+    assert_eq!(signing_key.id(), 1);
+    assert_eq!(*public_note, None);
+    context.clone()
+}
+
+#[test]
+fn token_claim_dispatches_selected_parameters_and_refreshes_only_after_own_success() {
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        // Settle the automatic arrival request before the claim.
+        let arrival = balance_refreshes(&hub).remove(0);
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&arrival, BackendTaskSuccessResult::FetchedTokenBalances);
+        hub.run_steps(3);
+        let claim = submit_hub_claim(&mut hub, &ctx);
+        assert!(hub.query_by_role_and_label(Role::Button, "Claim").is_none());
+        hub.state_mut().1.clear();
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            BackendTaskSuccessResult::ClaimedTokens(FeeResult::estimated_only(1)),
+        );
+        hub.run_steps(3);
+        assert!(
+            hub.state().1.is_empty(),
+            "foreign result cannot refresh or settle the claim"
+        );
+        hub.state_mut().0.display_backend_task_result(
+            &claim,
+            BackendTaskSuccessResult::ClaimedTokens(FeeResult::estimated_only(1)),
+        );
+        hub.run_steps(3);
+        assert!(hub.state().1.iter().any(|a| matches!(a, AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(t), .. } if matches!(t.as_ref(), TokenTask::QueryMyTokenBalances))));
+        let token = ctx
+            .get_contract_by_id(&Identifier::from([0xC2; 32]))
+            .unwrap()
+            .unwrap()
+            .contract
+            .token_id(0)
+            .unwrap();
+        set_balance(&ctx, Identifier::from([0xA6; 32]), token, 200);
+        let refresh = hub
+            .state()
+            .1
+            .iter()
+            .find_map(|a| match a {
+                AppAction::BackendTaskWithContext { context, .. } => Some(context.clone()),
+                _ => None,
+            })
+            .unwrap();
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&refresh, BackendTaskSuccessResult::FetchedTokenBalances);
+        hub.run_steps(3);
+        assert!(hub.query_by_label("2 AirDrop").is_some());
+    });
+}
+
+#[test]
+fn token_claim_failure_allows_explicit_retry_without_refresh() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        let claim = submit_hub_claim(&mut hub, &ctx);
+        hub.state_mut().1.clear();
+        let error = TaskError::MasterKeyNotFound;
+        hub.state_mut().0.display_backend_task_error(&claim, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "generic banner presents the typed error"
+        );
+        hub.run_steps(3);
+        assert!(hub.query_by_role_and_label(Role::Button, "Claim").is_some());
+        assert!(hub.state().1.is_empty(), "no automatic paid retry");
+    });
+}
+
+#[test]
+fn token_claim_requires_a_key_and_cancel_never_dispatches() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        hub.get_by_role_and_label(Role::Button, "Claim").click();
+        hub.run_steps(3);
+        hub.get_by_role_and_label(Role::Button, "Review claim")
+            .click();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_role_and_label(Role::Button, "Confirm claim")
+                .is_none()
+        );
+        hub.state_mut().1.clear();
+        hub.get_by_role_and_label(Role::Button, "Cancel").click();
+        hub.run_steps(3);
+        assert!(hub.state().1.is_empty());
+    });
+}
+
+fn perpetual_config(recipient: Identifier) -> TokenConfiguration {
+    use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::{
+        TokenPerpetualDistribution, distribution_function::DistributionFunction,
+        distribution_recipient::TokenDistributionRecipient,
+        reward_distribution_type::RewardDistributionType, v0::TokenPerpetualDistributionV0,
+    };
+    let mut token = token_config("Rewards", false);
+    let TokenDistributionRules::V0(mut rules) = token.distribution_rules().clone() else {
+        unreachable!()
+    };
+    rules.perpetual_distribution = Some(TokenPerpetualDistribution::V0(
+        TokenPerpetualDistributionV0 {
+            distribution_type: RewardDistributionType::BlockBasedDistribution {
+                interval: 1,
+                function: DistributionFunction::FixedAmount { amount: 100 },
+            },
+            distribution_recipient: TokenDistributionRecipient::Identity(recipient),
+        },
+    ));
+    token.set_distribution_rules(TokenDistributionRules::V0(rules));
+    token
+}
+
+fn estimated_rewards(
+    pair: IdentityTokenIdentifier,
+    amount: u64,
+) -> dash_evo_tool::backend_task::BackendTaskSuccessResult {
+    use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::{
+        distribution_function::{
+            DistributionFunction, evaluate_interval::IntervalEvaluationExplanation,
+        },
+        reward_distribution_moment::RewardDistributionMoment,
+    };
+    dash_evo_tool::backend_task::BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(pair, amount, IntervalEvaluationExplanation {
+        distribution_function: DistributionFunction::FixedAmount { amount: 100 },
+        interval_start_excluded: RewardDistributionMoment::BlockBasedMoment(1),
+        interval_end_included: RewardDistributionMoment::BlockBasedMoment(2),
+        step: RewardDistributionMoment::BlockBasedMoment(1),
+        distribution_start: RewardDistributionMoment::BlockBasedMoment(1),
+        total_amount: amount, evaluation_steps: vec![], reward_ratios_applied: None,
+        steps_count: 1, is_first_claim: true, optimization_notes: vec![],
+    })
+}
+
+#[test]
+fn token_claim_reuses_reward_estimate_and_hides_known_zero() {
+    for amount in [0, 250] {
+        with_isolated_data_dir(|| {
+            let (_runtime, ctx) = fresh_app_context();
+            let identity = seed_signing_identity(&ctx, 0xA6);
+            let tokens = seed_contract(
+                &ctx,
+                0xC2,
+                Identifier::from([0xEE; 32]),
+                vec![perpetual_config(identity)],
+            );
+            set_balance(&ctx, identity, tokens[0], 100);
+            let mut hub = mount_tokens_tab(&ctx);
+            hub.state_mut().1.clear();
+            hub.get_by_role_and_label(Role::Button, "Claim").click();
+            hub.run_steps(3);
+            assert!(hub.query_by_label("Checking available rewards…").is_some());
+            let estimate = hub.state().1.iter().find_map(|a| match a {
+                AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(task), context }
+                    if matches!(task.as_ref(), TokenTask::EstimatePerpetualTokenRewardsWithExplanation { identity_id, token_id } if *identity_id == identity && *token_id == tokens[0]) => Some(context.clone()),
+                _ => None,
+            }).expect("existing estimate task with selected pair");
+            hub.state_mut().0.display_backend_task_result(
+                &estimate,
+                estimated_rewards(
+                    IdentityTokenIdentifier {
+                        identity_id: identity,
+                        token_id: tokens[0],
+                    },
+                    amount,
+                ),
+            );
+            hub.run_steps(3);
+            if amount == 0 {
+                assert!(
+                    hub.query_by_label("No rewards are available yet. Check again later.")
+                        .is_some()
+                );
+                hub.get_by_role_and_label(Role::Button, "Review claim")
+                    .click();
+                hub.run_steps(3);
+                assert!(
+                    hub.query_by_role_and_label(Role::Button, "Confirm claim")
+                        .is_none()
+                );
+            } else {
+                assert!(
+                    hub.query_by_label(
+                        "Estimated rewards: 2.5 Rewards. The amount received may differ."
+                    )
+                    .is_some()
+                );
+            }
+            hub.get_by_role_and_label(Role::Button, "Cancel").click();
+            hub.run_steps(3);
+            assert_eq!(
+                hub.query_by_role_and_label(Role::Button, "Claim").is_some(),
+                amount > 0
+            );
+        });
+    }
+}
+
+#[test]
+fn token_claim_scheduled_future_or_another_recipient_has_no_action() {
+    use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::{
+        TokenPreProgrammedDistribution, v0::TokenPreProgrammedDistributionV0,
+    };
+    for (future, other) in [(true, false), (false, true), (false, false)] {
+        with_isolated_data_dir(|| {
+            let (_runtime, ctx) = fresh_app_context();
+            let identity = seed_signing_identity(&ctx, 0xA6);
+            let recipient = if other {
+                Identifier::from([0x77; 32])
+            } else {
+                identity
+            };
+            let mut token = token_config("Scheduled", false);
+            let TokenDistributionRules::V0(mut rules) = token.distribution_rules().clone() else {
+                unreachable!()
+            };
+            rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+                TokenPreProgrammedDistributionV0 {
+                    distributions: BTreeMap::from([(
+                        if future { u64::MAX } else { 1_000 },
+                        BTreeMap::from([(recipient, 100)]),
+                    )]),
+                },
+            ));
+            token.set_distribution_rules(TokenDistributionRules::V0(rules));
+            let tokens = seed_contract(&ctx, 0xC2, Identifier::from([0xEE; 32]), vec![token]);
+            set_balance(&ctx, identity, tokens[0], 100);
+            let mut hub = mount_tokens_tab(&ctx);
+            assert_eq!(
+                hub.query_by_role_and_label(Role::Button, "Claim").is_some(),
+                !future && !other
+            );
+            if !future && !other {
+                hub.get_by_role_and_label(Role::Button, "Claim").click();
+                hub.run_steps(3);
+                assert!(hub.query_by_label("Pre-programmed").is_some());
+                assert!(hub.query_by_label("The network will check which scheduled rewards are still available. An amount estimate is unavailable.").is_some());
+            }
+        });
+    }
+}
+
+#[test]
+fn token_claim_success_waits_for_old_refresh_then_fetches_again() {
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        let arrival = balance_refreshes(&hub).remove(0);
+        let claim = submit_hub_claim(&mut hub, &ctx);
+        hub.state_mut().1.clear();
+        hub.state_mut().0.display_backend_task_result(
+            &claim,
+            BackendTaskSuccessResult::ClaimedTokens(FeeResult::estimated_only(1)),
+        );
+        hub.run_steps(3);
+        assert!(
+            balance_refreshes(&hub).is_empty(),
+            "wait for the older read"
+        );
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&arrival, BackendTaskSuccessResult::FetchedTokenBalances);
+        hub.run_steps(3);
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            1,
+            "a read started before the claim cannot provide its new balance"
+        );
+        assert!(
+            hub.query_by_role_and_label(Role::Button, "Claim").is_none(),
+            "do not offer the once-only claim again"
+        );
+    });
+}
+
+#[test]
+fn token_claim_review_recreated_hub_cannot_duplicate_in_flight_claim() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let mut hub = regression_claim_hub(&ctx);
+        let _claim = submit_hub_claim(&mut hub, &ctx);
+        drop(hub);
+        let hub = mount_tokens_tab(&ctx);
+        assert!(
+            hub.query_by_role_and_label(Role::Button, "Claim").is_none(),
+            "pending payment must outlive the screen and a network round trip"
+        );
+    });
+}
+
+#[test]
+fn token_claim_review_scheduled_success_exhausts_one_due_tranche() {
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+    use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::{
+        TokenPreProgrammedDistribution, v0::TokenPreProgrammedDistributionV0,
+    };
+    for (count, first_zero) in [(1, false), (2, false), (2, true)] {
+        with_isolated_data_dir(|| {
+            let (_runtime, ctx) = fresh_app_context();
+            let identity = seed_signing_identity(&ctx, 0xA6);
+            let mut token = token_config("Scheduled", false);
+            let TokenDistributionRules::V0(mut rules) = token.distribution_rules().clone() else {
+                unreachable!()
+            };
+            rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+                TokenPreProgrammedDistributionV0 {
+                    distributions: (1..=count)
+                        .map(|at| {
+                            (
+                                at,
+                                BTreeMap::from([(
+                                    identity,
+                                    if first_zero && at == 1 { 0 } else { 100 },
+                                )]),
+                            )
+                        })
+                        .collect(),
+                },
+            ));
+            token.set_distribution_rules(TokenDistributionRules::V0(rules));
+            let tokens = seed_contract(&ctx, 0xC2, Identifier::from([0xEE; 32]), vec![token]);
+            set_balance(&ctx, identity, tokens[0], 100);
+            let mut hub = mount_tokens_tab(&ctx);
+            for remaining in (0..count).rev() {
+                let claim =
+                    submit_hub_claim_for(&mut hub, &ctx, TokenDistributionType::PreProgrammed);
+                hub.state_mut().0.display_backend_task_result(
+                    &claim,
+                    BackendTaskSuccessResult::ClaimedTokens(FeeResult::estimated_only(1)),
+                );
+                hub.run_steps(3);
+                assert_eq!(
+                    hub.query_by_role_and_label(Role::Button, "Claim").is_some(),
+                    remaining > 0,
+                    "consume only one scheduled tranche per success"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn token_claim_review_closed_estimate_errors_are_suppressed() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA6);
+        let tokens = seed_contract(
+            &ctx,
+            0xC2,
+            Identifier::from([0xEE; 32]),
+            vec![perpetual_config(identity)],
+        );
+        set_balance(&ctx, identity, tokens[0], 100);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.state_mut().1.clear();
+        hub.get_by_role_and_label(Role::Button, "Claim").click();
+        hub.run_steps(3);
+        let estimate = hub
+            .state()
+            .1
+            .iter()
+            .find_map(|a| match a {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    context,
+                } if matches!(
+                    task.as_ref(),
+                    TokenTask::EstimatePerpetualTokenRewardsWithExplanation { .. }
+                ) =>
+                {
+                    Some(context.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            !hub.state()
+                .0
+                .should_suppress_backend_task_error(&estimate, &TaskError::NoIdentitiesFound)
+        );
+        hub.get_by_role_and_label(Role::Button, "Cancel").click();
+        hub.run_steps(3);
+        assert!(
+            hub.state()
+                .0
+                .should_suppress_backend_task_error(&estimate, &TaskError::NoIdentitiesFound)
+        );
     });
 }

@@ -55,6 +55,7 @@ pub(crate) trait DomainFeedback {
 
 /// Every domain, in the order their reactions run.
 const DOMAINS: &[&dyn DomainFeedback] = &[
+    &crate::ui::tokens::task_feedback::TokensFeedback,
     &crate::ui::identity::task_feedback::IdentityFeedback,
     &crate::ui::wallets::task_feedback::WalletsFeedback,
     &crate::ui::network_chooser_screen::task_feedback::SettingsFeedback,

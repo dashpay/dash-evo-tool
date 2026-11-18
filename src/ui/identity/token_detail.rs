@@ -64,6 +64,8 @@ pub fn render(
                 }
                 let status = state.row_status(app_context, row, context.view_only);
                 action |= render_row_status(ui, app_context, row, &status, &context, state);
+                action |=
+                    super::tokens_tab::render_claim_button(ui, app_context, identity, state, row);
             });
             ui.add_space(Spacing::MD);
             super::home::card(ui, |ui| {

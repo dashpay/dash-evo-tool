@@ -184,12 +184,25 @@ fn pooled_funding_accounts(
     sources: &[AccountTypePreference],
     account_index: u32,
 ) -> Vec<(ManagedCoreFundsAccount, Account)> {
+    pooled_funding_account_refs(wallet, accounts, sources, account_index)
+        .into_iter()
+        .map(|(managed, account)| (managed.clone(), account.clone()))
+        .collect()
+}
+
+/// [`pooled_funding_account_types`], each account borrowed with its keys.
+fn pooled_funding_account_refs<'a>(
+    wallet: &'a Wallet,
+    accounts: &'a ManagedAccountCollection,
+    sources: &[AccountTypePreference],
+    account_index: u32,
+) -> Vec<(&'a ManagedCoreFundsAccount, &'a Account)> {
     pooled_funding_account_types(wallet, accounts, sources, account_index)
         .into_iter()
         .filter_map(|account_type| {
             let account = wallet.accounts.account_of_type(account_type)?;
             let managed = accounts.funds_account(&account_type)?;
-            Some((managed.clone(), account.clone()))
+            Some((managed, account))
         })
         .collect()
 }
@@ -251,16 +264,32 @@ impl AssetLockFundingPool {
         info: &ManagedWalletInfo,
         max_inputs: usize,
     ) -> Self {
+        let (accounts, current_height) = Self::borrowed_from_wallet(wallet, info);
         Self {
-            accounts: pooled_funding_accounts(
+            accounts: accounts
+                .into_iter()
+                .map(|(managed, account)| (managed.clone(), account.clone()))
+                .collect(),
+            current_height,
+            max_inputs,
+        }
+    }
+
+    /// The accounts [`Self::from_wallet`] pools, borrowed in place rather
+    /// than cloned, and the height its builds run at.
+    pub(super) fn borrowed_from_wallet<'a>(
+        wallet: &'a Wallet,
+        info: &'a ManagedWalletInfo,
+    ) -> (Vec<(&'a ManagedCoreFundsAccount, &'a Account)>, u32) {
+        (
+            pooled_funding_account_refs(
                 wallet,
                 &info.accounts,
                 &platform_wallet::ASSET_LOCK_FUNDING_SOURCES,
                 DEFAULT_BIP44_ACCOUNT,
             ),
-            current_height: asset_lock_builder_height(info),
-            max_inputs,
-        }
+            asset_lock_builder_height(info),
+        )
     }
 
     /// A pool of one account, for tests that fund a single account by hand.
@@ -1359,31 +1388,69 @@ fn pooled_spendable_coins(
 /// Build `builder` unsigned, funded from the pooled send accounts the way
 /// upstream's finalizer funds a payment, then release what it reserved, and
 /// return the transaction and the fee it charges.
-///
-/// The accounts are clones sharing the live `ReservationSet`, so the release
-/// MUST run on success; the owner guard frees only this build's reservation.
 fn dry_build_pooled(
     wallet: &Wallet,
     info: &ManagedWalletInfo,
     builder: TransactionBuilder,
 ) -> Result<(dash_sdk::dpp::dashcore::Transaction, u64), BuilderError> {
-    let mut accounts = pooled_funding_accounts(
-        wallet,
-        &info.accounts,
-        &platform_wallet::SEND_FUNDING_SOURCES,
-        DEFAULT_BIP44_ACCOUNT,
-    );
-    let mut builder = builder.set_current_height(asset_lock_builder_height(info));
-    for (managed, account) in accounts.iter_mut() {
-        builder = builder.add_funding(managed, account);
-    }
-    let (transaction, fee, reservation) = builder.build_unsigned_reserved()?;
-    if let Some(token) = reservation {
-        for (managed, _) in &accounts {
-            managed.release_reservation_if_owner(&transaction, token);
+    PooledScratch::new(wallet, info).dry_build(builder)
+}
+
+/// The pooled send accounts, cloned once so a search can run many dry builds
+/// without copying the wallet's funding state for each.
+///
+/// The clones share the live `ReservationSet`, so every successful build's
+/// reservation MUST be released; the owner guard frees only that build's.
+/// The change address is derived once, as a build on fresh clones derives it,
+/// and set on every build, so `add_funding` never asks the scratch change pool
+/// again: each build is the one a fresh pooled build would make.
+struct PooledScratch {
+    accounts: Vec<(ManagedCoreFundsAccount, Account)>,
+    change_address: Option<dash_sdk::dpp::dashcore::Address>,
+    current_height: u32,
+}
+
+impl PooledScratch {
+    fn new(wallet: &Wallet, info: &ManagedWalletInfo) -> Self {
+        let mut accounts = pooled_funding_accounts(
+            wallet,
+            &info.accounts,
+            &platform_wallet::SEND_FUNDING_SOURCES,
+            DEFAULT_BIP44_ACCOUNT,
+        );
+        // As `TransactionBuilder::add_funding` asks: each account in turn,
+        // until one has a change address.
+        let change_address = accounts.iter_mut().find_map(|(managed, account)| {
+            managed
+                .next_change_address(Some(&account.account_xpub), true)
+                .ok()
+        });
+        Self {
+            accounts,
+            change_address,
+            current_height: asset_lock_builder_height(info),
         }
     }
-    Ok((transaction, fee))
+
+    fn dry_build(
+        &mut self,
+        builder: TransactionBuilder,
+    ) -> Result<(dash_sdk::dpp::dashcore::Transaction, u64), BuilderError> {
+        let mut builder = builder.set_current_height(self.current_height);
+        if let Some(change_address) = &self.change_address {
+            builder = builder.set_change_address(change_address.clone());
+        }
+        for (managed, account) in self.accounts.iter_mut() {
+            builder = builder.add_funding(managed, account);
+        }
+        let (transaction, fee, reservation) = builder.build_unsigned_reserved()?;
+        if let Some(token) = reservation {
+            for (managed, _) in &self.accounts {
+                managed.release_reservation_if_owner(&transaction, token);
+            }
+        }
+        Ok((transaction, fee))
+    }
 }
 
 /// The largest single payment of at most `upper_duffs` the pooled send
@@ -1398,8 +1465,15 @@ fn largest_core_payment_at_most(
     upper_duffs: u64,
     deadline: &ProbeDeadline,
 ) -> Option<(u64, u64)> {
-    let fee_of =
-        |amount: u64| dry_run_core_payment(wallet, info, &[(recipient.clone(), amount)]).ok();
+    // One scratch set for every probe: each probe would otherwise clone the
+    // pooled accounts again under the wallet-manager write lock.
+    let mut scratch = PooledScratch::new(wallet, info);
+    let mut fee_of = |amount: u64| {
+        scratch
+            .dry_build(core_payment_builder(&[(recipient.clone(), amount)]))
+            .map(|(_, fee)| fee)
+            .ok()
+    };
     if let Some(fee) = fee_of(upper_duffs) {
         return Some((upper_duffs, fee));
     }
@@ -1792,6 +1866,63 @@ mod tests {
         assert_eq!(spendable, (1, COIN_DUFFS));
     }
 
+    /// One scratch funding set serves every probe of a search: each build pays
+    /// change to the address a fresh pooled build would, charges the same fee,
+    /// and leaves nothing reserved, however many builds run on it.
+    #[test]
+    fn pooled_scratch_builds_like_a_fresh_pooled_build_every_time() {
+        const COIN_DUFFS: u64 = 700_000;
+        const PAYMENT_DUFFS: u64 = 300_000;
+        // Well past any address-pool gap limit.
+        const BUILDS: usize = 64;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut info = ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        info.update_last_processed_height(200);
+        let bip44 = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let address = managed
+            .next_receive_address(Some(&bip44.account_xpub), true)
+            .expect("BIP44 address");
+        let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: COIN_DUFFS,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed.utxos.insert(outpoint, utxo);
+        let payment = || super::core_payment_builder(&[(payment_recipient(), PAYMENT_DUFFS)]);
+        // The reference is funded the ordinary way, change chosen by
+        // `add_funding` itself, not through the scratch set.
+        let (fresh, fresh_fee) = pooled_build(&wallet, &info, payment_recipient(), PAYMENT_DUFFS);
+
+        let mut scratch = super::PooledScratch::new(&wallet, &info);
+        for build in 0..BUILDS {
+            let (transaction, fee) = scratch
+                .dry_build(payment())
+                .unwrap_or_else(|error| panic!("build {build} on the scratch set: {error:?}"));
+            assert_eq!(fee, fresh_fee, "build {build}: fee");
+            assert_eq!(
+                transaction.output, fresh.output,
+                "build {build}: outputs and change"
+            );
+        }
+        // Every reservation was released: the coin still funds a real build.
+        let (inputs, _) = pooled_build_charge(&wallet, &info, payment_recipient(), PAYMENT_DUFFS);
+        assert_eq!(inputs, 1);
+    }
+
     /// Build a payment of `amount` to `recipient` the way the pooled send
     /// funds it, release its reservation, and return how many coins it spent
     /// and the fee it charged.
@@ -1801,6 +1932,19 @@ mod tests {
         recipient: Address,
         amount: u64,
     ) -> (usize, u64) {
+        let (transaction, charged) = pooled_build(wallet, info, recipient, amount);
+        (transaction.input.len(), charged)
+    }
+
+    /// [`pooled_build_charge`]'s build: fresh clones of the pooled accounts,
+    /// each funding the payment through `add_funding`, which picks the change
+    /// address; the reservation is released.
+    fn pooled_build(
+        wallet: &Wallet,
+        info: &ManagedWalletInfo,
+        recipient: Address,
+        amount: u64,
+    ) -> (dash_sdk::dpp::dashcore::Transaction, u64) {
         let mut pooled = super::pooled_funding_accounts(
             wallet,
             &info.accounts,
@@ -1820,7 +1964,7 @@ mod tests {
                 managed.release_reservation_if_owner(&transaction, token);
             }
         }
-        (transaction.input.len(), charged)
+        (transaction, charged)
     }
 
     /// The fee a pooled Core payment shows is never below what the build

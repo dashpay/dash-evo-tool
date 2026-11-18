@@ -3515,6 +3515,15 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // A shielded funding was resumed to another recipient than the one its
+        // asset lock recorded. Upstream pays nobody, and the same request is
+        // refused every time, so the generic envelope's retry advice is wrong.
+        other @ P::AssetLockRecipientMismatch { .. } => {
+            TaskError::ShieldedFundingRecipientMismatch {
+                source: Box::new(other),
+            }
+        }
+
         // A token operation keeps its SDK cause, so it is classified like any
         // SDK error; an unclassified one still names the operation.
         P::TokenOperationFailed { operation, source } => {
@@ -3599,7 +3608,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
-        // Variants introduced by the platform 0c08eb6c repin. None is raised by
+        // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
         // an operation this map serves as a Platform rejection or a pending
         // outcome DET can watch, so they take the generic envelope like their
         // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
@@ -3607,7 +3616,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AccountNotFound(_)
         | P::WalletRemovedBeforeSend(_)
         | P::AssetLockFundsAwaitingFinality { .. }
-        | P::AssetLockRecipientMismatch { .. }
         | P::ShieldedBroadcastMaybeDelivered(_)
         | P::DocumentEraseBusy
         | P::DecisionProposalNotFound { .. }
@@ -3954,7 +3962,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
-        // Variants introduced by the platform 0c08eb6c repin. None is raised by
+        // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
         // an operation this map serves as a Platform rejection or a pending
         // outcome DET can watch, so they take the generic envelope like their
         // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
@@ -3962,6 +3970,8 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AccountNotFound(_)
         | P::WalletRemovedBeforeSend(_)
         | P::AssetLockFundsAwaitingFinality { .. }
+        // Raised only when a shielded funding is resumed; no identity or
+        // address-funding flow resumes one.
         | P::AssetLockRecipientMismatch { .. }
         | P::ShieldedBroadcastMaybeDelivered(_)
         | P::DocumentEraseBusy
@@ -5022,6 +5032,32 @@ mod tests {
             }
             other => panic!("Expected ShieldedRecoveryKeysRequired, got: {other:?}"),
         }
+    }
+
+    /// A resume to another shielded recipient than the recorded one is refused
+    /// the same way every time, so it must not take the generic envelope,
+    /// whose message tells the user to retry.
+    #[test]
+    fn map_shielded_op_error_routes_recipient_mismatch_away_from_retry_advice() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let mapped = map_shielded_op_error(P::AssetLockRecipientMismatch {
+            out_point: dash_sdk::dpp::dashcore::OutPoint::null(),
+            recorded: [0x11; 43],
+            requested: [0x22; 43],
+        });
+        assert!(
+            matches!(mapped, TaskError::ShieldedFundingRecipientMismatch { .. }),
+            "Expected ShieldedFundingRecipientMismatch, got: {mapped:?}"
+        );
+        let generic = TaskError::WalletBackend {
+            source: Arc::new(P::ShieldedNotBound),
+        };
+        assert_ne!(
+            mapped.to_string(),
+            generic.to_string(),
+            "a refused resume must not reuse the retry advice"
+        );
     }
 
     /// No identity register / top-up / address-funding flow runs a shielded

@@ -3443,6 +3443,21 @@ pub enum TaskError {
         source: platform_wallet::wallet::shielded::FileShieldedStoreError,
     },
 
+    /// A shielded funding was resumed to a different shielded address than the
+    /// one recorded when its asset lock was built. Upstream pays nobody and
+    /// refuses the same request every time; only the recorded address works.
+    /// The outpoint and both addresses stay in the source chain.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::AssetLockRecipientMismatch`.
+    #[error(
+        "These funds were already set aside for a different shielded address, so nothing was sent. Shield them to the address you chose the first time."
+    )]
+    ShieldedFundingRecipientMismatch {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// An earlier identity-funded shielded payment is still unresolved, so the
     /// upstream coordinator refused to start this one. Nothing was built or
     /// broadcast; retrying immediately hits the same refusal.

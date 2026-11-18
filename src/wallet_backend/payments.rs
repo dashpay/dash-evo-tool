@@ -246,12 +246,9 @@ pub(super) fn pooled_send_input_count(wallet: &Wallet, info: &ManagedWalletInfo)
 ///
 /// The pool mirrors [`platform_wallet::ASSET_LOCK_FUNDING_SOURCES`] at the
 /// default account index — the set every exact-amount asset lock DET builds
-/// draws from. The cap applies on top of the builder's own: the upstream
-/// exact-amount builder accepts up to the standard-transaction limit, so an
-/// amount only a larger lock could fund is treated as unbuildable here.
-// TODO(dashpay/platform#5513): the exact-amount asset-lock builder should
-// refuse more inputs than `max_asset_lock_transaction_inputs` itself, as its
-// drain does (DET follow-up draft: asset-lock-exact-input-cap).
+/// draws from. The dry run applies the asset-lock cap before prompting for
+/// secrets. Upstream also checks exact amounts and drains before broadcast,
+/// and refuses to resend an oversized tracked lock without a local finality proof.
 pub(super) struct AssetLockFundingPool {
     accounts: Vec<(ManagedCoreFundsAccount, Account)>,
     current_height: u32,
@@ -927,23 +924,15 @@ impl WalletBackend {
     /// Refuse an exact-amount asset lock that would need more inputs than the
     /// protocol accepts.
     ///
-    /// The upstream exact-amount builder enforces only the standard-transaction
-    /// limit, and Dash Core silently drops a larger asset lock, leaving its
-    /// inputs reserved and the lock unconfirmed. The same dry run the Max probe
-    /// uses decides it; other funding kinds are left to upstream.
+    /// The same dry run the Max probe uses avoids asking for secrets when
+    /// the amount cannot fit. Other funding kinds are checked upstream.
     ///
     /// Every asset-lock path runs it twice: before the secret session, so a
     /// doomed lock never prompts, and again inside the session immediately
     /// before the upstream build, because the wallet can change while the user
-    /// types a password. Upstream takes the wallet-manager lock itself and
-    /// builds and broadcasts in one call, so the second check is as close to
-    /// the build as DET can get; a concurrent spend or sync landing between
-    /// the two lock acquisitions can still change the selection.
-    // TODO(dashpay/platform#5513): once upstream enforces
-    // `max_asset_lock_inputs` for `Exact` builds in
-    // `broadcast_funded_asset_lock_with_operation` (its abandon arm covers
-    // only `DrainAll`), the cap is atomic with the build and this guard can go
-    // (DET follow-up draft: asset-lock-exact-input-cap).
+    /// types a password. Upstream checks the cap atomically with the actual
+    /// build before broadcast, covering selection changes between this dry
+    /// run and the build.
     pub(super) async fn ensure_asset_lock_within_input_cap(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1274,8 +1263,9 @@ impl WalletBackend {
     /// # Errors
     /// [`TaskError::AssetLockAlreadyUsed`] when the lock was already spent,
     /// [`TaskError::AssetLockNotEligibleForTopUp`] when it belongs to another
-    /// role or this wallet does not track it, and the generic
-    /// [`TaskError::WalletBackend`] envelope when upstream cannot resume it.
+    /// role or this wallet does not track it,
+    /// [`TaskError::AssetLockTransferTooManyInputs`] when the input cap blocks
+    /// resending it, and [`TaskError::WalletBackend`] for other resume failures.
     pub(crate) async fn resume_unbound_topup_asset_lock(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1307,9 +1297,7 @@ impl WalletBackend {
                     .asset_locks()
                     .resume_asset_lock(&out_point, None)
                     .await
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Arc::new(e),
-                    })?;
+                    .map_err(map_asset_lock_error)?;
                 let private_key =
                     self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
                 Ok((proof, private_key))
@@ -1580,13 +1568,32 @@ fn map_core_finalize_error(
     }
 }
 
+/// Classify an asset-lock build or resume refusal without losing its source.
+pub(super) fn map_asset_lock_error(
+    source: platform_wallet::error::PlatformWalletError,
+) -> TaskError {
+    match source {
+        platform_wallet::error::PlatformWalletError::AssetLockTooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(source),
+            }
+        }
+        other => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
+    }
+}
+
 /// Classify a broadcast failure from the payment path. Pure — unit-testable.
 ///
 /// An ambiguous outcome gets its own [`TaskError::TransactionConfirmationUnknown`]
 /// rather than the generic envelope: the payment may already be on the network,
 /// and upstream deliberately keeps its inputs reserved so it cannot be sent
 /// twice, so telling the user to retry would be both wrong and unactionable.
-/// Every definitive failure keeps the generic envelope.
+/// Input-limit refusals retain their typed guidance; other definitive failures
+/// keep the generic envelope.
 ///
 /// `txid` is the broadcast transaction's id when the caller holds it, so the UI
 /// can watch that transaction for a late confirmation; `None` where the
@@ -1603,9 +1610,7 @@ pub(super) fn map_core_broadcast_error(
                 source: Box::new(source),
             }
         }
-        other => TaskError::WalletBackend {
-            source: Arc::new(other),
-        },
+        other => map_asset_lock_error(other),
     }
 }
 

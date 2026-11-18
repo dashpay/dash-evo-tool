@@ -442,6 +442,18 @@ pub enum TaskError {
     )]
     AssetLockTooManyInputs { count: usize, max: usize },
 
+    /// Upstream refused a built transfer or a resume; changing the requested
+    /// amount cannot change the inputs already selected for that transaction.
+    #[error(
+        "This transfer could not be sent or resumed because it combines {count} small amounts from your wallet; the network accepts at most {max}. Wait for your wallet to finish updating and check whether the transfer completed. If it did not, start a new transfer for a smaller amount, or combine part of your balance by sending it to yourself."
+    )]
+    AssetLockTransferTooManyInputs {
+        count: usize,
+        max: usize,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// The wallet's available amount is not quoted while another operation
     /// that moves the funds it is quoted from is in progress: one that can
     /// take or release its Core inputs (until it reserves them, no quote can

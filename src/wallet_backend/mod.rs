@@ -3453,6 +3453,14 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
 
+        other @ P::AssetLockTooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(other),
+            }
+        }
+
         // Only shielding from Platform raises this, and
         // `WalletBackend::shield_from_balance` intercepts it first through
         // [`shield_capacity_exceeded_error`]: its `available` is a gross
@@ -3605,7 +3613,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
         | P::InvitationNetworkMismatch { .. }
-        | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
         // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
@@ -3656,8 +3663,8 @@ fn classify_sdk_error_or(
 /// Classify a `PlatformWalletError` returned from
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
-/// finality failures become `AssetLockFinalityTimeout`; everything else
-/// falls through to the generic `WalletBackend` wrapper. SDK errors use the
+/// finality failures become `AssetLockFinalityTimeout`; input-limit refusals
+/// retain their counts and source; remaining failures use `WalletBackend`. SDK errors use the
 /// richer `TaskError` classifier before this coarse mapping, falling back to
 /// `IdentityCreateRejected` for an unclassified rejection (see
 /// [`classify_sdk_error_or`]) so generic broadcast failures still carry
@@ -3673,6 +3680,13 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         other => other,
     };
     match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::TooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(e),
+            }
+        }
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
         },
@@ -3714,6 +3728,13 @@ fn map_identity_top_up_error(
         other => other,
     };
     match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::TooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(e),
+            }
+        }
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
             source: Box::new(e),
@@ -3776,8 +3797,8 @@ fn platform_warm_start_seed(
 /// Map an orchestrated platform-address funding error to a typed `TaskError`.
 /// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
-/// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
-/// through to the generic [`TaskError::WalletBackend`] envelope. SDK errors use
+/// in [`TaskError::PlatformAddressFundRejected`], and input-limit refusals retain
+/// their counts and source. Remaining failures use [`TaskError::WalletBackend`]. SDK errors use
 /// the richer `TaskError` classifier before this coarse mapping, falling back
 /// to `PlatformAddressFundRejected` (see [`classify_sdk_error_or`]) for an
 /// unclassified rejection so the existing-lock recovery instructions survive.
@@ -3791,6 +3812,13 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         other => other,
     };
     match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::TooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(e),
+            }
+        }
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
@@ -3814,6 +3842,8 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
 
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
+    /// The built transaction exceeds the input cap and cannot be re-sent.
+    TooManyInputs { count: usize, max: usize },
     /// Network or broadcast rejected the submission (SDK error or asset-lock
     /// transaction broadcast failure).
     Rejected,
@@ -3839,6 +3869,11 @@ enum IdentityOpErrorKind {
 fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> IdentityOpErrorKind {
     use platform_wallet::error::PlatformWalletError as P;
     match e {
+        P::AssetLockTooManyInputs { count, max } => IdentityOpErrorKind::TooManyInputs {
+            count: *count,
+            max: *max,
+        },
+
         // Network / broadcast rejections. A failed token operation carries the
         // SDK rejection that caused it.
         P::Sdk(_) | P::TransactionBroadcast(_) | P::TokenOperationFailed { .. } => {
@@ -3959,7 +3994,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
         | P::InvitationNetworkMismatch { .. }
-        | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
         // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
@@ -3992,6 +4026,60 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_asset_lock_input_limit_preserves_counts_source_and_restart_guidance() {
+        use platform_wallet::error::PlatformWalletError as P;
+        use std::error::Error;
+
+        let identity_id = dash_sdk::platform::Identifier::from([1; 32]);
+        let error = || P::AssetLockTooManyInputs {
+            count: 101,
+            max: 100,
+        };
+        for mapped in [
+            payments::map_asset_lock_error(error()),
+            payments::map_core_broadcast_error(None, error()),
+            map_identity_register_error(error()),
+            map_identity_top_up_error(identity_id, error()),
+            map_platform_address_fund_error(error()),
+            map_shielded_op_error(error()),
+        ] {
+            assert!(matches!(
+                &mapped,
+                TaskError::AssetLockTransferTooManyInputs {
+                    count: 101,
+                    max: 100,
+                    ..
+                }
+            ));
+            let message = mapped.to_string();
+            assert!(
+                message.contains("101") && message.contains("100"),
+                "{message}"
+            );
+            assert!(
+                message.contains("could not be sent or resumed"),
+                "{message}"
+            );
+            assert!(message.contains("start a new transfer"), "{message}");
+            assert!(
+                message.contains("check whether the transfer completed"),
+                "{message}"
+            );
+            assert!(!message.contains("Try again"), "{message}");
+            assert!(matches!(
+                mapped
+                    .source()
+                    .and_then(|source| source.downcast_ref::<Box<P>>())
+                    .map(Box::as_ref),
+                Some(P::AssetLockTooManyInputs {
+                    count: 101,
+                    max: 100
+                })
+            ));
+        }
+    }
 
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;

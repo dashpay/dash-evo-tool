@@ -740,28 +740,6 @@ pub struct PlatformAddressEntry {
     pub as_of_height: u64,
 }
 
-/// Per-address `(balance, as_of_height)` behind the frame-safe Platform total,
-/// by wallet. Coordinator passes and spends merge into it in any order; the
-/// total is always its sum, so a late, older result cannot undo a newer one.
-pub type PlatformBalanceLedger = HashMap<WalletSeedHash, BTreeMap<[u8; 20], (Credits, u64)>>;
-
-/// Merge `entries` into one wallet's ledger, keeping an address's stored figure
-/// when it is pinned higher, and return the wallet's total in credits.
-pub fn merge_platform_balances(
-    ledger: &mut BTreeMap<[u8; 20], (Credits, u64)>,
-    entries: &[PlatformAddressEntry],
-) -> Credits {
-    for entry in entries {
-        if ledger
-            .get(&entry.hash)
-            .is_none_or(|&(_, pin)| pin <= entry.as_of_height)
-        {
-            ledger.insert(entry.hash, (entry.balance, entry.as_of_height));
-        }
-    }
-    ledger.values().map(|&(balance, _)| balance).sum()
-}
-
 /// Batch of coordinator-push balance updates, grouped by wallet.
 ///
 /// Each element is `(seed_hash, entries)` where each `entry` is a
@@ -2031,6 +2009,93 @@ impl Wallet {
         );
         self.register_platform_payment_entry(canonical, path);
     }
+
+    /// Total credits, summed before any duff conversion, of the cached
+    /// Platform-address balances of addresses on this wallet's
+    /// platform-payment paths for `network`. A figure cached for any other
+    /// address is left out.
+    pub fn owned_platform_balance(&self, network: Network) -> Credits {
+        self.platform_address_info
+            .iter()
+            .filter(|(address, _)| {
+                self.known_addresses
+                    .get(&Wallet::canonical_address(address, network))
+                    .is_some_and(|path| path.is_platform_payment(network))
+            })
+            .fold(0, |total: Credits, (_, info)| {
+                total.saturating_add(info.balance)
+            })
+    }
+
+    /// [`Self::owned_platform_balance`] in whole duffs, summed before
+    /// truncating so sub-duff remainders across addresses still count.
+    pub fn platform_balance_duffs(&self, network: Network) -> u64 {
+        self.owned_platform_balance(network) / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF
+    }
+
+    /// Record `entries` pinned at their heights (a stored figure pinned
+    /// higher wins) and register each address for signing.
+    pub fn apply_platform_address_entries(
+        &mut self,
+        entries: &[PlatformAddressEntry],
+        network: Network,
+    ) {
+        self.write_platform_address_entries(entries, network, |wallet, address, entry| {
+            wallet.apply_pinned_platform_address_info(
+                address,
+                entry.balance,
+                entry.nonce,
+                entry.as_of_height,
+            )
+        });
+    }
+
+    /// Seed `entries` where no figure is cached yet (the at-rest warm start,
+    /// which must not clobber a live figure) and register each address for
+    /// signing.
+    pub fn seed_platform_address_entries(
+        &mut self,
+        entries: &[PlatformAddressEntry],
+        network: Network,
+    ) {
+        self.write_platform_address_entries(entries, network, |wallet, address, entry| {
+            wallet.seed_platform_address_info(
+                address,
+                entry.balance,
+                entry.nonce,
+                entry.as_of_height,
+            )
+        });
+    }
+
+    /// Store each entry under its canonical address with `write_info`, then
+    /// register the address for signing: the exact DIP-17 index when known,
+    /// the bounded reverse-derivation scan otherwise. Without the signer
+    /// registration a balance is visible yet unwithdrawable.
+    fn write_platform_address_entries(
+        &mut self,
+        entries: &[PlatformAddressEntry],
+        network: Network,
+        write_info: impl Fn(&mut Wallet, Address, &PlatformAddressEntry),
+    ) {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        for entry in entries {
+            let address = PlatformP2PKHAddress::new(entry.hash).to_address(network);
+            let canonical = Wallet::canonical_address(&address, network);
+            write_info(self, canonical.clone(), entry);
+            match entry.index {
+                Some(index) => self.register_platform_payment_address(
+                    &canonical,
+                    entry.account,
+                    index,
+                    network,
+                ),
+                None => {
+                    self.reconcile_platform_address(&canonical, network);
+                }
+            }
+        }
+    }
 }
 
 /// Default gap limit for HD wallet address scanning
@@ -2663,36 +2728,51 @@ mod tests {
         assert_eq!(figure(&wallet), (47_000, 4, 0));
     }
 
-    /// Results merge by pin in any order; an address a result omits keeps its figure.
+    /// Entries apply by pin in any order; an address a later batch omits keeps
+    /// its figure, and the owned total follows.
     #[test]
-    fn platform_balances_merge_by_pin_in_any_order() {
-        let entry = |hash: u8, balance: u64, as_of_height: u64| PlatformAddressEntry {
-            hash: [hash; 20],
+    fn platform_entries_apply_by_pin_in_any_order() {
+        let network = Network::Testnet;
+        let mut wallet = legacy_wallet(network);
+        let hash = |index: u32| match PlatformAddress::try_from(platform_address_at(index, network))
+        {
+            Ok(PlatformAddress::P2pkh(hash)) => hash,
+            other => panic!("p2pkh address expected: {other:?}"),
+        };
+        let entry = |index: u32, balance: u64, as_of_height: u64| PlatformAddressEntry {
+            hash: hash(index),
             balance,
             nonce: 1,
             account: 0,
-            index: Some(0),
+            index: Some(index),
             as_of_height,
         };
-        let mut ledger = BTreeMap::new();
+        wallet.apply_platform_address_entries(&[entry(1, 10, 500)], network);
+        assert_eq!(wallet.owned_platform_balance(network), 10);
+        wallet.apply_platform_address_entries(&[entry(1, 99, 400)], network);
+        assert_eq!(wallet.owned_platform_balance(network), 10, "older figure");
+        wallet.apply_platform_address_entries(&[entry(2, 5, 100)], network);
         assert_eq!(
-            merge_platform_balances(&mut ledger, &[entry(0xAA, 10, 500)]),
-            10
-        );
-        assert_eq!(
-            merge_platform_balances(&mut ledger, &[entry(0xAA, 99, 400)]),
-            10,
-            "older figure"
-        );
-        assert_eq!(
-            merge_platform_balances(&mut ledger, &[entry(0xBB, 5, 100)]),
+            wallet.owned_platform_balance(network),
             15,
             "omitted address kept"
         );
-        assert_eq!(
-            merge_platform_balances(&mut ledger, &[entry(0xAA, 7, 500)]),
-            12
-        );
+        wallet.apply_platform_address_entries(&[entry(1, 7, 500)], network);
+        assert_eq!(wallet.owned_platform_balance(network), 12);
+    }
+
+    /// The owned total counts only addresses on the wallet's platform-payment
+    /// paths; a cached figure for any other address is left out.
+    #[test]
+    fn owned_platform_balance_counts_only_platform_payment_addresses() {
+        let network = Network::Testnet;
+        let mut wallet = legacy_wallet(network);
+        let owned = platform_address_at(3, network);
+        wallet.register_platform_payment_address(&owned, 0, 3, network);
+        wallet.apply_pinned_platform_address_info(owned, 30_000, 1, 10);
+        wallet.apply_pinned_platform_address_info(platform_address_at(4, network), 9_999, 1, 10);
+
+        assert_eq!(wallet.owned_platform_balance(network), 30_000);
     }
 
     /// A warm-start seed keeps the persisted height pin, so an older refresh

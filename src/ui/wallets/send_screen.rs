@@ -5029,7 +5029,6 @@ impl WalletSendScreen {
             BackendTaskSuccessResult::GeneratedReceiveAddress { .. }
                 | BackendTaskSuccessResult::GeneratedPlatformReceiveAddress { .. }
                 | BackendTaskSuccessResult::PlatformAddressBalances { .. }
-                | BackendTaskSuccessResult::PlatformAddressSyncPushed { .. }
                 | BackendTaskSuccessResult::RefreshedWallet { .. }
                 | BackendTaskSuccessResult::RefreshedIdentity(_)
                 | BackendTaskSuccessResult::LoadedIdentity(_)

@@ -1932,11 +1932,21 @@ mod funding_method_tests {
             wallets.push((seed_hash, wallet));
         }
         app_context.has_wallet.store(true, Ordering::Relaxed);
-        app_context
-            .platform_balances
-            .lock()
-            .expect("platform balances")
-            .insert(wallets[0].0, 30_000_000);
+        wallets[0]
+            .1
+            .write()
+            .expect("wallet lock")
+            .apply_platform_address_entries(
+                &[crate::model::wallet::PlatformAddressEntry {
+                    hash: [0x51; 20],
+                    balance: 30_000_000 * dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF,
+                    nonce: 1,
+                    account: 0,
+                    index: Some(0),
+                    as_of_height: 1,
+                }],
+                app_context.network(),
+            );
         let mut screen = AddNewIdentityScreen::new(&app_context);
         screen.selected_wallet = Some(wallets[0].1.clone());
         *screen.funding_method.write().expect("funding method lock") =

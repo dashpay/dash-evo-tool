@@ -867,7 +867,12 @@ mod tests {
             ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response, 10)
                 .expect("update");
         }
-        for (_, wallet, address, balance) in &wallets {
+        for (seed_hash, wallet, address, balance) in &wallets {
+            assert_eq!(
+                ctx.platform_balance_duffs(seed_hash),
+                balance / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF,
+                "the wallet total follows a refresh of its addresses"
+            );
             let wallet = wallet.read().expect("wallet");
             assert_eq!(
                 wallet.total_platform_balance(),

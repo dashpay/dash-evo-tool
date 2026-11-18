@@ -7249,6 +7249,65 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn platform_to_identity_max_with_dust_is_accepted() {
+        let (mut screen, _dir) = send_screen();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                screen.app_context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wallet backend");
+        let identity = bound_identity();
+        screen
+            .app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("identity");
+        screen.validated_destination = Some(ValidatedAddress::Identity {
+            id: identity.identity.id(),
+            dpns_name: None,
+        });
+        let estimator = screen.app_context.fee_estimator();
+        let fee = estimate_platform_fee(&estimator, 1, 1);
+        let balance = 1_000_000_000;
+        let addresses: Vec<_> = [(2, balance), (3, estimator.min_platform_input() - 1)]
+            .into_iter()
+            .map(|(index, balance)| {
+                let core = testnet_core_address(index);
+                (
+                    PlatformAddress::try_from(core.clone()).expect("address"),
+                    core,
+                    balance,
+                )
+            })
+            .collect();
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(addresses.clone()));
+        let seed_hash = screen.selected_wallet_seed_hash.expect("wallet");
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        let max = harness.state().amount.as_ref().expect("Max").value();
+        assert_eq!(max, balance - fee);
+        let action = harness
+            .state_mut()
+            .send_platform_to_identity(seed_hash, addresses.clone())
+            .expect("quoted Max must be accepted");
+        let AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TopUpIdentityFromPlatformAddresses { inputs, .. },
+        )) = action
+        else {
+            panic!("expected identity top-up: {action:?}");
+        };
+        assert_eq!(inputs, BTreeMap::from([(addresses[0].0, max)]));
+    }
+
     /// The shield planner decides which Platform addresses it may spend, so
     /// Max for a shield from Platform is the planner's quote — never the
     /// balance minus a fee — and nothing is offered before the quote arrives.

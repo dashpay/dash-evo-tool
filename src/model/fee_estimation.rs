@@ -1226,7 +1226,7 @@ struct AmountSplit {
 
 /// Take `amount` from `sources` (address, credits it may give) in order, at
 /// most `max_inputs` of them and none for less than `min_input`. A last input
-/// that would give less takes the difference from an earlier one that stays
+/// that would give less takes the difference from earlier inputs that stay
 /// at or above the minimum, or is left out (its share stays unplaced).
 fn split_amount(
     sources: impl IntoIterator<Item = (PlatformAddress, u64)>,
@@ -1250,19 +1250,21 @@ fn split_amount(
     if let Some((last, earlier)) = picked.split_last_mut()
         && last.1 < min_input
     {
-        let need = min_input - last.1;
-        match earlier
-            .iter_mut()
-            .find(|(_, used)| *used >= min_input.saturating_add(need))
-        {
-            Some(donor) => {
-                donor.1 -= need;
-                last.1 = min_input;
+        let mut need = min_input - last.1;
+        let surplus: u64 = earlier.iter().map(|(_, used)| used - min_input).sum();
+        if surplus >= need {
+            for (_, used) in earlier {
+                let donated = (*used - min_input).min(need);
+                *used -= donated;
+                need -= donated;
+                if need == 0 {
+                    break;
+                }
             }
-            None => {
-                unplaced += last.1;
-                picked.pop();
-            }
+            last.1 = min_input;
+        } else {
+            unplaced += last.1;
+            picked.pop();
         }
     }
     AmountSplit {
@@ -1381,7 +1383,11 @@ pub(crate) fn allocate_platform_addresses(
     let input_cap = estimator.max_platform_inputs();
     let max_inputs = addresses
         .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
+        .filter(|(platform_addr, _, balance)| {
+            destination != Some(platform_addr)
+                && *balance > 0
+                && *balance >= estimator.min_platform_input()
+        })
         .count()
         .min(input_cap);
 
@@ -3215,13 +3221,61 @@ mod tests {
         }
     }
 
-    /// A last share no earlier input can spare the minimum for stays unplaced.
     #[test]
-    fn split_leaves_a_share_no_input_can_raise_to_the_minimum() {
+    fn split_raises_the_last_input_from_multiple_donors() {
         let split = split_amount([(pa(1), 150), (pa(2), 150), (pa(3), 150)], 310, 16, 100);
+        assert_eq!(split.unplaced, 0);
+        assert_eq!(split.inputs.len(), 3);
+        assert_eq!(split.inputs.values().sum::<u64>(), 310);
+        assert!(split.inputs.values().all(|used| (100..=150).contains(used)));
+
+        let plan = allocate_platform_addresses_with_fee(
+            &addrs(&[(1, 150), (2, 150), (3, 150)]),
+            310,
+            None,
+            16,
+            100,
+            |_| 0,
+        );
+        assert_eq!(plan.shortfall, 0);
+        assert_eq!(plan.inputs, split.inputs);
+    }
+
+    #[test]
+    fn split_preserves_inputs_when_combined_surplus_is_insufficient() {
+        let split = split_amount([(pa(1), 110), (pa(2), 110), (pa(3), 110)], 230, 16, 100);
         assert_eq!(split.unplaced, 10);
         assert_eq!(split.inputs.len(), 2);
-        assert!(split.inputs.values().all(|used| *used == 150));
+        assert!(split.inputs.values().all(|used| *used == 110));
+    }
+
+    #[test]
+    fn allocate_excludes_dust_and_destination_from_fee_reserve() {
+        let estimator = PlatformFeeEstimator::latest();
+        let balance = 1_000_000_000;
+        let fee = estimate_platform_fee(&estimator, 1, 1);
+        let addresses = addrs(&[
+            (1, balance),
+            (2, estimator.min_platform_input() - 1),
+            (3, balance),
+        ]);
+        let destination = pa(3);
+        let amount = balance - fee;
+        let plan = allocate_platform_addresses(&estimator, &addresses, amount, Some(&destination));
+        assert_eq!(plan.shortfall, 0);
+        assert_eq!(plan.estimated_fee, fee);
+        assert_eq!(plan.inputs, BTreeMap::from([(pa(1), amount)]));
+
+        let transfer =
+            allocate_platform_transfer(&estimator, &addresses, amount, Some(&destination));
+        assert_eq!(transfer.inputs, plan.inputs);
+        assert!(!transfer.fee_from_amount);
+        let max = platform_transfer_max(&estimator, &addresses, Some(&destination));
+        assert_eq!(max, balance);
+        let max_plan = allocate_platform_transfer(&estimator, &addresses, max, Some(&destination));
+        assert_eq!(max_plan.shortfall, 0);
+        assert_eq!(max_plan.estimated_fee, fee);
+        assert_eq!(max_plan.inputs, BTreeMap::from([(pa(1), balance)]));
     }
 
     /// The Platform → Platform Max is the balance one transfer may spend,

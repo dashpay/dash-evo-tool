@@ -1845,9 +1845,8 @@ impl Wallet {
         );
     }
 
-    /// Record a balance pinned at `as_of_height`, unless the stored one is
-    /// pinned higher: a coordinator pass that started before a spend must not
-    /// undo the spend's result.
+    /// Record a balance ordered by height, then nonce, so a delayed update
+    /// cannot undo a spend, including one confirmed at the same height.
     pub fn apply_pinned_platform_address_info(
         &mut self,
         address: Address,
@@ -1857,7 +1856,7 @@ impl Wallet {
     ) {
         if self
             .get_platform_address_info(&address)
-            .is_some_and(|stored| stored.as_of_height > as_of_height)
+            .is_some_and(|stored| (stored.as_of_height, stored.nonce) > (as_of_height, nonce))
         {
             return;
         }
@@ -2033,8 +2032,8 @@ impl Wallet {
         self.owned_platform_balance(network) / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF
     }
 
-    /// Record `entries` pinned at their heights (a stored figure pinned
-    /// higher wins) and register each address for signing.
+    /// Record `entries` ordered by height, then nonce, and register each
+    /// address for signing.
     pub fn apply_platform_address_entries(
         &mut self,
         entries: &[PlatformAddressEntry],
@@ -2681,6 +2680,7 @@ mod tests {
             (info.balance, info.nonce, info.as_of_height)
         };
         let older = scan(80_000, 2, 400);
+        let same_height_older_nonce = scan(80_000, 2, 500);
         let newer = scan(45_000, 4, 650);
 
         wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
@@ -2690,6 +2690,8 @@ mod tests {
             (41_000, 3, 500),
             "the older scan is ignored"
         );
+        same_height_older_nonce.apply_results_to_wallet(&mut wallet);
+        assert_eq!(figure(&wallet), (41_000, 3, 500));
 
         newer.apply_results_to_wallet(&mut wallet);
         assert_eq!(
@@ -2699,8 +2701,8 @@ mod tests {
         );
     }
 
-    /// A balance pinned lower than the stored one is ignored; an equal or
-    /// higher pin replaces it. A write of unknown height resets the pin.
+    /// Height takes precedence; equal height and nonce replaces the balance.
+    /// A write of unknown height resets the pin.
     #[test]
     fn pinned_platform_address_info_keeps_the_newer_figure() {
         let mut wallet = test_wallet();
@@ -2726,6 +2728,24 @@ mod tests {
         // A write of unknown height resets the pin rather than claiming 600.
         wallet.set_platform_address_info(addr.clone(), 47_000, 4);
         assert_eq!(figure(&wallet), (47_000, 4, 0));
+    }
+
+    #[test]
+    fn pinned_platform_address_info_orders_same_height_updates_by_nonce() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        wallet.apply_pinned_platform_address_info(addr.clone(), 30_000, 4, 600);
+        for (balance, nonce, height, expected) in [
+            (80_000, 3, 600, (30_000, 4, 600)),
+            (25_000, 5, 600, (25_000, 5, 600)),
+            (26_000, 5, 600, (26_000, 5, 600)),
+            (90_000, 6, 599, (26_000, 5, 600)),
+            (10_000, 1, 601, (10_000, 1, 601)),
+        ] {
+            wallet.apply_pinned_platform_address_info(addr.clone(), balance, nonce, height);
+            let info = wallet.get_platform_address_info(&addr).unwrap();
+            assert_eq!((info.balance, info.nonce, info.as_of_height), expected);
+        }
     }
 
     /// Entries apply by pin in any order; an address a later batch omits keeps

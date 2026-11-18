@@ -2042,6 +2042,13 @@ mod tests {
         ctx.apply_platform_address_spend(seed_hash, spend(41_000, 3, 500));
 
         assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
+        ctx.apply_platform_address_spend(seed_hash, spend(80_000, 3, 600));
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
+        wallet
+            .write()
+            .expect("wallet")
+            .apply_platform_address_entries(&spend(80_000, 3, 600), Network::Testnet);
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
         let wallet = wallet.read().expect("wallet");
         let info = wallet
             .get_platform_address_info(&address)

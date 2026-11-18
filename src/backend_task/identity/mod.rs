@@ -1646,12 +1646,10 @@ mod tests {
         );
     }
 
-    /// IDKEY-V0-001: under protocol versions 13 and 14 the spec set's keys,
-    /// in both the public keys map and the key storage, are the V0 keys the
-    /// hand-built literals produced, so the identity-create encoding is
-    /// unchanged.
+    /// Unlimited identity keys use V0 on both supported protocols, in the
+    /// public key map and in local key storage.
     #[test]
-    fn identity_key_specs_build_v0_keys_at_protocols_13_and_14() {
+    fn identity_key_specs_build_v0_keys_at_protocols_14_and_15() {
         let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
@@ -1679,7 +1677,7 @@ mod tests {
             disabled_at: None,
         });
 
-        for protocol_version in [13, 14] {
+        for protocol_version in [14, 15] {
             let platform_version = PlatformVersion::get(protocol_version).expect("version");
             let public_map = specs
                 .to_public_keys_map(platform_version)

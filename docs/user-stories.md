@@ -856,9 +856,9 @@ As a user, I want to remove an identity from this device from the identity's own
 
 As a user, I want the app to sign with a key that can actually sign the action, so that my actions are not refused because of an expired, used-up or out-of-scope key.
 
-- Automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
+- On supported Platform networks (protocol 14 and newer), automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
 - Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
-- Creating or updating a contract (including registering a token contract) requires a key without a spending limit or expiry date, even if the expiry is in the future. Automatic selection and the manual chooser enforce this on every protocol version.
+- Creating or updating a contract (including registering a token contract) requires a key without a spending limit or expiry date, even if the expiry is in the future. Automatic selection and the manual chooser enforce this on both protocol 14 and protocol 15.
 - For other actions where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
 
 ## DPNS (DPN)

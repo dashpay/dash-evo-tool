@@ -130,7 +130,7 @@ pub fn bounds_permit(bounds: Option<&ContractBounds>, scope: SigningScope<'_>) -
 }
 
 /// Whether the key's budget and expiry permit signing in `scope`.
-/// DET applies Platform's PV15 contract rule on every protocol version.
+/// DET applies Platform's PV15 contract rule on all supported protocols (14+).
 /// See <https://github.com/dashpay/platform/pull/5861>.
 pub fn limits_permit(key: &IdentityPublicKey, scope: SigningScope<'_>) -> bool {
     scope != SigningScope::DataContract || !key.has_limits()

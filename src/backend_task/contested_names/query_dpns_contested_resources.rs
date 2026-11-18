@@ -809,7 +809,8 @@ mod tests {
             .document_type_for_name("domain")
             .expect("domain document type");
         let query = ContestedDocumentVotePollDriveQuery {
-            limit: None,
+            // The SDK reads the vote state in pages of this size.
+            limit: Some(dash_sdk::drive::config::DEFAULT_QUERY_LIMIT),
             offset: None,
             start_at: None,
             vote_poll: ContestedDocumentResourceVotePoll {

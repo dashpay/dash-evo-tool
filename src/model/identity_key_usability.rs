@@ -36,13 +36,15 @@ pub const PLATFORM_SIGNING_KEY_TYPES: &[KeyType] = &[
     KeyType::BLS12_381,
 ];
 
-/// What a signature authorizes, as far as contract bounds are concerned.
+/// What a signature authorizes, for contract bounds and key limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigningScope<'a> {
     /// A state transition outside a batch: identity update, credit transfer or
-    /// withdrawal, data contract create or update, masternode vote. Platform
-    /// refuses a contract-bound key on any of them.
+    /// withdrawal or masternode vote. Platform refuses a contract-bound key
+    /// on any of them. Contract create/update uses `DataContract` instead.
     NonBatch,
+    /// A data contract create or update: no contract bounds, budget or expiry.
+    DataContract,
     /// A document transition on `document_type_name` of `contract_id`.
     Document {
         contract_id: Identifier,
@@ -65,6 +67,8 @@ pub enum KeyCaveat {
     Expired { expired_at: TimestampMillis },
     /// The key is bound to a different contract or document type.
     OutOfBounds,
+    /// A budgeted or expiring key cannot create or update a contract.
+    ContractRequiresUnlimitedKey,
     /// The key is bound to a contract group; whether the group covers this
     /// contract is only known to Platform.
     ContractGroupBound { group_id: Identifier },
@@ -76,10 +80,13 @@ pub enum KeyCaveat {
 }
 
 impl KeyCaveat {
-    /// Whether Platform is certain to refuse a signature from the key.
+    /// Whether the key must be refused for this action.
     pub fn blocks_signing(&self) -> bool {
         match self {
-            KeyCaveat::Disabled | KeyCaveat::Expired { .. } | KeyCaveat::OutOfBounds => true,
+            KeyCaveat::Disabled
+            | KeyCaveat::Expired { .. }
+            | KeyCaveat::OutOfBounds
+            | KeyCaveat::ContractRequiresUnlimitedKey => true,
             KeyCaveat::ContractGroupBound { .. }
             | KeyCaveat::Budgeted { .. }
             | KeyCaveat::Expiring { .. } => false,
@@ -96,7 +103,7 @@ impl KeyCaveat {
 pub fn bounds_permit(bounds: Option<&ContractBounds>, scope: SigningScope<'_>) -> Option<bool> {
     match (bounds, scope) {
         (None, _) => Some(true),
-        (Some(_), SigningScope::NonBatch) => Some(false),
+        (Some(_), SigningScope::NonBatch | SigningScope::DataContract) => Some(false),
         (
             Some(ContractBounds::SingleContract { id }),
             SigningScope::Document { contract_id, .. } | SigningScope::ContractWide { contract_id },
@@ -120,6 +127,13 @@ pub fn bounds_permit(bounds: Option<&ContractBounds>, scope: SigningScope<'_>) -
             SigningScope::Document { .. } | SigningScope::ContractWide { .. },
         ) => None,
     }
+}
+
+/// Whether the key's budget and expiry permit signing in `scope`.
+/// DET applies Platform's PV15 contract rule on every protocol version.
+/// See <https://github.com/dashpay/platform/pull/5861>.
+pub fn limits_permit(key: &IdentityPublicKey, scope: SigningScope<'_>) -> bool {
+    scope != SigningScope::DataContract || !key.has_limits()
 }
 
 /// Everything the user should know about signing with `key` in `scope` at
@@ -151,6 +165,9 @@ pub fn key_caveats(
             }
         }
     }
+    if !limits_permit(key, scope) {
+        caveats.push(KeyCaveat::ContractRequiresUnlimitedKey);
+    }
     if let Some(total_budget) = key.total_budget() {
         caveats.push(KeyCaveat::Budgeted { total_budget });
     }
@@ -163,7 +180,7 @@ pub fn key_caveats(
 }
 
 /// Whether `key` may be picked automatically for `scope` at `now_ms`: not
-/// disabled, not expired, and bounds known to permit the scope.
+/// disabled, not expired, and bounds and limits known to permit the scope.
 pub fn is_auto_selectable(
     key: &IdentityPublicKey,
     scope: SigningScope<'_>,
@@ -171,6 +188,7 @@ pub fn is_auto_selectable(
 ) -> bool {
     !key.is_disabled()
         && !key.is_expired_at(now_ms)
+        && limits_permit(key, scope)
         && bounds_permit(key.contract_bounds(), scope) == Some(true)
 }
 
@@ -398,6 +416,7 @@ mod tests {
     fn an_unbound_key_covers_every_scope() {
         for scope in [
             SigningScope::NonBatch,
+            SigningScope::DataContract,
             doc_scope(),
             SigningScope::ContractWide {
                 contract_id: CONTRACT,
@@ -535,6 +554,27 @@ mod tests {
             |_| true,
         );
         assert_eq!(picked.map(|k| k.id()), Some(1));
+    }
+
+    #[test]
+    fn pv15_contract_limits_do_not_change_other_non_batch_actions() {
+        let limited = key(0, None).with_limits(Some(1_000), Some(NOW + 1));
+        assert!(is_auto_selectable(&limited, SigningScope::NonBatch, NOW));
+        assert!(!is_auto_selectable(
+            &limited,
+            SigningScope::DataContract,
+            NOW
+        ));
+        let caveats = key_caveats(&limited, SigningScope::DataContract, NOW);
+        assert_eq!(caveats[0], KeyCaveat::ContractRequiresUnlimitedKey);
+        assert!(caveats[0].blocks_signing());
+        assert_eq!(
+            bounds_permit(
+                Some(&ContractBounds::SingleContract { id: CONTRACT }),
+                SigningScope::DataContract
+            ),
+            Some(false)
+        );
     }
 
     #[test]

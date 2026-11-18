@@ -39,6 +39,7 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        super::contract::validate_contract_signing_key(&identity, &signing_key)?;
         // Estimate fee for contract update
         let estimated_fee = self.fee_estimator().estimate_contract_update();
 

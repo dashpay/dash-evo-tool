@@ -1813,6 +1813,11 @@ pub enum TaskError {
     )]
     NoUsableWithdrawalKey,
 
+    #[error(
+        "This key has a spending limit or an expiry date, so it cannot create or update contracts. Choose a key without either restriction."
+    )]
+    ContractSigningKeyHasLimits,
+
     /// No active key this app can sign with was available for a masternode or
     /// evonode withdrawal, which may be signed with the payout (transfer) key
     /// or, failing that, the owner key — the chosen key may have been disabled,

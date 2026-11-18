@@ -106,7 +106,7 @@ impl UpdateDataContractScreen {
                 .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
                     &[SecurityLevel::CRITICAL],
-                    SigningScope::NonBatch,
+                    SigningScope::DataContract,
                 ))
                 .cloned()
         });
@@ -492,7 +492,7 @@ impl ScreenLike for UpdateDataContractScreen {
                         .signing_key_now(KeyRequirements::new(
                             Purpose::AUTHENTICATION,
                             &[SecurityLevel::CRITICAL],
-                            SigningScope::NonBatch,
+                            SigningScope::DataContract,
                         ))
                         .cloned();
 
@@ -519,7 +519,7 @@ impl ScreenLike for UpdateDataContractScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::UpdateContract,
-                        SigningScope::NonBatch,
+                        SigningScope::DataContract,
                     );
                 }
             }
@@ -646,6 +646,41 @@ impl ScreenLike for UpdateDataContractScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pv15_contract_update_auto_selection_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding, wired_test_app_context};
+        for (budget, expiry) in [
+            (Some(0), None),
+            (Some(1_000), None),
+            (None, Some(u64::MAX)),
+            (Some(1_000), Some(u64::MAX)),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = wired_test_app_context(dir.path()).await;
+            let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+            let identity = identity_holding(std::slice::from_ref(&limited));
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("seed identity");
+            let screen = UpdateDataContractScreen::new(&ctx);
+            assert!(screen.selected_qualified_identity.is_some());
+            assert!(
+                screen.selected_key.is_none(),
+                "budget={budget:?}, expiry={expiry:?}"
+            );
+
+            let unlimited = auth_key(2, SecurityLevel::CRITICAL);
+            let identity = identity_holding(&[limited, unlimited]);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("replace identity");
+            assert_eq!(
+                UpdateDataContractScreen::new(&ctx)
+                    .selected_key
+                    .map(|key| key.id()),
+                Some(2)
+            );
+        }
+    }
 
     /// With no wallet backend wired, `get_contracts()` fails and the constructor
     /// must degrade to an empty known-contracts list instead of panicking.

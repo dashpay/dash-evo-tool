@@ -81,7 +81,7 @@ impl RegisterDataContractScreen {
                 .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
                     &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
-                    SigningScope::NonBatch,
+                    SigningScope::DataContract,
                 ))
                 .cloned()
         });
@@ -463,7 +463,7 @@ impl ScreenLike for RegisterDataContractScreen {
                             .signing_key_now(KeyRequirements::new(
                                 Purpose::AUTHENTICATION,
                                 &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
-                                SigningScope::NonBatch,
+                                SigningScope::DataContract,
                             ))
                             .cloned();
 
@@ -490,7 +490,7 @@ impl ScreenLike for RegisterDataContractScreen {
                             identity,
                             &mut self.selected_key,
                             TransactionType::RegisterContract,
-                            SigningScope::NonBatch,
+                            SigningScope::DataContract,
                         );
                     }
                 }
@@ -585,6 +585,41 @@ mod tests {
     use super::*;
     use crate::context::test_support::{auth_key, identity_holding};
     use egui_kittest::kittest::Queryable;
+
+    #[tokio::test]
+    async fn pv15_contract_create_auto_selection_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding, wired_test_app_context};
+        for (budget, expiry) in [
+            (Some(0), None),
+            (Some(1_000), None),
+            (None, Some(u64::MAX)),
+            (Some(1_000), Some(u64::MAX)),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = wired_test_app_context(dir.path()).await;
+            let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+            let identity = identity_holding(std::slice::from_ref(&limited));
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("seed identity");
+            let screen = RegisterDataContractScreen::new(&ctx);
+            assert!(screen.selected_qualified_identity.is_some());
+            assert!(
+                screen.selected_key.is_none(),
+                "budget={budget:?}, expiry={expiry:?}"
+            );
+
+            let unlimited = auth_key(2, SecurityLevel::CRITICAL);
+            let identity = identity_holding(&[limited, unlimited]);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("replace identity");
+            assert_eq!(
+                RegisterDataContractScreen::new(&ctx)
+                    .selected_key
+                    .map(|key| key.id()),
+                Some(2)
+            );
+        }
+    }
 
     /// Regression: an identity holding only a key that cannot sign (here an
     /// expired one) passed the screen's gate, and the form stopped with no

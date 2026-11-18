@@ -447,7 +447,12 @@ impl<'a> KeyFilter<'a> {
             purposes,
             security_levels,
             key_types: transaction_type.allowed_key_types(),
-            scope,
+            scope: match transaction_type {
+                TransactionType::RegisterContract | TransactionType::UpdateContract => {
+                    SigningScope::DataContract
+                }
+                _ => scope,
+            },
         }
     }
 
@@ -625,12 +630,15 @@ fn render_key_combo(
 
 /// Whether a key with `caveats` is offered for the user to pick: every key
 /// but one whose bounds tie it to another contract or document type, which
-/// Platform is certain to refuse here. Expired and limited keys stay on
-/// offer with their warning; the user may know better.
+/// Platform is certain to refuse here. Contract create/update also excludes
+/// every key with a budget or expiry. Other actions retain their warnings.
 fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
-    !caveats
-        .iter()
-        .any(|caveat| matches!(caveat, KeyCaveat::OutOfBounds))
+    !caveats.iter().any(|caveat| {
+        matches!(
+            caveat,
+            KeyCaveat::OutOfBounds | KeyCaveat::ContractRequiresUnlimitedKey
+        )
+    })
 }
 
 /// A key list entry for the key labelled `label`, naming its most severe
@@ -643,13 +651,17 @@ fn key_entry_label(label: &str, caveat: Option<&KeyCaveat>) -> String {
         Some(KeyCaveat::Expiring { .. }) => format!("{label} (expires)"),
         // Disabled keys and keys bound to another contract or document type
         // are never listed, so no entry names them.
-        Some(KeyCaveat::Disabled | KeyCaveat::OutOfBounds) | None => label.to_string(),
+        Some(
+            KeyCaveat::Disabled | KeyCaveat::OutOfBounds | KeyCaveat::ContractRequiresUnlimitedKey,
+        )
+        | None => label.to_string(),
     }
 }
 
 /// The user-facing explanation of a key caveat: what it means and what to do.
 pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
     match caveat {
+        KeyCaveat::ContractRequiresUnlimitedKey => "This key has a spending limit or an expiry date, so it cannot create or update contracts. Choose a key without either restriction.".to_string(),
         KeyCaveat::Disabled => "This key is disabled, so the network will reject anything signed with it. Choose another key.".to_string(),
         KeyCaveat::Expired { expired_at } => format!(
             "This key expired on {date}, so the network will reject anything signed with it. Choose another key.",
@@ -1314,6 +1326,70 @@ pub fn show_group_token_success_screen_with_fee(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pv15_contract_manual_chooser_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            let filter = KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch);
+            for (budget, expiry) in [
+                (Some(0), None),
+                (Some(1_000), None),
+                (None, Some(u64::MAX)),
+                (Some(1_000), Some(u64::MAX)),
+            ] {
+                let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+                let identity = identity_holding(&[limited, auth_key(2, SecurityLevel::CRITICAL)]);
+                for dev_mode in [false, true] {
+                    let ids: Vec<_> = listed_keys(&identity, filter, dev_mode, 1)
+                        .map(|key| key.id())
+                        .collect();
+                    assert_eq!(
+                        ids,
+                        vec![2],
+                        "{action:?}, dev={dev_mode}, budget={budget:?}, expiry={expiry:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pv15_limited_document_key_remains_usable_automatically_and_manually() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::model::identity_key_usability::{KeyRequirements, select_identity_signing_key};
+        let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000), Some(u64::MAX));
+        let identity = identity_holding(&[limited]);
+        let scope = SigningScope::Document {
+            contract_id: Identifier::new([1; 32]),
+            document_type_name: "note",
+        };
+        let action = TransactionType::DocumentAction;
+        let purposes = action.allowed_purposes();
+        let levels = action.allowed_security_levels();
+        let filter = KeyFilter::new(action, &purposes, &levels, scope);
+        assert_eq!(
+            listed_keys(&identity, filter, false, 1)
+                .map(|key| key.id())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            select_identity_signing_key(
+                &identity.identity,
+                KeyRequirements::new(Purpose::AUTHENTICATION, &levels, scope),
+                1,
+                |_| true
+            )
+            .map(|key| key.id()),
+            Some(1)
+        );
+    }
+
     /// Regression: a key bound to another contract or document type was
     /// offered, though its bounds prove Platform refuses it here. Expired and
     /// limited keys stay on offer (IDN-024), with their warning.

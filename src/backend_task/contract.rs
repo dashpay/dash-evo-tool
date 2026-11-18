@@ -226,3 +226,57 @@ impl AppContext {
         }
     }
 }
+
+/// Reject contract signing with a budget or expiry before any network work.
+pub(super) fn validate_contract_signing_key(
+    identity: &QualifiedIdentity,
+    key: &IdentityPublicKey,
+) -> Result<(), super::error::TaskError> {
+    use crate::model::identity_key_usability::{SigningScope, limits_permit};
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    let current_key = identity
+        .identity
+        .public_keys()
+        .get(&key.id())
+        .unwrap_or(key);
+    if !limits_permit(key, SigningScope::DataContract)
+        || !limits_permit(current_key, SigningScope::DataContract)
+    {
+        return Err(super::error::TaskError::ContractSigningKeyHasLimits);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding};
+    use dash_sdk::dpp::identity::SecurityLevel;
+
+    #[test]
+    fn pv15_contract_preflight_checks_current_key_limits() {
+        let original = auth_key(1, SecurityLevel::CRITICAL);
+        assert!(
+            validate_contract_signing_key(
+                &identity_holding(std::slice::from_ref(&original)),
+                &original
+            )
+            .is_ok()
+        );
+        for (budget, expiry) in [(Some(0), None), (Some(1_000), None), (None, Some(u64::MAX))] {
+            let limited = original.clone().with_limits(budget, expiry);
+            assert!(matches!(
+                validate_contract_signing_key(
+                    &identity_holding(std::slice::from_ref(&original)),
+                    &limited
+                ),
+                Err(super::super::error::TaskError::ContractSigningKeyHasLimits)
+            ));
+            let identity = identity_holding(&[limited]);
+            assert!(matches!(
+                validate_contract_signing_key(&identity, &original),
+                Err(super::super::error::TaskError::ContractSigningKeyHasLimits)
+            ));
+        }
+    }
+}

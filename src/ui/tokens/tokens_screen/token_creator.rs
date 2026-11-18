@@ -19,7 +19,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::identity_key_usability::SigningScope;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
     distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
@@ -34,7 +34,6 @@ use crate::ui::components::MessageBanner;
 use crate::ui::MessageType;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use crate::ui::tokens::tokens_screen::{
     TokenPresetSelection, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
     TokenNameLanguage, TokensScreen,
@@ -192,19 +191,13 @@ impl TokensScreen {
                                     self.selected_key = None; // Clear previous key only on identity change
                                 }
                                 if let Some(ref identity) = self.selected_identity {
-                                    // Find first eligible key for RegisterContract
-                                    // Requires Authentication purpose with High or Critical security level
                                     let first_eligible_key = identity
-                                        .private_keys
-                                        .identity_public_keys()
-                                        .iter()
-                                        .find(|key_ref| {
-                                            let key = &key_ref.1.identity_public_key;
-                                            key.purpose() == Purpose::AUTHENTICATION
-                                                && (key.security_level() == SecurityLevel::CRITICAL
-                                                    || key.security_level() == SecurityLevel::HIGH)
-                                        })
-                                        .map(|key_ref| key_ref.1.identity_public_key.clone());
+                                        .signing_key_now(KeyRequirements::new(
+                                            Purpose::AUTHENTICATION,
+                                            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                                            SigningScope::DataContract,
+                                        ))
+                                        .cloned();
 
                                     if first_eligible_key.is_some() {
                                         self.selected_key = first_eligible_key;
@@ -217,7 +210,7 @@ impl TokensScreen {
                                 ui.add_space(5.0);
                                 ui.colored_label(
                                     egui::Color32::from_rgb(200, 100, 100),
-                                    "No eligible key found for this identity. Please use Advanced Options or add a suitable key.",
+                                    "This identity has no key on this device that can create a contract. Add or load a suitable key without a spending limit or expiry date, or select another identity.",
                                 );
                                 return;
                             }
@@ -256,7 +249,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
-                                SigningScope::NonBatch,
+                                SigningScope::DataContract,
                             );
                             let after_id = self
                                 .selected_identity

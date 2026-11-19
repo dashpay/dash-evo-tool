@@ -655,7 +655,6 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     &mut state.1,
                     &mut state.3,
                     &mut pending,
-                    dash_evo_tool::ui::identity::IdentityHubTab::Home,
                 );
                 let (mut action, _) = home::render(
                     ui,

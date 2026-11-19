@@ -732,7 +732,6 @@ impl ScreenLike for IdentityHubScreen {
                                 &mut self.profile_cache,
                                 &mut self.avatar_cache,
                                 &mut self.pending_avatars,
-                                self.selected_tab,
                             ),
                             None => (AppAction::None, super::home::HomeOutcome::None),
                         };

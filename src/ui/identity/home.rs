@@ -43,7 +43,6 @@ pub fn render_header(
     profiles: &mut ProfileCache,
     avatars: &mut AvatarCache,
     pending_avatars: &mut Vec<BackendTask>,
-    tab: IdentityHubTab,
 ) -> (AppAction, HomeOutcome) {
     profiles.seed_cached(app_context, identity);
     let profile = profiles.get_or_request(identity).and_then(Option::as_ref);
@@ -148,9 +147,12 @@ pub fn render_header(
                             }
                         },
                     );
-                    if tab == IdentityHubTab::Home {
-                        let full_id = identity.identity.id().to_string(Encoding::Base58);
-                        ui.horizontal(|ui| {
+                    let full_id = identity.identity.id().to_string(Encoding::Base58);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), username_action_size.y),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().button_padding = egui::vec2(Spacing::XS, Spacing::XXS);
                             ui.label(
                                 RichText::new(shorten_id(&full_id))
                                     .monospace()
@@ -158,7 +160,10 @@ pub fn render_header(
                             )
                             .info_tooltip(&full_id);
                             let copy = ui
-                                .add(ComponentStyles::secondary_button("Copy", dark))
+                                .add(
+                                    ComponentStyles::secondary_button("📋", dark)
+                                        .min_size(username_action_size),
+                                )
                                 .clickable_tooltip("Copy the full identity ID.");
                             copy.widget_info(|| {
                                 egui::WidgetInfo::labeled(
@@ -169,14 +174,15 @@ pub fn render_header(
                             });
                             if copy.clicked() {
                                 ui.ctx().copy_text(full_id);
-                                MessageBanner::set_global(
+                                MessageBanner::replace_global(
                                     ui.ctx(),
+                                    "The identity ID was copied to the clipboard.",
                                     "The identity ID was copied to the clipboard.",
                                     MessageType::Success,
                                 );
                             }
-                        });
-                    }
+                        },
+                    );
                 },
             );
             if wide {

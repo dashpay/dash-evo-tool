@@ -2389,6 +2389,10 @@ pub enum TaskError {
     )]
     DuplicateProTxHash { identity_id: Identifier },
 
+    /// The node load would overwrite an existing user identity.
+    #[error("This ID belongs to a saved user identity. Check the node's identity ID and try again.")]
+    MasternodeLoadUserIdentity { identity_id: Identifier },
+
     /// A load of this identity is already running. Carries the resolved identity
     /// id so the caller can name the node. Excludes the concurrent load that
     /// would race the duplicate check above.

@@ -40,38 +40,6 @@ impl Database {
     }
 }
 
-/// Decision-#7 single-key carve-out regression lane (release-blocking).
-///
-/// Pins the Decision-#7 stub error so a regression that silently re-enables
-/// single-key spends — or changes the user-facing message — fails CI.
-#[cfg(test)]
-mod single_key_carveout_regression {
-    use crate::backend_task::error::TaskError;
-
-    #[test]
-    fn decision_7_stub_still_surfaces_single_key_unsupported() {
-        // The stub error variant is the load-bearing Decision-#7 contract.
-        // It is fieldless, so a structural match fully pins it; the
-        // user-facing message is asserted verbatim so a regression that
-        // weakens the disclosure fails here.
-        let err = TaskError::SingleKeyWalletsUnsupported;
-        assert!(matches!(err, TaskError::SingleKeyWalletsUnsupported));
-        let msg = TaskError::SingleKeyWalletsUnsupported.to_string();
-        assert!(
-            msg.contains("Single-key wallets are not supported in this version"),
-            "stub message must state the capability is unsupported: {msg}"
-        );
-        assert!(
-            msg.contains("preserved") && msg.contains("future update"),
-            "stub message must reassure data is preserved and will return: {msg}"
-        );
-        assert!(
-            msg.contains("HD (recovery-phrase) wallet"),
-            "stub message must give the user a concrete alternative: {msg}"
-        );
-    }
-}
-
 /// Stores a password-protected imported key the way the earlier version
 /// saved it, so it awaits its old password.
 #[cfg(test)]
@@ -108,4 +76,36 @@ pub(crate) fn seed_legacy_protected_key(db: &Database) {
             ],
         )
         .expect("insert legacy protected key");
+}
+
+/// Decision-#7 single-key carve-out regression lane (release-blocking).
+///
+/// Pins the Decision-#7 stub error so a regression that silently re-enables
+/// single-key spends — or changes the user-facing message — fails CI.
+#[cfg(test)]
+mod single_key_carveout_regression {
+    use crate::backend_task::error::TaskError;
+
+    #[test]
+    fn decision_7_stub_still_surfaces_single_key_unsupported() {
+        // The stub error variant is the load-bearing Decision-#7 contract.
+        // It is fieldless, so a structural match fully pins it; the
+        // user-facing message is asserted verbatim so a regression that
+        // weakens the disclosure fails here.
+        let err = TaskError::SingleKeyWalletsUnsupported;
+        assert!(matches!(err, TaskError::SingleKeyWalletsUnsupported));
+        let msg = TaskError::SingleKeyWalletsUnsupported.to_string();
+        assert!(
+            msg.contains("Single-key wallets are not supported in this version"),
+            "stub message must state the capability is unsupported: {msg}"
+        );
+        assert!(
+            msg.contains("preserved") && msg.contains("future update"),
+            "stub message must reassure data is preserved and will return: {msg}"
+        );
+        assert!(
+            msg.contains("HD (recovery-phrase) wallet"),
+            "stub message must give the user a concrete alternative: {msg}"
+        );
+    }
 }

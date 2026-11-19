@@ -1,5 +1,5 @@
-//! Identity Hub Tokens tab: the tokens the selected identity holds, with Send
-//! and Claim. Holder actions only — every administrative action stays in
+//! Identity Hub Tokens tab: balances and rewards for the selected identity.
+//! Every administrative action stays in
 //! Tokens › My Tokens; the only link there is "Manage in Tokens screen", shown
 //! when the identity actually holds an admin permission on the token.
 //!
@@ -24,8 +24,7 @@ use crate::ui::state::identity_tokens::{
     sort_rows,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
-use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenType};
+use crate::ui::{MessageType, RootScreenType, ScreenType};
 use egui::containers::menu::MenuButton;
 use egui::{self, RichText, Sense, Ui, UiBuilder};
 use std::sync::Arc;
@@ -55,17 +54,6 @@ impl RowContext {
             synced: app_context.connection_status().masternodes_ready(),
             view_only: identity.private_keys.is_empty(),
             identity_label: app_context.identity_display_label(identity),
-        }
-    }
-
-    /// Why Send and Claim are blocked for this identity right now, if they are.
-    fn holder_action_block(&self) -> Option<&'static str> {
-        if !self.synced {
-            Some(DISABLED_NOT_SYNCED)
-        } else if self.view_only {
-            Some(STATUS_ADD_KEY)
-        } else {
-            None
         }
     }
 }
@@ -491,7 +479,6 @@ fn render_row(
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 action |= render_row_menu(ui, app_context, state, row, context);
-                action |= render_row_actions(ui, app_context, row, context);
             });
         });
     });
@@ -586,86 +573,6 @@ pub(super) fn render_row_status(
         }
     }
     action
-}
-
-/// Send and Claim, laid out right to left. Both wait for the masternode list
-/// and for a signing key; Send also needs a balance and a transferable token.
-pub(super) fn render_row_actions(
-    ui: &mut Ui,
-    app_context: &Arc<AppContext>,
-    row: &TokenRow,
-    context: &RowContext,
-) -> AppAction {
-    let mut action = render_claim_button(ui, app_context, row, context);
-    if row.holds_some() {
-        let send_reason = if row.transferable() {
-            context.holder_action_block()
-        } else {
-            Some(DISABLED_NOT_TRANSFERABLE)
-        };
-        let send = ui.add_enabled(
-            send_reason.is_none(),
-            ComponentStyles::primary_button(SEND_LABEL),
-        );
-        if send
-            .disabled_tooltip(send_reason.unwrap_or_default())
-            .clicked()
-            && let Some(balance) = row.balance_record()
-        {
-            action |= AppAction::AddScreen(
-                ScreenType::TransferTokensScreen(balance).create_screen(app_context),
-            );
-        }
-    }
-    action
-}
-
-/// The Claim button, when `row` has something to claim; disabled with its
-/// reason until the network is synced and the identity can sign.
-pub(super) fn render_claim_button(
-    ui: &mut Ui,
-    app_context: &Arc<AppContext>,
-    row: &TokenRow,
-    context: &RowContext,
-) -> AppAction {
-    if !row.claim_available() {
-        return AppAction::None;
-    }
-    let blocked_reason = context.holder_action_block();
-    let claim = ui.add_enabled(
-        blocked_reason.is_none(),
-        ComponentStyles::secondary_button(CLAIM_LABEL, ui.visuals().dark_mode),
-    );
-    if claim
-        .disabled_tooltip(blocked_reason.unwrap_or_default())
-        .clicked()
-    {
-        return claim_action(ui.ctx(), app_context, row);
-    }
-    AppAction::None
-}
-
-/// Push the Claim screen for `row`, or explain why not.
-fn claim_action(ctx: &egui::Context, app_context: &Arc<AppContext>, row: &TokenRow) -> AppAction {
-    match app_context.get_contract_by_token_id(&row.token.token_id) {
-        Ok(Some(contract)) => {
-            AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
-                row.basic_info(),
-                contract,
-                row.token.token_config.clone(),
-                app_context,
-            )))
-        }
-        Ok(None) => {
-            MessageBanner::set_global(ctx, ERROR_CONTRACT_MISSING, MessageType::Info);
-            AppAction::None
-        }
-        Err(error) => {
-            MessageBanner::set_global(ctx, ERROR_CONTRACT_MISSING, MessageType::Error)
-                .with_details(error);
-            AppAction::None
-        }
-    }
 }
 
 /// The row's ••• menu.

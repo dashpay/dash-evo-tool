@@ -97,16 +97,14 @@ impl CoordinatorGate {
     /// the single-winner `fired` flag so the action runs exactly once even when
     /// `arm` and `on_masternodes_ready` race.
     fn try_fire(&self) {
-        if !self.should_fire() {
-            return;
-        }
-        // Claim the fire exactly once. The `should_fire` pre-check is a cheap
-        // early-out; this swap is the authoritative single-winner guard.
-        if self.fired.swap(true, Ordering::SeqCst) {
+        if self.has_fired() || !self.masternodes_ready() {
             return;
         }
         let slot = self.action.lock_recover();
-        if let Some(action) = slot.as_ref() {
+        if let Some(action) = slot.as_ref()
+            && self.masternodes_ready()
+            && !self.fired.swap(true, Ordering::SeqCst)
+        {
             tracing::info!("Masternode list synced; starting Platform sync coordinators");
             action();
         }
@@ -114,8 +112,14 @@ impl CoordinatorGate {
 
     /// Pure decision: the action may fire when masternodes are ready, an action
     /// is armed, and it has not fired yet. Side-effect-free, unit-testable.
+    #[cfg(test)]
     fn should_fire(&self) -> bool {
         self.masternodes_ready() && self.action.lock_recover().is_some() && !self.has_fired()
+    }
+
+    /// Prevent a late readiness callback from starting work during teardown.
+    pub(super) fn disarm(&self) {
+        *self.action.lock_recover() = None;
     }
 
     /// Clear the gate so a restart-in-place reconnect can re-arm it.
@@ -127,7 +131,8 @@ impl CoordinatorGate {
     /// before firing — starting them against a not-yet-synced masternode list
     /// fires proof-verifying DAPI calls that get every queried node banned.
     pub(super) fn reset(&self) {
-        *self.action.lock_recover() = None;
+        let mut action = self.action.lock_recover();
+        *action = None;
         self.fired.store(false, Ordering::SeqCst);
         self.masternodes_ready.store(false, Ordering::SeqCst);
     }
@@ -138,6 +143,17 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn a_late_ready_callback_cannot_start_disarmed_work() {
+        let gate = CoordinatorGate::default();
+        let starts = Arc::new(AtomicUsize::new(0));
+        gate.arm(counting_action(&starts));
+        gate.disarm();
+        gate.on_masternodes_ready();
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        assert!(!gate.has_fired());
+    }
 
     /// A start action that counts how many times it ran.
     fn counting_action(counter: &Arc<AtomicUsize>) -> StartAction {

@@ -22,7 +22,6 @@
 //!   here (private fields, builder methods, `ComponentResponse` trait).
 
 use crate::ui::components::component_trait::ComponentResponse;
-use crate::ui::components::pill::accent_pill;
 use crate::ui::identity::IdentityHubTab;
 use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing, Typography};
 use eframe::egui::{self, CornerRadius, RichText, Stroke, Ui, Vec2};
@@ -78,9 +77,6 @@ pub struct IdentityHubTabBar {
     /// Optional min button width override. Defaults to `96.0`, which
     /// comfortably fits every tab label at `Typography::SCALE_SM`.
     min_button_width: f32,
-    /// A count pill shown after a tab's button, with its tooltip. Only
-    /// actionable counts belong here (pending claims, not token totals).
-    badges: Vec<(IdentityHubTab, usize, String)>,
 }
 
 impl IdentityHubTabBar {
@@ -89,25 +85,7 @@ impl IdentityHubTabBar {
         Self {
             selected,
             min_button_width: 96.0,
-            badges: Vec::new(),
         }
-    }
-
-    /// Show `count` in a pill after `tab`, explained by `tooltip`. A zero
-    /// count shows nothing.
-    pub fn with_badge(mut self, tab: IdentityHubTab, count: usize, tooltip: String) -> Self {
-        if count > 0 {
-            self.badges.push((tab, count, tooltip));
-        }
-        self
-    }
-
-    /// The badge count shown for `tab`, if any.
-    pub fn badge(&self, tab: IdentityHubTab) -> Option<usize> {
-        self.badges
-            .iter()
-            .find(|(badged, ..)| *badged == tab)
-            .map(|(_, count, _)| *count)
     }
 
     /// Override the minimum per-tab button width. Useful in narrow layouts.
@@ -164,16 +142,6 @@ impl IdentityHubTabBar {
                 if clicked && !is_selected {
                     response.clicked = Some(tab);
                 }
-                if let Some((_, count, tooltip)) =
-                    self.badges.iter().find(|(badged, ..)| *badged == tab)
-                {
-                    accent_pill(
-                        ui,
-                        &count.to_string(),
-                        DashColors::pill_accent(ui.visuals().dark_mode),
-                        Some(tooltip),
-                    );
-                }
             }
         });
 
@@ -212,20 +180,6 @@ mod tests {
             response.changed_value().as_ref(),
             Some(&IdentityHubTab::Contacts)
         );
-    }
-
-    #[test]
-    fn a_badge_shows_only_a_positive_count() {
-        let bar = IdentityHubTabBar::new(IdentityHubTab::Home)
-            .with_badge(
-                IdentityHubTab::Tokens,
-                2,
-                "2 tokens have something to claim.".into(),
-            )
-            .with_badge(IdentityHubTab::Contacts, 0, "Unused.".into());
-        assert_eq!(bar.badge(IdentityHubTab::Tokens), Some(2));
-        assert_eq!(bar.badge(IdentityHubTab::Contacts), None);
-        assert_eq!(bar.badge(IdentityHubTab::Home), None);
     }
 
     #[test]

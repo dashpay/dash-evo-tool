@@ -62,6 +62,7 @@ pub mod single_key;
 pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
+mod spend_activity;
 mod token_balance;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
@@ -112,8 +113,8 @@ use snapshot::SnapshotStore;
 pub use snapshot::{
     AssetLockInputState, DetUtxo, DetWalletBalance, TransactionHistoryStatus, WalletSnapshot,
 };
-use token_balance::TokenBalanceStore;
 pub use token_balance::UpstreamTokenBalances;
+use token_balance::{PendingTokenBalanceRead, PeriodicTokenBalanceSync, TokenBalanceStore};
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
@@ -357,6 +358,10 @@ impl StartLatch {
 /// always operated account 0; multi-account support is out of P2 scope.
 const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 
+/// The Platform Payment account shielding from Platform draws on. Its Max is
+/// quoted against the same account.
+pub(crate) const SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT: u32 = 0;
+
 /// Number of times [`WalletBackend::resolve_registered_wallet`] re-probes the
 /// upstream wallet manager before concluding a wallet is genuinely absent.
 /// Tolerates the brief window where a concurrent registration has created the
@@ -428,6 +433,7 @@ struct Inner {
     /// UI thread from the upstream `IdentitySyncManager` and read on the
     /// frame thread via [`Self::token_balances`]. See [`token_balance`].
     token_balances: Arc<TokenBalanceStore>,
+    periodic_token_sync: std::sync::Mutex<Option<PeriodicTokenBalanceSync>>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
     #[cfg(test)]
@@ -546,6 +552,12 @@ struct Inner {
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
     task_result_sender: SenderAsync<TaskResult>,
+    /// Operations that can take or release Core input reservations; keys the
+    /// Core send and asset-lock Max quotes. See [`spend_activity`].
+    spend_activity: Arc<spend_activity::SpendActivity>,
+    /// Shields from Platform in flight; keys the shield-from-Platform Max
+    /// quote. See [`spend_activity`].
+    platform_shield_activity: Arc<spend_activity::SpendActivity>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -673,19 +685,23 @@ impl WalletBackend {
         let coordinator_gate = Arc::new(CoordinatorGate::default());
 
         let bridge = Arc::new(EventBridge::new(
+            network,
             connection_status,
             task_result_sender.clone(),
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
-            // The shielded sync-completed callback writes per-wallet balances
-            // into AppContext's frame-safe snapshot.
-            Arc::clone(&ctx.shielded_balances),
-            // Platform-address push writer: the platform address sync-completed callback
-            // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
-            Arc::clone(&ctx.platform_balances),
-            // ...and the matching `(timestamp, height)` sync-cursor snapshot that
-            // drives the "Addresses synced" status label.
-            Arc::clone(&ctx.platform_sync_cursors),
+            event_bridge::PushSnapshots {
+                // The shielded sync-completed callback writes per-wallet balances
+                // into AppContext's frame-safe snapshot.
+                shielded_balances: Arc::clone(&ctx.shielded_balances),
+                // Platform-address push writer: the platform address sync-completed
+                // callback writes per-wallet owned-only balances into AppContext's
+                // frame-safe snapshot.
+                platform_balances: Arc::clone(&ctx.platform_balances),
+                // ...and the matching `(timestamp, height)` sync-cursor snapshot that
+                // drives the "Addresses synced" status label.
+                platform_sync_cursors: Arc::clone(&ctx.platform_sync_cursors),
+            },
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
@@ -725,6 +741,7 @@ impl WalletBackend {
                 wallet_persister: persister,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
+                periodic_token_sync: std::sync::Mutex::new(None),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 #[cfg(test)]
                 registration_attempts: std::sync::atomic::AtomicUsize::new(0),
@@ -769,6 +786,8 @@ impl WalletBackend {
                 start_latch: StartLatch::default(),
                 coordinator_gate,
                 task_result_sender,
+                spend_activity: Arc::default(),
+                platform_shield_activity: Arc::default(),
             }),
         };
 
@@ -1910,12 +1929,12 @@ impl WalletBackend {
             .collect()
     }
 
-    /// Start chain sync and the periodic upstream coordinators.
+    /// Start chain sync and the periodic Platform sync workers.
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this
     /// orchestrates the parts: `SpvRuntime::start(ClientConfig)` followed by
-    /// `spawn_run_loop()`, plus the platform-address / identity / shielded sync
-    /// coordinators.
+    /// `spawn_run_loop()`, plus the platform-address, token-balance, and
+    /// shielded sync workers.
     ///
     /// `SpvRuntime::start()` initializes the network manager, disk storage,
     /// and SPV client. The sync loop runs separately on the tokio runtime;
@@ -2009,7 +2028,7 @@ impl WalletBackend {
         // and blocking the next reconnect's persister open. At fire time the
         // backend is live, so the upgrade always succeeds.
         let platform_address_sync = Arc::downgrade(&self.inner.pwm.platform_address_sync_arc());
-        let identity_sync = Arc::downgrade(&self.inner.pwm.identity_sync_arc());
+        let token_backend = Arc::downgrade(&self.inner);
         // Shielded sync coordinator (Orchard note scanning). Runs the
         // background `ShieldedSyncManager` loop once masternodes are ready.
         // `configure_shielded` (called in `new()`) opens the coordinator's
@@ -2023,6 +2042,7 @@ impl WalletBackend {
         // is provably reachable. Cloning the sender avoids capturing any
         // `Weak<AppContext>` in this run-loop closure.
         let task_result_sender = self.inner.task_result_sender.clone();
+        let network = self.inner.network;
         self.inner.coordinator_gate.arm(Box::new(move || {
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
@@ -2031,8 +2051,17 @@ impl WalletBackend {
                     "Coordinator start skipped: backend torn down before the quorum gate fired"
                 ),
             }
-            match identity_sync.upgrade() {
-                Some(coordinator) => coordinator.start(),
+            match token_backend.upgrade() {
+                Some(inner) => {
+                    use poison::MutexRecover;
+                    *inner.periodic_token_sync.lock_recover() =
+                        Some(PeriodicTokenBalanceSync::start(
+                            inner.pwm.identity_sync_arc(),
+                            Arc::clone(&inner.token_balances),
+                            network,
+                            task_result_sender.clone(),
+                        ));
+                }
                 None => tracing::warn!(
                     coordinator = "identity-sync",
                     "Coordinator start skipped: backend torn down before the quorum gate fired"
@@ -2050,7 +2079,8 @@ impl WalletBackend {
             // (single-winner gate): a full 256-deep channel would drop this and
             // the sweep would not run until a reconnect re-arms the gate, but the
             // user can always run discovery manually, so the drop is tolerated.
-            let _ = task_result_sender.try_send(TaskResult::unattributed_success(
+            let _ = task_result_sender.try_send(TaskResult::wallet_event(
+                network,
                 BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
             ));
         }));
@@ -2093,6 +2123,8 @@ impl WalletBackend {
     /// *consumers* is safe — no new events can arrive, and any in-flight
     /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
+        let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.coordinator_gate.disarm();
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
@@ -2103,6 +2135,7 @@ impl WalletBackend {
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
+        self.stop_periodic_token_sync().await;
         // `pwm.shutdown()` quiesces the periodic coordinators — draining any
         // in-flight pass and its persister / host-callback fan-out — then drains
         // the wallet-event adapter task. Best-effort: a non-clean report flags a
@@ -2132,9 +2165,8 @@ impl WalletBackend {
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
     ///    `PlatformEventManager` in place for the next `spawn_in_background`.
-    /// 2. `quiesce()` the three sync coordinators (cancel + drain the in-flight
-    ///    pass) via their `Arc` accessors — NOT `pwm.shutdown()` — so the event
-    ///    adapter keeps running.
+    /// 2. Stop and join the token-balance timer, then quiesce the sync
+    ///    coordinators via their `Arc` accessors so the event adapter keeps running.
     /// 3. Re-arm the DET start gates ([`StartLatch::reset`] +
     ///    [`CoordinatorGate::reset`]) so the reconnect's `start()` spawns the
     ///    run loop again and re-fires the coordinators once masternodes re-sync.
@@ -2148,13 +2180,14 @@ impl WalletBackend {
     /// SAFETY (restart-in-place vs the upstream coordinators): restarting the
     /// SAME coordinator instance is race-free because every coordinator clears
     /// its cancel slot under a `background_generation` guard in the pinned
-    /// platform rev — `identity_sync`, `shielded_sync`, and (since b4506492)
+    /// platform rev — `shielded_sync`, and (since b4506492)
     /// `platform_address_sync`. Without that guard a lagging old thread could
     /// clobber a freshly-installed cancel token, leaking an uncancellable /
     /// duplicate loop; the guard makes the stale thread observe the bumped
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.coordinator_gate.disarm();
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
@@ -2162,6 +2195,7 @@ impl WalletBackend {
                 "SPV run loop did not stop cleanly during stop_in_place; continuing"
             );
         }
+        self.stop_periodic_token_sync().await;
         // 2. Quiesce the coordinators (consumers) directly — do NOT call
         //    `pwm.shutdown()`, which would also tear down the non-restartable
         //    wallet-event adapter.
@@ -2186,6 +2220,14 @@ impl WalletBackend {
         // 3. Re-arm the DET start gates for the next start() on this backend.
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
+    }
+
+    async fn stop_periodic_token_sync(&self) {
+        use poison::MutexRecover;
+        let session = self.inner.periodic_token_sync.lock_recover().take();
+        if let Some(session) = session {
+            session.stop().await;
+        }
     }
 
     /// Hold starts and stops pending, so tests can join multiple callers to
@@ -2262,7 +2304,7 @@ impl WalletBackend {
     }
 
     /// Per-`(identity, token)` balance view (T6 seam). Reads the lock-free
-    /// snapshot last published by [`Self::refresh_token_balances`] off the
+    /// snapshot published after a sync pass off the
     /// upstream `IdentitySyncManager`. Infallible, frame-safe. See
     /// [`token_balance`] for the syncing-vs-zero contract.
     pub fn token_balances(&self) -> UpstreamTokenBalances {
@@ -2943,7 +2985,65 @@ impl WalletBackend {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> (u64, AssetLockInputState, u64) {
-        self.inner.snapshots.asset_lock_probe_snapshot(seed_hash)
+        let (generation, inputs, revision) =
+            self.inner.snapshots.asset_lock_probe_snapshot(seed_hash);
+        let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
+        (generation, inputs.with_spend_key(spend_key), revision)
+    }
+
+    /// The revision a Core send Max quote is made against: the coins the
+    /// pooled build can draw on and the operations that can move their
+    /// reservations. Keyed on the coins, not the snapshot generation, so wallet
+    /// events that leave them unchanged (new blocks, chainlocks) do not
+    /// re-quote.
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        let coins = self.inner.snapshots.core_send_inputs_key(seed_hash);
+        let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
+        coins ^ spend_key.rotate_left(32)
+    }
+
+    /// The key a Max quote made now for `seed_hash` is valid under, or
+    /// [`TaskError::SpendInProgress`] while an operation that can reserve its
+    /// Core inputs is open.
+    fn spend_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        self.inner.spend_activity.idle_quote_key(seed_hash)
+    }
+
+    /// The key a shield-from-Platform Max quote made now for `seed_hash` is
+    /// valid under, or [`TaskError::SpendInProgress`] while a shield from its
+    /// Platform balance is in flight.
+    fn platform_shield_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        self.inner
+            .platform_shield_activity
+            .idle_quote_key(seed_hash)
+    }
+
+    /// Mark an operation that can take or release Core input reservations
+    /// on `seed_hash` for as long as the returned guard lives.
+    fn begin_core_spend(&self, seed_hash: &WalletSeedHash) -> spend_activity::SpendGuard {
+        self.inner.spend_activity.begin(seed_hash)
+    }
+
+    /// The shield-in-flight part of the key a shield-from-Platform Max quote
+    /// is made against. The live Platform balances form the rest; they keep
+    /// showing a shield's spent credits until a sync pass reads them back, so
+    /// this moves when a shield opens and when it settles.
+    pub fn platform_shield_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.inner
+            .platform_shield_activity
+            .quote_state(seed_hash)
+            .key
+    }
+
+    /// Mark a shield from `seed_hash`'s Platform balance in flight for as
+    /// long as the returned guard lives: through the shield and the sync pass
+    /// that reads its spend back, for as long as that pass is waited on (see
+    /// `AppContext::shield_from_platform_then_sync`).
+    pub(crate) fn begin_platform_shield(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> spend_activity::SpendGuard {
+        self.inner.platform_shield_activity.begin(seed_hash)
     }
 
     /// Full transaction history for the wallet (event-sourced).
@@ -2995,6 +3095,13 @@ impl WalletBackend {
     /// them. DISPLAY-ONLY, like [`Self::utxos`].
     pub fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.inner.snapshots.utxo_count(seed_hash)
+    }
+
+    /// How many coins a pooled Core send of the wallet's whole balance
+    /// spends, per the display snapshot. DISPLAY-ONLY: it prices the Core fee
+    /// shown beside the Max; the Max itself comes from the backend quote.
+    pub fn core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.inner.snapshots.core_send_input_count(seed_hash)
     }
 
     /// UTXO-derived per-address balances for the wallet.
@@ -3085,7 +3192,7 @@ impl WalletBackend {
     /// `last_sync_unix` and per-token balances rather than resetting them to
     /// "syncing". Pass the full set of tokens DET tracks for the identity;
     /// passing an empty set clears the watch list.
-    pub async fn register_identity_tokens(
+    async fn register_identity_tokens(
         &self,
         identity_id: dash_sdk::platform::Identifier,
         token_ids: Vec<dash_sdk::platform::Identifier>,
@@ -3113,80 +3220,103 @@ impl WalletBackend {
     /// Reads the identity's current watched-token set, removes `token_id`, and
     /// replaces the set via `update_watched_tokens` — which preserves the
     /// remaining tokens' cached balances. A no-op if the identity isn't
-    /// registered or wasn't watching the token. Upstream `Identifier` types
-    /// stay inside this seam; callers pass and receive DET-side identifiers.
+    /// registered or wasn't watching the token. Remove the local pair even
+    /// when a transaction supplied a balance before watch registration.
     pub async fn unwatch_identity_token(
         &self,
         identity_id: dash_sdk::platform::Identifier,
         token_id: dash_sdk::platform::Identifier,
     ) {
         let identity_sync = self.inner.pwm.identity_sync();
-        let Some(state) = identity_sync.state_for_identity(&identity_id).await else {
-            return;
-        };
-        let remaining: Vec<dash_sdk::platform::Identifier> = state
-            .tokens
-            .iter()
-            .map(|info| info.token_id)
-            .filter(|t| *t != token_id)
-            .collect();
-        if remaining.len() == state.tokens.len() {
-            return;
+        if let Some(state) = identity_sync.state_for_identity(&identity_id).await {
+            let remaining: Vec<dash_sdk::platform::Identifier> = state
+                .tokens
+                .iter()
+                .map(|info| info.token_id)
+                .filter(|t| *t != token_id)
+                .collect();
+            if remaining.len() != state.tokens.len() {
+                identity_sync
+                    .update_watched_tokens(identity_id, remaining)
+                    .await;
+            }
         }
-        identity_sync
-            .update_watched_tokens(identity_id, remaining)
-            .await;
-        self.refresh_token_balances().await;
+        self.inner.token_balances.remove(identity_id, token_id);
     }
 
-    /// Run one upstream token-balance sync pass that sees the watch lists
-    /// registered so far, then republish DET's snapshot. A pass already
-    /// running is waited out first. Everything, our own pass included, ends
+    /// Set the watch lists, run an upstream pass, and republish DET's
+    /// snapshot. A periodic pass already running is waited out first.
+    /// Everything, our own pass included, ends
     /// within `budget`; `cancel` ends it on shutdown.
     pub(crate) async fn sync_token_balances_now(
         &self,
+        watch_sets: Vec<(
+            dash_sdk::platform::Identifier,
+            Vec<dash_sdk::platform::Identifier>,
+        )>,
         budget: std::time::Duration,
         cancel: &CancellationToken,
     ) -> Result<(), TokenBalanceSyncError> {
+        let deadline = tokio::time::Instant::now() + budget;
+        let store = &self.inner.token_balances;
         let identity_sync = self.inner.pwm.identity_sync();
+        let mut pending = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(TokenBalanceSyncError::Cancelled),
+            guard = tokio::time::timeout_at(deadline, store.sync_lock.lock()) => {
+                guard.map_err(|_| TokenBalanceSyncError::OtherPassStillRunning)?
+            }
+        };
+        let prepare = async {
+            if pending.is_some()
+                && store.reconcile_pending(
+                    &mut pending,
+                    &TokenBalanceStore::read_upstream(identity_sync).await,
+                )
+            {
+                let _ = self
+                    .inner
+                    .task_result_sender
+                    .try_send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                        network: self.inner.network,
+                        domain: crate::backend_task::CacheDomain::Tokens,
+                    }));
+            }
+            for (identity_id, token_ids) in watch_sets {
+                self.register_identity_tokens(identity_id, token_ids).await;
+            }
+            TokenBalanceStore::read_upstream(identity_sync).await
+        };
+        let upstream_before = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(TokenBalanceSyncError::Cancelled),
+            result = tokio::time::timeout_at(deadline, prepare) => {
+                result.map_err(TokenBalanceSyncError::TimedOut)?
+            }
+        };
+        let before = store.load();
+        *pending = Some(PendingTokenBalanceRead {
+            published: Arc::clone(&before),
+            upstream: upstream_before,
+        });
         run_fresh_token_balance_sync(
             || identity_sync.is_syncing(),
             || identity_sync.sync_now(),
             TOKEN_BALANCE_SYNC_POLL,
-            budget,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
             cancel,
         )
         .await?;
-        self.refresh_token_balances().await;
-        Ok(())
-    }
-
-    /// Republish the lock-free token-balance snapshot from the upstream
-    /// `IdentitySyncManager`'s current state. Async — call from a backend
-    /// task, never the egui frame; the frame reads the published snapshot via
-    /// [`Self::token_balances`].
-    ///
-    /// Only identities that have completed at least one sync pass
-    /// (`last_sync_unix != 0`) contribute rows; an unsynced identity is
-    /// omitted so the UI renders it as "syncing", not a zero balance. Upstream
-    /// `IdentityTokenSyncState` / `IdentityTokenSyncInfo` / `TokenAmount` are
-    /// converted to DET types here so they never cross the seam.
-    pub async fn refresh_token_balances(&self) {
-        let all_state = self.inner.pwm.identity_sync().all_state().await;
-        let synced = all_state.into_values().filter_map(|state| {
-            if state.last_sync_unix == 0 {
-                return None;
+        let incoming = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(TokenBalanceSyncError::Cancelled),
+            rows = tokio::time::timeout_at(deadline, TokenBalanceStore::read_upstream(identity_sync)) => {
+                rows.map_err(TokenBalanceSyncError::TimedOut)?
             }
-            let balances = state
-                .tokens
-                .into_iter()
-                .map(|info| (info.token_id, info.balance))
-                .collect::<std::collections::BTreeMap<_, _>>();
-            Some((state.identity_id, balances))
-        });
-        self.inner
-            .token_balances
-            .publish(TokenBalanceStore::snapshot_from(synced));
+        };
+        store.replace(incoming, &before);
+        *pending = None;
+        Ok(())
     }
 
     /// The [`SecretScope`] that addresses the HD seed for `seed_hash`.
@@ -3342,6 +3472,36 @@ fn bip44_account0_xpub<'a>(
         .map(|a| a.account_xpub)
 }
 
+/// Classify upstream's refusal to shield more than the Platform addresses can
+/// fund, stating the planner's own maximum from `preflight` — a plan taken
+/// after the refusal, since the refusal's `available` is the usable balance
+/// with the fee reserve still in it, or the whole account balance when no
+/// address can keep the reserve back. Without a plan there is no trustworthy
+/// maximum, so the refusal keeps the generic envelope; with a plan that can
+/// shield nothing, there is no Max to point to. Pure — unit-testable.
+fn shield_capacity_exceeded_error(
+    source: platform_wallet::error::PlatformWalletError,
+    preflight: Result<
+        platform_wallet::ShieldedShieldPreflight,
+        platform_wallet::error::PlatformWalletError,
+    >,
+) -> TaskError {
+    match preflight {
+        Ok(preflight) if preflight.can_shield && preflight.max_shieldable_credits > 0 => {
+            TaskError::ShieldFromPlatformCapacityExceeded {
+                max_shieldable: preflight.max_shieldable_credits,
+                source: Box::new(source),
+            }
+        }
+        Ok(_) => TaskError::ShieldFromPlatformNothingShieldable {
+            source: Box::new(source),
+        },
+        Err(_) => TaskError::WalletBackend {
+            source: Arc::new(source),
+        },
+    }
+}
+
 /// Map a [`PlatformWalletError`] from any shielded operation to the correct
 /// [`TaskError`] variant.
 ///
@@ -3388,6 +3548,14 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     // Exhaustive match — no `_` arm.
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
+
+        // Only shielding from Platform raises this, and
+        // `WalletBackend::shield_from_balance` intercepts it first through
+        // [`shield_capacity_exceeded_error`]: its `available` is a gross
+        // balance, not a maximum the user can act on.
+        other @ P::PlatformShieldCapacityExceeded { .. } => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
 
         // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
         other @ (P::FinalityTimeout(_)
@@ -3509,7 +3677,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)
-        | P::PlatformShieldCapacityExceeded { .. }
         | P::CorePooledInsufficientFunds { .. }
         | P::InsufficientIdentityCredits { .. }
         | P::IdentityDiscoveryIncomplete { .. }
@@ -4843,6 +5010,113 @@ mod tests {
             decoded.account_xpub.encode(),
             a.encode(),
             "bincode round-trip must preserve the account xpub encoding"
+        );
+    }
+
+    fn shield_preflight(
+        usable_balance_credits: u64,
+        fee_reserve_credits: u64,
+    ) -> platform_wallet::ShieldedShieldPreflight {
+        let max_shieldable_credits = usable_balance_credits.saturating_sub(fee_reserve_credits);
+        platform_wallet::ShieldedShieldPreflight {
+            can_shield: max_shieldable_credits > 0,
+            account_balance_credits: usable_balance_credits,
+            usable_balance_credits,
+            fee_reserve_credits,
+            max_shieldable_credits,
+            reason: None,
+        }
+    }
+
+    /// Upstream's capacity refusal reports the usable balance, which still
+    /// holds the fee reserve. The user is shown the planner's own maximum.
+    #[test]
+    fn a_shield_above_capacity_states_the_planner_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const USABLE: u64 = 300_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: USABLE,
+                required: USABLE + RESERVE,
+            },
+            Ok(shield_preflight(USABLE, RESERVE)),
+        );
+
+        assert!(
+            matches!(
+                mapped,
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable,
+                    ..
+                } if max_shieldable == USABLE - RESERVE
+            ),
+            "{mapped:?}"
+        );
+        let message = mapped.to_string();
+        assert!(
+            message.contains(&crate::model::fee_estimation::format_credits_as_dash(
+                USABLE - RESERVE
+            )),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&crate::model::fee_estimation::format_credits_as_dash(
+                USABLE
+            )),
+            "{message}"
+        );
+    }
+
+    /// When no address can keep the fee reserve back, upstream reports the
+    /// whole account balance, but nothing at all can be shielded — so the
+    /// message says so instead of pointing at a Max of zero.
+    #[test]
+    fn a_shield_with_no_fee_bearing_address_says_nothing_can_be_shielded() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const BALANCE: u64 = 50_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+        let mut preflight = shield_preflight(0, RESERVE);
+        preflight.account_balance_credits = BALANCE;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: BALANCE,
+                required: 1 + RESERVE,
+            },
+            Ok(preflight),
+        );
+
+        assert!(
+            matches!(
+                mapped,
+                TaskError::ShieldFromPlatformNothingShieldable { .. }
+            ),
+            "{mapped:?}"
+        );
+        let message = mapped.to_string();
+        assert!(!message.contains("Max"), "{message}");
+        assert!(message.contains("nothing can be shielded"), "{message}");
+    }
+
+    /// Without a fresh plan there is no trustworthy maximum to state, so the
+    /// refusal falls back to the generic wallet envelope rather than a guess.
+    #[test]
+    fn a_shield_capacity_refusal_without_a_plan_states_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: 7,
+                required: 9,
+            },
+            Err(P::ShieldedNotBound),
+        );
+
+        assert!(
+            matches!(mapped, TaskError::WalletBackend { .. }),
+            "{mapped:?}"
         );
     }
 

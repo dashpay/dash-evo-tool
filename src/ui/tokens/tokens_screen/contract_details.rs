@@ -87,7 +87,12 @@ impl TokensScreen {
                                     action |= internal_action;
                                 }
                                 Err(e) => {
-                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        e.to_string(),
+                                        MessageType::Error,
+                                    )
+                                    .with_details(e);
                                 }
                             }
                         }

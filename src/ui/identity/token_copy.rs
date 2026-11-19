@@ -7,9 +7,6 @@
 use crate::model::amount::Amount;
 use crate::model::datetime;
 
-/// The holder verb, shared with the Send screen and Tokens › My Tokens.
-pub use crate::ui::tokens::transfer_tokens_screen::SEND_LABEL;
-
 // Tab header and controls.
 pub const HEADING: &str = "Tokens";
 pub const SUBTITLE: &str = "Tokens this identity holds or keeps an eye on.";
@@ -26,7 +23,6 @@ pub const FILTER_HINT: &str = "Filter by name or ID";
 pub const SORT_LABEL: &str = "Sort";
 
 // Row actions and menu.
-pub const CLAIM_LABEL: &str = "Claim";
 pub const MENU_LABEL: &str = "•••";
 pub const CHECK_NOW_LABEL: &str = "Check balance now";
 pub const DETAILS_LABEL: &str = "Token details";
@@ -66,8 +62,6 @@ pub const ERROR_REFRESH_FAILED: &str =
     "Token balances couldn't be updated. Check your internet connection and try again.";
 pub const ERROR_REFRESH_SLOW: &str =
     "Updating token balances is taking longer than usual. Try again in a moment.";
-pub const ERROR_CONTRACT_MISSING: &str =
-    "This token's details aren't available yet. Refresh and try again.";
 
 // Detail page.
 pub const BACK_LABEL: &str = "‹ Back to tokens";
@@ -81,8 +75,13 @@ pub const REWARDS_LABEL: &str = "Rewards";
 pub const COPY_LABEL: &str = "Copy";
 pub const CAN_BE_SENT_YES: &str = "Yes, to any identity.";
 pub const CAN_BE_SENT_NO: &str = "No. This token cannot be sent to other identities.";
-pub const REWARDS_OVER_TIME: &str = "Paid out to holders over time. Claim them whenever you like.";
+pub const REWARDS_OVER_TIME: &str = "This token distributes rewards over time.";
 pub const REWARDS_NONE: &str = "This token pays no rewards.";
+pub const RELOAD_DETAILS_LABEL: &str = "Reload token details";
+pub const RELOADING_DETAILS: &str = "Reloading token details…";
+pub const CONTRACT_MISSING: &str = "Reload token details to see who issued this token.";
+pub const RELOAD_DETAILS_FAILED: &str =
+    "Token details couldn't be reloaded. Check your connection and try again.";
 pub const ISSUED_BY_YOU: &str = "Issued by you";
 pub const ISSUED_BY_SOMEONE_ELSE: &str = "Issued by someone else";
 
@@ -148,7 +147,7 @@ pub fn stop_tracking_question(token: &str, identity: &str) -> String {
     format!("Stop tracking {token} for {identity}? You can add it again at any time.")
 }
 
-/// Tooltip of the tab badge and the Home card's claim line.
+/// The Home card's claim line.
 pub fn pending_claims_text(count: usize) -> String {
     if count == 1 {
         "1 token has something to claim.".to_string()
@@ -190,7 +189,6 @@ mod tests {
         FOOTNOTE,
         ERROR_REFRESH_FAILED,
         ERROR_REFRESH_SLOW,
-        ERROR_CONTRACT_MISSING,
         CAN_BE_SENT_YES,
         CAN_BE_SENT_NO,
         REWARDS_OVER_TIME,
@@ -209,8 +207,6 @@ mod tests {
         HIDE_ZERO_LABEL,
         FILTER_HINT,
         SORT_LABEL,
-        SEND_LABEL,
-        CLAIM_LABEL,
         MENU_LABEL,
         CHECK_NOW_LABEL,
         DETAILS_LABEL,

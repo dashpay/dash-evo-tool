@@ -35,6 +35,7 @@ pub mod selected_identity;
 pub mod selected_wallet;
 pub mod settings;
 pub mod single_key;
+pub mod spend_limit;
 pub mod spv_status;
 pub mod token;
 pub mod user_role;

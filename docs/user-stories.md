@@ -490,9 +490,10 @@ As a user, I want to transfer identity credits to a Platform address from the Se
 
 As a user, I want a "Max" button on a Core-to-Core send that fills in the largest amount I can actually send so that I can empty a wallet in one go without the transaction failing on fees.
 
-- "Max" sets the amount to the wallet balance minus the estimated network fee, so the send leaves enough to pay the fee and succeeds.
+- "Max" sets the amount to the largest payment the wallet's send build accepts now: it pools the transparent accounts a send draws on (BIP-44, BIP-32 and DashPay receiving funds, never CoinJoin), leaves out inputs another send is still using, and accounts for the network fee and the most inputs one transaction may carry. Nothing is offered until that amount has been checked.
 - The fee reserved is shown next to the amount.
 - When the balance is too low to cover the fee, "Max" produces no amount and a calm message explains why — never an error path.
+- The send itself is checked by the same build, not by the displayed balance, so an amount Max offered is never refused because that display lags behind.
 
 ### SND-015: Unshield credits to a Platform address [Implemented]
 **Persona:** Jordan
@@ -521,7 +522,7 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 
 - "Max" and amount validation both ask the wallet directly for its actual sendable ceiling, reserving the relevant operation's fee, instead of estimating from the on-screen balance — both derive from the same builder quote, including for an amount typed in by hand rather than produced by the Max button. When the wallet's spendable inputs change after a quote, Max steps back to "Checking the available amount…" and validation waits for a fresh quote rather than accepting a stale ceiling.
 - While the check is running, the amount field shows "Checking the available amount…"; if it fails, "The available amount could not be checked." appears with a "Retry available amount check" button.
-- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
+- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses the send build's own quote and is not covered by this story.
 - The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
 
 ### SND-018: A payment with an unverified outcome resolves itself [Implemented]
@@ -859,9 +860,9 @@ As a user, I want to register a username for one of my identities so that others
 
 - Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
 - When the identity cannot register from this device, the disabled button says why and what helps: add a key when the identity has no suitable key; restore keys in place when an earlier version of the app saved the key; use Restore from Previous Version in Settings when the app was updated but nothing is offered in place; otherwise enter the key under the identity's keys. When the key comes from a wallet that is not on this device, the button is disabled and says to import that wallet again; a wallet that is on this device but locked does not disable it.
-- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · taken · locked for good · request window closed · already requested by this identity · can't check. Only the first three allow continuing. Contested and locked names are never reported as available.
-- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee (read from the network: 0.2 DASH before protocol 14, 0.1 DASH from 14) is never returned, and a lock vote means no one gets the name.
-- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. A low balance offers Top up and returns with the name kept. Availability is re-checked on Pay.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. From protocol 14 a vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
+- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.2 DASH before protocol 14; from 14, 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
+- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. Where the DPNS contract picks the first request for a name, the balance must also hold the network's small name-admission reserve (0.001 DASH) on top of the fees; a balance without it is turned away before anything is paid. A low balance offers Top up and returns with the name kept. Availability and the community vote fee are re-checked on Pay; a fee that changed since it was approved is refused as changed terms.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
 - The registration fee shown is the balance the network needs for both registration steps, which is above what it then charges. An identity that holds less than the total cannot pay and is refused before anything is sent, so the first step is never paid for a registration the second step would turn down.
 - While registration runs, a full-window blocking progress overlay prevents a duplicate submission.
@@ -1348,17 +1349,18 @@ As a token creator, I want to create a token that holders cannot send to other i
 ### TOK-021: See and use my identity's tokens in the Identity Hub [Implemented]
 **Persona:** Alex, Priya
 
-As an identity owner, I want to see the tokens this identity holds — with balances, rewards I can claim, and Send/Claim actions — inside the Identities hub, so that I don't have to find them in a token-first table that also shows issuer actions.
+As an identity owner, I want to see the tokens this identity holds — with balances and information about rewards I can claim — inside the Identities hub, so that I don't have to find them in a token-first table that also shows issuer actions.
 
 - The hub has a Tokens tab (`Home · Contacts · Tokens · Profile`) listing this identity's tracked tokens with the balance in the token's decimals, a short ID, "Issued by you" and "Can't be sent" badges, and one plain-words status line per row: "Checking balance…" before a successful check or while refreshing, "No balance found." when a successful check leaves the balance absent (never shown as zero), "Rewards may be waiting for you.", "You can claim {amount} once." / "Claimed on {date}." for once-per-identity distributions, and "Add a key to this identity to send or claim tokens." for a view-only identity.
-- The tab badge shows the number of pending claims; nothing when zero.
-- Send and Claim open the existing transfer and claim screens pre-scoped to this identity, disabled with a reason until sync finishes or when the identity cannot sign; Send is also disabled when the token cannot be sent, and hidden at zero balance. Taking a once-per-identity claim leaves Claim offered while another distribution still pays this identity. Holder transfers say "Send" everywhere, including the transfer screen and Tokens › My Tokens.
+- The Tokens tab has no count badge. Returning to it from another hub tab opens the token list.
+- The hub token list, detail, and Home card offer no Send or Claim action. Dedicated hub sending and claiming flows are follow-up work; the existing Tokens section retains these operations.
 - No administrative action appears in the hub. "Manage in Tokens screen" shows only when this identity holds an administrative permission under the token's configuration rules — not by role, not for issuers as such.
 - Balances refresh on arrival (older than two minutes) and on demand; a refresh already running elsewhere is never an error. A failed refresh is explained inline with "Try again" while known balances stay on screen with "Showing balances from {time}."
 - A fetched zero renders as a normal row; "Hide tokens with zero balance" (always visible, remembered per device) never hides a row still being checked. Filter and sort appear from eight tokens and are remembered too.
 - Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again", one request). Adding a token (by name or ID) sits in the header; checking a balance now, copying the ID, the detail page and stop tracking (with confirmation) are in the row menu; the Receive dialog explains how a received token appears. Every network read waits for the masternode list and says so.
-- Home shows a Tokens card only when a balance is above zero or a claim is pending. A single pending claim can be taken from the card; "See all tokens" opens the Tokens tab.
-- Clicking a row opens a detail page with the facts in plain words and copyable IDs, Send/Claim, Manage under the same rule (opening Tokens › My Tokens on that token), and Stop tracking.
+- Home shows a Tokens card only when a balance is above zero or a claim is pending. Pending claims are shown as information; "See all tokens" opens the Tokens tab.
+- Clicking a row opens a detail page with the facts in plain words and copyable IDs, Manage under the same rule (opening Tokens › My Tokens on that token), and Stop tracking.
+- The token detail breadcrumb ends with the identity, Tokens, and the token name; Tokens returns to this identity's list. Re-importing a dismissed token by ID or name restores tracking without removing it from the global registry.
 - Token names from the chain are shown without control, direction-override or invisible characters; a name with nothing visible left shows the short token ID.
 - After a failed refresh every unchecked balance says "Couldn't check this balance." with Try again; a check refused because a refresh is already running is retried when it ends.
 - Design: `docs/ai-design/2026-10-28-identity-tokens/`.

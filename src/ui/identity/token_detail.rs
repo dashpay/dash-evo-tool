@@ -7,7 +7,7 @@
 use super::token_copy::*;
 use super::tokens_tab::{
     DETAIL_MONOGRAM_SIZE, RowContext, manage_action, open_stop_tracking_dialog,
-    paint_token_monogram, refresh_block_reason, render_row_actions, render_row_status,
+    paint_token_monogram, refresh_block_reason, render_row_status,
 };
 use crate::app::AppAction;
 use crate::context::AppContext;
@@ -64,10 +64,6 @@ pub fn render(
                 }
                 let status = state.row_status(app_context, row, context.view_only);
                 action |= render_row_status(ui, app_context, row, &status, &context, state);
-                ui.add_space(Spacing::SM);
-                ui.horizontal_wrapped(|ui| {
-                    action |= render_row_actions(ui, app_context, row, &context);
-                });
             });
             ui.add_space(Spacing::MD);
             super::home::card(ui, |ui| {
@@ -86,21 +82,23 @@ pub fn render(
                         copyable(ui, &shorten_id(&contract), &contract);
                         ui.end_row();
 
-                        fact_label(ui, ISSUED_BY_LABEL);
-                        let issuer = row.issuer_id.to_string(Encoding::Base58);
-                        ui.horizontal(|ui| {
-                            ui.label(if row.issued_by_me {
-                                ISSUED_BY_YOU
-                            } else {
-                                ISSUED_BY_SOMEONE_ELSE
+                        if let Some(issuer_id) = row.issuer_id {
+                            fact_label(ui, ISSUED_BY_LABEL);
+                            let issuer = issuer_id.to_string(Encoding::Base58);
+                            ui.horizontal(|ui| {
+                                ui.label(if row.issued_by_me {
+                                    ISSUED_BY_YOU
+                                } else {
+                                    ISSUED_BY_SOMEONE_ELSE
+                                });
+                                ui.label(
+                                    RichText::new(shorten_id(&issuer))
+                                        .monospace()
+                                        .color(DashColors::text_secondary(dark)),
+                                );
                             });
-                            ui.label(
-                                RichText::new(shorten_id(&issuer))
-                                    .monospace()
-                                    .color(DashColors::text_secondary(dark)),
-                            );
-                        });
-                        ui.end_row();
+                            ui.end_row();
+                        }
 
                         fact_label(ui, SMALLEST_UNIT_LABEL);
                         ui.label(row.amount(1).to_string());
@@ -114,11 +112,42 @@ pub fn render(
                         });
                         ui.end_row();
 
-                        fact_label(ui, REWARDS_LABEL);
-                        ui.label(rewards_text(row));
-                        ui.end_row();
+                        if row.issuer_id.is_some()
+                            || row.once_claim.is_some()
+                            || row.recurring_recipient
+                        {
+                            fact_label(ui, REWARDS_LABEL);
+                            ui.label(rewards_text(row));
+                            ui.end_row();
+                        }
                     });
                 ui.add_space(Spacing::MD);
+                if row.issuer_id.is_none() {
+                    let contract_id = row.token.data_contract_id;
+                    let reloading = state.reloading_contract();
+                    ui.label(if reloading == Some(contract_id) {
+                        RELOADING_DETAILS
+                    } else if state.contract_reload_failed(contract_id) {
+                        RELOAD_DETAILS_FAILED
+                    } else {
+                        CONTRACT_MISSING
+                    });
+                    if ui
+                        .add_enabled(
+                            context.synced && reloading.is_none(),
+                            ComponentStyles::secondary_button(RELOAD_DETAILS_LABEL, dark),
+                        )
+                        .disabled_tooltip(if reloading.is_some() {
+                            RELOADING_DETAILS
+                        } else {
+                            DISABLED_NOT_SYNCED
+                        })
+                        .clicked()
+                    {
+                        action |= state.reload_contract_action(app_context, contract_id);
+                    }
+                    ui.add_space(Spacing::SM);
+                }
                 let refreshing = state.refreshing(app_context);
                 ui.horizontal_wrapped(|ui| {
                     if ui
@@ -149,7 +178,7 @@ pub fn render(
 fn rewards_text(row: &TokenRow) -> String {
     match (&row.once_claim, row.claimed_on_date()) {
         (Some(once), None) => once_claim_text(&row.amount(once.amount)),
-        _ if row.recurring_claim => REWARDS_OVER_TIME.to_string(),
+        _ if row.recurring_recipient => REWARDS_OVER_TIME.to_string(),
         (Some(_), Some(date)) => claimed_on_text(&date),
         (None, _) => REWARDS_NONE.to_string(),
     }
@@ -196,10 +225,10 @@ mod tests {
                 token_position: 0,
                 available_actions: IdentityTokenAvailableActions::default(),
             },
-            issuer_id: Identifier::from([4; 32]),
+            issuer_id: Some(Identifier::from([4; 32])),
             issued_by_me: false,
             once_claim: None,
-            recurring_claim: false,
+            recurring_recipient: false,
             has_admin_permission: false,
             check_failed: false,
         }
@@ -225,14 +254,14 @@ mod tests {
             claimed_at_ms: Some(1_700_000_000_000),
         });
         assert!(rewards_text(&row).starts_with("Claimed on "));
-        row.recurring_claim = true;
+        row.recurring_recipient = true;
         assert_eq!(
             rewards_text(&row),
             REWARDS_OVER_TIME,
             "a taken once claim never hides rewards still paid"
         );
         let mut perpetual = self::row();
-        perpetual.recurring_claim = true;
+        perpetual.recurring_recipient = true;
         assert_eq!(rewards_text(&perpetual), REWARDS_OVER_TIME);
     }
 }

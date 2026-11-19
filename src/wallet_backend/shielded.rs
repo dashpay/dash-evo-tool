@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, SecretPlaintext, WalletBackend,
-    map_shielded_op_error,
+    map_shielded_op_error, shield_capacity_exceeded_error,
 };
 
 /// Borrow the 64-byte HD seed from a resolved secret session for a shielded
@@ -158,10 +158,16 @@ impl WalletBackend {
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        let _spend = self.begin_core_spend(seed_hash);
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -203,7 +209,30 @@ impl WalletBackend {
         payment_account: u32,
         amount: u64,
     ) -> Result<(), TaskError> {
+        // No shield Max is quoted while this runs. `ShieldFromBalance` holds
+        // its own guard on through the sync pass that reads the spend back.
+        let _shielding = self.begin_platform_shield(seed_hash);
         let coordinator = self.shielded_coordinator_arc().await?;
+        // The planner's verdict, before any prompt: an amount above its
+        // maximum is refused with the maximum it can shield. A failed read
+        // leaves the verdict to the planner inside the build.
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        if let Ok(preflight) = wallet.shielded_shield_preflight(payment_account).await {
+            let max_shieldable = if preflight.can_shield {
+                preflight.max_shieldable_credits
+            } else {
+                0
+            };
+            if amount > max_shieldable {
+                // The refusal the planner itself would give for this amount.
+                let source =
+                    platform_wallet::error::PlatformWalletError::PlatformShieldCapacityExceeded {
+                        available: preflight.usable_balance_credits,
+                        required: amount.saturating_add(preflight.fee_reserve_credits),
+                    };
+                return Err(shield_capacity_exceeded_error(source, Ok(preflight)));
+            }
+        }
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -213,7 +242,7 @@ impl WalletBackend {
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-                wallet
+                match wallet
                     .shielded_shield_from_account(
                         &coordinator,
                         shielded_account,
@@ -223,7 +252,20 @@ impl WalletBackend {
                         &prover,
                     )
                     .await
-                    .map_err(map_shielded_op_error)
+                {
+                    Ok(()) => Ok(()),
+                    // The refusal's own figure includes the fee reserve; a
+                    // fresh plan states the maximum the user can act on.
+                    Err(
+                        source @ platform_wallet::error::PlatformWalletError::PlatformShieldCapacityExceeded {
+                            ..
+                        },
+                    ) => Err(shield_capacity_exceeded_error(
+                        source,
+                        wallet.shielded_shield_preflight(payment_account).await,
+                    )),
+                    Err(source) => Err(map_shielded_op_error(source)),
+                }
             })
             .await
     }
@@ -407,6 +449,37 @@ impl WalletBackend {
     /// was never configured (empty coordinator → empty pass).
     pub async fn sync_shielded_now(&self, force: bool) {
         self.inner.pwm.shielded_sync_arc().sync_now(force).await;
+    }
+
+    /// Run a Platform-address sync pass after an operation spent
+    /// Platform-address credits, waiting up to `wait` for it.
+    ///
+    /// Upstream's shield drops the proven post-state of its input addresses,
+    /// so until a pass runs, both the shield planner and DET's per-address
+    /// balances still hold the spent credits, and a shield Max quoted from
+    /// them is refused. The pass refreshes upstream's balances and fires the
+    /// push that rewrites DET's, which moves the send form's quote key.
+    ///
+    /// Best-effort: the pass runs on its own thread, so an expired wait ends
+    /// only the wait, and nothing here can fail the spend. While another pass
+    /// is in flight this one is skipped; the background loop's next pass
+    /// catches up.
+    pub(crate) async fn sync_platform_addresses_after_spend(&self, wait: std::time::Duration) {
+        let coordinator = self.inner.pwm.platform_address_sync_arc();
+        // rustc cannot prove the pass's future `Send` (rust#100013), so it
+        // runs the way upstream's own loop runs it: `block_on` on a thread
+        // of its own.
+        let runtime = tokio::runtime::Handle::current();
+        let pass = tokio::task::spawn_blocking(move || runtime.block_on(coordinator.sync_now()));
+        match tokio::time::timeout(wait, pass).await {
+            Ok(Ok(_summary)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(?error, "Platform-address sync after a spend did not finish");
+            }
+            Err(_elapsed) => {
+                tracing::debug!("Platform-address sync after a spend is still running");
+            }
+        }
     }
 }
 

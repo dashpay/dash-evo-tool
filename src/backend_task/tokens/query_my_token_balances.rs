@@ -285,13 +285,12 @@ impl AppContext {
         watch_sets: Vec<(Identifier, Vec<Identifier>)>,
     ) -> Result<(), TaskError> {
         let backend = self.wallet_backend()?;
-        for (identity_id, token_ids) in watch_sets {
-            backend
-                .register_identity_tokens(identity_id, token_ids)
-                .await;
-        }
         backend
-            .sync_token_balances_now(TOKEN_BALANCE_SYNC_BUDGET, &self.subtasks.cancellation_token)
+            .sync_token_balances_now(
+                watch_sets,
+                TOKEN_BALANCE_SYNC_BUDGET,
+                &self.subtasks.cancellation_token,
+            )
             .await
             .map_err(token_balance_sync_task_error)
     }

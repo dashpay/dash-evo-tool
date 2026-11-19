@@ -17,7 +17,7 @@ use crate::ui::identity::token_copy::{
     ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT, SEE_ALL_TOKENS_LABEL, TOKENS_CARD_HEADING,
     can_claim_once_text, pending_claims_text,
 };
-use crate::ui::identity::tokens_tab::{RowContext, render_claim_button, render_failure};
+use crate::ui::identity::tokens_tab::render_failure;
 pub use crate::ui::state::identity_home::HomeState;
 use crate::ui::state::identity_tokens::{
     IdentityTokensState, TokenRow, home_card_shows, sort_rows,
@@ -394,20 +394,7 @@ fn render_main_column(
     (action, outcome)
 }
 
-/// The Tokens card: a glance at what the identity holds and can claim. Shown
-/// only when there is something to say. A single pending claim can be taken
-/// right here; more than one is listed on the Tokens tab. A failed balance
-/// refresh shows above it, as it may be why there is no card, unless the
-/// identity has no token the failure could be hiding.
-/// What Home says about the one token with something to claim: the
-/// once-per-identity amount only while that claim is still open.
-fn single_claim_text(row: &TokenRow) -> String {
-    match &row.once_claim {
-        Some(once) if once.claimed_at_ms.is_none() => can_claim_once_text(&row.amount(once.amount)),
-        _ => pending_claims_text(1),
-    }
-}
-
+/// The Tokens card: balances and outstanding once-per-identity claims.
 fn render_tokens_card(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -417,7 +404,7 @@ fn render_tokens_card(
     let rows = tokens.rows(app_context, identity);
     // Shown whether or not the card is: unread tokens may be why it is not.
     super::tokens_tab::render_row_load_failure(ui, tokens);
-    let mut action = if rows.is_empty() {
+    let action = if rows.is_empty() {
         AppAction::None
     } else {
         render_failure(ui, app_context, tokens)
@@ -429,9 +416,11 @@ fn render_tokens_card(
     let dark = ui.visuals().dark_mode;
     let mut held: Vec<&TokenRow> = rows.iter().filter(|row| row.holds_some()).collect();
     sort_rows(&mut held, TokenListSort::BalanceHighToLow);
-    let claimable: Vec<&TokenRow> = rows.iter().filter(|row| row.claim_available()).collect();
+    let claimable: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.open_once_claim().map(|claim| (row, claim)))
+        .collect();
     let pending_claims = claimable.len();
-    let context = RowContext::new(app_context, identity);
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.strong(TOKENS_CARD_HEADING);
@@ -451,11 +440,10 @@ fn render_tokens_card(
                 });
             });
         }
-        if let [only] = claimable.as_slice() {
+        if let [(row, claim)] = claimable.as_slice() {
             ui.horizontal_wrapped(|ui| {
-                let text = single_claim_text(only);
+                let text = can_claim_once_text(&row.amount(claim.amount));
                 ui.label(RichText::new(text).color(DashColors::success_color(dark)));
-                action |= render_claim_button(ui, app_context, only, &context);
             });
         } else if pending_claims > 1 {
             ui.label(
@@ -657,64 +645,9 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::token::{
-        IdentityTokenAvailableActions, IdentityTokenMaybeBalanceWithActions,
-    };
-    use crate::ui::state::identity_tokens::OnceClaim;
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::data_contract::TokenConfiguration;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
-
-    fn row(once_claim: Option<OnceClaim>, recurring_claim: bool) -> TokenRow {
-        TokenRow {
-            token: IdentityTokenMaybeBalanceWithActions {
-                token_id: Identifier::from([2; 32]),
-                token_alias: "AIR".into(),
-                token_config: TokenConfiguration::V0(
-                    TokenConfigurationV0::default_most_restrictive(),
-                ),
-                identity_id: Identifier::from([1; 32]),
-                identity_name: None,
-                balance: Some(5),
-                estimated_unclaimed_rewards: None,
-                data_contract_id: Identifier::from([3; 32]),
-                token_position: 0,
-                available_actions: IdentityTokenAvailableActions::default(),
-            },
-            issuer_id: Identifier::from([4; 32]),
-            issued_by_me: false,
-            once_claim,
-            recurring_claim,
-            has_admin_permission: false,
-            check_failed: false,
-        }
-    }
-
-    /// A taken airdrop beside ongoing rewards is not offered again.
-    #[test]
-    fn a_taken_once_claim_is_not_advertised_on_home() {
-        let open = row(
-            Some(OnceClaim {
-                amount: 100,
-                claimed_at_ms: None,
-            }),
-            true,
-        );
-        assert_eq!(
-            single_claim_text(&open),
-            can_claim_once_text(&open.amount(100))
-        );
-        let taken = row(
-            Some(OnceClaim {
-                amount: 100,
-                claimed_at_ms: Some(1),
-            }),
-            true,
-        );
-        assert_eq!(single_claim_text(&taken), pending_claims_text(1));
-    }
 
     /// Unreadable saved tokens are explained on Home, though no card shows.
     #[test]

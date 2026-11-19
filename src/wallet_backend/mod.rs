@@ -4126,7 +4126,7 @@ mod tests {
             );
             assert_eq!(
                 mapped.to_string(),
-                "This amount needs 0.0025 DASH that is still waiting to be confirmed. Wait a few minutes for the confirmation, then try again."
+                "This amount would use 0.0025 DASH of your funds that are still waiting to be confirmed. Wait a few minutes for the confirmation, then try again."
             );
         }
     }

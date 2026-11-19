@@ -805,16 +805,28 @@ mod tests {
                 id: Identifier::new([6; 32]),
             },
         );
-        for (key, warning) in [
-            (key.with_limits(Some(1_000_000), None), "spending limit"),
-            (group_key, "contract group"),
+        let unlimited_key = auth_key(2, SecurityLevel::CRITICAL);
+        for (key, warning, other_key) in [
+            (
+                key.clone().with_limits(Some(1_000_000), None),
+                "spending limit",
+                None,
+            ),
+            (group_key, "contract group", None),
+            (
+                key.with_limits(None, Some(1)),
+                "expired",
+                Some(unlimited_key.clone()),
+            ),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let context = test_app_context(dir.path());
+            let mut local_keys = vec![key.clone()];
+            local_keys.extend(other_key);
             let info = IdentityTokenInfo {
                 token_id: Identifier::from([4; 32]),
                 token_alias: "Test token".into(),
-                identity: identity_holding(std::slice::from_ref(&key)),
+                identity: identity_holding(&local_keys),
                 data_contract: QualifiedContract {
                     contract: context.dpns_contract().as_ref().clone(),
                     alias: None,
@@ -825,11 +837,12 @@ mod tests {
             let mut screen = MintTokensScreen::new(info, &context);
             screen.common.show_advanced_options = true;
             let label = format_key_label(&key);
-            let combo = if screen.common.selected_key.as_ref().is_some() {
-                &label
-            } else {
-                "Select Key…"
-            };
+            let combo = screen
+                .common
+                .selected_key
+                .as_ref()
+                .map(format_key_label)
+                .unwrap_or_else(|| "Select Key…".into());
             let mut harness = egui_kittest::Harness::builder()
                 .with_size(egui::vec2(1280.0, 900.0))
                 .build_ui_state(
@@ -839,14 +852,24 @@ mod tests {
                     screen,
                 );
             harness.run();
-            harness.get_by_value(combo).click();
+            harness.get_by_value(&combo).click();
             harness.run();
             harness
                 .get_by_label(&format!("{label} ({warning})"))
                 .click();
             harness.run();
 
-            let unlimited_key = auth_key(2, SecurityLevel::CRITICAL);
+            assert_eq!(
+                harness
+                    .state()
+                    .common
+                    .selected_key
+                    .as_ref()
+                    .map(|key| key.id()),
+                Some(1),
+                "{warning}: chosen explicitly"
+            );
+
             store_identity_with_wallet_key(
                 &context,
                 identity_holding(&[key.clone(), unlimited_key.clone()]),
@@ -860,14 +883,15 @@ mod tests {
                     .selected_key
                     .as_ref()
                     .map(|key| key.id()),
-                Some(1)
+                Some(1),
+                "{warning}: kept after refresh"
             );
 
             let mut disabled = key;
             disabled.set_disabled_at(1);
             store_identity_with_wallet_key(
                 &context,
-                identity_holding(&[disabled, unlimited_key]),
+                identity_holding(&[disabled, unlimited_key.clone()]),
                 2,
             );
             harness.state_mut().refresh();

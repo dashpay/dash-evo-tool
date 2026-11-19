@@ -18,12 +18,14 @@ pub mod view_token_claims_screen;
 
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::identity_key_usability::{KeyCaveat, SigningScope, key_caveats, now_ms};
+use crate::model::identity_key_usability::{SigningScope, key_caveats, now_ms};
 use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
-use crate::ui::helpers::{TransactionType, add_key_chooser_with_selection};
+use crate::ui::helpers::{
+    TransactionType, add_key_chooser_with_selection, offered_for_manual_choice,
+};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -142,9 +144,8 @@ impl TokenSigningKey {
                 .as_ref()
                 .and_then(|key| identity.current_public_key(key))
             && identity.holds_obtainable_key(live)
-            && !key_caveats(live, scope, now_ms())
-                .iter()
-                .any(KeyCaveat::blocks_signing)
+            && !live.is_disabled()
+            && offered_for_manual_choice(&key_caveats(live, scope, now_ms()))
             && (app_context.user_role().at_least(UserRole::Developer)
                 || (transaction_type
                     .allowed_purposes()

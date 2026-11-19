@@ -696,12 +696,9 @@ fn render_key_combo(
     picked
 }
 
-/// Whether a key with `caveats` is offered for the user to pick: every key
-/// but one whose bounds tie it to another contract or document type, which
-/// Platform is certain to refuse here. Contract create/update also excludes
-/// expired keys and, unless protocol 14 is verified, every key with a budget
-/// or expiry. Other actions retain their warnings.
-fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
+/// Whether the key's caveats permit an explicit choice. Callers also
+/// enforce disabled-key and operation-specific signing rules.
+pub(crate) fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
     !caveats.iter().any(|caveat| {
         matches!(
             caveat,

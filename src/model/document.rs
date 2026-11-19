@@ -144,7 +144,7 @@ mod tests {
     /// immutable (`contactRequest`) DashPay document type.
     #[test]
     fn factory_document_yields_the_hand_built_create_transition() {
-        for protocol_version in [13, 14] {
+        for protocol_version in [14, 15] {
             let platform_version = PlatformVersion::get(protocol_version).expect("version");
             let contract = load_system_data_contract(SystemDataContract::Dashpay, platform_version)
                 .expect("dashpay contract");

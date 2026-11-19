@@ -15,6 +15,7 @@ mod identity_db;
 mod identity_names;
 #[cfg(test)]
 pub(crate) mod lock_probe;
+mod protocol;
 #[cfg(test)]
 pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
@@ -1102,8 +1103,8 @@ impl AppContext {
         }
     }
 
-    /// The platform version the SDK builds, validates and signs with: the
-    /// network's minimum until a proven response ratchets it to the version
+    /// The platform version the SDK builds, validates and signs with:
+    /// DET's minimum until a proven response ratchets it to the version
     /// the network runs.
     pub fn platform_version(&self) -> &'static PlatformVersion {
         self.sdk.load().version()
@@ -1155,14 +1156,17 @@ impl AppContext {
     /// version transitions are built at, and whether the proven version is
     /// newer than any this build defines.
     pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
-        let sdk = self.sdk.load();
+        self.protocol_version_info_for(&self.sdk.load())
+    }
+
+    pub(crate) fn protocol_version_info_for(&self, sdk: &Sdk) -> ProtocolVersionInfo {
         let info = sdk.protocol_version_info();
         // TEST SEAM: compiled only into `cargo test` builds; every other build
         // returns the SDK's answer unchanged.
         // TODO(upstream): drop once the SDK offers a mock seam for a verified
         // version (https://github.com/dashpay/platform/issues/5622).
         #[cfg(test)]
-        let info = self.proven_protocol_version_for_tests.apply(&sdk, info);
+        let info = self.proven_protocol_version_for_tests.apply(sdk, info);
         info
     }
 
@@ -1420,7 +1424,7 @@ impl AppContext {
         if self.wallet_backend.load().is_some() {
             return Ok(());
         }
-        let sdk = std::sync::Arc::new(self.sdk.load().as_ref().clone());
+        let sdk = self.sdk.load_full();
         let backend = WalletBackend::new(
             self,
             sdk,
@@ -2114,15 +2118,10 @@ mod tests {
         }
     }
 
-    /// Before any proven response, a context builds, validates and signs at
-    /// the lowest protocol version its network still runs (upstream's
-    /// per-network minimum): 13 on mainnet, not an older table.
+    /// Every network starts at DET's minimum, without claiming it was verified.
     #[test]
-    fn platform_version_starts_at_the_network_minimum() {
+    fn minimum_protocol_14_seeds_every_network() {
         use crate::context::test_support::test_app_context_for_network;
-        use dash_sdk::sdk::min_protocol_version;
-
-        assert_eq!(min_protocol_version(Network::Mainnet), 13);
         for network in [
             Network::Mainnet,
             Network::Testnet,
@@ -2131,16 +2130,13 @@ mod tests {
         ] {
             let tmp = tempfile::tempdir().expect("tempdir");
             let ctx = test_app_context_for_network(tmp.path(), network);
-            assert_eq!(
-                ctx.platform_version().protocol_version,
-                min_protocol_version(network),
-                "{network:?}"
-            );
+            assert_eq!(ctx.platform_version().protocol_version, 14, "{network:?}");
+            assert_eq!(ctx.protocol_version_info().verified_version, None);
         }
     }
 
-    /// Once the SDK runs at protocol 14, the context builds with 14 and serves
-    /// the system contracts protocol 14 defines — not the ones loaded at boot.
+    /// Once the SDK runs at protocol 15, the context builds with 15 and serves
+    /// the system contracts protocol 15 defines — not the ones loaded at boot.
     #[test]
     fn platform_version_and_system_contracts_follow_the_sdk() {
         use crate::context::test_support::test_app_context_for_network;
@@ -2148,17 +2144,21 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
-        let v14 = PlatformVersion::get(14).expect("protocol 14");
+        let v15 = PlatformVersion::get(15).expect("protocol 15");
         let boot_dashpay = ctx.dashpay_contract();
-        assert_ne!(
+        assert_eq!(
             *boot_dashpay,
-            load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap(),
-            "precondition: protocol 14 redefines the DashPay contract"
+            load_system_data_contract(
+                SystemDataContract::Dashpay,
+                crate::sdk_wrapper::MIN_PLATFORM_VERSION
+            )
+            .unwrap(),
+            "boot uses DET minimum"
         );
 
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
 
-        assert_eq!(ctx.platform_version().protocol_version, 14);
+        assert_eq!(ctx.platform_version().protocol_version, 15);
         for (served, contract) in [
             (ctx.dashpay_contract(), SystemDataContract::Dashpay),
             (ctx.withdraws_contract(), SystemDataContract::Withdrawals),
@@ -2172,7 +2172,7 @@ mod tests {
                 SystemDataContract::KeywordSearch,
             ),
         ] {
-            assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
+            assert_eq!(*served, load_system_data_contract(contract, v15).unwrap());
         }
         assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
     }
@@ -2187,9 +2187,9 @@ mod tests {
         let ctx = test_app_context(temp_dir.path());
         assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
-        prove_protocol_version(&ctx, 13);
+        prove_protocol_version(&ctx, 14);
         let info = ctx.protocol_version_info();
-        assert_eq!(info.verified_version, Some(13));
+        assert_eq!(info.verified_version, Some(14));
         assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
@@ -2225,7 +2225,7 @@ mod tests {
 
         let newest = PlatformVersion::latest().protocol_version;
         for network in [Network::Mainnet, Network::Testnet] {
-            let minimum = dash_sdk::sdk::min_protocol_version(network);
+            let minimum = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version;
             let pinned = contest_durations(
                 network,
                 PlatformVersion::get(minimum).expect("network minimum"),

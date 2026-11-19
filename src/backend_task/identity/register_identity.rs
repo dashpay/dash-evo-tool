@@ -39,7 +39,8 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = self.sdk.load_full();
+        self.ensure_sdk_write_supported(&sdk)?;
 
         let public_keys = keys.to_public_keys_map(self.platform_version())?;
         let key_count = public_keys.len();
@@ -280,7 +281,8 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = self.sdk.load_full();
+        self.ensure_sdk_write_supported(&sdk)?;
 
         let public_keys = keys.to_public_keys_map(sdk.version())?;
 

@@ -8700,12 +8700,12 @@ mod tests {
     /// After the app's own SDK has been rebuilt it can be on a newer protocol
     /// version than the wallet backend, which runs the transfer and sizes its
     /// funding. Max and the check before sending must use the backend's fee
-    /// (212 852 duffs under protocol 13, not the 164 140 of protocol 14), or
+    /// on the backend's supported protocol version, or
     /// Max proposes an amount whose funding the wallet cannot build.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn core_to_shielded_max_fits_the_ceiling_when_the_sdks_differ() {
         const CEILING_DUFFS: u64 = 10_000_000;
-        const BACKEND_FEE_DUFFS: u64 = 212_852;
+        const BACKEND_FEE_DUFFS: u64 = 164_140;
 
         let (mut screen, _temp_dir) = send_screen();
         let (sender, _receiver) = tokio::sync::mpsc::channel(32);
@@ -8717,10 +8717,10 @@ mod tests {
             ))
             .await
             .expect("wallet backend");
-        let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
+        let pv15 = dash_sdk::dpp::version::PlatformVersion::get(15).expect("PV15");
         screen.app_context.sdk.store(Arc::new(
             dash_sdk::SdkBuilder::new_mock()
-                .with_version(pv14)
+                .with_version(pv15)
                 .build()
                 .expect("mock sdk"),
         ));

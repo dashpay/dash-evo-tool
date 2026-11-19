@@ -224,32 +224,34 @@ pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) 
 // mock expectations raise only the stored version, never the verified one
 // (https://github.com/dashpay/platform/issues/5622).
 #[derive(Debug, Default)]
-pub(crate) struct ProvenProtocolVersionOverride(std::sync::Mutex<Option<(Arc<Sdk>, u32)>>);
+pub(crate) struct ProvenProtocolVersionOverride(std::sync::Mutex<Vec<(Arc<Sdk>, u32)>>);
 
 impl ProvenProtocolVersionOverride {
     /// Record `protocol_version` as proven for `sdk`. Only raises it, as the
     /// network does.
     fn prove(&self, sdk: Arc<Sdk>, protocol_version: u32) {
-        let mut slot = self.0.lock().expect("override lock");
-        let proven = match slot.as_ref() {
-            Some((current, proven)) if Arc::ptr_eq(current, &sdk) => {
-                (*proven).max(protocol_version)
-            }
-            _ => protocol_version,
-        };
-        *slot = Some((sdk, proven));
+        let mut slots = self.0.lock().expect("override lock");
+        if let Some((_, proven)) = slots
+            .iter_mut()
+            .find(|(current, _)| Arc::ptr_eq(current, &sdk))
+        {
+            *proven = (*proven).max(protocol_version);
+        } else {
+            slots.push((sdk, protocol_version));
+        }
     }
 
     /// `info` with the version proven for `sdk` folded in, as upstream
     /// reports a version it verified itself.
     pub(crate) fn apply(
         &self,
-        sdk: &Arc<Sdk>,
+        sdk: &Sdk,
         mut info: dash_sdk::ProtocolVersionInfo,
     ) -> dash_sdk::ProtocolVersionInfo {
-        let slot = self.0.lock().expect("override lock");
-        if let Some((current, proven)) = slot.as_ref()
-            && Arc::ptr_eq(current, sdk)
+        let slots = self.0.lock().expect("override lock");
+        if let Some((_, proven)) = slots
+            .iter()
+            .find(|(current, _)| std::ptr::eq(current.as_ref(), sdk))
         {
             let verified = info.verified_version.unwrap_or(0).max(*proven);
             info.verified_version = Some(verified);
@@ -270,9 +272,18 @@ pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
         .prove(ctx.sdk.load_full(), protocol_version);
 }
 
+/// Record a verified observation for a retained connection in an offline test.
+pub(crate) fn prove_sdk_protocol_version(ctx: &AppContext, sdk: Arc<Sdk>, protocol_version: u32) {
+    ctx.proven_protocol_version_for_tests
+        .prove(sdk, protocol_version);
+}
+
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
-    let sdk = Sdk::new_mock();
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(crate::sdk_wrapper::MIN_PLATFORM_VERSION)
+        .build()
+        .expect("mock sdk");
     let provider = ctx
         .spv_context_provider
         .read()

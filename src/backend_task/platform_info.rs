@@ -600,6 +600,9 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
+        if let Err(error) = self.refresh_retained_wallet_protocol(sdk).await {
+            tracing::warn!(%error, "Retained wallet connection could not verify the network version");
+        }
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
@@ -1004,17 +1007,6 @@ impl AppContext {
 
 /// The `status` values a finished withdrawal can carry, as the completed
 /// withdrawal queries send them.
-///
-/// `FAILED` (5) exists only in the v2 withdrawals schema (protocol 14); the v1
-/// schema of a protocol 13 network stops at `EXPIRED` (4). Sending it at
-/// protocol 13 is still correct and deliberate: a JSON-schema `enum` constrains
-/// documents being created, not query values. Nothing in the query path checks
-/// membership — the `status` property is typed as a plain integer, and
-/// `DocumentPropertyType::encode_value_for_tree_keys` encodes any value that
-/// converts to it. So the out-of-enum member encodes, matches nothing on a
-/// protocol 13 network (which cannot produce a failed withdrawal), and leaves
-/// `COMPLETE` and `EXPIRED` matching as usual, while the same query stays
-/// complete on protocol 14.
 fn completed_withdrawal_statuses() -> Vec<Value> {
     vec![
         Value::U8(WithdrawalStatus::COMPLETE as u8),
@@ -1039,16 +1031,13 @@ mod tests {
         })
     }
 
-    /// The completed-withdrawal filter keeps `FAILED` even though the protocol
-    /// 13 schema stops at `EXPIRED`: a schema `enum` constrains documents, not
-    /// query values, and every status encodes into the `status` property's key
-    /// representation at both schema versions.
+    /// Terminal statuses encode for queries on every supported version.
     #[test]
-    fn completed_withdrawal_filter_encodes_at_both_schema_versions() {
+    fn completed_withdrawal_filter_encodes_at_supported_versions() {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
         use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
         use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
-        use dash_sdk::dpp::version::v13::PLATFORM_V13;
+        use dash_sdk::dpp::version::v14::PLATFORM_V14;
 
         assert_eq!(
             completed_withdrawal_statuses(),
@@ -1068,23 +1057,19 @@ mod tests {
                 .clone()
         };
 
-        // v1 (protocol 13) and v2 (protocol 14) differ only in the enum's last
-        // member, so the property type is identical.
-        let v13 = status_property(&PLATFORM_V13);
+        let v14 = status_property(&PLATFORM_V14);
         let latest = status_property(PlatformVersion::latest());
         assert_eq!(
-            v13.property_type, latest.property_type,
+            v14.property_type, latest.property_type,
             "the status property type must not differ across schema versions"
         );
 
-        // FAILED is outside the v1 enum, yet encodes for the query exactly like
-        // the statuses that are inside it.
         for status in completed_withdrawal_statuses() {
             assert!(
-                v13.property_type
+                v14.property_type
                     .encode_value_for_tree_keys(&status)
                     .is_ok(),
-                "status {status:?} must encode against the protocol 13 schema"
+                "status {status:?} must encode against the protocol 14 schema"
             );
         }
     }
@@ -1106,8 +1091,8 @@ mod tests {
     }
 
     /// The limit is whatever the network's own protocol version says it is,
-    /// never a version fixed in this build: protocol 13 reports a flat 2000
-    /// Dash whatever the total, protocol 14 derives it from that total (15% of
+    /// never a version fixed in this build. Supported versions derive it from
+    /// the total (15% of
     /// it, `SYSTEM_LIMITS_V4.daily_withdrawal_limit_percent`, never below the
     /// 500 Dash maximum withdrawal).
     #[test]
@@ -1115,13 +1100,8 @@ mod tests {
         // `dash_to_credits!` stringifies its argument and parses the digits, so
         // a `1_000_000` written with separators silently reads as no credits.
         let total = dash_to_credits!(1000000);
-        let v13 = PlatformVersion::get(13).expect("protocol 13");
         let v14 = PlatformVersion::get(14).expect("protocol 14");
 
-        assert_eq!(
-            network_daily_withdrawal_limit(total, v13).expect("limit"),
-            dash_to_credits!(2000)
-        );
         assert_eq!(
             network_daily_withdrawal_limit(total, v14).expect("limit"),
             dash_to_credits!(150000)
@@ -1259,7 +1239,7 @@ mod tests {
     /// which of the two the app is charging by.
     #[test]
     fn unavailable_epoch_never_presents_the_fee_multiplier_as_a_network_reading() {
-        for protocol_version in [None, Some(12)] {
+        for protocol_version in [None, Some(14)] {
             let formatted = format_unavailable_current_epoch_info(protocol_version, 1500);
             assert!(
                 formatted

@@ -262,7 +262,7 @@ mod data_contract_tests {
     fn system_contracts_resolve_at_the_requested_platform_version() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        for protocol_version in [13, 14] {
+        for protocol_version in [14, 15] {
             let platform_version = PlatformVersion::get(protocol_version).expect("known version");
             let expected =
                 load_system_data_contract(SystemDataContract::Dashpay, platform_version).unwrap();

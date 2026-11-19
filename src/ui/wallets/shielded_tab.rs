@@ -51,7 +51,7 @@ pub const SHIELDED_TAB_SKIPPED_LABEL: &str =
 /// Shown in place of the Shield / Send / Unshield controls when the connected
 /// network does not yet support shielded state transitions. Viewing balance,
 /// address, and notes stays available.
-pub const SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL: &str = "Shielded sending is not available on this network yet. You can still view your shielded balance and receive address.";
+pub const SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL: &str = "Sending is paused until the network is verified and supported. Wait for syncing to finish, or choose another network in Settings.";
 /// Shown in place of the Shield / Send / Unshield controls when the connected
 /// network supports shielded state transitions but the user's interface mode
 /// does not unlock them yet. Viewing balance, address, and notes stays
@@ -719,7 +719,7 @@ impl ShieldedTabView {
             }
             Some(check) => {
                 let label = match check {
-                    Check::Capability(_) => SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL,
+                    Check::SupportedNetwork => SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL,
                     Check::MinRole(_) | Check::Experimental(_) => {
                         SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL
                     }

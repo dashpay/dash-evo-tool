@@ -2,6 +2,16 @@
 
 `det-cli` is the command-line interface for Dash Evo Tool. Run wallet and platform commands from the terminal — no GUI needed.
 
+## Network compatibility
+
+The CLI has the same minimum as the GUI: Dash Platform protocol 14. Platform
+writes require a verified, supported network version. On an older network,
+wait for its upgrade or connect to a supported network. Reads and local wallet
+management remain available. An unconfirmed connection must finish syncing
+before a Platform write; a network newer than this build requires updating DET.
+If this warning persists after changing endpoints to a supported network, restart
+DET to discard the previous connection's verified version.
+
 ## Build
 
 ```bash

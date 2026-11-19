@@ -62,6 +62,7 @@ pub mod grovestark;
 pub mod identity;
 pub mod migration;
 pub mod platform_info;
+mod protocol;
 pub mod register_contract;
 pub mod shielded;
 pub mod system_task;
@@ -1621,6 +1622,8 @@ impl AppContext {
         sender: SenderAsync<TaskResult>,
         sdk: &dash_sdk::Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.ensure_platform_task_supported(&task, sdk)?;
+
         // Refuse a shielded fund movement while shielded operations are
         // unavailable BEFORE `ensure_wallet_backend` runs. That bootstrap does
         // real work for any wallet-touching task — building the backend and, for
@@ -1717,6 +1720,8 @@ impl AppContext {
                 None => Err(TaskError::WalletStorageNotReady),
             };
         }
+
+        self.ensure_platform_task_supported(&task, sdk)?;
 
         match task {
             BackendTask::ContractTask(contract_task) => {
@@ -2843,13 +2848,13 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
-        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+        use crate::sdk_wrapper::MIN_PLATFORM_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         crate::context::test_support::prove_protocol_version(
             &ctx,
-            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+            MIN_PLATFORM_VERSION.protocol_version,
         );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -3178,6 +3183,7 @@ mod tests {
         ];
         for (index, task) in paid.iter().enumerate() {
             assert_eq!(task.fee_payer(), Some(payer_id), "paid task #{index}");
+            assert!(task.changes_platform_state(), "paid task #{index}");
         }
 
         let free = [
@@ -3223,6 +3229,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let context = crate::context::test_support::test_app_context(dir.path());
+        crate::context::test_support::prove_protocol_version(&context, 14);
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, context.egui_ctx().clone());
         context
@@ -3504,6 +3511,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
+        crate::context::test_support::prove_protocol_version(&ctx, 14);
         ctx.migration_status().set_state(MigrationState::Running {
             step: MigrationStep::Identities,
         });
@@ -3647,5 +3655,80 @@ mod tests {
             .generated_receive_address_wallet(),
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod minimum_protocol_14_tests {
+    use super::*;
+    use crate::context::test_support::{prove_protocol_version, test_app_context};
+
+    #[tokio::test]
+    async fn minimum_protocol_14_refuses_platform_funding_before_wallet_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        prove_protocol_version(&ctx, 13);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let task = BackendTask::WalletTask(WalletTask::TransferPlatformCredits {
+            seed_hash: [0; 32],
+            inputs: Default::default(),
+            outputs: Default::default(),
+            fee_payer_index: 0,
+        });
+        let error = ctx.run_backend_task(task, sender).await.unwrap_err();
+        assert!(matches!(
+            error,
+            TaskError::PlatformNetworkTooOld {
+                verified_version: 13
+            }
+        ));
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "refusal must precede wallet startup"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This network is running an older version that this app no longer supports. Wait for the network to upgrade, or choose another network in Settings."
+        );
+    }
+
+    #[tokio::test]
+    async fn minimum_protocol_14_sweep_refusal_retains_its_network_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        prove_protocol_version(&ctx, 13);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let error = ctx
+            .run_backend_task(
+                BackendTask::ContestedResourceTask(ContestedResourceTask::CastDueScheduledVotes {
+                    preserve_eligibility_since_ms: None,
+                    reconcile_unconfirmed: false,
+                }),
+                sender,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, TaskError::ScheduledVoteSweepFailed { network, source }
+            if network == ctx.network() && matches!(*source, TaskError::PlatformNetworkTooOld { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn minimum_protocol_14_keeps_local_reads_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        prove_protocol_version(&ctx, 13);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        assert!(
+            ctx.run_backend_task(BackendTask::None, sender)
+                .await
+                .is_ok()
+        );
+        assert_eq!(ctx.platform_version().protocol_version, 14);
+        let _ = ctx.dpns_contract();
     }
 }

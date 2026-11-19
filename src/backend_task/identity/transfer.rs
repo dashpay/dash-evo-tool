@@ -36,7 +36,8 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = self.sdk.load_full();
+        self.ensure_sdk_write_supported(&sdk)?;
         let signing_key = transfer_signing_key(&qualified_identity, id)?;
 
         let balance_before = qualified_identity.identity.balance();
@@ -130,6 +131,7 @@ mod tests {
         let sdk = dash_sdk::Sdk::new_mock();
         // A transfer between identities uses the SDK the context holds.
         ctx.sdk.store(std::sync::Arc::new(sdk.clone()));
+        crate::context::test_support::prove_protocol_version(&ctx, 14);
         let (sender, _receiver) = tokio::sync::mpsc::channel(8);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(sender, ctx.egui_ctx().clone());
 

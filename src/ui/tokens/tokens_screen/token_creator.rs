@@ -16,9 +16,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
-use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
     distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
@@ -1145,57 +1143,27 @@ impl TokensScreen {
             document_schemas: self.parsed_document_schemas.clone(),
             marketplace_rules,
             change_direct_purchase_pricing_rules,
-            transferable: self.parse_transferable()?,
+            transferable: self.transferable_input,
         })
     }
 
-    /// The once-per-identity amount, when that distribution is enabled. It
-    /// needs protocol version 14, so a network that does not accept it yet is
-    /// refused here rather than by Platform after the fee is paid.
+    /// Validate the once-per-identity amount when that distribution is enabled.
     fn parse_once_per_identity_amount(&self) -> Result<Option<TokenAmount>, String> {
         if !self.enable_once_per_identity_distribution {
             return Ok(None);
-        }
-        if !FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context) {
-            return Err(TaskError::TokenOncePerIdentityNotSupported.to_string());
         }
         parse_once_per_identity_amount(&self.once_per_identity_amount_input)
             .map(Some)
             .map_err(|error| error.to_string())
     }
 
-    /// Whether holders may transfer the token. A token that cannot be
-    /// transferred needs protocol version 14, so a network that does not
-    /// accept it yet is refused here rather than by Platform after the fee is
-    /// paid.
-    fn parse_transferable(&self) -> Result<bool, String> {
-        if !self.transferable_input
-            && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
-        {
-            return Err(TRANSFERS_OFF_HINT.to_owned());
-        }
-        Ok(self.transferable_input)
-    }
-
-    /// The "holders can send this token" option, offered only in Advanced
-    /// mode's Advanced section. Turning transfers off needs a network that
-    /// accepts such tokens; a choice already made is kept (never silently
-    /// flipped back), but creating is blocked until the network supports it or
-    /// transfers are allowed again. Both create buttons show that reason, so it
-    /// stays visible while this row is hidden.
+    /// Configure transferability in the Advanced section on every supported network.
     pub(super) fn transferable_row(&mut self, ui: &mut egui::Ui) {
-        let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
-        // Allowing transfers again always works; only turning them off needs support.
-        let editable = available || !self.transferable_input;
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(editable, |ui| {
-                StyledCheckbox::new(
-                    &mut self.transferable_input,
-                    "Holders can send this token to other identities",
-                )
-                .show(ui)
-                .disabled_tooltip(TaskError::NonTransferableTokenNotSupported.to_string());
-            });
+            StyledCheckbox::new(
+                &mut self.transferable_input,
+                "Holders can send this token to other identities",
+            ).show(ui);
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });
         if let Some(reason) = self.creation_blocked_reason() {
@@ -1203,11 +1171,12 @@ impl TokensScreen {
         }
     }
 
-    /// Why the token cannot be created as configured, if a setting the
-    /// connected network does not accept was chosen. The backend refuses it too
-    /// (`TaskError::NonTransferableTokenNotSupported`).
+    /// Known incompatible networks cannot register; offline users can prepare a token.
+    /// The backend still requires a verified supported connection before submission.
     pub(super) fn creation_blocked_reason(&self) -> Option<String> {
-        self.parse_transferable().err()
+        self.app_context
+            .unsupported_platform_error()
+            .map(|error| error.to_string())
     }
 
     /// The confirmation's sentence about whether holders can send the token.
@@ -1800,11 +1769,6 @@ impl TokensScreen {
         });
     }
 }
-
-/// Why creating is blocked while transfers are off on a network that does not
-/// accept such tokens. Names where the option is, since it is offered only under
-/// Advanced and may be hidden.
-const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
 
 /// Why Simple mode's "Create Token" is blocked until a preset is chosen.
 const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";

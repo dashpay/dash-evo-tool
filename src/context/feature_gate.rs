@@ -1,87 +1,5 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
-use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
-use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
-
-/// Shielded state transitions activate at upstream rs-platform-version's
-/// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
-/// so DET stays aligned if upstream renumbers the feature.
-///
-/// Do not infer activation from `FeatureVersionBounds::max_version > 0`:
-/// `{ min: 0, max: 0 }` is a valid v0 bound, not an undefined marker.
-const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
-    Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
-
-/// Version 1 token distribution rules (the once-per-identity distribution)
-/// are accepted from protocol version 14. Upstream names no feature constant
-/// for it, so the protocol version it shipped in is used directly.
-const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
-
-/// Tokens that cannot be transferred (a version 1 token configuration) are
-/// accepted from protocol version 14. Upstream names no feature constant for
-/// them, so the protocol version they shipped in is used directly.
-const NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
-
-/// A runtime capability of the connected platform, evaluated against the live
-/// context. Independent of the user's role — it answers "does the connected
-/// network support this?", not "which role has the user selected?".
-///
-/// Capabilities are network-scoped by construction: `is_met` reads live state
-/// off the passed-in [`AppContext`], which is one instance per network, so a
-/// check against mainnet's context sees mainnet's protocol version and testnet's
-/// sees testnet's. New variants must follow the same rule — read from `ctx`,
-/// never a network-agnostic constant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Capability {
-    /// The connected platform protocol version defines all shielded state
-    /// transitions (shield, shielded transfer, unshield, shield from asset
-    /// lock, shielded withdrawal).
-    ShieldedProtocol,
-    /// The connected platform accepts tokens with a once-per-identity
-    /// distribution.
-    OncePerIdentityDistribution,
-    /// The connected platform accepts version 1 token configurations, which
-    /// can make a token non-transferable.
-    NonTransferableTokens,
-}
-
-/// Whether the protocol version the connected network has proven is one this
-/// build defines and is at least `activation`.
-///
-/// Every capability reads the version through this, so it fails closed both
-/// before the network proves a version and for a version newer than any this
-/// build knows ([`dash_sdk::ProtocolVersionInfo::newer_protocol_available`]):
-/// this build cannot tell what an unknown version's rules allow.
-fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
-    let info = ctx.protocol_version_info();
-    !info.newer_protocol_available
-        && info
-            .verified_version
-            .is_some_and(|version| version >= activation)
-}
-
-impl Capability {
-    fn is_met(self, ctx: &AppContext) -> bool {
-        match self {
-            Capability::ShieldedProtocol => match SHIELDED_ACTIVATION_PROTOCOL_VERSION {
-                // A closed gate makes the capability unavailable on every network.
-                None => false,
-                // The version fetched from the connected network, not the hardcoded
-                // default — the capability is per-network.
-                Some(activation) => known_protocol_version_at_least(ctx, activation),
-            },
-            Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
-                ctx,
-                ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
-            ),
-            Capability::NonTransferableTokens => known_protocol_version_at_least(
-                ctx,
-                NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
-            ),
-        }
-    }
-}
-
 /// A feature that has not stabilised yet (the stability axis). Distinct from
 /// role: when such a feature stabilises, its check is removed and it unlocks
 /// for every role — misfiling it as a role gate would permanently hide the
@@ -105,9 +23,8 @@ pub enum ExperimentalFeature {
 pub enum Check {
     /// The user is operating in at least this role (role axis).
     MinRole(UserRole),
-    /// The connected platform provides this capability (platform axis,
-    /// network-scoped by construction — see [`Capability`]).
-    Capability(Capability),
+    /// The connection has verified a Platform version supported by DET.
+    SupportedNetwork,
     /// An experimental feature that has not stabilised yet (stability axis).
     /// When the feature stabilises this check is removed and it unlocks for
     /// EVERY role.
@@ -122,7 +39,7 @@ impl Check {
     fn is_met(&self, ctx: &AppContext) -> bool {
         match self {
             Check::MinRole(min) => ctx.user_role().at_least(*min),
-            Check::Capability(cap) => cap.is_met(ctx),
+            Check::SupportedNetwork => ctx.ensure_platform_write_supported().is_ok(),
             Check::Experimental(f) => ctx.experimental_enabled(*f),
         }
     }
@@ -152,12 +69,8 @@ pub enum FeatureGate {
     /// *creating* shielded state transitions behind the network's protocol
     /// capability.
     Shielded,
-    /// Shielded operations the user can actually invoke — shielded send sources
-    /// and shielded destinations. Both axes must hold: the connected network has
-    /// to define the shielded state transitions ([`FeatureGate::Shielded`]) *and*
-    /// the feature is still experimental. Offering a shielded destination the
-    /// network cannot settle is a dead end, so this never reduces to the
-    /// experimental flag alone.
+    /// Shielded sending on a verified, supported network, with experimental
+    /// features enabled for the user's role.
     ShieldedOperations,
     /// DashPay social features — always available (placeholder for future restriction)
     DashPay,
@@ -173,13 +86,6 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
-    /// Creating a token with a once-per-identity distribution. Offered only
-    /// where the connected network accepts it; claiming from an existing one
-    /// needs no gate, since such a token can only exist on such a network.
-    TokenOncePerIdentityDistribution,
-    /// Creating a token that holders cannot transfer. Offered only where the
-    /// connected network accepts one.
-    NonTransferableTokens,
 }
 
 impl FeatureGate {
@@ -189,19 +95,13 @@ impl FeatureGate {
         match self {
             FeatureGate::Shielded => &[],
             FeatureGate::ShieldedOperations => &[
-                Check::Capability(Capability::ShieldedProtocol),
+                Check::SupportedNetwork,
                 Check::Experimental(ExperimentalFeature::Shielded),
             ],
             FeatureGate::DashPay => &[],
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
-            FeatureGate::TokenOncePerIdentityDistribution => {
-                &[Check::Capability(Capability::OncePerIdentityDistribution)]
-            }
-            FeatureGate::NonTransferableTokens => {
-                &[Check::Capability(Capability::NonTransferableTokens)]
-            }
         }
     }
 
@@ -214,7 +114,7 @@ impl FeatureGate {
     /// check passes (equivalent to `is_available` returning `true`). Lets a
     /// caller surface which axis is actually blocking availability — e.g.
     /// distinguishing "the network doesn't support this yet" (a
-    /// [`Check::Capability`]) from "your interface mode doesn't unlock this" (a
+    /// [`Check::SupportedNetwork`]) from "your interface mode doesn't unlock this" (a
     /// [`Check::Experimental`]) — instead of a single opaque `false`.
     pub fn first_unmet_check(self, ctx: &AppContext) -> Option<Check> {
         self.checks().iter().copied().find(|c| !c.is_met(ctx))
@@ -245,7 +145,7 @@ mod tests {
 
     /// Every protocol version upstream actually defines.
     fn known_protocol_versions() -> Vec<u32> {
-        (1..=MAX_PROBED_PROTOCOL_VERSION)
+        (14..=MAX_PROBED_PROTOCOL_VERSION)
             .filter(|v| PlatformVersion::get_optional(*v).is_some())
             .collect()
     }
@@ -314,217 +214,49 @@ mod tests {
         }
     }
 
-    /// An unfetched protocol version (0, the boot value) means "we do not know what
-    /// this network supports" — the shielded *capability* must read as unmet, so
-    /// shielded *operations* stay closed until the version is known, never
-    /// optimistic. The Shielded *tab* is decoupled from this — see
-    /// `shielded_tab_gate_is_available_regardless_of_protocol_version`.
     #[test]
-    fn shielded_capability_is_unmet_before_a_version_is_fetched() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-
-        assert_eq!(
-            ctx.protocol_version_info().verified_version,
-            None,
-            "boot value"
-        );
-        assert!(!Capability::ShieldedProtocol.is_met(&ctx));
-        assert!(
-            !FeatureGate::ShieldedOperations.is_available(&ctx),
-            "shielded operations stay closed until the network's version is known"
-        );
-    }
-
-    /// The Shielded *tab* gate is decoupled from the state-transition capability:
-    /// DET runs the shielded coordinator on every network, so shielded balances
-    /// can exist and the tab that views them must be available regardless of the
-    /// connected protocol version or the user's role. Regression guard for the bug
-    /// where a wallet tracked a shielded balance but the tab bar offered no
-    /// Shielded tab to view it.
-    #[test]
-    fn shielded_tab_gate_is_available_regardless_of_protocol_version() {
+    fn shielded_operations_need_a_supported_network_and_unlocked_role() {
         for role in ROLES {
             let (_tmp, ctx) = ctx_with_role(role);
-            // Boot value: the network's version is not known yet.
-            assert!(
-                FeatureGate::Shielded.is_available(&ctx),
-                "Shielded tab must be available at boot for {role:?}"
-            );
-            // Every protocol version upstream defines — none of which the tab
-            // gate depends on.
+            assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
             for version in known_protocol_versions() {
                 prove_protocol_version(&ctx, version);
-                assert!(
-                    FeatureGate::Shielded.is_available(&ctx),
-                    "Shielded tab must be available on protocol v{version} for {role:?}"
+                assert_eq!(
+                    FeatureGate::ShieldedOperations.is_available(&ctx),
+                    role.at_least(UserRole::Power)
                 );
+                assert!(FeatureGate::Shielded.is_available(&ctx));
             }
         }
     }
 
     #[test]
-    fn shielded_capability_tracks_the_activation_boundary() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let versions = known_protocol_versions();
-        assert!(!versions.is_empty(), "the probe must find some versions");
-
-        for version in versions {
-            prove_protocol_version(&ctx, version);
-            assert_eq!(
-                Capability::ShieldedProtocol.is_met(&ctx),
-                version >= SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
-                "shielded capability on protocol v{version}"
-            );
-        }
-    }
-
-    #[test]
-    fn shielded_operations_are_available_at_activation_for_unlocked_roles() {
-        for role in [UserRole::Power, UserRole::Developer] {
-            let (_tmp, ctx) = ctx_with_role(role);
-            prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
-
-            assert!(
-                FeatureGate::ShieldedOperations.is_available(&ctx),
-                "shielded operations must be available at activation for {role:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn shielded_operations_are_unavailable_before_activation_for_developer() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
-            .checked_sub(1)
-            .expect("shielded activation must follow the boot protocol version");
-        prove_protocol_version(&ctx, version);
-
-        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
-    }
-
-    #[test]
-    fn shielded_operations_are_unavailable_at_activation_for_everyday_user() {
+    fn shielded_operations_report_network_then_role_requirements() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
-
-        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
-    }
-
-    #[test]
-    fn shielded_operations_reports_the_first_unmet_check() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
-            .checked_sub(1)
-            .expect("shielded activation must follow the boot protocol version");
-        prove_protocol_version(&ctx, version);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
-            Some(Check::Capability(Capability::ShieldedProtocol))
+            Some(Check::SupportedNetwork)
         );
-
-        let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, 14);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Experimental(ExperimentalFeature::Shielded))
         );
-
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        ctx.set_user_role(UserRole::Developer);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             None
         );
     }
 
-    /// AND semantics. `ShieldedOperations` is the first multi-check gate: it needs
-    /// the experimental axis *and* the network capability. A Developer passes the
-    /// experimental check outright, so the gate can only be closed by the failing
-    /// capability — proving the capability check is genuinely part of the
-    /// conjunction and not decoration. A gate that reduced to `experimental_enabled`
-    /// (the bug this replaces) would be available here.
     #[test]
-    fn shielded_operations_fails_when_only_the_experimental_axis_passes() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-
-        assert!(
-            ctx.experimental_enabled(ExperimentalFeature::Shielded),
-            "a Developer passes the experimental check"
-        );
-        assert!(
-            !Capability::ShieldedProtocol.is_met(&ctx),
-            "no network defines the shielded state transitions yet"
-        );
-        assert!(
-            !FeatureGate::ShieldedOperations.is_available(&ctx),
-            "one failing check must close the conjunction: shielded send options \
-             must not be offered on a network that cannot settle them"
-        );
-    }
-
-    /// A failing capability closes the gate for every role — no role can buy its
-    /// way past a network that does not support the feature.
-    #[test]
-    fn shielded_operations_is_unavailable_for_every_role_today() {
-        for role in ROLES {
-            let (_tmp, ctx) = ctx_with_role(role);
-            assert!(
-                !FeatureGate::ShieldedOperations.is_available(&ctx),
-                "ShieldedOperations must stay closed for {role:?} while the capability is unmet"
-            );
-        }
-    }
-
-    /// Protocol version 14 features stay closed below version 14 and before
-    /// the network's version is known, whatever the role.
-    #[test]
-    fn protocol_v14_gates_follow_the_connected_version() {
-        // One entry per protocol version 14 gate this build offers.
-        let gates = [
-            FeatureGate::TokenOncePerIdentityDistribution,
-            FeatureGate::NonTransferableTokens,
-        ];
-        for role in ROLES {
-            for gate in gates {
-                // A proven version only rises, so each gate gets a fresh context.
-                let (_tmp, ctx) = ctx_with_role(role);
-                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-                prove_protocol_version(&ctx, 13);
-                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-                prove_protocol_version(&ctx, 14);
-                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
-            }
-        }
-    }
-
-    /// A protocol version this build does not define closes every protocol
-    /// capability: nothing here knows that version's rules. The newest
-    /// version this build defines keeps them open.
-    #[test]
-    fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
+    fn unsupported_network_keeps_balances_visible_but_refuses_shielded_operations() {
         use dash_sdk::dpp::version::LATEST_VERSION;
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [
-            Capability::ShieldedProtocol,
-            Capability::OncePerIdentityDistribution,
-            Capability::NonTransferableTokens,
-        ];
-
-        prove_protocol_version(&ctx, LATEST_VERSION);
-        for capability in capabilities {
-            assert!(
-                capability.is_met(&ctx),
-                "{capability:?} on protocol {LATEST_VERSION}"
-            );
-        }
-
-        prove_protocol_version(&ctx, LATEST_VERSION + 1);
-        for capability in capabilities {
-            assert!(
-                !capability.is_met(&ctx),
-                "{capability:?} on unknown protocol {}",
-                LATEST_VERSION + 1
-            );
+        for version in [13, LATEST_VERSION + 1] {
+            let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+            prove_protocol_version(&ctx, version);
+            assert!(FeatureGate::Shielded.is_available(&ctx));
+            assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         }
     }
 }

@@ -611,6 +611,7 @@ pub(super) struct ConnectionBanner {
     handle: Option<BannerHandle>,
     /// Startup proof error cleared once quorum keys become available.
     quorum_startup_error: TransientBanner,
+    protocol_error: Option<BannerHandle>,
 }
 
 impl ConnectionBanner {
@@ -619,6 +620,7 @@ impl ConnectionBanner {
             previous_state: None,
             handle: None,
             quorum_startup_error: TransientBanner::default(),
+            protocol_error: None,
         }
     }
 
@@ -633,6 +635,7 @@ impl ConnectionBanner {
             handle.clear();
         }
         self.quorum_startup_error.reset();
+        self.protocol_error.take_and_clear();
         self.previous_state = None;
     }
 
@@ -648,6 +651,26 @@ impl ConnectionBanner {
         spv_overlaying: bool,
         onboarding_active: bool,
     ) -> Option<BackendTask> {
+        if self.protocol_error.was_evicted() {
+            self.protocol_error = None;
+        }
+        match app_context.unsupported_platform_error() {
+            Some(error) => {
+                let message = error.to_string();
+                if let Some(handle) = &self.protocol_error {
+                    if handle.text().as_deref() != Some(message.as_str()) {
+                        handle.set_message(message);
+                        handle.with_details(error);
+                    }
+                } else {
+                    let handle = MessageBanner::set_global(ctx, message, MessageType::Error);
+                    handle.disable_auto_dismiss();
+                    handle.with_details(error);
+                    self.protocol_error = Some(handle);
+                }
+            }
+            None => self.protocol_error.take_and_clear(),
+        }
         let connection_status = app_context.connection_status();
         self.quorum_startup_error
             .clear_if(connection_status.masternodes_ready());
@@ -2489,6 +2512,43 @@ mod tests {
                 MigrationTask::AcknowledgeUnreadableAppData
             )),
         );
+    }
+
+    #[test]
+    fn minimum_protocol_14_banner_tracks_upgrade_and_connection_reset() {
+        use crate::context::test_support::prove_protocol_version;
+        let tmp = tempfile::tempdir().unwrap();
+        let app_context = test_app_context(tmp.path());
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.is_none());
+        prove_protocol_version(&app_context, 13);
+        banner.update(&ctx, &app_context, false, true);
+        let old_handle = banner.protocol_error.clone().expect("old network banner");
+        assert_eq!(
+            old_handle.text().unwrap(),
+            TaskError::PlatformNetworkTooOld {
+                verified_version: 13
+            }
+            .to_string()
+        );
+        for index in 0..10 {
+            MessageBanner::set_global(&ctx, format!("Other message {index}"), MessageType::Info);
+        }
+        assert!(old_handle.was_evicted());
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.as_ref().unwrap().is_live());
+        prove_protocol_version(&app_context, 14);
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.is_none());
+        assert!(!old_handle.is_live());
+        prove_protocol_version(&app_context, dash_sdk::dpp::version::LATEST_VERSION + 1);
+        banner.update(&ctx, &app_context, false, true);
+        let newer_handle = banner.protocol_error.clone().unwrap();
+        assert!(newer_handle.is_live());
+        banner.reset();
+        assert!(!newer_handle.is_live());
     }
 
     /// Disconnected stays hidden throughout onboarding and appears on the first

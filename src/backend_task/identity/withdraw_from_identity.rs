@@ -22,7 +22,8 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = self.sdk.load_full();
+        self.ensure_sdk_write_supported(&sdk)?;
 
         tracing::info!(
             identity_id = %qualified_identity.identity.id().to_string(Encoding::Base58),

@@ -233,6 +233,18 @@ pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
+    /// A verified network is older than DET's supported range.
+    #[error("This network is running an older version that this app no longer supports. Wait for the network to upgrade, or choose another network in Settings.")]
+    PlatformNetworkTooOld { verified_version: u32 },
+
+    /// The network's rules are newer than this build understands.
+    #[error("This network needs a newer version of the app. Update Dash Evo Tool, or restart it if you just changed connection settings.")]
+    PlatformNetworkTooNew { verified_version: u32 },
+
+    /// A seed or an unverified response cannot authorize Platform changes.
+    #[error("The app has not verified this network yet. Wait for syncing to finish and try again.")]
+    PlatformNetworkUnconfirmed,
+
     /// The wallet backend has not finished starting up yet. The lazy-init gate
     /// in [`AppContext::wallet_backend`](crate::context::AppContext::wallet_backend)
     /// returns this while the backend is still being built; every wallet and
@@ -2814,13 +2826,6 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
-    /// A token with a once-per-identity distribution was requested on a
-    /// network that does not accept one yet.
-    #[error(
-        "The connected network does not accept once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
-    )]
-    TokenOncePerIdentityNotSupported,
-
     /// A once-per-identity token claim succeeded, but this device could not
     /// record that it was made. Without the record, the claim may be offered
     /// again, and Platform refuses (and charges for) a second claim.
@@ -2845,13 +2850,6 @@ pub enum TaskError {
         #[source]
         source_error: Box<SdkError>,
     },
-
-    /// The token creator asked for a token that cannot be transferred, on a
-    /// network that does not accept one yet.
-    #[error(
-        "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
-    )]
-    NonTransferableTokenNotSupported,
 
     /// A token operation run by the wallet runtime failed for a reason the
     /// SDK error classification has no specific variant for. Built by
@@ -3213,13 +3211,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A fund-moving shielded operation was requested on a network that does
-    /// not support shielded state transitions.
-    #[error(
-        "Shielded operations are not available on this network yet. Use a regular payment instead, or try again after a future network update."
-    )]
-    ShieldedOperationsNetworkUnavailable,
-
     /// A fund-moving shielded operation was requested from an interface mode
     /// that does not unlock experimental features.
     #[error(

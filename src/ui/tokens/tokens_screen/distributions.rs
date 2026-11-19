@@ -1,5 +1,3 @@
-use crate::backend_task::error::TaskError;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::token::parse_once_per_identity_amount;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
@@ -1096,19 +1094,11 @@ impl TokensScreen {
     /// identity may claim exactly once. Offered only where the connected
     /// network accepts it; the registration fee grows when it is on.
     fn render_once_per_identity_distribution(&mut self, ui: &mut egui::Ui) {
-        let available =
-            FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context);
-        if !available {
-            self.enable_once_per_identity_distribution = false;
-        }
-        ui.add_enabled_ui(available, |ui| {
-            ui.checkbox(
-                &mut self.enable_once_per_identity_distribution,
-                "Enable Once-per-identity Distribution",
-            )
-            .on_hover_text("Every identity can claim a fixed amount of this token, exactly once.")
-            .on_disabled_hover_text(TaskError::TokenOncePerIdentityNotSupported.to_string());
-        });
+        ui.checkbox(
+            &mut self.enable_once_per_identity_distribution,
+            "Enable Once-per-identity Distribution",
+        )
+        .on_hover_text("Every identity can claim a fixed amount of this token, exactly once.");
 
         if self.enable_once_per_identity_distribution {
             ui.add_space(2.0);

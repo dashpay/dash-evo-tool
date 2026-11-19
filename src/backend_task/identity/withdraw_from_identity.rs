@@ -166,23 +166,15 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
     }
 
-    /// Store the identity as fetched for a finished withdrawal, carrying its
-    /// remaining balance, into the record as stored now: a concurrent change
-    /// such as a removed voting key stays removed. The withdrawal already
-    /// happened, so a failed save is only logged; it never reads as a failed
-    /// withdrawal that the user might repeat.
+    /// Store only the completed withdrawal's balance, keeping the current
+    /// revision, public keys and local edits. Save failures are logged because
+    /// the withdrawal has already happened.
     fn persist_withdrawn_identity(
         &self,
         withdrawn: &QualifiedIdentity,
         provenance: BalanceProvenance,
     ) {
-        let id = withdrawn.identity.id();
-        if let Err(error) = self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
-            stored.identity = withdrawn.identity.clone();
-            Ok(())
-        }) {
-            tracing::warn!(identity_id = %id, ?error, "Identity could not be saved locally after a withdrawal");
-        }
+        let _ = self.store_paid_balance(withdrawn, provenance);
     }
 }
 
@@ -191,6 +183,55 @@ mod tests {
     use crate::context::test_staging::stage_identity_with_voter_twin;
     use crate::model::identity_balance::BalanceProvenance;
     use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn withdrawal_does_not_restore_stale_public_keys_or_revision() {
+        let staged = stage_identity_with_voter_twin(
+            crate::test_support::keys::secret_bytes(),
+            crate::test_support::keys::secret_bytes(),
+        )
+        .await;
+        let mut withdrawn = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let mut concurrent = withdrawn.clone();
+        concurrent
+            .identity
+            .set_revision(withdrawn.identity.revision() + 1);
+        let mut keys = concurrent.identity.public_keys().clone();
+        keys.insert(
+            88,
+            dash_sdk::dpp::identity::IdentityPublicKey::random_key(
+                88,
+                None,
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            ),
+        );
+        concurrent.identity.set_public_keys(keys);
+        staged
+            .ctx
+            .update_local_qualified_identity(&concurrent)
+            .unwrap();
+
+        withdrawn.identity.set_balance(4_321);
+        staged
+            .ctx
+            .persist_withdrawn_identity(&withdrawn, BalanceProvenance::ConfirmedUnordered);
+
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.identity.balance(), 4_321);
+        assert_eq!(after.identity.revision(), concurrent.identity.revision());
+        assert_eq!(
+            after.identity.public_keys(),
+            concurrent.identity.public_keys()
+        );
+    }
 
     /// A withdrawal's network work can outlast the removal of an old voting
     /// key; its final write must not bring that key back.

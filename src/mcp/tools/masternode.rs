@@ -97,8 +97,8 @@ pub struct MasternodeIdentityLoadOutput {
     payout_key_loaded: bool,
     /// Withdrawal key modes this identity supports ("owner" / "transfer").
     available_withdrawal_keys: Vec<String>,
-    /// Whether the node holds an owner or payout key on this device, so the
-    /// withdraw tool can use it. `false` loads the node without withdrawals.
+    /// Whether a locally signable withdrawal mode has the required destination
+    /// information. `false` loads the node without withdrawals.
     withdrawals_available: bool,
     /// Set when `withdrawals_available` is `false`: what to do to enable them.
     note: Option<String>,
@@ -180,46 +180,59 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             )));
         };
 
-        let mut owner_key_loaded = false;
-        let mut payout_key_loaded = false;
-        let mut available_withdrawal_keys = Vec::new();
-        for key in qi.signable_withdrawal_keys() {
-            match key.identity_public_key.purpose() {
-                Purpose::OWNER => {
-                    // Guard: push the mode string only on first OWNER key seen so
-                    // identities with multiple OWNER keys don't yield duplicates.
-                    if !owner_key_loaded {
-                        available_withdrawal_keys.push(KeyMode::Owner.to_string());
-                    }
-                    owner_key_loaded = true;
+        Ok(identity_load_output(&qi, identity_type, ctx.network()))
+    }
+}
+
+/// The load response describes the signing material and withdrawal modes separately.
+fn identity_load_output(
+    qi: &QualifiedIdentity,
+    identity_type: IdentityType,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> MasternodeIdentityLoadOutput {
+    let payout_address = qi
+        .masternode_payout_address(network)
+        .map(|address| address.to_string());
+    let mut owner_key_loaded = false;
+    let mut payout_key_loaded = false;
+    let mut available_withdrawal_keys = Vec::new();
+    for key in qi.signable_withdrawal_keys() {
+        match key.identity_public_key.purpose() {
+            Purpose::OWNER => {
+                // Guard: push the mode string only on first OWNER key seen so
+                // identities with multiple OWNER keys don't yield duplicates.
+                if !owner_key_loaded && payout_address.is_some() {
+                    available_withdrawal_keys.push(KeyMode::Owner.to_string());
                 }
-                Purpose::TRANSFER => {
-                    if !payout_key_loaded {
-                        available_withdrawal_keys.push(KeyMode::Transfer.to_string());
-                    }
-                    payout_key_loaded = true;
-                }
-                _ => {}
+                owner_key_loaded = true;
             }
+            Purpose::TRANSFER => {
+                if !payout_key_loaded {
+                    available_withdrawal_keys.push(KeyMode::Transfer.to_string());
+                }
+                payout_key_loaded = true;
+            }
+            _ => {}
         }
+    }
 
-        let withdrawals_available = !available_withdrawal_keys.is_empty();
+    let withdrawals_available = !available_withdrawal_keys.is_empty();
 
-        Ok(MasternodeIdentityLoadOutput {
-            identity_id: qi.identity.id().to_string(Encoding::Base58),
-            node_type: identity_type.to_string().to_ascii_lowercase(),
-            alias: qi.alias.clone(),
-            owner_key_loaded,
-            voting_key_loaded: qi.associated_voter_identity.is_some(),
-            payout_key_loaded,
-            available_withdrawal_keys,
+    MasternodeIdentityLoadOutput {
+        identity_id: qi.identity.id().to_string(Encoding::Base58),
+        node_type: identity_type.to_string().to_ascii_lowercase(),
+        alias: qi.alias.clone(),
+        owner_key_loaded,
+        voting_key_loaded: qi.associated_voter_identity.is_some(),
+        payout_key_loaded,
+        available_withdrawal_keys,
+        withdrawals_available,
+        note: withdrawal_note(
             withdrawals_available,
-            note: withdrawal_note(withdrawals_available),
-            payout_address: qi
-                .masternode_payout_address(ctx.network())
-                .map(|addr| addr.to_string()),
-            dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
-        })
+            owner_key_loaded && payout_address.is_none(),
+        ),
+        payout_address,
+        dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
     }
 }
 
@@ -256,15 +269,25 @@ fn identity_input_to_load(
     }
 }
 
-/// The note a load reports when the node holds neither an owner nor a payout
-/// key on this device; `None` when it can withdraw.
-fn withdrawal_note(withdrawals_available: bool) -> Option<String> {
-    (!withdrawals_available).then(|| {
-        "The node was loaded without an owner or payout key, so it cannot withdraw \
-         yet. Load it again with the owner or payout private key, or load the \
-         wallet that holds one of them first."
-            .to_string()
-    })
+/// Explain the missing key or payout address when no withdrawal mode is available.
+fn withdrawal_note(withdrawals_available: bool, owner_without_payout: bool) -> Option<String> {
+    if withdrawals_available {
+        None
+    } else if owner_without_payout {
+        Some(
+            "The owner key is loaded, but the node's payout address is unavailable. \
+             Load the node again to refresh its payout address, or load its payout \
+             key to withdraw to another address."
+                .to_owned(),
+        )
+    } else {
+        Some(
+            "The node was loaded without an owner or payout key, so it cannot withdraw \
+             yet. Load it again with the owner or payout private key, or load the \
+             wallet that holds one of them first."
+                .to_owned(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -575,11 +598,11 @@ mod tests {
 
     #[test]
     fn a_node_without_withdrawal_keys_gets_a_note() {
-        let note = withdrawal_note(false).expect("a note when withdrawals are unavailable");
+        let note = withdrawal_note(false, false).expect("a note when withdrawals are unavailable");
         assert!(note.contains("owner"), "names the owner key: {note}");
         assert!(note.contains("payout"), "names the payout key: {note}");
         assert!(note.contains("Load it again"), "says what to do: {note}");
-        assert_eq!(withdrawal_note(true), None);
+        assert_eq!(withdrawal_note(true, false), None);
     }
 
     // ── Tool A param Debug redaction (TC-MN-010) ──────────────────────────
@@ -850,6 +873,14 @@ mod tests {
     use dash_sdk::dpp::identity::IdentityPublicKey;
     use dash_sdk::dpp::version::PlatformVersion;
 
+    fn fixture_rng_seed() -> u64 {
+        u64::from_le_bytes(
+            crate::test_support::keys::secret_bytes()[..8]
+                .try_into()
+                .expect("eight seed bytes"),
+        )
+    }
+
     fn masternode_fixture(with_owner: bool, with_payout: bool) -> QualifiedIdentity {
         use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
         use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -866,7 +897,8 @@ mod tests {
 
         if with_owner {
             let (owner_key, owner_secret) =
-                IdentityPublicKey::random_masternode_owner_key(0, Some(1), pv).expect("owner key");
+                IdentityPublicKey::random_masternode_owner_key(0, Some(fixture_rng_seed()), pv)
+                    .expect("owner key");
             public_keys.insert(owner_key.id(), owner_key.clone());
             key_storage.insert_at(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner_key.id()),
@@ -878,7 +910,7 @@ mod tests {
         }
         if with_payout {
             let (payout_key, payout_secret) =
-                IdentityPublicKey::random_masternode_transfer_key(1, Some(2), pv)
+                IdentityPublicKey::random_masternode_transfer_key(1, Some(fixture_rng_seed()), pv)
                     .expect("transfer key");
             public_keys.insert(payout_key.id(), payout_key.clone());
             key_storage.insert_at(
@@ -907,6 +939,61 @@ mod tests {
             status: IdentityStatus::Active,
             network: Network::Testnet,
         }
+    }
+
+    #[test]
+    fn load_does_not_offer_owner_mode_without_a_payout_address() {
+        let qi = masternode_fixture(true, false);
+        let output = identity_load_output(&qi, qi.identity_type, qi.network);
+
+        assert!(output.owner_key_loaded);
+        assert!(output.payout_address.is_none());
+        assert!(!output.withdrawals_available);
+        assert!(output.available_withdrawal_keys.is_empty());
+        assert!(
+            output
+                .note
+                .expect("missing payout guidance")
+                .contains("payout address")
+        );
+        assert!(resolve_withdrawal_plan(&qi, KeyMode::Owner, "", qi.network).is_err());
+    }
+
+    #[test]
+    fn load_keeps_transfer_mode_available_without_an_owner_key() {
+        let qi = masternode_fixture(false, true);
+        let output = identity_load_output(&qi, qi.identity_type, qi.network);
+
+        assert!(!output.owner_key_loaded);
+        assert!(output.payout_key_loaded);
+        assert!(output.withdrawals_available);
+        assert_eq!(
+            output.available_withdrawal_keys,
+            vec![KeyMode::Transfer.to_string()]
+        );
+        assert!(output.note.is_none());
+    }
+
+    #[test]
+    fn load_offers_owner_mode_with_a_public_payout_and_no_payout_secret() {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+
+        let mut qi = masternode_fixture(true, false);
+        let public_payout = masternode_fixture(false, true);
+        let mut keys = qi.identity.public_keys().clone();
+        keys.extend(public_payout.identity.public_keys().clone());
+        qi.identity.set_public_keys(keys);
+        let output = identity_load_output(&qi, qi.identity_type, qi.network);
+
+        assert!(output.owner_key_loaded);
+        assert!(!output.payout_key_loaded);
+        assert!(output.withdrawals_available);
+        assert_eq!(
+            output.available_withdrawal_keys,
+            vec![KeyMode::Owner.to_string()]
+        );
+        assert!(output.note.is_none());
+        assert!(resolve_withdrawal_plan(&qi, KeyMode::Owner, "", qi.network).is_ok());
     }
 
     fn testnet_core_address() -> String {

@@ -312,12 +312,14 @@ fn transfer_available(
 /// Whether `identity` is who the perpetual distribution pays: the contract
 /// owner, a named identity, or any evonode.
 pub fn is_perpetual_distribution_recipient(
-    contract_owner_id: Identifier,
+    contract_owner_id: Option<Identifier>,
     recipient: TokenDistributionRecipient,
     identity: &QualifiedIdentity,
 ) -> bool {
     match recipient {
-        TokenDistributionRecipient::ContractOwner => contract_owner_id == identity.identity.id(),
+        TokenDistributionRecipient::ContractOwner => {
+            contract_owner_id == Some(identity.identity.id())
+        }
         TokenDistributionRecipient::Identity(identifier) => identifier == identity.identity.id(),
         TokenDistributionRecipient::EvonodesByParticipation => {
             identity.identity_type == IdentityType::Evonode
@@ -365,12 +367,12 @@ fn is_pre_programmed_recipient(
         })
 }
 
-/// Whether the token's perpetual or pre-programmed distribution pays
-/// `identity`. Unlike a once-per-identity claim, these stay claimable after
-/// any one claim, and a token may offer them alongside it.
+/// Whether the token's perpetual or pre-programmed distribution names
+/// `identity` as a recipient. Reward availability depends on the distribution
+/// schedule and the identity's claim history.
 pub fn is_recurring_distribution_recipient(
     token_configuration: &TokenConfiguration,
-    contract_owner_id: Identifier,
+    contract_owner_id: Option<Identifier>,
     identity: &QualifiedIdentity,
 ) -> bool {
     let perpetual_recipient = token_configuration
@@ -429,7 +431,11 @@ pub fn get_available_token_actions_for_identity(
         super::once_per_identity_amount(token_configuration).is_some();
     let can_claim = can_claim_once_per_identity
         || in_dev_mode
-        || is_recurring_distribution_recipient(token_configuration, contract_owner_id, identity);
+        || is_recurring_distribution_recipient(
+            token_configuration,
+            Some(contract_owner_id),
+            identity,
+        );
 
     let can_estimate = {
         if let Some(dist) = token_configuration
@@ -438,7 +444,7 @@ pub fn get_available_token_actions_for_identity(
         {
             in_dev_mode
                 || is_perpetual_distribution_recipient(
-                    contract_owner_id,
+                    Some(contract_owner_id),
                     dist.distribution_recipient(),
                     identity,
                 )
@@ -695,7 +701,7 @@ mod tests {
     fn the_perpetual_recipient_rule_names_owner_identity_or_evonode() {
         let owner = identity(1);
         let other = identity(2);
-        let owner_id = owner.identity.id();
+        let owner_id = Some(owner.identity.id());
         assert!(is_perpetual_distribution_recipient(
             owner_id,
             TokenDistributionRecipient::ContractOwner,
@@ -706,15 +712,27 @@ mod tests {
             TokenDistributionRecipient::ContractOwner,
             &other
         ));
+        assert!(!is_perpetual_distribution_recipient(
+            None,
+            TokenDistributionRecipient::ContractOwner,
+            &owner
+        ));
         assert!(is_perpetual_distribution_recipient(
-            owner_id,
+            None,
             TokenDistributionRecipient::Identity(other.identity.id()),
             &other
         ));
         assert!(!is_perpetual_distribution_recipient(
-            owner_id,
+            None,
             TokenDistributionRecipient::EvonodesByParticipation,
             &other
+        ));
+        let mut evonode = identity(3);
+        evonode.identity_type = IdentityType::Evonode;
+        assert!(is_perpetual_distribution_recipient(
+            None,
+            TokenDistributionRecipient::EvonodesByParticipation,
+            &evonode
         ));
     }
 
@@ -764,7 +782,6 @@ mod tests {
         use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
         let recipient = identity(2);
         let bystander = identity(3);
-        let owner_id = identity(1).identity.id();
         let mut config = transferable();
         let TokenDistributionRules::V0(mut rules) = config.distribution_rules().clone() else {
             panic!("the most restrictive preset is version 0");
@@ -781,10 +798,10 @@ mod tests {
         assert_eq!(once_per_identity_amount(&config), Some(10));
 
         assert!(is_recurring_distribution_recipient(
-            &config, owner_id, &recipient
+            &config, None, &recipient
         ));
         assert!(
-            !is_recurring_distribution_recipient(&config, owner_id, &bystander),
+            !is_recurring_distribution_recipient(&config, None, &bystander),
             "the once-per-identity claim alone recurs for nobody"
         );
     }

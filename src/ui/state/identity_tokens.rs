@@ -8,6 +8,7 @@
 //! never clones it.
 
 use crate::app::AppAction;
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -63,13 +64,12 @@ pub struct TokenRow {
     /// developer display override.
     pub token: IdentityTokenMaybeBalanceWithActions,
     /// The contract owner, who issued the token.
-    pub issuer_id: Identifier,
+    pub issuer_id: Option<Identifier>,
     /// The identity issued the token (owns its contract).
     pub issued_by_me: bool,
     pub once_claim: Option<OnceClaim>,
-    /// A perpetual or pre-programmed distribution pays the identity; it stays
-    /// claimable whatever happened to the once-per-identity claim.
-    pub recurring_claim: bool,
+    /// The identity is a recipient of a perpetual or pre-programmed distribution.
+    pub recurring_recipient: bool,
     /// The identity holds an administrative permission on the token.
     pub has_admin_permission: bool,
     /// No balance is known and the last check that would have found one failed.
@@ -114,17 +114,11 @@ impl TokenRow {
         self.token.token_id.to_string(Encoding::Base58)
     }
 
-    /// A claim the identity can still take: a recurring distribution, or a
-    /// once-per-identity claim not taken yet.
-    pub fn claim_available(&self) -> bool {
-        self.recurring_claim || self.once_claim_open()
-    }
-
-    /// The once-per-identity claim exists and was not taken yet.
-    fn once_claim_open(&self) -> bool {
+    /// A once-per-identity claim that this device has not recorded as taken.
+    pub fn open_once_claim(&self) -> Option<&OnceClaim> {
         self.once_claim
             .as_ref()
-            .is_some_and(|once| once.claimed_at_ms.is_none())
+            .filter(|once| once.claimed_at_ms.is_none())
     }
 
     /// The identity holds some of this token.
@@ -185,14 +179,14 @@ pub fn row_status(row: &TokenRow, view_only: bool) -> RowStatus {
             RowStatus::Checking
         };
     }
-    if view_only && (row.claim_available() || (row.holds_some() && row.transferable())) {
+    if view_only && (row.open_once_claim().is_some() || (row.holds_some() && row.transferable())) {
         return RowStatus::AddKey;
     }
-    if let Some(once) = row.once_claim.as_ref().filter(|_| row.once_claim_open()) {
+    if let Some(once) = row.open_once_claim() {
         return RowStatus::CanClaimOnce(row.amount(once.amount));
     }
-    // A taken once-per-identity claim never hides rewards still to claim.
-    if row.recurring_claim {
+    // The scheduled distribution remains relevant after the once-per-identity claim.
+    if row.recurring_recipient {
         return RowStatus::RewardsMayBeWaiting;
     }
     match row.claimed_on_date() {
@@ -211,8 +205,9 @@ pub fn sort_rows<R: Borrow<TokenRow>>(rows: &mut [R], sort: TokenListSort) {
         let by_balance = || balance_order(b, a);
         match sort {
             TokenListSort::ClaimableFirst => b
-                .claim_available()
-                .cmp(&a.claim_available())
+                .open_once_claim()
+                .is_some()
+                .cmp(&a.open_once_claim().is_some())
                 .then_with(by_balance)
                 .then_with(by_name),
             TokenListSort::BalanceHighToLow => by_balance().then_with(by_name),
@@ -258,7 +253,7 @@ pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs, filter_sho
 /// or has something to claim.
 pub fn home_card_shows(rows: &[TokenRow]) -> bool {
     rows.iter()
-        .any(|row| row.holds_some() || row.claim_available())
+        .any(|row| row.holds_some() || row.open_once_claim().is_some())
 }
 
 /// Whether an arrival refresh is due: on arrival, when no refresh finished
@@ -327,9 +322,10 @@ pub struct IdentityTokensState {
     refresh_covers: BTreeSet<Identifier>,
     refresh_failure: Option<RefreshFailure>,
     arriving: bool,
-    /// The error just recorded refused one of this tab's requests while a
-    /// refresh ran or the network synced: no failure, so no banner.
-    quiet_next_error: bool,
+    /// The contract this tab is fetching for a token with missing issuer details.
+    contract_reload: PendingRequest<Identifier>,
+    /// The last requested contract the app could not reload.
+    failed_contract_reload: Option<Identifier>,
     prefs: Option<IdentityTokensViewPrefs>,
     /// The list controls changed since they were last written to the device.
     prefs_dirty: bool,
@@ -365,6 +361,8 @@ impl IdentityTokensState {
             pair_checks: std::mem::take(&mut self.pair_checks),
             stop_tracking: std::mem::take(&mut self.stop_tracking),
             track_again: std::mem::take(&mut self.track_again),
+            contract_reload: std::mem::take(&mut self.contract_reload),
+            failed_contract_reload: self.failed_contract_reload,
             // Owed pairs belong to the previous identity; its next visit
             // offers "track again" anew.
             track_again_owed: None,
@@ -442,10 +440,10 @@ impl IdentityTokensState {
         identity: &QualifiedIdentity,
     ) -> Result<(Vec<TokenRow>, bool), TaskError> {
         let identity_id = identity.identity.id();
-        let registry = app_context.get_all_known_tokens_with_data_contract()?;
+        let registry = app_context.get_all_known_tokens()?;
         let registry_has_tokens = !registry.is_empty();
         let dismissed = app_context.untracked_token_balances()?;
-        let balances = app_context.identity_token_balances()?;
+        let balances = app_context.token_balances_view()?;
         let mut rows = Vec::with_capacity(registry.len());
         for (token_id, token) in registry {
             let pair = IdentityTokenIdentifier {
@@ -455,18 +453,17 @@ impl IdentityTokensState {
             if dismissed.contains(&pair) {
                 continue;
             }
-            let balance = balances.get(&pair).map(|record| record.balance);
+            let balance = balances.get(&identity_id, &token_id);
             let config = &token.token_configuration;
-            // Computed without the developer display override, so the admin
-            // flags below answer the real permission question (Q3).
-            let actions = get_available_token_actions_for_identity(
-                balance,
-                identity,
-                config,
-                &token.data_contract,
-                false,
-                None,
-            );
+            let contract = app_context.get_unqualified_contract_by_id(&token.data_contract_id)?;
+            let actions = contract
+                .as_ref()
+                .map(|contract| {
+                    get_available_token_actions_for_identity(
+                        balance, identity, config, contract, false, None,
+                    )
+                })
+                .unwrap_or_default();
             let once_claim = match once_per_identity_amount(config) {
                 Some(amount) => Some(OnceClaim {
                     amount,
@@ -475,15 +472,16 @@ impl IdentityTokensState {
                 }),
                 None => None,
             };
-            let issuer_id = token.data_contract.owner_id();
-            let recurring_claim = is_recurring_distribution_recipient(config, issuer_id, identity);
+            let issuer_id = contract.as_ref().map(|contract| contract.owner_id());
+            let recurring_recipient =
+                is_recurring_distribution_recipient(config, issuer_id, identity);
             rows.push(TokenRow {
                 issuer_id,
-                issued_by_me: issuer_id == identity_id,
+                issued_by_me: issuer_id == Some(identity_id),
                 has_admin_permission: actions.has_admin_permission(),
                 check_failed: balance.is_none() && self.check_failed_for(pair),
                 once_claim,
-                recurring_claim,
+                recurring_recipient,
                 token: IdentityTokenMaybeBalanceWithActions {
                     token_id,
                     token_alias: token_display_name(&token.token_name, &token_id),
@@ -492,7 +490,7 @@ impl IdentityTokensState {
                     identity_name: None,
                     balance,
                     estimated_unclaimed_rewards: None,
-                    data_contract_id: token.data_contract.id(),
+                    data_contract_id: token.data_contract_id,
                     token_position: token.token_position,
                     available_actions: actions,
                 },
@@ -814,6 +812,33 @@ impl IdentityTokensState {
         )
     }
 
+    /// Ask for the owning contract so its issuer and administrative rules can be shown.
+    pub fn reload_contract_action(
+        &mut self,
+        app_context: &AppContext,
+        contract_id: Identifier,
+    ) -> AppAction {
+        if !Self::can_read(app_context) || self.contract_reload.is_pending() {
+            return AppAction::None;
+        }
+        self.failed_contract_reload = None;
+        self.contract_reload.dispatch_on_with(
+            BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![contract_id]))),
+            app_context.network,
+            contract_id,
+        )
+    }
+
+    /// The contract whose reload is still waiting for an answer.
+    pub fn reloading_contract(&self) -> Option<Identifier> {
+        self.contract_reload.subject().copied()
+    }
+
+    /// Whether the last request to restore these details failed.
+    pub fn contract_reload_failed(&self, contract_id: Identifier) -> bool {
+        self.failed_contract_reload == Some(contract_id)
+    }
+
     /// Settle a result of this tab's requests. Returns whether it was one.
     pub fn record_result(
         &mut self,
@@ -821,6 +846,16 @@ impl IdentityTokensState {
         result: &BackendTaskSuccessResult,
         now_ms: u64,
     ) -> bool {
+        if let Some(contract_id) = self.contract_reload.settle(context) {
+            if matches!(result, BackendTaskSuccessResult::FetchedContracts(contracts)
+                if contracts.iter().flatten().any(|contract| contract.id() == contract_id))
+            {
+                self.invalidate_rows();
+            } else {
+                self.failed_contract_reload = Some(contract_id);
+            }
+            return true;
+        }
         // Only the full refresh fetched every identity's balances; "track
         // again" refreshed the selected identity's watch set alone.
         if let Some(covers) = self.refresh.settle(context) {
@@ -879,10 +914,11 @@ impl IdentityTokensState {
     /// failure: the request is owed again once it can go out, and no banner
     /// shows. Anything else is shown inline and by the default banner.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        let in_progress = matches!(
-            error,
-            TaskError::TokenBalanceRefreshInProgress | TaskError::MasternodeListSyncPending
-        );
+        if let Some(contract_id) = self.contract_reload.settle(context) {
+            self.failed_contract_reload = Some(contract_id);
+            return;
+        }
+        let in_progress = Self::is_deferred_balance_read(error);
         if let Some(mut pairs) = self.track_again.settle(context) {
             if in_progress {
                 pairs.retain(|pair| self.owner.is_some_and(|(_, id)| id == pair.identity_id));
@@ -901,7 +937,6 @@ impl IdentityTokensState {
                 );
             }
             self.invalidate_rows();
-            self.quiet_next_error = in_progress;
             return;
         }
         if self.refresh.settle(context).is_some() {
@@ -911,7 +946,6 @@ impl IdentityTokensState {
                 self.note_full_refresh_failed(error);
             }
             self.invalidate_rows();
-            self.quiet_next_error = in_progress;
             return;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
@@ -927,7 +961,6 @@ impl IdentityTokensState {
                     .insert(pair, PairCheckResult::Failed);
                 self.invalidate_rows();
             }
-            self.quiet_next_error = in_progress;
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
@@ -946,10 +979,19 @@ impl IdentityTokensState {
         self.pair_check_results.clear();
     }
 
-    /// Whether the error just recorded was a refusal of this tab's request
-    /// that needs no banner. Every real failure gets the default banner.
-    pub fn take_quiet_error(&mut self) -> bool {
-        std::mem::take(&mut self.quiet_next_error)
+    /// Whether this exact balance request needs to wait and retry quietly.
+    pub fn should_suppress_error(&self, context: &BackendTaskContext, error: &TaskError) -> bool {
+        Self::is_deferred_balance_read(error)
+            && (self.refresh.owns(context)
+                || self.pair_checks.owns(context)
+                || self.track_again.owns(context))
+    }
+
+    fn is_deferred_balance_read(error: &TaskError) -> bool {
+        matches!(
+            error,
+            TaskError::TokenBalanceRefreshInProgress | TaskError::MasternodeListSyncPending
+        )
     }
 
     /// Another screen's full refresh satisfies the arrival rule for the
@@ -986,19 +1028,19 @@ mod tests {
                 token_position: 0,
                 available_actions: IdentityTokenAvailableActions::default(),
             },
-            issuer_id: Identifier::from([8; 32]),
+            issuer_id: Some(Identifier::from([8; 32])),
             issued_by_me: false,
             once_claim: None,
-            recurring_claim: false,
+            recurring_recipient: false,
             has_admin_permission: false,
             check_failed: false,
         }
     }
 
     /// A row a perpetual or pre-programmed distribution pays.
-    fn claimable(mut row: TokenRow) -> TokenRow {
+    fn with_recurring_rewards(mut row: TokenRow) -> TokenRow {
         row.token.available_actions.can_claim = true;
-        row.recurring_claim = true;
+        row.recurring_recipient = true;
         row
     }
 
@@ -1129,9 +1171,9 @@ mod tests {
             let request = dispatched(state.dispatch_track_again(vec![pair]));
             state.reset_for_identity_change();
             state.owner = Some((Network::Testnet, Identifier::from([2; 32])));
+            assert!(state.should_suppress_error(&request, &error));
             state.record_error(&request, &error);
             assert!(!state.track_again.is_pending());
-            assert!(state.take_quiet_error());
             assert_eq!(state.track_again_owed, None);
             assert_eq!(state.arrival(1_001, true, false), Arrival::NotDue);
         }
@@ -1160,7 +1202,7 @@ mod tests {
             row("Small", Some(1)),
             row("Checking", None),
             row("Big", Some(1_000)),
-            claimable(row("Claimable", Some(0))),
+            once_only(row("Claimable", Some(0)), None),
         ];
         sort_rows(&mut rows, TokenListSort::ClaimableFirst);
         assert_eq!(
@@ -1216,14 +1258,14 @@ mod tests {
             ..owned_state()
         };
         let check = dispatched(state.dispatch_pair_check(cached.pair()));
+        assert!(!state.should_suppress_error(&check, &TaskError::NoIdentitiesFound));
         state.record_error(&check, &TaskError::NoIdentitiesFound);
-        assert!(!state.take_quiet_error());
         let check = dispatched(state.dispatch_pair_check(unknown.pair()));
-        state.record_error(&check, &TaskError::NoIdentitiesFound);
         assert!(
-            !state.take_quiet_error(),
+            !state.should_suppress_error(&check, &TaskError::NoIdentitiesFound),
             "the row says it could not check, and the banner says so too"
         );
+        state.record_error(&check, &TaskError::NoIdentitiesFound);
     }
 
     #[test]
@@ -1312,7 +1354,7 @@ mod tests {
         let once = once_only(row("AIR", Some(0)), Some(1_700_000_000_000));
         assert!(matches!(row_status(&once, false), RowStatus::ClaimedOn(_)));
 
-        let rewards = claimable(row("DCF", Some(5)));
+        let rewards = with_recurring_rewards(row("DCF", Some(5)));
         assert_eq!(row_status(&rewards, false), RowStatus::RewardsMayBeWaiting);
     }
 
@@ -1349,7 +1391,11 @@ mod tests {
             row("Zero", Some(0)),
             row("Held", Some(1))
         ]));
-        assert!(home_card_shows(&[claimable(row("Air", Some(0)))]));
+        assert!(home_card_shows(&[once_only(row("Air", Some(0)), None)]));
+        assert!(!home_card_shows(&[with_recurring_rewards(row(
+            "Future",
+            Some(0)
+        ))]));
     }
 
     #[test]
@@ -1377,15 +1423,14 @@ mod tests {
         assert!(!arrival_refresh_due(false, two_minutes, Some(0)));
     }
 
-    /// A token may pay ongoing rewards beside a once-per-identity airdrop:
-    /// taking the airdrop leaves the rewards claimable, on every surface.
+    /// The row still shows possible recurring rewards after the one-time claim.
     #[test]
-    fn a_taken_once_claim_leaves_recurring_rewards_claimable() {
-        let both = claimable(once_only(row("Both", Some(5)), Some(1_700_000_000_000)));
-        assert!(both.claim_available(), "recurring rewards remain available");
+    fn a_taken_once_claim_keeps_the_recurring_reward_hint() {
+        let both = with_recurring_rewards(once_only(row("Both", Some(5)), Some(1_700_000_000_000)));
+        assert!(both.open_once_claim().is_none());
         assert_eq!(row_status(&both, false), RowStatus::RewardsMayBeWaiting);
         assert!(home_card_shows(std::slice::from_ref(&both)));
-        let open = claimable(once_only(row("Both", Some(5)), None));
+        let open = with_recurring_rewards(once_only(row("Both", Some(5)), None));
         assert_eq!(
             row_status(&open, false),
             RowStatus::CanClaimOnce(open.amount(100)),
@@ -1444,9 +1489,9 @@ mod tests {
     fn an_in_progress_refresh_is_not_a_failure_but_a_timeout_is() {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh(Vec::new()));
+        assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
         assert_eq!(state.refresh_failure(), None);
-        assert!(state.take_quiet_error());
 
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         let timeout = tokio::runtime::Runtime::new()
@@ -1493,12 +1538,12 @@ mod tests {
         let mut state = owned_state();
         let pair = row("T", None).pair();
         let context = dispatched(state.dispatch_pair_check(pair));
+        assert!(!state.should_suppress_error(&context, &TaskError::NoIdentitiesFound));
         state.record_error(&context, &TaskError::NoIdentitiesFound);
         assert_eq!(
             state.pair_check_results.get(&pair),
             Some(&PairCheckResult::Failed)
         );
-        assert!(!state.take_quiet_error());
 
         let context = dispatched(state.dispatch_pair_check(pair));
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 1));
@@ -1679,8 +1724,8 @@ mod tests {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         state.reset_for_identity_change();
+        assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_quiet_error());
     }
 
     /// A balance refresh covers every identity it found stored, so switching
@@ -1703,13 +1748,15 @@ mod tests {
         let mut state = owned_state();
         let first_ctx = dispatched(state.dispatch_pair_check(row("First", None).pair()));
         let second_ctx = dispatched(state.dispatch_pair_check(row("Second", None).pair()));
-        state.record_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress);
         assert!(
-            state.take_quiet_error(),
+            state.should_suppress_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress),
             "the first check is still ours, so its refusal stays quiet"
         );
+        state.record_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress);
+        assert!(
+            state.should_suppress_error(&second_ctx, &TaskError::TokenBalanceRefreshInProgress)
+        );
         state.record_error(&second_ctx, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_quiet_error());
         assert!(
             !state.pair_checks.is_pending(),
             "nothing of this tab is outstanding"
@@ -1723,8 +1770,8 @@ mod tests {
         let mut state = IdentityTokensState::default();
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_pair_check(row("T", None).pair()));
+        assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_quiet_error());
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
     }
@@ -1740,8 +1787,8 @@ mod tests {
         state.balances_refreshed_elsewhere(1_000, everyone());
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
+        assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_quiet_error());
         assert_eq!(state.track_again_owed, Some(pairs.clone()));
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
@@ -1754,8 +1801,8 @@ mod tests {
         let mut state = IdentityTokensState::default();
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_refresh(Vec::new()));
+        assert!(state.should_suppress_error(&context, &TaskError::MasternodeListSyncPending));
         state.record_error(&context, &TaskError::MasternodeListSyncPending);
-        assert!(state.take_quiet_error());
         assert_eq!(state.refresh_failure(), None, "waiting is not a failure");
         assert_eq!(state.arrival(1_001, false, false), Arrival::Owed);
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
@@ -1797,8 +1844,8 @@ mod tests {
         let mut state = owned_state();
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
+        assert!(!state.should_suppress_error(&context, &TaskError::NoIdentitiesFound));
         state.record_error(&context, &TaskError::NoIdentitiesFound);
-        assert!(!state.take_quiet_error());
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
         assert!(
@@ -1844,8 +1891,11 @@ mod tests {
         ] {
             let mut state = IdentityTokensState::default();
             let context = dispatched(state.dispatch_track_again(pairs.clone()));
+            assert!(
+                !state.should_suppress_error(&context, &error),
+                "{error:?} must reach the banner"
+            );
             state.record_error(&context, &error);
-            assert!(!state.take_quiet_error(), "{error:?} must reach the banner");
             assert!(!state.full_refresh_failed);
             assert_eq!(state.refresh_failure(), None);
             assert!(

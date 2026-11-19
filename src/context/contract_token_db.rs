@@ -755,7 +755,7 @@ impl AppContext {
     fn try_identity_tokens_view_prefs(
         &self,
     ) -> std::result::Result<IdentityTokensViewPrefs, TaskError> {
-        let kv = self.det_kv()?;
+        let kv = self.app_kv();
         Ok(kv
             .get(DetScope::Global, IdentityTokensViewPrefs::KV_KEY)
             .map_err(token_err)?
@@ -767,7 +767,7 @@ impl AppContext {
         &self,
         prefs: &IdentityTokensViewPrefs,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
+        let kv = self.app_kv();
         kv.put(DetScope::Global, IdentityTokensViewPrefs::KV_KEY, prefs)
             .map_err(token_err)
     }
@@ -790,7 +790,9 @@ impl AppContext {
     /// Upstream-fed token-balance view (T6 seam). Reads the lock-free
     /// snapshot the wallet backend refreshes from the upstream identity-sync
     /// loop.
-    fn token_balances_view(&self) -> std::result::Result<UpstreamTokenBalances, TaskError> {
+    pub(crate) fn token_balances_view(
+        &self,
+    ) -> std::result::Result<UpstreamTokenBalances, TaskError> {
         Ok(self.wallet_backend()?.token_balances())
     }
 
@@ -1011,6 +1013,41 @@ mod tests {
 
     fn ident(b: u8) -> Identifier {
         Identifier::from([b; 32])
+    }
+
+    #[test]
+    fn identity_token_view_preferences_follow_the_device() {
+        let dir = tempfile::tempdir().expect("device data dir");
+        let testnet = crate::context::test_support::test_app_context(dir.path());
+        let mainnet = AppContext::new(
+            dir.path().to_path_buf(),
+            Network::Mainnet,
+            testnet.db.clone(),
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            testnet.app_kv(),
+            testnet.secret_store(),
+            Default::default(),
+        )
+        .expect("second network context");
+        testnet.set_det_kv_override_for_test(empty_kv());
+        mainnet.set_det_kv_override_for_test(empty_kv());
+
+        let mut prefs = IdentityTokensViewPrefs {
+            filter: "Coffee".into(),
+            hide_zero_balances: true,
+            sort: crate::model::token::TokenListSort::NameAToZ,
+        };
+        testnet
+            .save_identity_tokens_view_prefs(&prefs)
+            .expect("save");
+        assert_eq!(mainnet.identity_tokens_view_prefs(), prefs);
+        prefs.filter = "Tea".into();
+        mainnet
+            .save_identity_tokens_view_prefs(&prefs)
+            .expect("save");
+        assert_eq!(testnet.identity_tokens_view_prefs(), prefs);
     }
 
     /// The once-per-identity claim hint is per (identity, token) and holds

@@ -534,13 +534,16 @@ fn a_failed_refresh_shows_inline_and_keeps_the_rows() {
 
         // A refresh already running elsewhere is not a failure to the user.
         let busy = TaskError::TokenBalanceRefreshInProgress;
-        hub.state_mut()
-            .0
-            .display_backend_task_error(&BackendTaskContext::TokenBalanceRefresh, &busy);
+        let foreign = BackendTaskContext::TokenBalanceRefresh;
         assert!(
-            !hub.state_mut().0.display_task_error(&busy),
+            !hub.state()
+                .0
+                .should_suppress_backend_task_error(&foreign, &busy),
             "an error of another screen's refresh is not this tab's to swallow"
         );
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&foreign, &busy);
     });
 }
 
@@ -1364,6 +1367,278 @@ fn a_pair_check_on_my_tokens_leaves_the_hidden_hubs_failure() {
     });
 }
 
+fn pre_programmed_token(
+    name: &str,
+    admin: bool,
+    scheduled_at: u64,
+    recipient: Identifier,
+) -> TokenConfiguration {
+    use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+    use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+
+    let mut token = token_config(name, admin);
+    let TokenDistributionRules::V0(mut rules) = token.distribution_rules().clone() else {
+        panic!("presets are version 0");
+    };
+    rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+        TokenPreProgrammedDistributionV0 {
+            distributions: BTreeMap::from([(scheduled_at, BTreeMap::from([(recipient, 500)]))]),
+        },
+    ));
+    token.set_distribution_rules(TokenDistributionRules::V0(rules));
+    token
+}
+
+#[test]
+fn hub_token_regression_scheduled_recipients_do_not_promise_home_claims() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let tokens = seed_contract(
+            &ctx,
+            0xC9,
+            Identifier::from([0xEE; 32]),
+            vec![
+                pre_programmed_token("Future", false, now + 86_400_000, identity),
+                pre_programmed_token("Past", false, 1, identity),
+            ],
+        );
+        for token in &tokens {
+            set_balance(&ctx, identity, *token, 0);
+        }
+        let mut home = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
+        assert!(
+            home.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
+            "membership in a schedule alone does not announce a ready claim"
+        );
+
+        set_balance(&ctx, identity, tokens[0], 100);
+        home.state_mut()
+            .0
+            .cached_data_changed(dash_evo_tool::backend_task::CacheUpdate {
+                network: ctx.network(),
+                domain: dash_evo_tool::backend_task::CacheDomain::Tokens,
+            });
+        home.run_steps(3);
+        assert!(home.query_by_label("1 Future").is_some());
+        assert!(
+            home.query_by_label(&token_copy::pending_claims_text(2))
+                .is_none()
+        );
+
+        let mut hub = mount_tokens_tab(&ctx);
+        assert_eq!(
+            hub.query_all_by_label(token_copy::STATUS_REWARDS).count(),
+            2
+        );
+        hub.get_by_label("Future").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label_contains("Claim them whenever").is_none());
+    });
+}
+
+#[test]
+fn hub_token_regression_missing_contract_keeps_balance_and_reloads_details() {
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    use dash_evo_tool::backend_task::contract::ContractTask;
+
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let token = seed_contract(
+            &ctx,
+            0xC1,
+            identity,
+            vec![pre_programmed_token("Coffee", true, 1, identity)],
+        )[0];
+        let other = seed_contract(&ctx, 0xC2, identity, vec![token_config("Tea", false)])[0];
+        let contract_id = Identifier::from([0xC1; 32]);
+        let contract = ctx
+            .get_contract_by_id(&contract_id)
+            .expect("read")
+            .expect("cached");
+        ctx.remove_contract(&contract_id)
+            .expect("remove cached contract");
+        set_balance(&ctx, identity, token, 125);
+        set_balance(&ctx, identity, other, 300);
+        set_balance(&ctx, Identifier::from([0xFF; 32]), token, 9_900);
+
+        let home = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
+        assert!(home.query_by_label("1.25 Coffee").is_some());
+        let mut hub = mount_tokens_tab(&ctx);
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+        assert!(hub.query_by_label("3 Tea").is_some());
+        assert!(hub.query_by_label(token_copy::STATUS_REWARDS).is_some());
+        assert!(hub.query_by_label(token_copy::EMPTY_HEADING).is_none());
+        assert!(hub.query_by_label(token_copy::DISMISSED_HEADING).is_none());
+
+        hub.get_by_label("Coffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+        assert!(hub.query_by_label(token_copy::MANAGE_LABEL).is_none());
+        assert!(hub.query_by_label(token_copy::ISSUED_BY_LABEL).is_none());
+        assert!(hub.query_by_label(token_copy::REWARDS_OVER_TIME).is_some());
+        let reload = |hub: &mut HubHarness| {
+            hub.state_mut().1.clear();
+            hub.get_by_label(token_copy::RELOAD_DETAILS_LABEL).click();
+            hub.run_steps(3);
+            hub.state()
+                .1
+                .iter()
+                .find_map(|action| match action {
+                    AppAction::BackendTaskWithContext {
+                        context,
+                        task: BackendTask::ContractTask(task),
+                    } if **task == ContractTask::FetchContracts(vec![contract_id]) => {
+                        Some(context.clone())
+                    }
+                    _ => None,
+                })
+                .expect("a correlated contract reload")
+        };
+        let first = reload(&mut hub);
+        hub.state_mut().0.display_backend_task_result(
+            &first,
+            BackendTaskSuccessResult::FetchedContracts(vec![None]),
+        );
+        hub.run_steps(3);
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+        assert!(
+            hub.query_by_label(token_copy::RELOAD_DETAILS_FAILED)
+                .is_some()
+        );
+        let second = reload(&mut hub);
+        ctx.insert_contract_if_not_exists(
+            &contract.contract,
+            None,
+            InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .expect("persist fetched contract");
+        let result = BackendTaskSuccessResult::FetchedContracts(vec![Some(contract.contract)]);
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&first, result.clone());
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::ISSUED_BY_LABEL).is_none());
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&second, result);
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::ISSUED_BY_YOU).is_some());
+        assert!(hub.query_by_label(token_copy::MANAGE_LABEL).is_some());
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+    });
+}
+
+#[test]
+fn hub_token_regression_hidden_hub_retries_only_its_deferred_requests() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+
+    for track_again in [false, true] {
+        with_isolated_data_dir(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let _guard = runtime.enter();
+            let mut app = crate::support::mount_app(RootScreenType::RootScreenIdentityHub);
+            let ctx = app.state().current_app_context().clone();
+            ctx.connection_status().set_masternodes_ready(true);
+            let identity = seed_signing_identity(&ctx, 0xA2);
+            let token = seed_contract(&ctx, 0xC1, identity, vec![token_config("Coffee", false)])[0];
+            let pair = IdentityTokenIdentifier {
+                identity_id: identity,
+                token_id: token,
+            };
+            let task = BackendTask::TokenTask(Box::new(if track_again {
+                ctx.mark_token_balance_untracked(pair)
+                    .expect("dismiss the token");
+                TokenTask::TrackTokenBalancesAgain(vec![pair])
+            } else {
+                TokenTask::QueryIdentityTokenBalance(pair)
+            }));
+            app.state_mut().test_capture_dispatches();
+            *routed_hub(&mut app) = IdentityHubScreen::new(&ctx);
+            routed_hub(&mut app).select_tab(IdentityHubTab::Tokens);
+            app.run_steps(4);
+            let arrival = routed_balance_refreshes(&app).pop().expect("arrival");
+            deliver_to_app(
+                &mut app,
+                TaskResult::Success {
+                    context: arrival,
+                    result: Box::new(BackendTaskSuccessResult::FetchedTokenBalances),
+                },
+            );
+            if track_again {
+                app.get_by_label(token_copy::TRACK_AGAIN_LABEL).click();
+            } else {
+                app.get_by_label("More actions for Coffee").click();
+                app.run_steps(2);
+                app.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+            }
+            app.run_steps(3);
+            let own = app
+                .state()
+                .test_captured_dispatches()
+                .iter()
+                .find_map(|(dispatched, context)| (dispatched == &task).then(|| context.clone()))
+                .expect("the hub dispatched the request");
+            let foreign = BackendTaskContext::for_dispatch_for_test(&task);
+            app.state_mut().test_record_visible_dispatch(&foreign);
+
+            app.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
+            app.run_steps(3);
+            let busy = TaskError::TokenBalanceRefreshInProgress;
+            let message = busy.to_string();
+            deliver_to_app(
+                &mut app,
+                TaskResult::Error {
+                    context: own,
+                    error: busy,
+                },
+            );
+            assert!(app.query_by_label_contains(&message).is_none());
+
+            let before = app.state().test_captured_dispatches().len();
+            app.state_mut().selected_main_screen = RootScreenType::RootScreenIdentityHub;
+            app.run_steps(3);
+            let retry = app.state().test_captured_dispatches()[before..]
+                .iter()
+                .find_map(|(retry, context)| {
+                    (if track_again {
+                        retry == &task
+                    } else {
+                        matches!(retry, BackendTask::TokenTask(task)
+                        if matches!(**task, TokenTask::QueryMyTokenBalances))
+                    })
+                    .then(|| context.clone())
+                })
+                .expect("the hub retries after returning");
+            app.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
+            app.run_steps(3);
+            let error = TaskError::NoIdentitiesFound;
+            let genuine_message = error.to_string();
+            deliver_to_app(
+                &mut app,
+                TaskResult::Error {
+                    context: retry,
+                    error,
+                },
+            );
+            assert!(app.query_by_label_contains(&genuine_message).is_some());
+
+            deliver_to_app(
+                &mut app,
+                TaskResult::Error {
+                    context: foreign,
+                    error: TaskError::TokenBalanceRefreshInProgress,
+                },
+            );
+            assert!(app.query_by_label_contains(&message).is_some());
+        });
+    }
+}
+
 #[test]
 fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
     use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
@@ -2163,11 +2438,13 @@ fn a_pair_check_failure_on_a_visible_row_reaches_the_banner_but_a_refusal_does_n
         hub.run_steps(2);
         let check = pair_check_context(&hub);
         let busy = TaskError::TokenBalanceRefreshInProgress;
-        hub.state_mut().0.display_backend_task_error(&check, &busy);
         assert!(
-            hub.state_mut().0.display_task_error(&busy),
+            hub.state()
+                .0
+                .should_suppress_backend_task_error(&check, &busy),
             "a refusal is no failure: the check is sent again later"
         );
+        hub.state_mut().0.display_backend_task_error(&check, &busy);
     });
 }
 

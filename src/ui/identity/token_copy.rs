@@ -75,8 +75,13 @@ pub const REWARDS_LABEL: &str = "Rewards";
 pub const COPY_LABEL: &str = "Copy";
 pub const CAN_BE_SENT_YES: &str = "Yes, to any identity.";
 pub const CAN_BE_SENT_NO: &str = "No. This token cannot be sent to other identities.";
-pub const REWARDS_OVER_TIME: &str = "Paid out to holders over time. Claim them whenever you like.";
+pub const REWARDS_OVER_TIME: &str = "This token distributes rewards over time.";
 pub const REWARDS_NONE: &str = "This token pays no rewards.";
+pub const RELOAD_DETAILS_LABEL: &str = "Reload token details";
+pub const RELOADING_DETAILS: &str = "Reloading token details…";
+pub const CONTRACT_MISSING: &str = "Reload token details to see who issued this token.";
+pub const RELOAD_DETAILS_FAILED: &str =
+    "Token details couldn't be reloaded. Check your connection and try again.";
 pub const ISSUED_BY_YOU: &str = "Issued by you";
 pub const ISSUED_BY_SOMEONE_ELSE: &str = "Issued by someone else";
 

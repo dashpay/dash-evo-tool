@@ -1223,12 +1223,15 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) -> bool {
+        self.tokens_state.should_suppress_error(context, error)
+    }
+
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        // A token request refused while a refresh runs or the network syncs
-        // is no failure; every real one gets the banner.
-        if self.tokens_state.take_quiet_error() {
-            return true;
-        }
         // The status refresh runs in the background; a failure keeps the stored
         // status and retries on the next cadence tick instead of raising a banner.
         if matches!(error, TaskError::UsernameRequestRefreshFailed { .. }) {

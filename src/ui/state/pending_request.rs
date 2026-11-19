@@ -117,6 +117,11 @@ impl<S> PendingRequests<S> {
         AppAction::BackendTaskWithContext { task, context }
     }
 
+    /// Whether this collection is waiting for this exact dispatch.
+    pub fn owns(&self, context: &BackendTaskContext) -> bool {
+        self.slots.iter().any(|(own, _)| own == context)
+    }
+
     /// End the wait on the request `context` is, returning its subject. Any
     /// other context leaves every request outstanding.
     pub fn settle(&mut self, context: &BackendTaskContext) -> Option<S> {

@@ -1418,17 +1418,34 @@ fn transfer_sources(
         .collect()
 }
 
-/// The Max of `sources`: all of their balance, with the fee taken out of it,
-/// or zero when that balance cannot pay the fee.
-fn transfer_max(estimator: &PlatformFeeEstimator, sources: &[(PlatformAddress, u64)]) -> u64 {
-    let spendable = sources
-        .iter()
-        .fold(0u64, |total, (_, balance)| total.saturating_add(*balance));
-    if spendable > estimate_platform_fee(estimator, sources.len(), 1) {
-        spendable
-    } else {
-        0
+/// The largest gross Platform transfer and its estimated fee.
+pub(crate) struct PlatformTransferMax {
+    /// Credits sent from the inputs before the fee, or zero if none can pay it.
+    pub amount: Credits,
+    /// Fee of the chosen inputs, or of the capped set if no prefix can pay.
+    pub estimated_fee: Credits,
+}
+
+fn transfer_max(
+    estimator: &PlatformFeeEstimator,
+    sources: &[(PlatformAddress, u64)],
+) -> PlatformTransferMax {
+    let mut max = PlatformTransferMax {
+        amount: 0,
+        estimated_fee: estimate_platform_fee(estimator, sources.len(), 1),
+    };
+    let mut amount = 0u64;
+    for (index, (_, balance)) in sources.iter().enumerate() {
+        amount = amount.saturating_add(*balance);
+        let estimated_fee = estimate_platform_fee(estimator, index + 1, 1);
+        if amount > estimated_fee && amount > max.amount {
+            max = PlatformTransferMax {
+                amount,
+                estimated_fee,
+            };
+        }
     }
+    max
 }
 
 /// Allocates a Platform → Platform transfer of `amount_credits`.
@@ -1458,7 +1475,7 @@ pub(crate) fn allocate_platform_transfer(
     if amount_credits > spendable {
         return AddressAllocationResult {
             refusal: Some(PlatformTransferRefusal::ExceedsSpendable {
-                max: transfer_max(estimator, &sources),
+                max: transfer_max(estimator, &sources).amount,
             }),
             ..kept_back
         };
@@ -1498,14 +1515,13 @@ pub(crate) fn allocate_platform_transfer(
     }
 }
 
-/// The Platform → Platform Max: the balance of the addresses one transfer
-/// may spend, with the fee taken out of it ([`allocate_platform_transfer`]),
-/// or zero when that balance cannot pay the fee.
+/// The Platform → Platform Max uses the largest balance prefix that covers
+/// its fee ([`allocate_platform_transfer`]).
 pub(crate) fn platform_transfer_max(
     estimator: &PlatformFeeEstimator,
     addresses: &[(PlatformAddress, Address, u64)],
     destination: Option<&PlatformAddress>,
-) -> u64 {
+) -> PlatformTransferMax {
     transfer_max(
         estimator,
         &transfer_sources(estimator, &sorted_sources(addresses, destination)),
@@ -3057,7 +3073,7 @@ mod tests {
         // A dust address next to a funded one, as a previous spend can leave.
         let addresses = addrs(&[(1, 1_000_000_000), (2, min_input / 2)]);
 
-        let max = platform_transfer_max(&estimator, &addresses, None);
+        let max = platform_transfer_max(&estimator, &addresses, None).amount;
         let max_plan = allocate_platform_transfer(&estimator, &addresses, max, None);
         assert_eq!(max_plan.shortfall, 0);
         assert!(
@@ -3164,7 +3180,7 @@ mod tests {
             for (amount, label) in [
                 (amount, "random"),
                 (
-                    platform_transfer_max(&estimator, &addresses, destination.as_ref()),
+                    platform_transfer_max(&estimator, &addresses, destination.as_ref()).amount,
                     "max",
                 ),
             ] {
@@ -3270,7 +3286,7 @@ mod tests {
             allocate_platform_transfer(&estimator, &addresses, amount, Some(&destination));
         assert_eq!(transfer.inputs, plan.inputs);
         assert!(!transfer.fee_from_amount);
-        let max = platform_transfer_max(&estimator, &addresses, Some(&destination));
+        let max = platform_transfer_max(&estimator, &addresses, Some(&destination)).amount;
         assert_eq!(max, balance);
         let max_plan = allocate_platform_transfer(&estimator, &addresses, max, Some(&destination));
         assert_eq!(max_plan.shortfall, 0);
@@ -3290,7 +3306,7 @@ mod tests {
         let addresses = addrs(&balances);
         let spendable: u64 = balances.iter().rev().take(cap).map(|(_, b)| b).sum();
 
-        let max = platform_transfer_max(&estimator, &addresses, None);
+        let max = platform_transfer_max(&estimator, &addresses, None).amount;
         assert_eq!(max, spendable, "the input cap bounds the Max");
         let plan = allocate_platform_transfer(&estimator, &addresses, max, None);
         assert_eq!(plan.shortfall, 0, "the Max is accepted");
@@ -3298,14 +3314,47 @@ mod tests {
 
         let fee = estimate_platform_fee(&estimator, 1, 1);
         assert_eq!(
-            platform_transfer_max(&estimator, &addrs(&[(1, fee)]), None),
+            platform_transfer_max(&estimator, &addrs(&[(1, fee)]), None).amount,
             0
         );
         assert_eq!(
-            platform_transfer_max(&estimator, &addrs(&[(1, 900)]), Some(&pa(1))),
+            platform_transfer_max(&estimator, &addrs(&[(1, 900)]), Some(&pa(1))).amount,
             0,
             "the destination is not a source"
         );
+    }
+
+    #[test]
+    fn platform_transfer_max_uses_the_largest_fundable_prefix() {
+        let estimator = PlatformFeeEstimator::latest();
+        let minimum = estimator.min_platform_input();
+        for (addresses, expected_inputs) in [
+            (
+                addrs(&[(2, minimum), (1, 20_000_000)]),
+                BTreeMap::from([(pa(1), 20_000_000)]),
+            ),
+            (
+                addrs(&[(3, minimum), (2, 10_000_000), (1, 18_000_000)]),
+                BTreeMap::from([(pa(1), 18_000_000), (pa(2), 10_000_000)]),
+            ),
+            (
+                addrs(&[(1, 14_000_000), (2, 13_000_000)]),
+                BTreeMap::from([(pa(1), 14_000_000), (pa(2), 13_000_000)]),
+            ),
+        ] {
+            let max = platform_transfer_max(&estimator, &addresses, None);
+            assert_eq!(max.amount, expected_inputs.values().sum::<u64>());
+            assert_eq!(
+                max.estimated_fee,
+                estimate_platform_fee(&estimator, expected_inputs.len(), 1)
+            );
+
+            let plan = allocate_platform_transfer(&estimator, &addresses, max.amount, None);
+            assert_eq!(plan.shortfall, 0);
+            assert_eq!(plan.inputs, expected_inputs);
+            assert!(plan.fee_from_amount);
+            assert_eq!(plan.estimated_fee, max.estimated_fee);
+        }
     }
 
     #[test]

@@ -2643,8 +2643,12 @@ pub enum TaskError {
     /// largest document. Platform would register the type, but no full
     /// document fits it and its entry size can never change, so the request
     /// is refused before signing. Sizes are in bytes.
+    ///
+    /// The refusal does not say whether the type is new or already
+    /// registered, and the remedy differs: only a new type can take a larger
+    /// entry size. The message gives both.
     #[error(
-        "The private document type {document_type} stores entries of {entry_size} bytes, but its largest document needs {minimum_entry_size}. Set its entry size to at least {minimum_entry_size}, or make its fields smaller, and try again."
+        "The private document type {document_type} stores entries of {entry_size} bytes, but its largest document needs {minimum_entry_size}. For a new type, set its entry size to at least {minimum_entry_size}. For a type that is already registered, the entry size cannot change: make the added fields smaller, remove them, or define a new type."
     )]
     PrivateDocumentEntrySizeTooSmall {
         document_type: String,
@@ -5334,7 +5338,7 @@ mod tests {
         );
         assert_eq!(
             too_small.to_string(),
-            "The private document type request stores entries of 375 bytes, but its largest document needs 398. Set its entry size to at least 398, or make its fields smaller, and try again."
+            "The private document type request stores entries of 375 bytes, but its largest document needs 398. For a new type, set its entry size to at least 398. For a type that is already registered, the entry size cannot change: make the added fields smaller, remove them, or define a new type."
         );
 
         let unbounded = TaskError::from(SdkError::Protocol(

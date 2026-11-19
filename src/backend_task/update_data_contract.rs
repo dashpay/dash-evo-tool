@@ -253,6 +253,16 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(update.version(), version_before);
+        // `request` is already registered, so raising its entry size is not
+        // open to the user: the update would fail Platform's own validation.
+        // The message must say what is.
+        let message = result.expect_err("refused").to_string();
+        assert!(
+            message.contains(
+                "For a type that is already registered, the entry size cannot change: make the added fields smaller, remove them, or define a new type."
+            ),
+            "{message}"
+        );
     }
 
     #[test]

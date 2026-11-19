@@ -379,3 +379,88 @@ impl AppContext {
         }
     }
 }
+
+#[cfg(test)]
+mod qr_generation_tests {
+    use super::*;
+    use crate::context::test_support::{bare_user_identity, wired_test_app_context};
+    use crate::model::dashpay::ContactQr;
+    use crate::model::qualified_identity::DPNSNameInfo;
+    use crate::model::wallet::Wallet;
+    use crate::model::wallet::birth_height::WalletOrigin;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+    use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    use platform_wallet::wallet::identity::crypto::auto_accept::verify_auto_accept_proof;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_contact_qr_uses_the_linked_wallet_through_the_secret_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let mut wallets = Vec::new();
+        for label in ["Unrelated", "Owner"] {
+            let seed = crate::test_support::keys::seed();
+            let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(label.into()), None)
+                .expect("wallet");
+            let (hash, wallet) = ctx
+                .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                .expect("register wallet");
+            ctx.wallet_backend()
+                .expect("wallet backend")
+                .register_wallet_from_seed(&hash, &seed, Some(0))
+                .await
+                .expect("register upstream wallet");
+            wallets.push((hash, wallet, seed));
+        }
+        wallets.sort_by_key(|wallet| wallet.0);
+        let unrelated = &wallets[0];
+        let owner = &wallets[1];
+        let owner_id = Identifier::new([2; 32]);
+        let mut identity = bare_user_identity(owner_id, Network::Testnet);
+        identity.dpns_names.push(DPNSNameInfo {
+            name: "alice.dash".into(),
+            acquired_at: 0,
+        });
+        for (hash, wallet, _) in &wallets {
+            identity.associated_wallets.insert(*hash, wallet.clone());
+        }
+        ctx.insert_local_qualified_identity(&identity, &Some((owner.0, 0)))
+            .expect("store owner link");
+        assert_ne!(identity.dashpay_wallet_seed_hash(), Some(owner.0));
+
+        let sdk = crate::context::test_support::mock_sdk_for(&ctx);
+        let result = ctx
+            .run_dashpay_task(DashPayTask::GenerateAutoAcceptQrCode { identity }, &sdk)
+            .await
+            .expect("generate QR through the production task");
+        let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(uri) = result else {
+            panic!("expected generated contact QR");
+        };
+        let now = u64::try_from(chrono::Utc::now().timestamp()).expect("current time");
+        let sender = Identifier::new([3; 32]);
+        let proof = ContactQr::parse(&uri, now)
+            .expect("parse upstream QR")
+            .sign_proof(&sender, &owner_id, 3, now)
+            .expect("sign contact proof");
+        for (wallet, expected) in [(owner, true), (unrelated, false)] {
+            let upstream = UpstreamWallet::from_seed_bytes(
+                wallet.2,
+                Network::Testnet,
+                WalletAccountCreationOptions::None,
+            )
+            .expect("upstream wallet");
+            assert_eq!(
+                verify_auto_accept_proof(
+                    &upstream,
+                    Network::Testnet,
+                    &proof,
+                    &sender,
+                    &owner_id,
+                    3
+                )
+                .expect("verify proof"),
+                expected
+            );
+        }
+    }
+}

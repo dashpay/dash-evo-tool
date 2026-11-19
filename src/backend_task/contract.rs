@@ -234,15 +234,12 @@ pub(super) async fn prepare_contract_signing_key(
     identity: &QualifiedIdentity,
     key: &IdentityPublicKey,
 ) -> Result<u64, super::error::TaskError> {
-    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
     use dash_sdk::query_types::IdentityBalance;
-    let limited = key.has_limits()
-        || identity
-            .identity
-            .public_keys()
-            .get(&key.id())
-            .is_some_and(|key| key.has_limits());
+    let current_key = identity
+        .current_public_key(key)
+        .ok_or(super::error::TaskError::ContractSigningKeyUnavailable)?;
+    let limited = current_key.has_limits();
     let block_time_ms = if limited
         && sdk
             .protocol_version_info()
@@ -287,24 +284,20 @@ pub(super) fn validate_contract_signing_key(
     block_time_ms: u64,
 ) -> Result<(), super::error::TaskError> {
     use crate::model::identity_key_usability::{SigningScope, limits_permit};
-    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     let current_key = identity
-        .identity
-        .public_keys()
-        .get(&key.id())
-        .unwrap_or(key);
+        .current_public_key(key)
+        .ok_or(super::error::TaskError::ContractSigningKeyUnavailable)?;
     let scope = SigningScope::DataContract { protocol_version };
-    if !limits_permit(key, scope) || !limits_permit(current_key, scope) {
+    if !limits_permit(current_key, scope) {
         if protocol_version.is_none() {
             return Err(super::error::TaskError::ContractSigningProtocolUnconfirmed);
         }
         return Err(super::error::TaskError::ContractSigningKeyHasLimits);
     }
-    if [key, current_key].into_iter().any(|key| {
-        crate::model::identity_key_usability::key_caveats(key, scope, block_time_ms)
-            .iter()
-            .any(crate::model::identity_key_usability::KeyCaveat::blocks_signing)
-    }) {
+    if crate::model::identity_key_usability::key_caveats(current_key, scope, block_time_ms)
+        .iter()
+        .any(crate::model::identity_key_usability::KeyCaveat::blocks_signing)
+    {
         return Err(super::error::TaskError::ContractSigningKeyUnavailable);
     }
     Ok(())
@@ -349,6 +342,28 @@ mod tests {
     }
 
     #[test]
+    fn contract_preflight_uses_a_matching_current_keys_raised_expiry() {
+        let selected = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1_000));
+        let current = selected.clone().with_limits(None, Some(2_000));
+        let identity = identity_holding(&[current]);
+        assert!(validate_contract_signing_key(&identity, &selected, Some(14), 1_500).is_ok());
+    }
+
+    #[test]
+    fn contract_preflight_refuses_absent_or_replaced_current_keys() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let selected = auth_key(1, SecurityLevel::CRITICAL);
+        let mut replaced = selected.clone();
+        replaced.set_read_only(true);
+        for identity in [identity_holding(&[]), identity_holding(&[replaced])] {
+            assert!(matches!(
+                validate_contract_signing_key(&identity, &selected, Some(14), 0),
+                Err(super::super::error::TaskError::ContractSigningKeyUnavailable)
+            ));
+        }
+    }
+
+    #[test]
     fn interop_contract_preflight_uses_the_verified_protocol() {
         for (budget, expiry) in [(Some(200_000_000_000), None), (None, Some(u64::MAX))] {
             let key = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
@@ -386,12 +401,12 @@ mod tests {
                     Some(15),
                     1
                 ),
-                Err(super::super::error::TaskError::ContractSigningKeyHasLimits)
+                Err(super::super::error::TaskError::ContractSigningKeyUnavailable)
             ));
             let identity = identity_holding(&[limited]);
             assert!(matches!(
                 validate_contract_signing_key(&identity, &original, Some(15), 1),
-                Err(super::super::error::TaskError::ContractSigningKeyHasLimits)
+                Err(super::super::error::TaskError::ContractSigningKeyUnavailable)
             ));
         }
     }

@@ -95,8 +95,11 @@ impl TransferScreen {
         let max_amount = identity.identity.balance();
         let identity_clone = identity.clone();
         let selected_key = identity_clone.transfer_signing_key();
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
                 MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error)
                     .disable_auto_dismiss();
                 None

@@ -1334,22 +1334,25 @@ impl QualifiedIdentity {
     }
 
     /// The key to sign a batch of one token transfer or claim on
-    /// `contract_id` with: a CRITICAL AUTHENTICATION key, else a CRITICAL
-    /// TRANSFER key, which DPP also accepts for such a batch (and requires
-    /// CRITICAL for), each picked as [`Self::signing_key_now`] picks.
+    /// `contract_id` with: a CRITICAL AUTHENTICATION or TRANSFER key, which
+    /// DPP accepts for such a batch. Unlimited keys precede limited keys
+    /// across both purposes; within each class AUTHENTICATION comes first.
     pub fn single_token_transition_key(
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> Option<&IdentityPublicKey> {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
         let scope = SigningScope::ContractWide { contract_id };
         SINGLE_TOKEN_TRANSITION_PURPOSES
             .into_iter()
-            .find_map(|purpose| {
+            .filter_map(|purpose| {
                 self.signing_key_now(
                     KeyRequirements::new(purpose, &[SecurityLevel::CRITICAL], scope)
                         .with_key_types(PLATFORM_SIGNING_KEY_TYPES),
                 )
             })
+            .min_by_key(|key| (key.has_limits(), key.purpose() != Purpose::AUTHENTICATION))
     }
 
     /// Whether this device can sign a batch of one token transfer or claim on
@@ -4065,6 +4068,38 @@ mod protocol_v14_compat_tests {
         ]);
         assert!(qi.single_token_transition_key(contract_id).is_none());
         assert!(!qi.holds_single_token_transition_key());
+    }
+
+    #[test]
+    fn single_token_transition_prefers_unlimited_keys_across_purposes() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        for (auth_limited, transfer_limited, expected) in [
+            (true, false, 2),
+            (false, true, 1),
+            (false, false, 1),
+            (true, true, 1),
+        ] {
+            let mut auth = auth_key(1, SecurityLevel::CRITICAL);
+            let mut transfer = auth_key(2, SecurityLevel::CRITICAL);
+            transfer.set_purpose(Purpose::TRANSFER);
+            if auth_limited {
+                auth = auth.with_limits(Some(1_000), None);
+            }
+            if transfer_limited {
+                transfer = transfer.with_limits(Some(1_000), None);
+            }
+            let identity = identity_holding(&[auth, transfer]);
+            assert_eq!(
+                identity
+                    .single_token_transition_key(contract_id)
+                    .map(|key| key.id()),
+                Some(expected),
+                "unlimited keys precede limited keys across both purposes"
+            );
+        }
     }
 
     /// Regression: the single token transition key took any key type, so a

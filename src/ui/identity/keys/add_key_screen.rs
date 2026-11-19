@@ -137,7 +137,10 @@ impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let identity_clone = identity.clone();
         let selected_key = identity_clone.identity_update_signing_key();
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -178,7 +181,10 @@ impl AddKeyScreen {
     ) -> Self {
         let identity_clone = identity.clone();
         let selected_key = identity_clone.identity_update_signing_key();
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -224,7 +230,10 @@ impl AddKeyScreen {
     ) -> Self {
         let identity_clone = identity.clone();
         let selected_key = identity_clone.identity_update_signing_key();
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);

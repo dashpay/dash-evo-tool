@@ -8,12 +8,12 @@ use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
 use crate::model::masternode_input::decode_identity_id;
-use crate::model::masternode_keys::MasternodeKeyHashes;
+use crate::model::masternode_keys::{MasternodeKeyHashes, stores_voting_private_key};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
-    PrivateKeyData, WalletDerivationPath, same_key,
+    PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
@@ -80,42 +80,18 @@ fn validate_identity_load_target(
 /// owner or payout key replaced by a rotation) is no longer offered for
 /// signing; its private material is kept.
 fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIdentity) {
-    // A key saved while discovery was running may belong to a different
-    // voter identity. Keep the stored voting key and its association together.
-    let voter_placement = new
-        .associated_voter_identity
-        .as_ref()
-        .map(|(_, key)| (PrivateKeyOnVoterIdentity, key.id()));
-    if let Some(placement) = voter_placement
-        && matches!(
-            new.private_keys.entry_at(&placement),
-            Some((_, PrivateKeyData::AtWalletDerivationPath(_)))
-        )
-        && stores_voting_key(&existing)
-    {
-        new.private_keys.remove_at(&placement);
-        new.associated_voter_identity = None;
+    if new.identity_type != IdentityType::User {
+        discard_shadowed_wallet_node_keys(new, &existing);
     }
     for (placement, (mut public_key, data)) in existing.private_keys.into_entries() {
-        let replaces_wallet_discovery = new.identity_type != IdentityType::User
-            && placement.0 == PrivateKeyOnMainIdentity
-            && matches!(
-                new.private_keys.entry_at(&placement),
-                Some((discovered, PrivateKeyData::AtWalletDerivationPath(_)))
-                    if same_key(&public_key.identity_public_key, &discovered.identity_public_key)
-            );
         if placement.0 == PrivateKeyOnMainIdentity
             && let Some(current) = new.identity.get_public_key_by_id(placement.1)
             && current.data() == public_key.identity_public_key.data()
         {
             public_key.identity_public_key = current.clone();
         }
-        if replaces_wallet_discovery {
-            new.private_keys.insert_at(placement, (public_key, data));
-        } else {
-            new.private_keys
-                .insert_if_absent(placement, (public_key, data));
-        }
+        new.private_keys
+            .insert_if_absent(placement, (public_key, data));
     }
     if new.alias.is_none() {
         new.alias = existing.alias;
@@ -128,6 +104,39 @@ fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIden
     }
     if new.associated_owner_key_id.is_none() {
         new.associated_owner_key_id = existing.associated_owner_key_id;
+    }
+}
+
+/// Drop automatically found paths when a fresh record holds the same owner
+/// or payout key, even at a historical placement. For voting, keep a saved
+/// key and its association together. Preserve an occupied destination slot
+/// even if it holds a different key.
+fn discard_shadowed_wallet_node_keys(new: &mut QualifiedIdentity, existing: &QualifiedIdentity) {
+    let shadowed: Vec<_> = new
+        .private_keys
+        .iter()
+        .filter_map(|(placement, (public_key, data))| {
+            if !matches!(data, PrivateKeyData::AtWalletDerivationPath(_)) {
+                return None;
+            }
+            let shadowed = existing.private_keys.has(placement)
+                || match placement.0 {
+                    PrivateKeyOnMainIdentity => existing
+                        .private_keys
+                        .candidates(&public_key.identity_public_key)
+                        .next()
+                        .is_some(),
+                    PrivateKeyOnVoterIdentity => stores_voting_private_key(existing),
+                    PrivateKeyTarget::PrivateKeyOnOperatorIdentity => false,
+                };
+            shadowed.then(|| placement.clone())
+        })
+        .collect();
+    for placement in shadowed {
+        new.private_keys.remove_at(&placement);
+        if placement.0 == PrivateKeyOnVoterIdentity {
+            new.associated_voter_identity = None;
+        }
     }
 }
 
@@ -620,10 +629,10 @@ impl AppContext {
     /// this load is still current: removal, a fresh import and protection
     /// changes may have happened while the network requests were in flight.
     ///
-    /// Stored voting keys are always kept, even ones the masternode list no
-    /// longer names: the list can lag behind the chain, so it cannot prove a
-    /// key retired. The node's page flags the mismatch and lets the user
-    /// remove the old key (`IdentityTask::RemoveRetiredVotingKey`).
+    /// Automatic discovery keeps stored voting keys, even ones the masternode
+    /// list no longer names. The list can lag behind the chain, so it cannot
+    /// prove a key retired. The node's page flags the mismatch and lets the
+    /// user remove the old key (`IdentityTask::RemoveRetiredVotingKey`).
     ///
     /// Once the target record is validated, the fetched balance is reconciled
     /// against a stored record's newer one.
@@ -1211,18 +1220,11 @@ fn stores_current_node_key(
     identity: &Identity,
     purpose: Purpose,
 ) -> bool {
-    existing
-        .private_keys
-        .identity_public_keys()
-        .iter()
-        .any(|(target, key)| {
-            let stored = &key.identity_public_key;
-            **target == PrivateKeyOnMainIdentity
-                && stored.purpose() == purpose
-                && identity
-                    .get_public_key_by_id(stored.id())
-                    .is_some_and(|current| current.purpose() == purpose && !current.is_disabled())
-        })
+    identity.public_keys().values().any(|key| {
+        key.purpose() == purpose
+            && !key.is_disabled()
+            && existing.private_keys.candidates(key).next().is_some()
+    })
 }
 
 /// The voting key hash to look for in this device's wallets on a load whose
@@ -1237,15 +1239,7 @@ fn wallet_voting_key_to_find(
     current: Option<[u8; 20]>,
     merging_into: Option<&QualifiedIdentity>,
 ) -> Option<[u8; 20]> {
-    current.filter(|_| !merging_into.is_some_and(stores_voting_key))
-}
-
-fn stores_voting_key(identity: &QualifiedIdentity) -> bool {
-    identity
-        .private_keys
-        .identity_public_keys()
-        .iter()
-        .any(|(target, _)| **target == PrivateKeyOnVoterIdentity)
+    current.filter(|_| !merging_into.is_some_and(stores_voting_private_key))
 }
 
 /// The key-storage entry for the active `purpose` key of `identity` whose
@@ -1320,6 +1314,13 @@ mod tests {
             rand::random(),
         )
         .await;
+        staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |node| {
+                node.identity_type = IdentityType::Masternode;
+                Ok(())
+            })
+            .unwrap();
         let before = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -1398,6 +1399,13 @@ mod tests {
             rand::random(),
         )
         .await;
+        staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |node| {
+                node.identity_type = IdentityType::Masternode;
+                Ok(())
+            })
+            .unwrap();
         let before = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -2858,16 +2866,15 @@ mod tests {
     /// whether the user saved a voting key after the lookup began.
     #[test]
     fn a_wallet_voting_key_never_displaces_a_stored_one() {
-        let (mut node, _) = masternode_shaped_qi();
+        let (mut node, _, stored) = node_with_stored_voter();
         node.private_keys = KeyStorage::default();
         let rotated_to: [u8; 20] = rand::random();
         assert_eq!(
             wallet_voting_key_to_find(Some(rotated_to), Some(&node)),
             Some(rotated_to),
-            "a node with no stored voting key looks for the current one"
+            "a public voter association leaves wallet discovery enabled"
         );
 
-        let stored = node_key(0, Purpose::VOTING, false);
         node.private_keys.insert_at(
             (V, stored.id()),
             (
@@ -4069,6 +4076,115 @@ mod tests {
         sdk
     }
 
+    async fn retirement_preserves_unrelated_voter_key(
+        auth_id: KeyID,
+        expected: crate::model::masternode_keys::VotingKeyAvailability,
+    ) {
+        let (ctx, _dir, id, _, current) = node_with_rotated_voting_key().await;
+        let bytes = crate::test_support::keys::secret_bytes();
+        let hash = PrivateKey::from_byte_array(&bytes, ctx.network)
+            .unwrap()
+            .public_key()
+            .pubkey_hash()
+            .to_byte_array();
+        let authentication = hash160_key(auth_id, Purpose::AUTHENTICATION, hash);
+        let operator = PrivateKeyTarget::PrivateKeyOnOperatorIdentity;
+        ctx.edit_local_qualified_identity(&id, |node| {
+            // File the retired key where an older release could leave it,
+            // freeing the voter slot for the unrelated key.
+            let old = node.private_keys.remove_at(&(V, 0)).unwrap();
+            node.private_keys.insert_at((operator, 0), old);
+            node.private_keys
+                .insert_non_encrypted((V, auth_id), (authentication.clone().into(), bytes))
+        })
+        .unwrap();
+        let sdk = node_and_voter_sdk(&ctx, id, current).await;
+        let (sender, _rx) = listening_sender(&ctx);
+
+        let result = ctx
+            .remove_retired_voting_key(&sdk, id, &sender)
+            .await
+            .unwrap();
+
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert!(
+            saved
+                .private_keys
+                .candidates(&authentication)
+                .next()
+                .is_some()
+        );
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+        assert!(*view.get(&V, auth_id).unwrap().expect("authentication key") == bytes);
+        assert!(
+            matches!(
+                result,
+                BackendTaskSuccessResult::RetiredVotingKeyRemoved { successor, .. }
+                    if successor == expected
+            ),
+            "expected {expected:?}, got {result:?}"
+        );
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_load_merge_finds_a_successor_beside_an_unrelated_voter_key() {
+        use crate::model::masternode_keys::VotingKeyAvailability;
+        retirement_preserves_unrelated_voter_key(7, VotingKeyAvailability::Available).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_load_merge_reports_missing_successor_when_voter_slot_is_occupied() {
+        use crate::model::masternode_keys::VotingKeyAvailability;
+        retirement_preserves_unrelated_voter_key(0, VotingKeyAvailability::Missing).await;
+    }
+
+    async fn preserves_legacy_main_voting_key(key_id: KeyID) {
+        let (ctx, _dir, id, _, current) = node_with_rotated_voting_key().await;
+        let bytes = crate::test_support::keys::secret_bytes();
+        let hash = PrivateKey::from_byte_array(&bytes, ctx.network)
+            .unwrap()
+            .public_key()
+            .pubkey_hash()
+            .to_byte_array();
+        let key = hash160_key(key_id, Purpose::VOTING, hash);
+        let voter_id = voter_identity_id(ProTxHash::from_byte_array(id.to_buffer()), &hash);
+        let mut voter =
+            Identity::create_basic_identity(voter_id, PlatformVersion::latest()).unwrap();
+        voter.add_public_keys([key.clone()]);
+        ctx.edit_local_qualified_identity(&id, |node| {
+            node.private_keys.remove_at(&(V, 0));
+            node.private_keys.remove_at(&(M, key.id()));
+            node.associated_voter_identity = Some((voter, key.clone()));
+            node.private_keys
+                .insert_non_encrypted((M, key.id()), (key.clone().into(), bytes))
+        })
+        .unwrap();
+        let sdk = node_and_voter_sdk(&ctx, id, current).await;
+
+        ctx.load_identity(&sdk, repeatable_load(id, None, None))
+            .await
+            .unwrap();
+
+        let node = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(node.associated_voter_identity.unwrap().0.id(), voter_id);
+        assert!(node.private_keys.is_in_vault(&(M, key.id())));
+        assert!(node.private_keys.candidates(&key).next().is_some());
+        assert!(node.private_keys.entry_at(&(V, 0)).is_none());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_load_merge_preserves_the_associated_voter_with_a_legacy_main_key() {
+        preserves_legacy_main_voting_key(8).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_load_merge_preserves_a_legacy_voter_in_the_owner_slot() {
+        preserves_legacy_main_voting_key(0).await;
+    }
+
     /// Removing a retired voting key looks again in the wallets, so the wallet
     /// holding the current key takes its place without another manual load.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4324,6 +4440,69 @@ mod tests {
         let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
         assert!(*view.get(&M, 0).unwrap().expect("owner key") == *bytes);
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_load_merge_does_not_shadow_legacy_owner_or_payout_keys() {
+        let (ctx, _dir, seed_hash, id, sdk) = wallet_held_node().await;
+        ctx.load_identity(&sdk, repeatable_load(id, None, None))
+            .await
+            .unwrap();
+        let mut loaded = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        let claim = ctx.begin_identity_load(id, None).unwrap();
+        let operator = PrivateKeyTarget::PrivateKeyOnOperatorIdentity;
+        for (key_id, path) in [(0, WALLET_NODE_OWNER_PATH), (1, WALLET_NODE_PAYOUT_PATH)] {
+            let bytes = wallet_reference(seed_hash, path)
+                .derivation_path
+                .derive_priv_ecdsa_for_master_seed(&*WALLET_NODE_SEED, ctx.network)
+                .unwrap()
+                .to_priv()
+                .inner
+                .to_bytes();
+            ctx.edit_local_qualified_identity(&id, |current| {
+                let entry = current.private_keys.remove_at(&(M, key_id)).unwrap();
+                current
+                    .private_keys
+                    .insert_at((operator.clone(), key_id), entry);
+                let key = current.identity.get_public_key_by_id(key_id).unwrap();
+                // Key Info reuses the matching historical placement.
+                let placement = current.private_keys.first_live_candidate(key).unwrap();
+                current
+                    .private_keys
+                    .insert_non_encrypted(placement, (key.clone().into(), *bytes))
+            })
+            .unwrap();
+        }
+        ctx.finish_identity_load_storage(
+            &mut loaded,
+            IdentityLoadMode::MergeIntoExisting,
+            None,
+            &claim,
+            None,
+            BalanceProvenance::Unobserved,
+        )
+        .unwrap();
+        drop(claim);
+
+        let stored = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        for key_id in [0, 1] {
+            assert!(stored.private_keys.is_in_vault(&(operator.clone(), key_id)));
+            assert!(stored.wallet_masternode_withdrawal(key_id).is_none());
+        }
+        assert_eq!(withdrawal_key_ids(&stored), vec![0, 1]);
+        ctx.load_identity(&sdk, repeatable_load(id, None, None))
+            .await
+            .unwrap();
+        let reloaded = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        for (key_id, purpose) in [(0, Purpose::OWNER), (1, Purpose::TRANSFER)] {
+            assert!(stores_current_node_key(
+                &reloaded,
+                &reloaded.identity,
+                purpose
+            ));
+            assert!(reloaded.wallet_masternode_withdrawal(key_id).is_none());
+        }
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

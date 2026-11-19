@@ -122,6 +122,12 @@ pub fn stores_voting_key(node: &QualifiedIdentity) -> bool {
     voting_keys(node).next().is_some()
 }
 
+/// Whether the node has a private-key entry for a recognized voting key.
+/// A public voter association by itself leaves wallet discovery enabled.
+pub(crate) fn stores_voting_private_key(node: &QualifiedIdentity) -> bool {
+    !voting_key_placements(node, |_| true).is_empty()
+}
+
 /// The stored voting state of `node` that differs from the masternode list's
 /// current voting hash. An exact private-key copy may be filed on any target.
 pub fn retired_voting_keys(node: &QualifiedIdentity, current: [u8; 20]) -> RetiredVotingKeys {

@@ -1167,38 +1167,32 @@ impl QualifiedIdentity {
     }
 
     pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
-        let mut keys = vec![];
-
-        // Check the main identity's public keys
-        for (target, public_key) in self.private_keys.identity_public_keys() {
-            // Platform rejects signing with a disabled key. Rotating a masternode
-            // payout address disables the old TRANSFER key and appends a new active
-            // one, so a rotated identity holds both — only the active key is signable.
-            if public_key.identity_public_key.is_disabled() {
-                continue;
-            }
-            match (self.identity_type, target) {
-                (IdentityType::User, PrivateKeyTarget::PrivateKeyOnMainIdentity) => {
-                    if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
-                        keys.push(public_key);
-                    }
-                }
-                (
-                    IdentityType::Masternode | IdentityType::Evonode,
-                    PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                ) => {
-                    if public_key.identity_public_key.purpose() == Purpose::OWNER {
-                        keys.push(public_key);
-                    }
-                    if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
-                        keys.push(public_key);
-                    }
-                }
-                _ => {}
-            }
+        if self.identity_type == IdentityType::User {
+            return self
+                .private_keys
+                .identity_public_keys()
+                .into_iter()
+                .filter_map(|(target, public_key)| {
+                    let key = &public_key.identity_public_key;
+                    (*target == PrivateKeyTarget::PrivateKeyOnMainIdentity
+                        && key.purpose() == Purpose::TRANSFER
+                        && !key.is_disabled())
+                    .then_some(public_key)
+                })
+                .collect();
         }
 
-        keys
+        // The node's current identity determines which keys can withdraw.
+        // Their private halves can be filed at a historical placement.
+        self.identity
+            .public_keys()
+            .values()
+            .filter(|key| !key.is_disabled() && MasternodeWithdrawalRole::for_key(key).is_some())
+            .filter_map(|key| {
+                let placement = self.private_keys.first_live_candidate(key)?;
+                self.private_keys.public_key_for(&placement)
+            })
+            .collect()
     }
 
     /// The [`available_withdrawal_keys`](Self::available_withdrawal_keys)
@@ -1355,10 +1349,13 @@ impl QualifiedIdentity {
             return None;
         }
         let signing_hash = <[u8; 20]>::try_from(key.data().as_slice()).ok()?;
-        let stored_path = self.private_keys.wallet_derivation_path_for(&(
-            PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            signing_key_id,
-        ))?;
+        let main_placement = self
+            .private_keys
+            .candidates(key)
+            .find(|(target, _)| *target == PrivateKeyTarget::PrivateKeyOnMainIdentity)?;
+        let stored_path = self
+            .private_keys
+            .wallet_derivation_path_for(&main_placement)?;
         let mut key_hashes = MasternodeKeyHashes::from_identity(&self.identity);
         let owner_key_index_hint = match role {
             MasternodeWithdrawalRole::Owner => {
@@ -3374,6 +3371,29 @@ pub(crate) mod withdrawal_key_tests {
         let route = qi.wallet_masternode_withdrawal(2).expect("wallet route");
         assert_eq!(route.role, MasternodeWithdrawalRole::Payout);
         assert_eq!(route.key_hashes.payout, Some([0x11; 20]));
+    }
+
+    #[test]
+    fn unrelated_main_wallet_path_does_not_route_a_legacy_node_withdrawal() {
+        let payout = payout_key(0, [0x11; 20]);
+        let voting_key = key(0, Purpose::VOTING);
+        let mut node = build_identity(
+            IdentityType::Masternode,
+            vec![payout.clone()],
+            vec![payout.clone()],
+        );
+        let private_payout = node
+            .private_keys
+            .remove_at(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, payout.id()))
+            .unwrap();
+        node.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnOperatorIdentity, payout.id()),
+            private_payout,
+        );
+        hold_in_wallet_at(&mut node, &voting_key, [0x5E; 32], "m/9'/1'/3'/1'/0");
+
+        assert!(node.wallet_masternode_withdrawal(payout.id()).is_none());
+        assert_eq!(node.resolve_withdrawal_signing_key(None), Ok(payout.id()));
     }
 
     /// Keys typed in by hand, and user identities, keep the identity's own

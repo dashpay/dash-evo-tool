@@ -124,7 +124,7 @@ impl RetiredVotingKeyState {
                     Status::Current
                 };
             }
-            BackendTaskSuccessResult::RetiredVotingKeyRemoved { identity_id }
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved { identity_id, .. }
             | BackendTaskSuccessResult::RetiredVotingKeyKept { identity_id }
                 if *identity_id == self.identity_id && self.removal.settle(context).is_some() =>
             {
@@ -241,6 +241,8 @@ mod tests {
         for outcome in [
             BackendTaskSuccessResult::RetiredVotingKeyRemoved {
                 identity_id: node(),
+                cleanup_pending: false,
+                successor: crate::model::masternode_keys::VotingKeyAvailability::Missing,
             },
             BackendTaskSuccessResult::RetiredVotingKeyKept {
                 identity_id: node(),

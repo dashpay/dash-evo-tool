@@ -7,6 +7,7 @@
 //! public key (`ECDSA_HASH160`). Those hashes are what a wallet compares its
 //! provider keys against to tell whether it holds them. Pure data — no IO.
 
+use crate::model::qualified_identity::encrypted_key_storage::same_key;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -88,6 +89,17 @@ pub struct WalletMasternodeWithdrawal {
     pub owner_key_index_hint: Option<u32>,
 }
 
+/// Whether this device can obtain the node's current voting key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VotingKeyAvailability {
+    /// The current voter and an obtainable signing key are saved.
+    Available,
+    /// No obtainable signing key is saved for the current voter.
+    Missing,
+    /// This device could not verify the current voting key or its storage.
+    Unverified,
+}
+
 /// The voting state a node stores that the masternode list no longer names:
 /// what removing an old voting key takes away.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -105,49 +117,31 @@ impl RetiredVotingKeys {
     }
 }
 
-/// Whether `node` stores any voting state — a voter identity or a key on it —
-/// that the masternode list could have retired.
+/// Whether the node has a voting key that the masternode list can identify.
 pub fn stores_voting_key(node: &QualifiedIdentity) -> bool {
-    node.associated_voter_identity.is_some()
-        || node
-            .private_keys
-            .identity_public_keys()
-            .into_iter()
-            .any(|(target, _)| *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity)
+    voting_keys(node).next().is_some()
 }
 
-/// The stored voting state of `node` that differs from `current`, the voting
-/// key hash the masternode list names for it. Covers the voter identity's key
-/// and every key stored on the voter identity; main-identity keys are never
-/// voting keys of a node and are left out.
+/// The stored voting state of `node` that differs from the masternode list's
+/// current voting hash. An exact private-key copy may be filed on any target.
 pub fn retired_voting_keys(node: &QualifiedIdentity, current: [u8; 20]) -> RetiredVotingKeys {
-    let retired = |key: &IdentityPublicKey| key.public_key_hash().ok() != Some(current);
+    let retired =
+        |key: &IdentityPublicKey| voting_key_hash(key).is_some_and(|hash| hash != current);
     RetiredVotingKeys {
         voter_identity: node
             .associated_voter_identity
             .as_ref()
             .is_some_and(|(_, key)| retired(key)),
-        placements: node
-            .private_keys
-            .identity_public_keys()
-            .into_iter()
-            .filter(|(target, key)| {
-                **target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
-                    && retired(&key.identity_public_key)
-            })
-            .map(|(target, key)| (target.clone(), key.identity_public_key.id()))
-            .collect(),
+        placements: voting_key_placements(node, retired).into_iter().collect(),
     }
 }
 
-/// What a node's record says about its voting keys: the voter identity with
-/// its key's hash, and the hash of every key stored on the voter identity.
-/// Compared to tell whether a record's voting state changed between two reads.
-/// A key whose hash cannot be computed counts as `None`.
+/// Compare the voter association and exact candidate placements before and
+/// after checking the list, including copies filed under other targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredVotingKeys {
-    voter_identity: Option<(Identifier, Option<[u8; 20]>)>,
-    placements: BTreeSet<(KeyID, Option<[u8; 20]>)>,
+    voter_identity: Option<(Identifier, IdentityPublicKey)>,
+    placements: Vec<((PrivateKeyTarget, KeyID), IdentityPublicKey)>,
 }
 
 /// The voting keys `node` stores right now.
@@ -156,18 +150,70 @@ pub fn stored_voting_keys(node: &QualifiedIdentity) -> StoredVotingKeys {
         voter_identity: node
             .associated_voter_identity
             .as_ref()
-            .map(|(voter, key)| (voter.id(), key.public_key_hash().ok())),
-        placements: node
-            .private_keys
-            .identity_public_keys()
+            .map(|(voter, key)| (voter.id(), key.clone())),
+        placements: voting_key_placements(node, |_| true)
             .into_iter()
-            .filter(|(target, _)| **target == PrivateKeyTarget::PrivateKeyOnVoterIdentity)
-            .map(|(_, key)| {
-                let key = &key.identity_public_key;
-                (key.id(), key.public_key_hash().ok())
+            .filter_map(|placement| {
+                let (key, _) = node.private_keys.entry_at(&placement)?;
+                Some((placement, key.identity_public_key.clone()))
             })
             .collect(),
     }
+}
+
+/// The P2PKH hash of a voting key with a supported public-key encoding.
+pub(crate) fn voting_key_hash(key: &IdentityPublicKey) -> Option<[u8; 20]> {
+    (key.purpose() == Purpose::VOTING
+        && matches!(
+            key.key_type(),
+            KeyType::ECDSA_HASH160 | KeyType::ECDSA_SECP256K1
+        ))
+    .then(|| key.public_key_hash().ok())
+    .flatten()
+}
+
+fn voting_keys(node: &QualifiedIdentity) -> impl Iterator<Item = &IdentityPublicKey> {
+    node.associated_voter_identity
+        .iter()
+        .map(|(_, key)| key)
+        .chain(
+            node.private_keys
+                .iter()
+                .filter_map(|((target, id), (key, _))| {
+                    let key = &key.identity_public_key;
+                    (*target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
+                        && *id == key.id()
+                        && !key_on_other_identity(node, key))
+                    .then_some(key)
+                }),
+        )
+        .filter(|key| voting_key_hash(key).is_some())
+}
+
+fn voting_key_placements(
+    node: &QualifiedIdentity,
+    include: impl Fn(&IdentityPublicKey) -> bool,
+) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
+    voting_keys(node)
+        .filter(|key| include(key) && !key_on_other_identity(node, key))
+        .flat_map(|key| node.private_keys.candidates(key))
+        .collect()
+}
+
+/// A copy also published by the main or operator identity is ambiguous.
+fn key_on_other_identity(node: &QualifiedIdentity, key: &IdentityPublicKey) -> bool {
+    std::iter::once(&node.identity)
+        .chain(
+            node.associated_operator_identity
+                .iter()
+                .map(|(identity, _)| identity),
+        )
+        .any(|identity| {
+            identity
+                .public_keys()
+                .get(&key.id())
+                .is_some_and(|published| same_key(published, key))
+        })
 }
 
 /// hash160 data of the first active `ECDSA_HASH160` key with `purpose`.
@@ -379,6 +425,30 @@ mod tests {
         let node = node_with_voter(&voting_key(1, 0x21));
 
         assert!(retired_voting_keys(&node, [0x21; 20]).is_empty());
+    }
+
+    #[test]
+    fn retirement_keeps_an_exact_key_also_published_by_the_main_identity() {
+        let voting = voting_key(1, 0x21);
+        let mut node = node_with_voter(&voting);
+        node.identity.add_public_key(voting);
+        let retired = retired_voting_keys(&node, [0x22; 20]);
+        assert!(retired.voter_identity);
+        assert!(retired.placements.is_empty());
+    }
+
+    #[test]
+    fn retirement_ignores_an_unreadable_voting_hash() {
+        let voting = key(
+            1,
+            Purpose::VOTING,
+            KeyType::ECDSA_HASH160,
+            vec![0x21],
+            false,
+        );
+        let node = node_with_voter(&voting);
+        assert!(!stores_voting_key(&node));
+        assert!(retired_voting_keys(&node, [0x22; 20]).is_empty());
     }
 
     /// Only the stored voting keys that differ are retired: a second, current

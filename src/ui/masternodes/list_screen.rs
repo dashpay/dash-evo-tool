@@ -22,6 +22,7 @@ use crate::model::dpns_voting::operator::{
     MasternodesSegment, background_refresh_due, opening_masternodes_segment,
 };
 use crate::model::masternode_input::decode_identity_id;
+use crate::model::masternode_keys::VotingKeyAvailability;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
 use crate::model::wallet_association::WalletAssociation;
@@ -50,6 +51,11 @@ const VOTES_ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::
 const GRID_GAP: f32 = 16.0;
 const RETIRED_VOTING_KEY_REMOVED: &str =
     "The old voting key was removed. Add the node's current voting key to vote again.";
+const RETIRED_VOTING_KEY_REPLACED: &str =
+    "The old voting key was removed. The node's current voting key is available.";
+const RETIRED_VOTING_KEY_UNVERIFIED: &str =
+    "The old voting key was removed. Reopen the node to check its current voting key.";
+const RETIRED_VOTING_KEY_CLEANUP_PENDING: &str = "Some saved data from the old voting key could not be cleared. Restart the app to finish cleaning it up.";
 const RETIRED_VOTING_KEY_KEPT: &str = "The saved voting key is the node's current voting key again, so it was kept. No action is needed.";
 
 /// Pre-resolved display data for one masternode/evonode card. Computed at
@@ -948,12 +954,25 @@ impl MasternodesScreen {
                 );
                 return;
             }
-            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. } => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    RETIRED_VOTING_KEY_REMOVED,
-                    MessageType::Success,
-                );
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved {
+                cleanup_pending,
+                successor,
+                ..
+            } => {
+                let message = match successor {
+                    VotingKeyAvailability::Available => RETIRED_VOTING_KEY_REPLACED,
+                    VotingKeyAvailability::Missing => RETIRED_VOTING_KEY_REMOVED,
+                    VotingKeyAvailability::Unverified => RETIRED_VOTING_KEY_UNVERIFIED,
+                };
+                let ctx = self.app_context.egui_ctx();
+                MessageBanner::set_global(ctx, message, MessageType::Success);
+                if cleanup_pending {
+                    MessageBanner::set_global(
+                        ctx,
+                        RETIRED_VOTING_KEY_CLEANUP_PENDING,
+                        MessageType::Warning,
+                    );
+                }
             }
             BackendTaskSuccessResult::RemovedIdentities {
                 network,
@@ -1707,8 +1726,26 @@ mod tests {
             (
                 BackendTaskSuccessResult::RetiredVotingKeyRemoved {
                     identity_id: Identifier::from([0x5B; 32]),
+                    cleanup_pending: false,
+                    successor: VotingKeyAvailability::Missing,
                 },
                 RETIRED_VOTING_KEY_REMOVED,
+            ),
+            (
+                BackendTaskSuccessResult::RetiredVotingKeyRemoved {
+                    identity_id: Identifier::from([0x5B; 32]),
+                    cleanup_pending: false,
+                    successor: VotingKeyAvailability::Available,
+                },
+                RETIRED_VOTING_KEY_REPLACED,
+            ),
+            (
+                BackendTaskSuccessResult::RetiredVotingKeyRemoved {
+                    identity_id: Identifier::from([0x5B; 32]),
+                    cleanup_pending: false,
+                    successor: VotingKeyAvailability::Unverified,
+                },
+                RETIRED_VOTING_KEY_UNVERIFIED,
             ),
             (
                 BackendTaskSuccessResult::RetiredVotingKeyKept {

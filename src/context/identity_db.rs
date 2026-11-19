@@ -414,6 +414,14 @@ fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Res
         .map_err(identity_err)
 }
 
+fn vault_cleanup_manifest(
+    kv: &DetKv,
+    id: &[u8; 32],
+) -> Result<Option<Vec<(StoredPrivateKeyTarget, KeyID)>>, TaskError> {
+    kv.get(DetScope::Global, &vault_cleanup_pending_key(id))
+        .map_err(identity_err)
+}
+
 /// Retire a completed removal; a failed bookkeeping delete is safe to retry.
 fn clear_vault_cleanup_manifest(kv: &DetKv, id: &[u8; 32]) {
     if let Err(error) = kv
@@ -1927,12 +1935,26 @@ impl AppContext {
     ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
         let mut keys = self.identity_vault_key_placements(kv, id)?;
         keys.extend(self.retained_identity_import_keys(&Identifier::from(*id))?);
-        let manifest: Vec<(StoredPrivateKeyTarget, KeyID)> = kv
-            .get(DetScope::Global, &vault_cleanup_pending_key(id))
-            .map_err(identity_err)?
-            .unwrap_or_default();
+        let manifest = vault_cleanup_manifest(kv, id)?.unwrap_or_default();
         keys.extend(manifest.into_iter().map(|(t, k)| (t.into(), k)));
         Ok(keys)
+    }
+
+    /// Whether a delisted identity still has work scheduled for startup.
+    pub(crate) fn identity_removal_cleanup_pending(
+        &self,
+        identity_id: Identifier,
+    ) -> Result<bool, TaskError> {
+        Ok(vault_cleanup_manifest(&self.det_kv()?, &identity_id.to_buffer())?.is_some())
+    }
+
+    /// The complete set a whole-record removal would delete. A caller
+    /// validating it before removal holds the identity's record guard.
+    pub(crate) fn identity_removal_key_placements(
+        &self,
+        identity_id: Identifier,
+    ) -> Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
+        self.pending_vault_key_placements(&self.det_kv()?, &identity_id.to_buffer())
     }
 
     /// Record that the user deliberately unloaded `id` from this device, so

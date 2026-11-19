@@ -16,6 +16,7 @@ use crate::model::dpns_voting::{
 };
 use crate::model::grovestark_prover::ProofDataOutput;
 use crate::model::masternode_input::decode_identity_id;
+use crate::model::masternode_keys::VotingKeyAvailability;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
 use crate::ui::tokens::tokens_screen::{
@@ -1362,6 +1363,10 @@ pub enum BackendTaskSuccessResult {
     /// A masternode's old voting key and voter identity were removed.
     RetiredVotingKeyRemoved {
         identity_id: Identifier,
+        /// The old voter was delisted, and startup will retry its cleanup.
+        cleanup_pending: bool,
+        /// The successor this device can obtain after any wallet lookup.
+        successor: VotingKeyAvailability,
     },
     /// The removal found the stored voting key current again and kept it.
     RetiredVotingKeyKept {

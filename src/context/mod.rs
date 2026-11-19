@@ -1187,10 +1187,10 @@ impl AppContext {
         }
     }
 
-    /// Rebuild the connection and refresh its proven protocol version best-effort.
+    /// Rebuild the clients immediately and queue a quorum-ready metadata probe.
     pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
         Arc::clone(self).reinit_core_client_and_sdk()?;
-        self.refresh_platform_protocol(&self.sdk.load_full()).await;
+        self.queue_platform_protocol_refresh();
         Ok(())
     }
 

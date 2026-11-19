@@ -8697,8 +8697,8 @@ mod tests {
         );
     }
 
-    /// After the app's own SDK has been rebuilt it can be on a newer protocol
-    /// version than the wallet backend, which runs the transfer and sizes its
+    /// The app's own SDK can differ from the wallet backend's protocol
+    /// version. The backend runs the transfer and sizes its
     /// funding. Max and the check before sending must use the backend's fee
     /// on the backend's supported protocol version, or
     /// Max proposes an amount whose funding the wallet cannot build.
@@ -8717,13 +8717,20 @@ mod tests {
             ))
             .await
             .expect("wallet backend");
-        let pv15 = dash_sdk::dpp::version::PlatformVersion::get(15).expect("PV15");
+        let pv13 = dash_sdk::dpp::version::PlatformVersion::get(13).expect("PV13");
         screen.app_context.sdk.store(Arc::new(
             dash_sdk::SdkBuilder::new_mock()
-                .with_version(pv15)
+                .with_version(pv13)
                 .build()
                 .expect("mock sdk"),
         ));
+        let app_fee = screen
+            .app_context
+            .fee_estimator()
+            .estimate_shield_from_core_fees_duffs(screen.app_context.platform_version())
+            .expect("app fee")
+            .0;
+        assert_ne!(app_fee, BACKEND_FEE_DUFFS, "SDK fees must differ");
         let seed_hash = core_source_with_ceiling(&mut screen, CEILING_DUFFS);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 

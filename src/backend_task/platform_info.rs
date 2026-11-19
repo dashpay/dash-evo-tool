@@ -614,29 +614,20 @@ impl AppContext {
         self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
     }
 
-    /// Schedule one best-effort check from the connection's readiness gate.
+    /// Schedule a best-effort check only within a running, quorum-ready session.
     pub(crate) fn queue_platform_protocol_refresh(self: &Arc<Self>) {
-        let ctx = Arc::clone(self);
-        let sdk = self.sdk.load_full();
-        if self
-            .subtasks
-            .spawn_sync("platform-protocol-refresh", async move {
-                ctx.refresh_platform_protocol(&sdk).await;
-            })
-            .is_err()
-        {
-            tracing::debug!("Protocol refresh skipped because the app is shutting down");
+        if let Ok(backend) = self.wallet_backend() {
+            backend.queue_platform_protocol_refresh();
         }
     }
 
     /// Refresh verified metadata without turning connection failures into task errors.
-    pub(crate) async fn refresh_platform_protocol(&self, sdk: &Sdk) {
-        if let Err(error) = sdk.refresh_protocol_version().await {
-            tracing::warn!(%error, "Could not refresh the connected network's protocol version");
-        }
+    pub(crate) async fn refresh_platform_protocol(&self, sdk: &Sdk) -> bool {
         if let Err(error) = self.refresh_current_epoch(sdk).await {
-            tracing::warn!(%error, "Could not refresh the connection's fee multiplier");
+            tracing::warn!(%error, "Could not refresh the connection's protocol version and fee multiplier");
+            return false;
         }
+        true
     }
 
     pub async fn run_platform_info_task(
@@ -1130,6 +1121,32 @@ mod tests {
             network_daily_withdrawal_limit(dash_to_credits!(1000), v14).expect("limit"),
             dash_to_credits!(500)
         );
+    }
+
+    #[tokio::test]
+    async fn platform_protocol_refresh_fetches_epoch_once() {
+        use dash_sdk::platform::{LimitQuery, Query, QuerySettings, types::epoch::EpochQuery};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_initial_version(PlatformVersion::get(14).expect("PV14"))
+            .build()
+            .expect("mock sdk");
+        let request_settings = Default::default();
+        let request = LimitQuery {
+            query: EpochQuery::genesis(),
+            limit: Some(1),
+            start_info: None,
+        }
+        .query(&QuerySettings {
+            request_settings: &request_settings,
+            protocol_version: PlatformVersion::get(14).expect("PV14"),
+            verified_protocol_version: 0,
+            prove: true,
+        })
+        .expect("epoch query");
+        ctx.refresh_platform_protocol(&sdk).await;
+        assert_eq!(sdk.mock().request_count(&request).await, 1);
     }
 
     /// A proved epoch sets the fee multiplier cache.

@@ -828,15 +828,20 @@ mod tests {
         assert!(drained_repaint(&mut rx));
     }
 
+    /// The peer count comes from the length of the event's address list. A
+    /// bridge that stopped publishing it would leave a synced wallet showing
+    /// "Connecting", so the count is checked, not only the repaint.
     #[test]
-    fn peers_updated_nudges_refresh() {
-        let (bridge, _cs, mut rx) = make_bridge();
+    fn peers_updated_publishes_the_peer_count_and_nudges_refresh() {
+        let (bridge, cs, mut rx) = make_bridge();
         bridge.on_network_event(&NetworkEvent::PeersUpdated {
-            addresses: Vec::new(),
+            addresses: vec![
+                ([127, 0, 0, 1], 19999).into(),
+                ([127, 0, 0, 2], 19999).into(),
+            ],
             best_height: 0,
         });
-        // ConnectionStatus has no public peer-count getter; its own tests
-        // cover the internal mutation. Here we assert the frame-loop nudge.
+        assert_eq!(cs.spv_connected_peers(), 2);
         assert!(drained_repaint(&mut rx));
     }
 

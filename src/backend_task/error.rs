@@ -454,6 +454,17 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// An asset lock of this amount could only be funded together with coins
+    /// that are neither confirmed nor InstantSend locked yet: `waiting` duffs
+    /// of them. Nothing was built or sent, and the same amount works once
+    /// those coins confirm. Shared by every asset-lock funding path, so the
+    /// text names no single operation.
+    #[error(
+        "This amount needs {waiting_dash} that is still waiting to be confirmed. Wait a few minutes for the confirmation, then try again.",
+        waiting_dash = format_duffs_as_dash(*.waiting)
+    )]
+    AssetLockFundsAwaitingConfirmation { waiting: u64 },
+
     /// The wallet's available amount is not quoted while another operation
     /// that moves the funds it is quoted from is in progress: one that can
     /// take or release its Core inputs (until it reserves them, no quote can

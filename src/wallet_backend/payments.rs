@@ -60,8 +60,20 @@ const P2PKH_INPUT_SIZE: usize = 148;
 
 enum AssetLockDryRun {
     Builds,
-    Rejected { available: u64, required: u64 },
-    TooManyInputs { count: usize, max: usize },
+    Rejected {
+        available: u64,
+        required: u64,
+    },
+    TooManyInputs {
+        count: usize,
+        max: usize,
+    },
+    /// Final coins cannot fund the amount, but they could together with
+    /// `waiting` duffs of coins that are neither confirmed nor InstantSend
+    /// locked yet. Unbuildable now, and unlike a shortfall it fixes itself.
+    AwaitingFinality {
+        waiting: u64,
+    },
 }
 
 enum AssetLockDrainSeed {
@@ -420,6 +432,9 @@ fn dry_run_asset_lock_amount_with_strategy(
             count,
             max: max.min(pool.max_inputs),
         }),
+        Err(BuilderError::FundsAwaitingFinality { waiting }) => {
+            Ok(AssetLockDryRun::AwaitingFinality { waiting })
+        }
         Err(source) => Err(source),
     }
 }
@@ -450,7 +465,10 @@ fn asset_lock_drain_ceiling(
             }),
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable))
         | Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
-        | Err(BuilderError::InsufficientFunds { .. }) => Ok(AssetLockDrainSeed::Unavailable),
+        | Err(BuilderError::InsufficientFunds { .. })
+        // Only coins that are not final yet could fund a drain: the Max is
+        // zero until they confirm, which is a known answer, not a failed read.
+        | Err(BuilderError::FundsAwaitingFinality { .. }) => Ok(AssetLockDrainSeed::Unavailable),
         Err(BuilderError::TooManyInputs { max, .. }) => Ok(AssetLockDrainSeed::TooManyInputs {
             max: max.min(pool.max_inputs),
         }),
@@ -485,9 +503,9 @@ fn largest_first_asset_lock_max_below(
             Some(SelectionStrategy::LargestFirst),
         )? {
             AssetLockDryRun::Builds => low = candidate,
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
-                high = candidate - 1
-            }
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => high = candidate - 1,
         }
     }
     Ok(low)
@@ -522,7 +540,9 @@ fn default_strategy_max_from_seed(
                 low = candidate;
                 step = step.saturating_mul(2);
             }
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => {
                 let mut high = candidate - 1;
                 while low < high {
                     if deadline.expired() {
@@ -532,7 +552,8 @@ fn default_strategy_max_from_seed(
                     match dry_run_asset_lock_amount(pool, midpoint)? {
                         AssetLockDryRun::Builds => low = midpoint,
                         AssetLockDryRun::Rejected { .. }
-                        | AssetLockDryRun::TooManyInputs { .. } => high = midpoint - 1,
+                        | AssetLockDryRun::TooManyInputs { .. }
+                        | AssetLockDryRun::AwaitingFinality { .. } => high = midpoint - 1,
                     }
                 }
                 return Ok(low);
@@ -582,17 +603,22 @@ fn asset_lock_max_below_upper_bound(
                     match dry_run_asset_lock_amount(pool, midpoint)? {
                         AssetLockDryRun::Builds => low = midpoint,
                         AssetLockDryRun::Rejected { .. }
-                        | AssetLockDryRun::TooManyInputs { .. } => high = midpoint - 1,
+                        | AssetLockDryRun::TooManyInputs { .. }
+                        | AssetLockDryRun::AwaitingFinality { .. } => high = midpoint - 1,
                     }
                 }
                 return Ok(low);
             }
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. }
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. }
                 if candidate == 0 =>
             {
                 return Ok(0);
             }
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => {
                 high = candidate - 1;
                 step = step.saturating_mul(2);
             }
@@ -617,6 +643,10 @@ fn full_range_asset_lock_max_amount(
 
     let mut high = match dry_run_asset_lock_amount(pool, MAX_MONEY.saturating_add(1))? {
         AssetLockDryRun::Rejected { available, .. } => available,
+        // No amount above what the final coins hold can build.
+        AssetLockDryRun::AwaitingFinality { .. } => {
+            pool.final_input_values().fold(0_u64, u64::saturating_add)
+        }
         AssetLockDryRun::Builds => MAX_MONEY,
         AssetLockDryRun::TooManyInputs { max, .. } => {
             return asset_lock_max_with_input_cap(pool, max, deadline);
@@ -631,9 +661,9 @@ fn full_range_asset_lock_max_amount(
         let candidate = low + (high - low).div_ceil(2);
         match dry_run_asset_lock_amount(pool, candidate)? {
             AssetLockDryRun::Builds => low = candidate,
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
-                high = candidate - 1
-            }
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => high = candidate - 1,
         }
     }
 
@@ -922,7 +952,8 @@ impl WalletBackend {
     }
 
     /// Refuse an exact-amount asset lock that would need more inputs than the
-    /// protocol accepts.
+    /// protocol accepts, that the wallet cannot fund, or that only coins still
+    /// awaiting confirmation could fund.
     ///
     /// The same dry run the Max probe uses avoids asking for secrets when
     /// the amount cannot fit. Other funding kinds are checked upstream.
@@ -983,6 +1014,11 @@ impl WalletBackend {
                 available,
                 required,
             }),
+            // The real build refuses this too, so say so before the unlock
+            // prompt rather than after it.
+            Ok(AssetLockDryRun::AwaitingFinality { waiting }) => {
+                Err(TaskError::AssetLockFundsAwaitingConfirmation { waiting })
+            }
             // Any other build failure is the real build's to report, with the
             // error it already maps.
             Ok(AssetLockDryRun::Builds) | Err(_) => Ok(()),
@@ -1580,6 +1616,11 @@ pub(super) fn map_asset_lock_error(
                 source: Box::new(source),
             }
         }
+        // Only coins that are not final yet could fund the lock. Nothing was
+        // built for the wire, and the same request works once they confirm.
+        platform_wallet::error::PlatformWalletError::AssetLockFundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+        }
         other => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -1617,8 +1658,9 @@ pub(super) fn map_core_broadcast_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSET_LOCK_FEE_PER_KB, AssetLockFundingPool, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_pool, map_core_broadcast_error, map_core_finalize_error,
+        ASSET_LOCK_FEE_PER_KB, AssetLockDryRun, AssetLockFundingPool, MAX_MONEY, ProbeDeadline,
+        asset_lock_builder_height, asset_lock_max_amount_from_pool, asset_lock_max_with_input_cap,
+        dry_run_asset_lock_amount, map_core_broadcast_error, map_core_finalize_error,
         unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
@@ -2192,6 +2234,37 @@ mod tests {
         assert!(
             overshoot.is_err(),
             "the display-only snapshot amount must reproduce the builder rejection"
+        );
+
+        // An amount the confirmed coin cannot fund but the pending one could is
+        // unbuildable now, not a failed probe. The input-capped search probes
+        // such amounts, between the Max and the confirmed total, and must land
+        // on the same Max.
+        let pool = AssetLockFundingPool::for_account(
+            managed_account,
+            account,
+            CURRENT_HEIGHT,
+            STANDARD_TRANSACTION_INPUT_CAP,
+        );
+        let above_max = dry_run_asset_lock_amount(&pool, CONFIRMED_DUFFS);
+        assert!(
+            matches!(
+                above_max,
+                Ok(AssetLockDryRun::AwaitingFinality {
+                    waiting: UNCONFIRMED_DUFFS
+                })
+            ),
+            "an amount only the pending coin could cover must be reported as awaiting finality"
+        );
+        assert_eq!(
+            asset_lock_max_with_input_cap(
+                &pool,
+                STANDARD_TRANSACTION_INPUT_CAP,
+                &ProbeDeadline::unbounded()
+            )
+            .expect("input-capped maximum"),
+            max_amount,
+            "probes that need the pending coin must narrow the search, not abort it"
         );
     }
 
@@ -2894,6 +2967,63 @@ mod tests {
             quote.amount_duffs > (CAP - 1) * UTXO_DUFFS,
             "Max must still use the full cap: {}",
             quote.amount_duffs
+        );
+    }
+
+    /// A wallet whose only coin is neither confirmed nor InstantSend locked.
+    /// Its asset-lock Max is a known zero, not a failed balance check, and an
+    /// exact amount that coin could fund is refused before any secret is
+    /// opened, with the amount that is still waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn funds_awaiting_confirmation_quote_zero_and_are_refused_before_the_unlock() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const PENDING_DUFFS: u64 = 1_000_000;
+        let account_type = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(&platform_wallet, account_type, 0x67, &[PENDING_DUFFS]).await;
+        {
+            let wallet_id = platform_wallet.wallet_id();
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let info = manager
+                .get_wallet_info_mut(&wallet_id)
+                .expect("wallet info");
+            let managed_account = info
+                .core_wallet
+                .accounts
+                .funds_account_mut(&account_type)
+                .expect("managed funding account");
+            for utxo in managed_account.utxos.values_mut() {
+                utxo.is_confirmed = false;
+            }
+        }
+
+        let quote = backend
+            .asset_lock_max_amount(&seed_hash)
+            .await
+            .expect("a wallet with only pending funds has a known Max");
+        assert_eq!(quote.amount_duffs, 0);
+        assert!(!quote.is_partial);
+
+        let funding = platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
+            amount_duffs: PENDING_DUFFS / 2,
+            account_index: 0,
+        };
+        let refused = backend
+            .ensure_asset_lock_within_input_cap(&seed_hash, &funding)
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(TaskError::AssetLockFundsAwaitingConfirmation {
+                    waiting: PENDING_DUFFS
+                })
+            ),
+            "{refused:?}"
         );
     }
 

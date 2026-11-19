@@ -3461,6 +3461,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // Only coins that are not final yet could fund the lock. Nothing was
+        // built for the wire, and the same request works once they confirm.
+        P::AssetLockFundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+        }
+
         // Only shielding from Platform raises this, and
         // `WalletBackend::shield_from_balance` intercepts it first through
         // [`shield_capacity_exceeded_error`]: its `available` is a gross
@@ -3622,7 +3628,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // `ShieldedBroadcastUnconfirmed`).
         | P::AccountNotFound(_)
         | P::WalletRemovedBeforeSend(_)
-        | P::AssetLockFundsAwaitingFinality { .. }
         | P::ShieldedBroadcastMaybeDelivered(_)
         | P::DocumentEraseBusy
         | P::DecisionProposalNotFound { .. }
@@ -3687,6 +3692,9 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
                 source: Box::new(e),
             }
         }
+        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+        }
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
         },
@@ -3734,6 +3742,9 @@ fn map_identity_top_up_error(
                 max,
                 source: Box::new(e),
             }
+        }
+        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
         }
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
@@ -3819,6 +3830,9 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
                 source: Box::new(e),
             }
         }
+        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+        }
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
@@ -3844,6 +3858,9 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
 enum IdentityOpErrorKind {
     /// The built transaction exceeds the input cap and cannot be re-sent.
     TooManyInputs { count: usize, max: usize },
+    /// Only coins that are not final yet could fund the asset lock; nothing
+    /// was built for the wire.
+    FundsAwaitingFinality { waiting: u64 },
     /// Network or broadcast rejected the submission (SDK error or asset-lock
     /// transaction broadcast failure).
     Rejected,
@@ -3873,6 +3890,10 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
             count: *count,
             max: *max,
         },
+
+        P::AssetLockFundsAwaitingFinality { waiting } => {
+            IdentityOpErrorKind::FundsAwaitingFinality { waiting: *waiting }
+        }
 
         // Network / broadcast rejections. A failed token operation carries the
         // SDK rejection that caused it.
@@ -4003,7 +4024,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // `ShieldedBroadcastUnconfirmed`).
         | P::AccountNotFound(_)
         | P::WalletRemovedBeforeSend(_)
-        | P::AssetLockFundsAwaitingFinality { .. }
         // Raised only when a shielded funding is resumed; no identity or
         // address-funding flow resumes one.
         | P::AssetLockRecipientMismatch { .. }
@@ -4078,6 +4098,36 @@ mod tests {
                     max: 100
                 })
             ));
+        }
+    }
+
+    /// Upstream refuses a lock only coins awaiting finality could fund.
+    /// Every operation that builds a lock says how much is waiting and to
+    /// wait for it, not the generic envelope's "retry in a moment".
+    #[test]
+    fn upstream_funds_awaiting_finality_says_to_wait_for_confirmation() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let identity_id = dash_sdk::platform::Identifier::from([1; 32]);
+        let error = || P::AssetLockFundsAwaitingFinality { waiting: 250_000 };
+        for mapped in [
+            payments::map_asset_lock_error(error()),
+            map_identity_register_error(error()),
+            map_identity_top_up_error(identity_id, error()),
+            map_platform_address_fund_error(error()),
+            map_shielded_op_error(error()),
+        ] {
+            assert!(
+                matches!(
+                    mapped,
+                    TaskError::AssetLockFundsAwaitingConfirmation { waiting: 250_000 }
+                ),
+                "{mapped:?}"
+            );
+            assert_eq!(
+                mapped.to_string(),
+                "This amount needs 0.0025 DASH that is still waiting to be confirmed. Wait a few minutes for the confirmation, then try again."
+            );
         }
     }
 

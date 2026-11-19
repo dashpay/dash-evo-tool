@@ -7690,7 +7690,6 @@ async fn existing_funding_below_the_network_fee_is_refused_by_every_task_that_ta
     use dash_sdk::dpp::address_funds::PlatformAddress;
 
     let (ctx, sender, _tmp) = offline_testnet_context();
-    crate::context::test_support::prove_protocol_version(&ctx, 14);
     let seed = crate::test_support::keys::seed();
     let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -7775,7 +7774,6 @@ async fn identity_creation_below_the_network_fee_is_refused_before_the_wallet_is
     use crate::backend_task::identity::{IdentityTask, build_identity_registration_with_seed};
 
     let (ctx, sender, _tmp) = offline_testnet_context();
-    crate::context::test_support::prove_protocol_version(&ctx, 14);
     let seed = crate::test_support::keys::seed();
     let wallet = Arc::new(RwLock::new(
         Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet"),

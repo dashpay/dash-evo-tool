@@ -23,8 +23,6 @@ pub enum ExperimentalFeature {
 pub enum Check {
     /// The user is operating in at least this role (role axis).
     MinRole(UserRole),
-    /// The connection has verified a Platform version supported by DET.
-    SupportedNetwork,
     /// An experimental feature that has not stabilised yet (stability axis).
     /// When the feature stabilises this check is removed and it unlocks for
     /// EVERY role.
@@ -39,7 +37,6 @@ impl Check {
     fn is_met(&self, ctx: &AppContext) -> bool {
         match self {
             Check::MinRole(min) => ctx.user_role().at_least(*min),
-            Check::SupportedNetwork => ctx.ensure_platform_write_supported().is_ok(),
             Check::Experimental(f) => ctx.experimental_enabled(*f),
         }
     }
@@ -66,17 +63,14 @@ pub enum FeatureGate {
     /// pool. Always available: DET configures the shielded coordinator on every
     /// network, so shielded balances can exist and must be viewable wherever the
     /// wallet runs. Distinct from [`FeatureGate::ShieldedOperations`], which gates
-    /// *creating* shielded state transitions behind the network's protocol
-    /// capability.
+    /// *creating* shielded state transitions behind experimental access.
     Shielded,
-    /// Shielded sending on a verified, supported network, with experimental
-    /// features enabled for the user's role.
+    /// Shielded sending with experimental features enabled for the user's role.
     ShieldedOperations,
     /// DashPay social features — always available (placeholder for future restriction)
     DashPay,
     /// DashPay operations the user can actually invoke — pay buttons and the
-    /// payment-history subscreen. Experimental only: DashPay has no network
-    /// capability gate today, unlike [`FeatureGate::ShieldedOperations`].
+    /// payment-history subscreen. Experimental only.
     DashPayOperations,
     /// Masternode operation — a Power User activity (the operator persona), so
     /// gated at [`UserRole::Power`]. Backs the Masternodes nav entry.
@@ -94,10 +88,9 @@ impl FeatureGate {
     fn checks(self) -> &'static [Check] {
         match self {
             FeatureGate::Shielded => &[],
-            FeatureGate::ShieldedOperations => &[
-                Check::SupportedNetwork,
-                Check::Experimental(ExperimentalFeature::Shielded),
-            ],
+            FeatureGate::ShieldedOperations => {
+                &[Check::Experimental(ExperimentalFeature::Shielded)]
+            }
             FeatureGate::DashPay => &[],
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
@@ -110,12 +103,7 @@ impl FeatureGate {
         self.checks().iter().all(|c| c.is_met(ctx))
     }
 
-    /// The first check that fails to hold for this gate, or `None` if every
-    /// check passes (equivalent to `is_available` returning `true`). Lets a
-    /// caller surface which axis is actually blocking availability — e.g.
-    /// distinguishing "the network doesn't support this yet" (a
-    /// [`Check::SupportedNetwork`]) from "your interface mode doesn't unlock this" (a
-    /// [`Check::Experimental`]) — instead of a single opaque `false`.
+    /// The first role or experimental check that fails, if any.
     pub fn first_unmet_check(self, ctx: &AppContext) -> Option<Check> {
         self.checks().iter().copied().find(|c| !c.is_met(ctx))
     }
@@ -124,15 +112,10 @@ impl FeatureGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::test_support::{prove_protocol_version, test_app_context};
-    use dash_sdk::dpp::version::PlatformVersion;
+    use crate::context::test_support::test_app_context;
     use std::sync::Arc;
 
     const ROLES: [UserRole; 3] = [UserRole::Everyday, UserRole::Power, UserRole::Developer];
-
-    /// Highest protocol version probed by [`known_protocol_versions`]. Well past
-    /// the versions upstream defines today, so the probe cannot silently miss one.
-    const MAX_PROBED_PROTOCOL_VERSION: u32 = 40;
 
     /// A context in `role`, on its own data dir — the app k/v store refuses a
     /// second open of the same path, so contexts cannot share one.
@@ -141,13 +124,6 @@ mod tests {
         let ctx = test_app_context(tmp.path());
         ctx.set_user_role(role);
         (tmp, ctx)
-    }
-
-    /// Every protocol version upstream actually defines.
-    fn known_protocol_versions() -> Vec<u32> {
-        (14..=MAX_PROBED_PROTOCOL_VERSION)
-            .filter(|v| PlatformVersion::get_optional(*v).is_some())
-            .collect()
     }
 
     /// Masternode operation is the operator persona's activity: Power and above.
@@ -215,48 +191,14 @@ mod tests {
     }
 
     #[test]
-    fn shielded_operations_need_a_supported_network_and_unlocked_role() {
+    fn shielded_operations_only_require_experimental_access() {
         for role in ROLES {
             let (_tmp, ctx) = ctx_with_role(role);
-            assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
-            for version in known_protocol_versions() {
-                prove_protocol_version(&ctx, version);
-                assert_eq!(
-                    FeatureGate::ShieldedOperations.is_available(&ctx),
-                    role.at_least(UserRole::Power)
-                );
-                assert!(FeatureGate::Shielded.is_available(&ctx));
-            }
-        }
-    }
-
-    #[test]
-    fn shielded_operations_report_network_then_role_requirements() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        assert_eq!(
-            FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
-            Some(Check::SupportedNetwork)
-        );
-        prove_protocol_version(&ctx, 14);
-        assert_eq!(
-            FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
-            Some(Check::Experimental(ExperimentalFeature::Shielded))
-        );
-        ctx.set_user_role(UserRole::Developer);
-        assert_eq!(
-            FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
-            None
-        );
-    }
-
-    #[test]
-    fn unsupported_network_keeps_balances_visible_but_refuses_shielded_operations() {
-        use dash_sdk::dpp::version::LATEST_VERSION;
-        for version in [13, LATEST_VERSION + 1] {
-            let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-            prove_protocol_version(&ctx, version);
+            assert_eq!(
+                FeatureGate::ShieldedOperations.is_available(&ctx),
+                role.at_least(UserRole::Power)
+            );
             assert!(FeatureGate::Shielded.is_available(&ctx));
-            assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         }
     }
 }

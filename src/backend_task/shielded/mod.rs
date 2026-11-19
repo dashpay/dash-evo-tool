@@ -67,7 +67,6 @@ const POST_SHIELD_ADDRESS_SYNC_WAIT: std::time::Duration = std::time::Duration::
 pub(super) fn shielded_operations_unavailable_error(ctx: &AppContext) -> Option<TaskError> {
     match FeatureGate::ShieldedOperations.first_unmet_check(ctx) {
         None => None,
-        Some(Check::SupportedNetwork) => ctx.ensure_platform_write_supported().err(),
         Some(Check::MinRole(_) | Check::Experimental(_)) => {
             Some(TaskError::ShieldedOperationsRoleUnavailable)
         }
@@ -347,7 +346,6 @@ mod tests {
     use crate::backend_task::BackendTask;
     use crate::backend_task::TaskResult;
     use crate::context::test_support::test_app_context;
-    use crate::model::user_role::UserRole;
     use crate::utils::egui_mpsc::SenderAsync;
     use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
     use dash_sdk::platform::DataContract;
@@ -356,7 +354,6 @@ mod tests {
     async fn mcp_style_direct_dispatch_rejects_unavailable_shielded_write() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_user_role(UserRole::Developer);
         assert!(FeatureGate::Shielded.is_available(&ctx));
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
 
@@ -370,7 +367,7 @@ mod tests {
         let result = ctx.run_backend_task(task, sender).await;
 
         assert!(
-            matches!(&result, Err(TaskError::PlatformNetworkUnconfirmed)),
+            matches!(&result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
             "a direct backend dispatch must reject unsupported shielded writes before moving funds: {result:?}"
         );
     }
@@ -414,7 +411,6 @@ mod tests {
     async fn shielded_pre_check_refuses_without_wiring_the_wallet_backend() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_user_role(UserRole::Developer);
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         assert!(
             ctx.wallet_backend().is_err(),
@@ -431,7 +427,7 @@ mod tests {
         let result = ctx.run_backend_task(task, sender).await;
 
         assert!(
-            matches!(&result, Err(TaskError::PlatformNetworkUnconfirmed)),
+            matches!(&result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
             "the pre-check must reject the shielded write: {result:?}"
         );
         assert!(

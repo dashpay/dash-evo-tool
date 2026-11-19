@@ -431,7 +431,7 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
-- Available on a verified, supported network when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-008: Top up identity from Send screen [Implemented]
 **Persona:** Priya, Jordan
@@ -450,7 +450,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 - Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only your default private address counts as your own.
 - System auto-selects the highest-balance Platform address.
-- Available on a verified, supported network when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-010: Withdraw from shielded pool to Core address [Implemented]
 **Persona:** Jordan
@@ -458,7 +458,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
 - Select Shielded Balance as source and enter a Core address as destination.
-- Available on a verified, supported network when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
 **Persona:** Priya, Jordan
@@ -503,7 +503,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 - Select Shielded Balance as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
-- Available on a verified, supported network when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-016: Send privately within the shielded pool [Implemented]
 **Persona:** Jordan
@@ -513,7 +513,7 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Select Shielded Balance as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
-- Available on a verified, supported network when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-017: "Max" is verified against what the wallet can actually build [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1460,8 +1460,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
-- DET supports Platform protocol 14 and newer. A verified older network displays an actionable notice to wait for its upgrade or select another network in Settings, and Platform writes are refused before spending funds. Saved data and read-only views remain available.
-- Platform writes wait for a verified supported network version. When the network runs a newer version than this build knows, DET advises updating the app.
+- DET supports Platform protocol 14 or newer on every network. On connection or reconnection, a verified older version shows a persistent warning to wait for the network upgrade or choose another network in Settings. A failed version check is logged without blocking operations; incompatible operations use normal server-error handling.
+- When the network runs a newer version than this build knows, the current-epoch report advises updating the app.
 - The recent withdrawal history, when it lists a failed withdrawal, notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]

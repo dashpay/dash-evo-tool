@@ -211,7 +211,6 @@ impl AppContext {
         qualified_identity: &QualifiedIdentity,
         sdk: &Sdk,
     ) -> Result<DpnsVoteAttempt, TaskError> {
-        self.ensure_platform_write_supported()?;
         let vote_poll = self.checked_dpns_vote_poll(name, sdk).await?;
         let Some((_, public_key)) = &qualified_identity.associated_voter_identity else {
             return Err(TaskError::NoVotingIdentity {

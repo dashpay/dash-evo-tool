@@ -237,14 +237,6 @@ pub enum TaskError {
     #[error("This network is running an older version that this app no longer supports. Wait for the network to upgrade, or choose another network in Settings.")]
     PlatformNetworkTooOld { verified_version: u32 },
 
-    /// The network's rules are newer than this build understands.
-    #[error("This network needs a newer version of the app. Update Dash Evo Tool, or restart it if you just changed connection settings.")]
-    PlatformNetworkTooNew { verified_version: u32 },
-
-    /// A seed or an unverified response cannot authorize Platform changes.
-    #[error("The app has not verified this network yet. Wait for syncing to finish and try again.")]
-    PlatformNetworkUnconfirmed,
-
     /// The wallet backend has not finished starting up yet. The lazy-init gate
     /// in [`AppContext::wallet_backend`](crate::context::AppContext::wallet_backend)
     /// returns this while the backend is still being built; every wallet and

@@ -361,13 +361,6 @@ impl AppContext {
             })
             .collect::<Vec<_>>();
         if !queued.is_empty() {
-            // Local edits and reads remain usable; resume queued votes only once
-            // the connection is supported. Keep recovery pending until then.
-            if self.ensure_platform_write_supported().is_err()
-                || self.ensure_sdk_write_supported(sdk).is_err()
-            {
-                return Ok(());
-            }
             let voters = self.load_local_voting_identities()?;
             for operation in queued {
                 self.execute_dpns_vote_operation(operation, voters.clone(), None, sdk)
@@ -1443,31 +1436,6 @@ mod tests {
                 )
                 .unwrap(),
         ])
-    }
-
-    #[tokio::test]
-    async fn minimum_protocol_14_defers_queued_vote_recovery_but_allows_local_cleanup() {
-        let (_dir, ctx) = vote_context();
-        let deadline = chrono::Utc::now().timestamp_millis() as u64 + 60_000;
-        let mut operation = scheduled_operation_for(&ctx, "alice", deadline);
-        operation.targets[0].status = DpnsVoteTargetStatus::Queued;
-        ctx.insert_dpns_vote_operation(&mut operation, None)
-            .unwrap();
-        crate::context::test_support::prove_protocol_version(&ctx, 13);
-        ctx.ensure_dpns_vote_recovery(&ctx.sdk()).await.unwrap();
-        assert!(!ctx.dpns_vote_recovery.lock().await.initialized);
-        let saved = ctx.dpns_vote_operation(operation.id).unwrap().unwrap();
-        assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Queued);
-        let (tx, _rx) = tokio::sync::mpsc::channel(8);
-        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
-        ctx.run_contested_resource_task(
-            ContestedResourceTask::ClearAllScheduledVotes,
-            &ctx.sdk(),
-            sender,
-        )
-        .await
-        .unwrap();
-        assert!(!ctx.dpns_vote_recovery.lock().await.initialized);
     }
 
     #[tokio::test]

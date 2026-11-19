@@ -1091,8 +1091,7 @@ Emits tokens in fixed amounts for specific intervals.
 
 impl TokensScreen {
     /// The once-per-identity distribution option: a fixed amount every
-    /// identity may claim exactly once. Offered only where the connected
-    /// network accepts it; the registration fee grows when it is on.
+    /// identity may claim exactly once. The registration fee grows when it is on.
     fn render_once_per_identity_distribution(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(
             &mut self.enable_once_per_identity_distribution,

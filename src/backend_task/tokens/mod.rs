@@ -265,7 +265,6 @@ impl AppContext {
                 signing_key,
                 params,
             } => {
-                self.ensure_platform_write_supported()?;
                 params
                     .contract_keywords
                     .iter()

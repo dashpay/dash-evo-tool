@@ -1166,17 +1166,6 @@ impl TokensScreen {
             ).show(ui);
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });
-        if let Some(reason) = self.creation_blocked_reason() {
-            Self::render_blocked_hint(ui, &reason);
-        }
-    }
-
-    /// Known incompatible networks cannot register; offline users can prepare a token.
-    /// The backend still requires a verified supported connection before submission.
-    pub(super) fn creation_blocked_reason(&self) -> Option<String> {
-        self.app_context
-            .unsupported_platform_error()
-            .map(|error| error.to_string())
     }
 
     /// The confirmation's sentence about whether holders can send the token.
@@ -1460,8 +1449,7 @@ impl TokensScreen {
     }
 
     /// Why Simple mode's "Create Token" is blocked, shown next to the button:
-    /// missing inputs first, then the preset, then a setting the network does
-    /// not accept.
+    /// missing inputs first, then the preset.
     pub(super) fn simple_mode_blocked_reason(&self) -> Option<String> {
         if self.token_names_input[0].0.trim().is_empty() {
             Some("Enter a token name to continue.".to_owned())
@@ -1470,17 +1458,17 @@ impl TokensScreen {
         } else if !self.preset_chosen() {
             Some(SIMPLE_PRESET_HINT.to_owned())
         } else {
-            self.creation_blocked_reason()
+            None
         }
     }
 
     /// Why Advanced mode's "Register Token Contract" is blocked, shown next to
-    /// the button: the preset first, then a setting the network does not accept.
+    /// the button when no preset has been chosen.
     pub(super) fn advanced_mode_blocked_reason(&self) -> Option<String> {
         if !self.preset_chosen() {
             Some(ADVANCED_PRESET_HINT.to_owned())
         } else {
-            self.creation_blocked_reason()
+            None
         }
     }
 

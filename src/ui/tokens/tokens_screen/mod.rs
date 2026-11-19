@@ -4681,39 +4681,14 @@ mod tests {
             .drop_without_applying_deltas();
     }
 
-    /// A non-transferable choice is kept, not silently flipped back to
-    /// transferable, while the network's support is not confirmed; creating is
-    /// blocked with the reason instead.
     #[test]
-    fn non_transferable_choice_survives_until_the_network_supports_it() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
+    fn non_transferable_choice_can_be_prepared_offline() {
+        let tmp = tempfile::tempdir().unwrap();
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         screen.transferable_input = false;
-        crate::context::test_support::prove_protocol_version(&app_context, 13);
-
-        render_transferable_row(&mut screen);
-
-        assert!(
-            !screen.transferable_input,
-            "the user's non-transferable choice must not be overwritten"
-        );
-        assert_eq!(
-            screen.creation_blocked_reason().as_deref(),
-            Some(
-                crate::backend_task::error::TaskError::PlatformNetworkTooOld {
-                    verified_version: 13
-                }
-                .to_string()
-                .as_str()
-            ),
-            "the reason must say where the hidden option is"
-        );
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
         render_transferable_row(&mut screen);
         assert!(!screen.transferable_input);
-        assert_eq!(screen.creation_blocked_reason(), None);
     }
 
     /// The confirmation always states the irreversible "holders cannot send"
@@ -4808,21 +4783,13 @@ mod tests {
         assert!(!unlocked.contains("marketplace"));
     }
 
-    /// Both modes name the preset first and then a setting the network does not
-    /// accept, so the user fixes one thing at a time.
     #[test]
-    fn blocked_reasons_name_the_preset_before_transferability() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
+    fn blocked_reasons_require_a_preset_without_network_gating() {
+        let tmp = tempfile::tempdir().unwrap();
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
         screen.transferable_input = false;
-        crate::context::test_support::prove_protocol_version(&app_context, 13);
-        let unsupported = crate::backend_task::error::TaskError::PlatformNetworkTooOld {
-            verified_version: 13,
-        }
-        .to_string();
-
         assert_eq!(
             screen.simple_mode_blocked_reason().as_deref(),
             Some("Choose a preset to create the token.")
@@ -4831,18 +4798,9 @@ mod tests {
             screen.advanced_mode_blocked_reason().as_deref(),
             Some("Choose a preset, or Custom to use the rules below.")
         );
-
         screen.change_to_preset(owner_preset(
             TokenConfigurationPresetFeatures::WithExtremeActions,
         ));
-        assert_eq!(
-            screen.simple_mode_blocked_reason(),
-            Some(unsupported.clone())
-        );
-        assert_eq!(screen.advanced_mode_blocked_reason(), Some(unsupported));
-
-        screen.transferable_input = true;
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
         assert_eq!(screen.simple_mode_blocked_reason(), None);
         assert_eq!(screen.advanced_mode_blocked_reason(), None);
     }

@@ -288,8 +288,7 @@ fn append_newer_protocol_advisory(text: &mut String, info: &ProtocolVersionInfo)
     let maximum = info.maximum_supported_version;
     text.push_str(&format!(
         "\n\nThe network runs protocol version {verified}, which is newer than this version \
-         of Dash Evo Tool supports (up to {maximum}). Some features stay unavailable until \
-         you update Dash Evo Tool."
+         of Dash Evo Tool supports (up to {maximum}). Update Dash Evo Tool to use the network's latest features."
     ));
 }
 
@@ -334,10 +333,9 @@ fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> Str
 /// The daily withdrawal limit the network enforces, at `platform_version` —
 /// never at whatever version the upstream crates happen to know best.
 ///
-/// Protocol 13 uses `daily_withdrawal_limit` v1, a flat 2000 Dash that ignores
-/// the total. Protocol 14 (v2) derives it from the total credits Platform held a
-/// day ago, which the SDK cannot query; passing today's total is an accepted
-/// gap for this display-only figure.
+/// Supported networks derive it from the total credits Platform held a day ago,
+/// which the SDK cannot query; passing today's total is an accepted gap for this
+/// display-only figure.
 fn network_daily_withdrawal_limit(
     total_credits_on_platform: Credits,
     platform_version: &PlatformVersion,
@@ -600,9 +598,6 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
-        if let Err(error) = self.refresh_retained_wallet_protocol(sdk).await {
-            tracing::warn!(%error, "Retained wallet connection could not verify the network version");
-        }
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
@@ -617,6 +612,31 @@ impl AppContext {
     /// Sets the fee multiplier cache from a proved epoch.
     fn set_fee_multiplier_from(&self, epoch_info: &ExtendedEpochInfo) {
         self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
+    }
+
+    /// Schedule one best-effort check from the connection's readiness gate.
+    pub(crate) fn queue_platform_protocol_refresh(self: &Arc<Self>) {
+        let ctx = Arc::clone(self);
+        let sdk = self.sdk.load_full();
+        if self
+            .subtasks
+            .spawn_sync("platform-protocol-refresh", async move {
+                ctx.refresh_platform_protocol(&sdk).await;
+            })
+            .is_err()
+        {
+            tracing::debug!("Protocol refresh skipped because the app is shutting down");
+        }
+    }
+
+    /// Refresh verified metadata without turning connection failures into task errors.
+    pub(crate) async fn refresh_platform_protocol(&self, sdk: &Sdk) {
+        if let Err(error) = sdk.refresh_protocol_version().await {
+            tracing::warn!(%error, "Could not refresh the connected network's protocol version");
+        }
+        if let Err(error) = self.refresh_current_epoch(sdk).await {
+            tracing::warn!(%error, "Could not refresh the connection's fee multiplier");
+        }
     }
 
     pub async fn run_platform_info_task(
@@ -1092,8 +1112,7 @@ mod tests {
 
     /// The limit is whatever the network's own protocol version says it is,
     /// never a version fixed in this build. Supported versions derive it from
-    /// the total (15% of
-    /// it, `SYSTEM_LIMITS_V4.daily_withdrawal_limit_percent`, never below the
+    /// the total (15% of it, `SYSTEM_LIMITS_V4.daily_withdrawal_limit_percent`, never below the
     /// 500 Dash maximum withdrawal).
     #[test]
     fn daily_withdrawal_limit_follows_the_given_platform_version() {
@@ -1150,7 +1169,7 @@ mod tests {
 
     const NEWER_PROTOCOL_ADVISORY: &str = "The network runs protocol version {verified}, \
         which is newer than this version of Dash Evo Tool supports (up to {maximum}). \
-        Some features stay unavailable until you update Dash Evo Tool.";
+        Update Dash Evo Tool to use the network's latest features.";
 
     fn expected_newer_protocol_advisory(verified: u32, maximum: u32) -> String {
         NEWER_PROTOCOL_ADVISORY
@@ -1287,9 +1306,7 @@ mod tests {
     }
 
     /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
-    /// not a network observation: treating it as proven would open the shielded
-    /// capability gate and stop the retry `mcp::resolve` makes while nothing is
-    /// proven. The report names the version as unconfirmed.
+    /// not a network observation. The report names the version as unconfirmed.
     #[tokio::test]
     async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
         let temp_dir = tempfile::tempdir().expect("tempdir");

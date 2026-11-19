@@ -8,11 +8,11 @@ See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/d
 
 DET requires Dash Platform protocol 14 or newer on every network. It starts at
 version 14 and follows newer versions confirmed by verified network responses.
-If a network is too old, the app explains how to recover and refuses Platform
-changes before spending funds. Wait for that network to upgrade, or choose
-another network in Settings. Saved data remains readable, including data from
-older app versions; network reads may still report a connection or compatibility
-error. A network newer than this build supports requires an app update.
+On connection and reconnection, DET checks the network version. A confirmed
+version below 14 shows a persistent warning: wait for the network to upgrade,
+or choose another network in Settings. A failed check is logged and does not
+block operations. The server reports incompatible operations through the normal
+error handling. Saved data from older app versions remains readable.
 
 ## Features
 

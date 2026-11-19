@@ -15,7 +15,6 @@ mod identity_db;
 mod identity_names;
 #[cfg(test)]
 pub(crate) mod lock_probe;
-mod protocol;
 #[cfg(test)]
 pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
@@ -1156,17 +1155,14 @@ impl AppContext {
     /// version transitions are built at, and whether the proven version is
     /// newer than any this build defines.
     pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
-        self.protocol_version_info_for(&self.sdk.load())
-    }
-
-    pub(crate) fn protocol_version_info_for(&self, sdk: &Sdk) -> ProtocolVersionInfo {
+        let sdk = self.sdk.load();
         let info = sdk.protocol_version_info();
         // TEST SEAM: compiled only into `cargo test` builds; every other build
         // returns the SDK's answer unchanged.
         // TODO(upstream): drop once the SDK offers a mock seam for a verified
         // version (https://github.com/dashpay/platform/issues/5622).
         #[cfg(test)]
-        let info = self.proven_protocol_version_for_tests.apply(sdk, info);
+        let info = self.proven_protocol_version_for_tests.apply(&sdk, info);
         info
     }
 
@@ -1191,22 +1187,10 @@ impl AppContext {
         }
     }
 
-    /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
-    /// the new connection's epoch. The new SDK has proven no protocol version,
-    /// so protocol capabilities stay closed until a proved response carries
-    /// one; the epoch read is that response, and it refreshes the fee
-    /// multiplier too. A failed read only leaves the version unproven until
-    /// the next proved response; it does not fail the rebuild.
+    /// Rebuild the connection and refresh its proven protocol version best-effort.
     pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
         Arc::clone(self).reinit_core_client_and_sdk()?;
-        let sdk = self.sdk.load_full();
-        if let Err(error) = self.refresh_current_epoch(&sdk).await {
-            tracing::warn!(
-                %error,
-                "Could not read the current epoch after rebuilding the connection; \
-                 protocol features stay closed until the next read"
-            );
-        }
+        self.refresh_platform_protocol(&self.sdk.load_full()).await;
         Ok(())
     }
 
@@ -1424,7 +1408,7 @@ impl AppContext {
         if self.wallet_backend.load().is_some() {
             return Ok(());
         }
-        let sdk = self.sdk.load_full();
+        let sdk = std::sync::Arc::new(self.sdk.load().as_ref().clone());
         let backend = WalletBackend::new(
             self,
             sdk,

@@ -4,13 +4,12 @@
 
 ## Network compatibility
 
-The CLI has the same minimum as the GUI: Dash Platform protocol 14. Platform
-writes require a verified, supported network version. On an older network,
-wait for its upgrade or connect to a supported network. Reads and local wallet
-management remain available. An unconfirmed connection must finish syncing
-before a Platform write; a network newer than this build requires updating DET.
-If this warning persists after changing endpoints to a supported network, restart
-DET to discard the previous connection's verified version.
+The CLI has the same minimum as the GUI: Dash Platform protocol 14. Its SDK
+starts at version 14 and follows newer versions confirmed by verified responses.
+Connection metadata refresh is best effort; a failed refresh is logged. Commands
+are not refused locally because a network version is unconfirmed or too old.
+The server can reject incompatible operations through the usual command errors.
+On an older network, wait for its upgrade or connect to a supported network.
 
 ## Build
 

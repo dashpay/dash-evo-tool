@@ -93,15 +93,12 @@ impl DomainFeedback for DpnsFeedback {
 }
 
 /// Whether a scheduled-vote sweep failure is expected and goes unreported:
-/// no voter is loaded, or the connection banner already explains why writes wait.
+/// the sweep found no voting identity on this device.
 pub(crate) fn is_quiet(error: &TaskError) -> bool {
     matches!(
         error,
         TaskError::ScheduledVoteSweepFailed { source, .. }
-            if matches!(source.as_ref(), TaskError::NoVotingIdentity { .. }
-                | TaskError::PlatformNetworkUnconfirmed
-                | TaskError::PlatformNetworkTooOld { .. }
-                | TaskError::PlatformNetworkTooNew { .. })
+            if matches!(source.as_ref(), TaskError::NoVotingIdentity { .. })
     )
 }
 
@@ -109,25 +106,6 @@ pub(crate) fn is_quiet(error: &TaskError) -> bool {
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
-
-    #[test]
-    fn compatibility_is_quiet_only_for_the_background_sweep() {
-        for source in [
-            TaskError::PlatformNetworkUnconfirmed,
-            TaskError::PlatformNetworkTooOld {
-                verified_version: 13,
-            },
-            TaskError::PlatformNetworkTooNew {
-                verified_version: u32::MAX,
-            },
-        ] {
-            assert!(!is_quiet(&source));
-            assert!(is_quiet(&TaskError::ScheduledVoteSweepFailed {
-                network: dash_sdk::dpp::dashcore::Network::Testnet,
-                source: Box::new(source),
-            }));
-        }
-    }
 
     #[test]
     fn only_missing_local_identity_sweep_errors_are_quiet() {

@@ -140,7 +140,7 @@ mod tests {
 
     /// DOC-CREATE-001: a document built by the document type's factory yields
     /// the same create transition as the hand-built document it replaces, under
-    /// protocol versions 13 and 14, for a mutable (`contactInfo`) and an
+    /// protocol versions 14 and 15, for a mutable (`contactInfo`) and an
     /// immutable (`contactRequest`) DashPay document type.
     #[test]
     fn factory_document_yields_the_hand_built_create_transition() {

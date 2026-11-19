@@ -1186,7 +1186,7 @@ mod tests {
     }
 
     /// Contracts saved while DET built at protocol 12 still load, unchanged,
-    /// once DET builds at the network's 13 or 14.
+    /// once DET builds at the network's 14 or 15.
     #[test]
     fn contracts_stored_at_protocol_12_decode_at_14_and_15() {
         let v12 = PlatformVersion::get(12).expect("v12");

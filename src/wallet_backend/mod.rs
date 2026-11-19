@@ -502,6 +502,7 @@ struct Inner {
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
     coordinator_gate: Arc<CoordinatorGate>,
+    app_context: std::sync::Weak<AppContext>,
     /// Frame-loop result channel, used by [`WalletBackend::start`] to nudge
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
@@ -591,6 +592,14 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
 /// [`wallet_database_path`] holding all Orchard state.
 pub(crate) fn shielded_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}-shielded.sqlite", network_prefix(network)))
+}
+
+fn protocol_refresh_action(context: std::sync::Weak<AppContext>) -> impl Fn() + Send + Sync {
+    move || {
+        if let Some(ctx) = context.upgrade() {
+            ctx.queue_platform_protocol_refresh();
+        }
+    }
 }
 
 impl WalletBackend {
@@ -738,6 +747,7 @@ impl WalletBackend {
                 secret_access,
                 start_latch: StartLatch::default(),
                 coordinator_gate,
+                app_context: Arc::downgrade(ctx),
                 task_result_sender,
                 spend_activity: Arc::default(),
                 platform_shield_activity: Arc::default(),
@@ -1992,11 +2002,12 @@ impl WalletBackend {
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
-        // is provably reachable. Cloning the sender avoids capturing any
-        // `Weak<AppContext>` in this run-loop closure.
+        // is provably reachable.
         let task_result_sender = self.inner.task_result_sender.clone();
         let network = self.inner.network;
+        let refresh_protocol = protocol_refresh_action(self.inner.app_context.clone());
         self.inner.coordinator_gate.arm(Box::new(move || {
+            refresh_protocol();
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
@@ -3942,6 +3953,36 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn startup_protocol_refresh_fires_once_and_rearms_on_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        let gate = super::CoordinatorGate::default();
+        for _ in 0..2 {
+            gate.arm(Box::new(super::protocol_refresh_action(
+                std::sync::Arc::downgrade(&ctx),
+            )));
+            assert!(!ctx.subtasks.is_active("platform-protocol-refresh"));
+            gate.on_masternodes_ready();
+            assert!(ctx.subtasks.is_active("platform-protocol-refresh"));
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while ctx.subtasks.is_active("platform-protocol-refresh") {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("offline refresh completes");
+            assert_eq!(ctx.protocol_version_info().verified_version, None);
+            gate.on_masternodes_ready();
+            assert!(
+                !ctx.subtasks.is_active("platform-protocol-refresh"),
+                "no per-task retry after a failed refresh"
+            );
+            gate.reset();
+        }
+    }
+
     use super::*;
 
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {

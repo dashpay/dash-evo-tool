@@ -292,8 +292,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
 
-        // A verified network version is required before any Platform write.
-        resolve::ensure_spv_synced(&ctx).await?;
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
         let identity_id_str = qi
@@ -435,8 +436,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTransfer {
         let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
-        // A verified network version is required before any Platform write.
-        resolve::ensure_spv_synced(&ctx).await?;
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let from_qi = resolve::qualified_identity(&ctx, &param.from_identity_id)?;
@@ -660,8 +662,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
         let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
-        // A verified network version is required before any Platform write.
-        resolve::ensure_spv_synced(&ctx).await?;
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;

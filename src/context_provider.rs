@@ -155,13 +155,13 @@ impl ContextProvider for SpvProvider {
 
         // Before the SPV masternode list has synced, quorum keys are not yet
         // resolvable, so answer with a typed "not ready" diagnostic that DET
-        // maps to `TaskError::MasternodeListNotReady`. This does NOT spare the
-        // queried node: the SDK wraps every provider error, `Config` included,
-        // in `Error::Proof`, treats all proof errors as retryable, and bans the
-        // node before returning (`ban_failed_address: true`; pinned by
-        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_bans_the_node`).
-        // Callers must therefore hold proof-verifying reads until
-        // `masternodes_ready()`; this branch only names the failure.
+        // maps to `TaskError::MasternodeListNotReady`. The SDK returns a
+        // provider `Config` failure as a configuration error of its own: it
+        // does not retry the request and bans no node for it (pinned by
+        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_is_a_readiness_wait_and_bans_no_node`).
+        // The read still fails, so callers hold proof-verifying reads until
+        // `masternodes_ready()`; this branch names the failure for one that
+        // gets through.
         if !app_ctx.connection_status().masternodes_ready() {
             // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
             return Err(ContextProviderError::Config(

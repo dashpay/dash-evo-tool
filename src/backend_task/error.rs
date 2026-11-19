@@ -5021,13 +5021,32 @@ impl From<SdkError> for TaskError {
     }
 }
 
+/// Whether `error` is `SpvProvider::get_quorum_public_key` answering that the
+/// masternode list has not synced yet (see `context_provider`).
+///
+/// The proof verifier wraps the provider's answer in `QuorumKeyUnavailable`,
+/// and the SDK's conversion lifts a provider `Config` failure out of the proof
+/// error to a top-level `ContextProviderError`, which it neither retries nor
+/// bans a node for. That top-level error is what a request returns. The two
+/// verifier shapes are matched as well, for an error that reaches DET without
+/// passing through that conversion. Only the provider's own readiness text
+/// counts: any other configuration failure is not a startup wait.
 fn sdk_error_is_masternode_list_not_ready(error: &SdkError) -> bool {
-    // Matches the `SpvProvider::get_quorum_public_key` payload from `context_provider`.
+    let provider_error = match error {
+        SdkError::ContextProviderError(provider_error)
+        | SdkError::Proof(
+            dash_sdk::ProofVerifierError::QuorumKeyUnavailable {
+                error: provider_error,
+                ..
+            }
+            | dash_sdk::ProofVerifierError::ContextProviderError(provider_error),
+        ) => provider_error,
+        _ => return false,
+    };
     matches!(
-        error,
-        SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
-            dash_sdk::error::ContextProviderError::Config(detail)
-        )) if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
+        provider_error,
+        dash_sdk::error::ContextProviderError::Config(detail)
+            if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
     )
 }
 
@@ -6185,11 +6204,41 @@ mod tests {
             crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL,
             sdk_detail
         );
-        let sdk_error = SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
-            dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
-        ));
+        // Through the SDK's own conversion of what the proof verifier returns
+        // when the provider cannot give a quorum key, not a hand-built shape.
+        let sdk_error = SdkError::from(dash_sdk::ProofVerifierError::QuorumKeyUnavailable {
+            quorum_type: 6,
+            quorum_hash: [0x51; 32],
+            core_chain_locked_height: 1_000,
+            error: dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
+        });
+        assert!(
+            matches!(
+                &sdk_error,
+                SdkError::ContextProviderError(dash_sdk::error::ContextProviderError::Config(_))
+            ),
+            "the SDK lifts a provider configuration failure out of the proof error: {sdk_error:?}"
+        );
 
         assert!(matches!(
+            TaskError::from(sdk_error),
+            TaskError::MasternodeListNotReady { .. }
+        ));
+    }
+
+    /// Only the provider's readiness answer is a startup wait. Another
+    /// configuration failure of the provider does not clear when sync catches
+    /// up, so it must not show the readiness banner.
+    #[test]
+    fn another_provider_configuration_failure_is_not_a_startup_wait() {
+        let sdk_error = SdkError::from(dash_sdk::ProofVerifierError::QuorumKeyUnavailable {
+            quorum_type: 6,
+            quorum_hash: [0x51; 32],
+            core_chain_locked_height: 1_000,
+            error: dash_sdk::error::ContextProviderError::Config("dump dir not set".to_string()),
+        });
+
+        assert!(!matches!(
             TaskError::from(sdk_error),
             TaskError::MasternodeListNotReady { .. }
         ));

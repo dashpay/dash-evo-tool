@@ -2638,6 +2638,33 @@ pub enum TaskError {
     )]
     MasterKeyNotFound,
 
+    /// A private document type of a contract takes entries too small for its
+    /// largest document. Platform would register the type, but no full
+    /// document fits it and its entry size can never change, so the request
+    /// is refused before signing. Sizes are in bytes.
+    #[error(
+        "The private document type {document_type} stores entries of {entry_size} bytes, but its largest document needs {minimum_entry_size}. Set its entry size to at least {minimum_entry_size}, or make its fields smaller, and try again."
+    )]
+    PrivateDocumentEntrySizeTooSmall {
+        document_type: String,
+        entry_size: u32,
+        minimum_entry_size: u32,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A field of a private document type sets no largest value, so no entry
+    /// size holds every document of the type. Refused before signing.
+    #[error(
+        "The field {property} of the private document type {document_type} has no maximum size. Give it a maximum size and try again."
+    )]
+    PrivateDocumentPropertyUnbounded {
+        document_type: String,
+        property: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// No withdrawal-capable key with locally-held private material was available
     /// to sign the operation (Platform requires a Transfer or Owner key you control).
     #[error(
@@ -4966,6 +4993,26 @@ impl From<SdkError> for TaskError {
                     source_error: boxed,
                 }
             }
+            // The SDK refuses these before signing; the same contract is
+            // refused every time, so "try again later" would be wrong.
+            SdkError::Protocol(ProtocolError::PrivateDocumentEntrySizeTooSmall {
+                document_type_name,
+                entry_size,
+                minimum_entry_size,
+            }) => TaskError::PrivateDocumentEntrySizeTooSmall {
+                document_type: document_type_name.clone(),
+                entry_size: *entry_size,
+                minimum_entry_size: *minimum_entry_size,
+                source_error: boxed,
+            },
+            SdkError::Protocol(ProtocolError::UnboundedPrivateDocumentProperty {
+                document_type_name,
+                property_name,
+            }) => TaskError::PrivateDocumentPropertyUnbounded {
+                document_type: document_type_name.clone(),
+                property: property_name.clone(),
+                source_error: boxed,
+            },
             _ => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -5240,6 +5287,46 @@ mod tests {
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
         }
+    }
+
+    /// The SDK refuses a contract whose private document type cannot hold its
+    /// own documents. The same contract is refused every time, so the message
+    /// names the type and what to change instead of advising a retry.
+    #[test]
+    fn private_document_refusals_name_the_type_and_the_fix() {
+        let too_small = TaskError::from(SdkError::Protocol(
+            ProtocolError::PrivateDocumentEntrySizeTooSmall {
+                document_type_name: "request".to_string(),
+                entry_size: 375,
+                minimum_entry_size: 398,
+            },
+        ));
+        assert!(
+            matches!(
+                &too_small,
+                TaskError::PrivateDocumentEntrySizeTooSmall {
+                    entry_size: 375,
+                    minimum_entry_size: 398,
+                    ..
+                }
+            ),
+            "{too_small:?}"
+        );
+        assert_eq!(
+            too_small.to_string(),
+            "The private document type request stores entries of 375 bytes, but its largest document needs 398. Set its entry size to at least 398, or make its fields smaller, and try again."
+        );
+
+        let unbounded = TaskError::from(SdkError::Protocol(
+            ProtocolError::UnboundedPrivateDocumentProperty {
+                document_type_name: "request".to_string(),
+                property_name: "label".to_string(),
+            },
+        ));
+        assert_eq!(
+            unbounded.to_string(),
+            "The field label of the private document type request has no maximum size. Give it a maximum size and try again."
+        );
     }
 
     /// What the SDK returns after a broadcast whose result could not be read

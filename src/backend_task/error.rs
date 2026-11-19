@@ -306,6 +306,13 @@ pub enum TaskError {
         source: dash_sdk::dpp::key_wallet::Error,
     },
 
+    /// Preparing a public Platform payment address pool failed before signing.
+    #[error("Your wallet addresses could not be prepared. Refresh the wallet and try again.")]
+    PlatformAddressPoolPreparationFailed {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
+
     /// Provisioning an identity-funding account (the registration account or a
     /// per-identity top-up account) failed while deriving its key or
     /// registering it with the wallet. The technical cause lives in `Debug`

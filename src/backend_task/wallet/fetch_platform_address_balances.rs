@@ -105,7 +105,7 @@ impl AppContext {
         let balances = {
             let mut wallet = wallet_arc.write()?;
 
-            provider.apply_results_to_wallet(&mut wallet);
+            provider.apply_sync_result_to_wallet(&mut wallet, &result);
 
             // Return the wallet's complete platform_address_info, not just
             // found_balances, so a wallet whose balances were already current

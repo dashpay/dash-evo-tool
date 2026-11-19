@@ -2326,6 +2326,32 @@ impl WalletAddressProvider {
         );
     }
 
+    /// Apply a complete scan, including its proof-backed absence results.
+    pub fn apply_sync_result_to_wallet(
+        &self,
+        wallet: &mut Wallet,
+        result: &dash_sdk::platform::address_sync::AddressSyncResult<AddressIndex, PlatformAddress>,
+    ) {
+        let tracked: BTreeSet<_> = wallet
+            .platform_address_info
+            .keys()
+            .map(|address| Wallet::canonical_address(address, self.network))
+            .collect();
+        let found: BTreeSet<_> = result.found.keys().map(|(_, address)| *address).collect();
+        for (_, address) in &result.absent {
+            let core_address = address.to_address_with_network(self.network);
+            if tracked.contains(&core_address) && !found.contains(address) {
+                wallet.apply_pinned_platform_address_info(
+                    core_address,
+                    0,
+                    0,
+                    result.checkpoint_height,
+                );
+            }
+        }
+        self.apply_results_to_wallet(wallet);
+    }
+
     /// Derive a Platform address at the given index from the account-level
     /// **public** key — no seed access.
     ///
@@ -2698,6 +2724,80 @@ mod tests {
             figure(&wallet),
             (45_000, 4, 650),
             "the newer scan is applied"
+        );
+    }
+
+    #[test]
+    fn explicit_refresh_clears_only_a_newer_proven_absence() {
+        use dash_sdk::platform::address_sync::AddressSyncResult;
+        let network = Network::Testnet;
+        let seed = crate::test_support::keys::seed();
+        let mut wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, network)
+            .expect("address");
+        let platform = PlatformAddress::try_from(address.clone()).expect("platform address");
+        wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
+        let provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+        let mut result = AddressSyncResult::default();
+        result.absent.insert((0, platform));
+        result.checkpoint_height = 400;
+        provider.apply_sync_result_to_wallet(&mut wallet, &result);
+        assert_eq!(
+            wallet
+                .get_platform_address_info(&address)
+                .expect("entry")
+                .balance,
+            41_000
+        );
+        result.checkpoint_height = 600;
+        provider.apply_sync_result_to_wallet(&mut wallet, &result);
+        let funds = wallet
+            .get_platform_address_info(&address)
+            .expect("tracked zero");
+        assert_eq!(
+            (funds.balance, funds.nonce, funds.as_of_height),
+            (0, 0, 600)
+        );
+    }
+
+    #[test]
+    fn explicit_refresh_keeps_found_addresses_and_ignores_untracked_absences() {
+        use dash_sdk::platform::address_sync::AddressSyncResult;
+        let network = Network::Testnet;
+        let seed = crate::test_support::keys::seed();
+        let mut wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, network)
+            .expect("address");
+        let platform = PlatformAddress::try_from(address.clone()).expect("platform address");
+        let mut provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+        let mut result = AddressSyncResult::default();
+        result.absent.insert((0, platform));
+        result.checkpoint_height = 600;
+        provider.apply_sync_result_to_wallet(&mut wallet, &result);
+        assert!(
+            wallet.platform_address_info.is_empty(),
+            "never-funded addresses stay untracked"
+        );
+
+        let funds = AddressFunds {
+            balance: 52_000,
+            nonce: 4,
+            as_of_height: 650,
+        };
+        wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
+        result.found.insert((0, platform), funds.clone());
+        provider
+            .found_balances
+            .insert(Wallet::canonical_address(&address, network), funds);
+        provider.apply_sync_result_to_wallet(&mut wallet, &result);
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("found entry");
+        assert_eq!(
+            (info.balance, info.nonce, info.as_of_height),
+            (52_000, 4, 650)
         );
     }
 

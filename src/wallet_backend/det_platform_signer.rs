@@ -69,7 +69,7 @@ impl PlatformPathIndex {
 
     /// The DIP-17 derivation path for `address`, or `None` if it is not one of
     /// the wallet's watched platform-payment addresses on this network.
-    fn path_for(&self, address: &PlatformAddress) -> Option<&DerivationPath> {
+    pub(super) fn path_for(&self, address: &PlatformAddress) -> Option<&DerivationPath> {
         self.by_address.get(address)
     }
 

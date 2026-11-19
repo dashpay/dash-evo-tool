@@ -39,6 +39,95 @@ use platform_wallet::wallet::platform_addresses::InputSelection;
 const PLATFORM_PAYMENT_ACCOUNT: u32 = 0;
 
 impl WalletBackend {
+    /// Make the transaction's DET-owned payment slots reconcilable upstream.
+    async fn ensure_platform_address_slots(
+        &self,
+        wallet: &platform_wallet::PlatformWallet,
+        path_index: &PlatformPathIndex,
+        addresses: impl IntoIterator<Item = PlatformAddress>,
+    ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::key_wallet::KeySource;
+        use dash_sdk::dpp::key_wallet::account::account_collection::PlatformPaymentAccountKey;
+        use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+
+        let mut required = Vec::new();
+        let mut account_ends = BTreeMap::<u32, u32>::new();
+        for address in addresses {
+            let Some(path) = path_index.path_for(&address) else {
+                continue; // Foreign outputs are not this wallet's slots.
+            };
+            let children: Vec<_> = path.into_iter().copied().collect();
+            let [
+                _,
+                _,
+                _,
+                ChildNumber::Hardened { index: account },
+                ChildNumber::Hardened { index: 0 },
+                ChildNumber::Normal { index },
+            ] = children.as_slice()
+            else {
+                return Err(TaskError::WalletStateInconsistent);
+            };
+            let end = index
+                .checked_add(1)
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            account_ends
+                .entry(*account)
+                .and_modify(|current| *current = (*current).max(end))
+                .or_insert(end);
+            required.push((address, *account, *index));
+        }
+        if required.is_empty() {
+            return Ok(());
+        }
+
+        // Only the manager lock is held, and it drops before any provider call.
+        // Pool extension derives public children; no seed or balance is copied.
+        let mut manager = wallet.wallet_manager().write().await;
+        let (public_wallet, info) = manager
+            .get_wallet_mut_and_info_mut(&wallet.wallet_id())
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        for (account_index, end) in account_ends {
+            let key = PlatformPaymentAccountKey {
+                account: account_index,
+                key_class: 0,
+            };
+            let xpub = public_wallet
+                .accounts
+                .platform_payment_accounts
+                .get(&key)
+                .ok_or(TaskError::WalletStateInconsistent)?
+                .account_xpub;
+            let account = info
+                .core_wallet
+                .platform_payment_managed_account_at_index_mut(account_index)
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            let generated_end = match account.addresses.highest_generated {
+                Some(index) => index
+                    .checked_add(1)
+                    .ok_or(TaskError::WalletStateInconsistent)?,
+                None => 0,
+            };
+            if end > generated_end {
+                account
+                    .addresses
+                    .generate_addresses(end - generated_end, &KeySource::Public(xpub), true)
+                    .map_err(|source| TaskError::PlatformAddressPoolPreparationFailed { source })?;
+            }
+        }
+        for (expected, account_index, index) in required {
+            let generated = info
+                .core_wallet
+                .platform_payment_managed_account_at_index(account_index)
+                .and_then(|account| account.addresses.address_at_index(index))
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            if PlatformAddress::try_from(generated).ok() != Some(expected) {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+        }
+        Ok(())
+    }
+
     /// Transfer credits between Platform addresses through platform-wallet's
     /// `PlatformAddressWallet::transfer`.
     ///
@@ -55,6 +144,12 @@ impl WalletBackend {
         fee_strategy: AddressFundsFeeStrategy,
     ) -> Result<Vec<PlatformAddressEntry>, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
+        self.ensure_platform_address_slots(
+            &wallet,
+            path_index,
+            inputs.keys().chain(outputs.keys()).copied(),
+        )
+        .await?;
         let scope = Self::hd_scope(seed_hash);
         let changeset = self
             .inner
@@ -107,6 +202,8 @@ impl WalletBackend {
                 let plaintext = session.plaintext();
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                 let path_index = prepare_path_index(seed)?;
+                self.ensure_platform_address_slots(&wallet, &path_index, inputs.keys().copied())
+                    .await?;
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, &path_index);
                 wallet
                     .platform()
@@ -149,6 +246,8 @@ impl WalletBackend {
         // fast without a passphrase prompt. The same handle reconciles after
         // the broadcast, so nothing after a successful top-up can fail.
         let wallet = self.resolve_wallet(seed_hash).await?;
+        self.ensure_platform_address_slots(&wallet, path_index, inputs.keys().copied())
+            .await?;
         let sdk = self.sdk().clone();
         let scope = Self::hd_scope(seed_hash);
         // TODO(upstream): switch to
@@ -520,6 +619,75 @@ mod tests {
             .await
             .expect("register wallet with the upstream manager");
         (seed_hash, wallet_arc, platform_address)
+    }
+
+    #[tokio::test]
+    async fn issued_address_beyond_the_gap_pool_is_reconciled_after_a_spend() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let backend = ctx.wallet_backend().expect("backend");
+        let seed = crate::test_support::keys::seed();
+        let (seed_hash, wallet_arc, _) = wallet_with_platform_address(&ctx, seed).await;
+        let (owned, path_index) = {
+            let mut wallet = wallet_arc.write().expect("wallet");
+            let mut last = None;
+            for _ in 1..=20 {
+                last = Some(
+                    wallet
+                        .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+                        .expect("issued address"),
+                );
+            }
+            let owned =
+                PlatformAddress::try_from(last.expect("slot 20")).expect("platform address");
+            wallet.apply_pinned_platform_address_info(
+                owned.to_address_with_network(Network::Testnet),
+                1_000_000,
+                1,
+                500,
+            );
+            (
+                owned,
+                PlatformPathIndex::from_wallet(&wallet, Network::Testnet),
+            )
+        };
+        let upstream = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("upstream wallet");
+        let before = reconcile_on(
+            &upstream,
+            &infos(&[(owned, 1_000_000, 1)]),
+            500,
+            "unregistered slot",
+        )
+        .await;
+        assert!(
+            before.is_empty(),
+            "slot 20 starts outside the managed gap pool"
+        );
+        backend
+            .ensure_platform_address_slots(&upstream, &path_index, [owned])
+            .await
+            .expect("register issued slots");
+        let entries =
+            reconcile_on(&upstream, &infos(&[(owned, 750_000, 2)]), 600, "test spend").await;
+        assert_eq!(entries.len(), 1, "the post-spend debit must be committed");
+        assert_eq!(
+            (entries[0].balance, entries[0].nonce, entries[0].index),
+            (750_000, 2, Some(20))
+        );
+        assert_eq!(upstream.platform().total_credits().await, 750_000);
+        ctx.apply_platform_address_spend(seed_hash, entries);
+        assert_eq!(
+            wallet_arc
+                .read()
+                .expect("wallet")
+                .get_platform_address_info(&owned.to_address_with_network(Network::Testnet))
+                .expect("debit")
+                .balance,
+            750_000
+        );
     }
 
     fn infos(entries: &[(PlatformAddress, Credits, u32)]) -> AddressInfos {

@@ -3435,43 +3435,6 @@ mod tests {
         assert_eq!(screen.selected_wallet_seed_hash(), Some(target));
     }
 
-    /// Stores a password-protected imported key the way the earlier version
-    /// saved it, so it awaits its old password.
-    fn seed_legacy_protected_key(ctx: &Arc<AppContext>) {
-        use crate::model::wallet::encryption::EncryptedEnvelope;
-        use crate::model::wallet::single_key::ClosedSingleKey;
-        use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey};
-
-        let raw_key = crate::test_support::keys::secret_bytes();
-        let EncryptedEnvelope {
-            ciphertext,
-            salt,
-            nonce,
-        } = ClosedSingleKey::encrypt_private_key(&raw_key, "old-legacy-password").expect("encrypt");
-        let public_key = PrivateKey::from_byte_array(&raw_key, Network::Testnet)
-            .expect("private key")
-            .public_key();
-        let path = ctx.db.db_file_path().expect("data.db path");
-        rusqlite::Connection::open(path)
-            .expect("open data.db")
-            .execute(
-                "INSERT INTO single_key_wallet
-                    (key_hash, encrypted_private_key, salt, nonce, public_key,
-                     address, alias, uses_password, network)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 1, ?7)",
-                rusqlite::params![
-                    ClosedSingleKey::compute_key_hash(&raw_key).as_slice(),
-                    ciphertext,
-                    salt,
-                    nonce,
-                    public_key.inner.to_compressed().to_vec(),
-                    Address::p2pkh(&public_key, Network::Testnet).to_string(),
-                    Network::Testnet.to_string(),
-                ],
-            )
-            .expect("insert legacy protected key");
-    }
-
     /// A storage update finished by a retry makes this network's storage
     /// readable: the restore banner must offer the imported keys awaiting
     /// their old password without a manual refresh. A change on another
@@ -3503,7 +3466,7 @@ mod tests {
         ))
         .await
         .expect("wire wallet backend");
-        seed_legacy_protected_key(&ctx);
+        crate::database::seed_legacy_protected_key(&ctx.db);
 
         screen.cached_data_changed(CacheUpdate {
             network: Network::Mainnet,

@@ -407,6 +407,7 @@ pub(super) fn map_transaction_record(record: &TransactionRecord) -> WalletTransa
         height: record.height(),
         block_hash: block_info.map(|bi| bi.block_hash()),
         net_amount: record.net_amount,
+        direction: record.direction,
         fee: transaction_fee(record),
         label: Some(record.label.clone()).filter(|s| !s.is_empty()),
         // Per-wallet history — every record involves our addresses.
@@ -2104,6 +2105,23 @@ mod tests {
             observed.asset_lock_inputs.final_funds_duffs, 1_000_000,
             "an uncontended recompute must observe the eligible composition"
         );
+    }
+
+    /// The wallet classifies a move into its own Platform keys, or between
+    /// its own accounts, as `Internal` while its Core balance goes down by
+    /// the locked amount or the fee. The history row must keep that
+    /// classification next to the signed amount: the sign alone reads as a
+    /// payment to someone else.
+    #[test]
+    fn a_history_row_keeps_the_wallets_direction_apart_from_the_amounts_sign() {
+        let mut internal = record(1, -1_750_000);
+        internal.direction = TransactionDirection::Internal;
+
+        let row = map_transaction_record(&internal);
+
+        assert_eq!(row.direction, TransactionDirection::Internal);
+        assert_eq!(row.net_amount, -1_750_000);
+        assert!(row.is_outgoing(), "the Core balance still went down");
     }
 
     #[test]

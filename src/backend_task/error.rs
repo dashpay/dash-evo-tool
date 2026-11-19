@@ -4460,6 +4460,17 @@ impl From<SdkError> for TaskError {
             };
         }
 
+        // The broadcast went out and its result could not be read, so the
+        // request may have completed. This comes first: every mapping below
+        // that could match the cause, or the retry-exhaustion wrapper around
+        // it, advises a retry, and a retried payment is built anew and can pay
+        // twice.
+        if error.is_state_transition_result_unconfirmed() {
+            return TaskError::PlatformResultUnconfirmed {
+                source_error: Box::new(error),
+            };
+        }
+
         // Check DapiClientError for domain errors carried as gRPC Internal status.
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
@@ -5217,6 +5228,65 @@ mod tests {
                 assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
+        }
+    }
+
+    /// What the SDK returns after a broadcast whose result could not be read
+    /// because no server answered: the unconfirmed result itself, and the same
+    /// wrapped by retry exhaustion.
+    fn unconfirmed_result_errors() -> [SdkError; 2] {
+        let unreachable = || {
+            SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::unavailable("connection refused"),
+            )))
+        };
+        [
+            SdkError::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            SdkError::NoAvailableAddressesToRetry(Box::new(
+                SdkError::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            )),
+        ]
+    }
+
+    /// A request that was broadcast and whose result is unknown may have
+    /// completed: a credit transfer retried on "try again" is built anew and
+    /// pays twice. It must tell the user to check first, and keep its source.
+    #[test]
+    fn unconfirmed_result_says_to_check_before_retrying() {
+        for sdk_error in unconfirmed_result_errors() {
+            let error = TaskError::from(sdk_error);
+            let TaskError::PlatformResultUnconfirmed { source_error } = &error else {
+                panic!("expected PlatformResultUnconfirmed, got {error:?}");
+            };
+            assert!(source_error.is_state_transition_result_unconfirmed());
+            assert_eq!(
+                error.to_string(),
+                "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
+            );
+        }
+    }
+
+    /// With every server unreachable the cause is a reachability failure, but
+    /// the request may still have completed, so the availability message
+    /// ("wait a minute and retry") must not replace the guidance. Nothing
+    /// special-cases this today: the cause sits behind the unconfirmed result
+    /// and is not seen as a reachability failure. This pins that outcome.
+    #[test]
+    fn dapi_availability_context_keeps_an_unconfirmed_result() {
+        for sdk_error in unconfirmed_result_errors() {
+            let direct =
+                TaskError::from(sdk_error).contextualize_dapi_availability(availability(1, 0));
+            assert!(
+                matches!(direct, TaskError::PlatformResultUnconfirmed { .. }),
+                "expected PlatformResultUnconfirmed, got {direct:?}"
+            );
+
+            let shared = std::sync::Arc::new(direct)
+                .contextualize_shared_dapi_availability(availability(1, 0));
+            assert!(
+                matches!(*shared, TaskError::PlatformResultUnconfirmed { .. }),
+                "expected PlatformResultUnconfirmed, got {shared:?}"
+            );
         }
     }
 

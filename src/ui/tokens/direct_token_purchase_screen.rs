@@ -1,4 +1,4 @@
-use crate::model::identity_key_usability::SigningScope;
+use super::TokenSigningKey;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -31,7 +31,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -40,7 +40,6 @@ use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::IdentityPublicKey;
 
 /// Internal states for the purchase process.
 #[derive(PartialEq)]
@@ -56,7 +55,7 @@ pub struct PurchaseTokenScreen {
     pub app_context: Arc<AppContext>,
 
     pub identity_token_info: IdentityTokenInfo,
-    selected_key: Option<IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
 
     // Specific to this transition - using AmountInput components following design pattern
@@ -100,7 +99,7 @@ impl PurchaseTokenScreen {
 
         Self {
             identity_token_info,
-            selected_key: possible_key,
+            selected_key: TokenSigningKey::automatic(possible_key),
             show_advanced_options: false,
             amount_to_purchase_input: None,
             amount_to_purchase_value: None,
@@ -396,7 +395,7 @@ impl ScreenLike for PurchaseTokenScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+        if let Ok(all_identities) = self.app_context.load_local_qualified_identities()
             && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
@@ -404,11 +403,17 @@ impl ScreenLike for PurchaseTokenScreen {
             self.identity_token_info.identity = updated_identity;
         }
         let contract_id = self.identity_token_info.data_contract.contract.id();
-        super::pick_key_if_none(
+        self.selected_key.refresh(
+            &self.app_context,
             &self.identity_token_info.identity,
-            &mut self.selected_key,
+            TransactionType::TokenAction,
+            contract_id,
+        );
+        crate::ui::identity::sync_signing_wallet(
+            Some(&self.identity_token_info.identity),
+            self.selected_key.as_ref(),
             &mut self.selected_wallet,
-            |identity| identity.token_action_key(contract_id),
+            &mut self.wallet_open_attempted,
         );
     }
 
@@ -537,15 +542,12 @@ impl ScreenLike for PurchaseTokenScreen {
                         ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                         ui.add_space(5.0);
                     }
-                    add_key_chooser(
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         &self.identity_token_info.identity,
-                        &mut self.selected_key,
                         TransactionType::TokenAction,
-                        SigningScope::ContractWide {
-                            contract_id: self.identity_token_info.data_contract.contract.id(),
-                        },
+                        self.identity_token_info.data_contract.contract.id(),
                     );
                     ui.add_space(10.0);
                     ui.separator();
@@ -617,7 +619,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 let can_purchase = matches!(
                     key_status,
                     SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
-                ) && self.selected_key.is_some()
+                ) && self.selected_key.as_ref().is_some()
                     && self
                         .selected_wallet
                         .as_ref()

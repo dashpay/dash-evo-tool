@@ -1,10 +1,10 @@
+use super::TokenSigningKey;
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::token::{
@@ -21,9 +21,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{
-    TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
-};
+use crate::ui::helpers::{TransactionType, check_token_authorization, render_group_action_text};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -43,7 +41,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DataContract, Identifier};
 use eframe::egui::{self, Color32, Ui};
 use egui::RichText;
 use std::collections::HashSet;
@@ -68,7 +66,7 @@ pub struct UpdateTokenConfigScreen {
     field_text: Option<String>,
     /// Why `field_text` does not parse; blocks the update until fixed.
     field_error: Option<TokenConfigInputError>,
-    signing_key: Option<IdentityPublicKey>,
+    signing_key: TokenSigningKey,
     show_advanced_options: bool,
     identity: QualifiedIdentity,
     pub public_note: Option<String>,
@@ -120,7 +118,7 @@ impl UpdateTokenConfigScreen {
             text_input_error: "".to_string(),
             field_text: None,
             field_error: None,
-            signing_key: possible_key,
+            signing_key: TokenSigningKey::automatic(possible_key),
             show_advanced_options: false,
             public_note: None,
 
@@ -715,7 +713,7 @@ impl UpdateTokenConfigScreen {
         );
 
         if signing_available
-            && self.signing_key.is_some()
+            && self.signing_key.as_ref().is_some()
             && self
                 .selected_wallet
                 .as_ref()
@@ -906,6 +904,39 @@ impl UpdateTokenConfigScreen {
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        if let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Some(updated) = identities
+                .into_iter()
+                .find(|identity| identity.identity.id() == self.identity.identity.id())
+        {
+            self.identity_token_info.identity = updated.clone();
+            self.identity = updated;
+        }
+
+        self.signing_key.refresh(
+            &self.app_context,
+            &self.identity,
+            TransactionType::TokenAction,
+            self.identity_token_info.data_contract.contract.id(),
+        );
+        crate::ui::identity::sync_signing_wallet(
+            Some(&self.identity),
+            self.signing_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
@@ -1061,15 +1092,12 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                             ui.add_space(5.0);
                         }
-                        add_key_chooser(
+                        action |= self.signing_key.show_chooser(
                             ui,
                             &self.app_context,
                             &self.identity,
-                            &mut self.signing_key,
                             TransactionType::TokenAction,
-                            SigningScope::ContractWide {
-                                contract_id: self.identity_token_info.data_contract.contract.id(),
-                            },
+                            self.identity_token_info.data_contract.contract.id(),
                         );
                         ui.add_space(10.0);
                         ui.separator();

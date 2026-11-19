@@ -1,7 +1,7 @@
+use super::TokenSigningKey;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::SigningScope;
 use crate::model::token::once_per_identity_amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
@@ -9,7 +9,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -57,7 +57,7 @@ pub enum ClaimTokensStatus {
 pub struct ClaimTokensScreen {
     pub identity: Option<QualifiedIdentity>,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
-    selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
     pub public_note: Option<String>,
     token_contract: QualifiedContract,
@@ -143,7 +143,7 @@ impl ClaimTokensScreen {
         Self {
             identity,
             identity_token_basic_info,
-            selected_key,
+            selected_key: TokenSigningKey::automatic(selected_key),
             show_advanced_options: false,
             public_note: None,
             token_contract,
@@ -295,7 +295,7 @@ impl ClaimTokensScreen {
             self.status = ClaimTokensStatus::Error;
             return;
         };
-        let Some(signing_key) = self.selected_key.clone() else {
+        let Some(signing_key) = self.selected_key.as_ref().cloned() else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "No signing key selected",
@@ -442,12 +442,22 @@ impl ScreenLike for ClaimTokensScreen {
         }
         if let Some(identity) = &self.identity {
             let contract_id = self.identity_token_basic_info.contract_id;
-            super::pick_key_if_none(
+            let previous_key = self.selected_key.as_ref().cloned();
+            self.selected_key.refresh(
+                &self.app_context,
                 identity,
-                &mut self.selected_key,
-                &mut self.selected_wallet,
-                |identity| identity.single_token_transition_key(contract_id),
+                TransactionType::TokenClaim,
+                contract_id,
             );
+            let wallet_changed = crate::ui::identity::sync_signing_wallet(
+                Some(identity),
+                self.selected_key.as_ref(),
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            );
+            if wallet_changed || previous_key.as_ref() != self.selected_key.as_ref() {
+                self.confirmation_dialog = None;
+            }
         }
         self.once_per_identity_claimed_at =
             load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
@@ -598,15 +608,12 @@ impl ScreenLike for ClaimTokensScreen {
                         ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                         ui.add_space(5.0);
                     }
-                    add_key_chooser(
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         identity,
-                        &mut self.selected_key,
                         TransactionType::TokenClaim,
-                        SigningScope::ContractWide {
-                            contract_id: self.identity_token_basic_info.contract_id,
-                        },
+                        self.identity_token_basic_info.contract_id,
                     );
                     ui.add_space(10.0);
                 }
@@ -909,7 +916,7 @@ mod tests {
             status: IdentityStatus::Active,
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         });
-        screen.selected_key = Some(identity_public_key(
+        screen.selected_key.selected = Some(identity_public_key(
             1,
             Purpose::AUTHENTICATION,
             SecurityLevel::CRITICAL,
@@ -964,6 +971,42 @@ mod tests {
             panic!("a claim was confirmed");
         };
         assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
+
+    #[test]
+    fn token_claim_confirmation_cannot_send_with_a_replaced_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        let initial = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000), None);
+        screen.identity = Some(identity_holding(std::slice::from_ref(&initial)));
+        screen.selected_key = TokenSigningKey::automatic(Some(initial.clone()));
+        screen.open_claim_confirmation();
+        screen.refresh();
+        assert!(screen.confirmation_dialog.is_some());
+
+        store_identity_with_wallet_key(
+            &screen.app_context,
+            identity_holding(&[initial, auth_key(2, SecurityLevel::CRITICAL)]),
+            2,
+        );
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+        assert!(matches!(screen.confirm_claim(), AppAction::None));
+
+        screen.open_claim_confirmation();
+        let AppAction::BackendTasks(tasks, _) = screen.confirm_claim() else {
+            panic!("the new confirmation sends the claim");
+        };
+        let Some(BackendTask::TokenTask(task)) = tasks.first() else {
+            panic!("the claim comes first");
+        };
+        assert!(matches!(
+            task.as_ref(),
+            TokenTask::ClaimTokens { signing_key, .. } if signing_key.id() == 2
+        ));
     }
 
     /// Regression: a refused second claim left Claim enabled with no note, so
@@ -1131,7 +1174,7 @@ mod tests {
     /// Regression: the claim key was picked only when the screen opened, so
     /// once the identity's key became usable (expiry extended, key added or
     /// its wallet loaded) a refresh opened the form with no key to sign.
-    /// A refresh picks it then, with its wallet, and keeps a manual choice.
+    /// A refresh picks it then, with its wallet.
     #[test]
     fn a_refresh_picks_the_claim_key_that_became_usable() {
         use crate::ui::tokens::tests::{
@@ -1140,7 +1183,7 @@ mod tests {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         let (mut screen, _dir) = screen_for(once_per_identity_token(5));
         screen.identity = Some(identity_with_expired_key());
-        screen.selected_key = None;
+        screen.selected_key.selected = None;
         screen.selected_wallet = None;
         let seed_hash = store_identity_with_usable_wallet_key(&screen.app_context);
 
@@ -1148,17 +1191,6 @@ mod tests {
         assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
         let wallet = screen.selected_wallet.as_ref().expect("the key's wallet");
         assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
-
-        let manual = identity_public_key(
-            7,
-            Purpose::AUTHENTICATION,
-            SecurityLevel::CRITICAL,
-            KeyType::ECDSA_SECP256K1,
-            vec![2; 33],
-        );
-        screen.selected_key = Some(manual);
-        screen.refresh();
-        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(7));
     }
 
     /// Regression: a claim whose only key is bound to a contract group closed
@@ -1177,7 +1209,7 @@ mod tests {
                 id: Identifier::new([0x6A; 32]),
             },
         )]));
-        screen.selected_key = None;
+        screen.selected_key.selected = None;
 
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 900.0))

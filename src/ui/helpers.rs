@@ -646,8 +646,9 @@ fn render_key_combo(
     selected_key: &mut Option<IdentityPublicKey>,
     filter: &KeyFilter<'_>,
     is_dev_mode: bool,
-) {
+) -> bool {
     let now = now_ms();
+    let mut picked = false;
     ComboBox::from_id_salt(combo_id)
         .width(width)
         .selected_text(
@@ -678,6 +679,7 @@ fn render_key_combo(
                     .clicked()
                 {
                     *selected_key = Some(key.clone());
+                    picked = true;
                 }
             }
         });
@@ -691,6 +693,7 @@ fn render_key_combo(
     if let Some(key) = selected_key.as_ref() {
         render_key_caveats(ui, &key_caveats(key, filter.scope, now));
     }
+    picked
 }
 
 /// Whether a key with `caveats` is offered for the user to pick: every key
@@ -844,9 +847,29 @@ pub fn add_key_chooser_with_security_levels(
     allowed_security_levels: &[SecurityLevel],
     scope: SigningScope<'_>,
 ) -> AppAction {
-    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
-    let mut action = AppAction::None;
+    add_key_chooser_with_selection(
+        ui,
+        app_context,
+        identity,
+        selected_key,
+        transaction_type,
+        allowed_security_levels,
+        scope,
+    )
+    .0
+}
 
+/// Reports an explicit pick, including a click on the key already selected.
+pub(crate) fn add_key_chooser_with_selection(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    allowed_security_levels: &[SecurityLevel],
+    scope: SigningScope<'_>,
+) -> (AppAction, bool) {
+    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
     let allowed_purposes = transaction_type.allowed_purposes();
     let filter = KeyFilter::new(
         transaction_type,
@@ -860,32 +883,34 @@ pub fn add_key_chooser_with_security_levels(
         key_eligibility(identity, &filter, now_ms());
 
     if !is_dev_mode && !has_suitable_keys_with_private {
-        action = render_no_eligible_key_group(
-            ui,
-            app_context,
-            identity,
-            transaction_type,
-            has_eligible_public_keys_without_private,
-        );
-    } else {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.add_space(15.0);
-                ui.label("Key:");
-            });
-            render_key_combo(
+        return (
+            render_no_eligible_key_group(
                 ui,
-                "key_chooser_combo",
-                300.0,
-                Some(identity),
-                selected_key,
-                &filter,
-                is_dev_mode,
-            );
-        });
+                app_context,
+                identity,
+                transaction_type,
+                has_eligible_public_keys_without_private,
+            ),
+            false,
+        );
     }
 
-    action
+    let picked = ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.add_space(15.0);
+            ui.label("Key:");
+        });
+        render_key_combo(
+            ui,
+            "key_chooser_combo",
+            300.0,
+            Some(identity),
+            selected_key,
+            &filter,
+            is_dev_mode,
+        )
+    });
+    (AppAction::None, picked.inner)
 }
 
 /// Identity key chooser that filters keys based on transaction type and dev mode

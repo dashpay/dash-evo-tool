@@ -1,10 +1,10 @@
+use super::TokenSigningKey;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -20,7 +20,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -52,7 +52,7 @@ pub struct TransferTokensScreen {
     identity: Option<QualifiedIdentity>,
     pub identity_token_balance: IdentityTokenBalance,
     known_identities: Vec<QualifiedIdentity>,
-    selected_key: Option<IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
     public_note: Option<String>,
     receiver_identity_id: String,
@@ -113,7 +113,7 @@ impl TransferTokensScreen {
             identity,
             identity_token_balance,
             known_identities,
-            selected_key,
+            selected_key: TokenSigningKey::automatic(selected_key),
             show_advanced_options: false,
             public_note: None,
             receiver_identity_id: String::new(),
@@ -358,11 +358,17 @@ impl ScreenLike for TransferTokensScreen {
         }
         if let Some(identity) = &self.identity {
             let contract_id = self.identity_token_balance.data_contract_id;
-            super::pick_key_if_none(
+            self.selected_key.refresh(
+                &self.app_context,
                 identity,
-                &mut self.selected_key,
+                TransactionType::TokenTransfer,
+                contract_id,
+            );
+            crate::ui::identity::sync_signing_wallet(
+                Some(identity),
+                self.selected_key.as_ref(),
                 &mut self.selected_wallet,
-                |identity| identity.single_token_transition_key(contract_id),
+                &mut self.wallet_open_attempted,
             );
         }
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
@@ -542,21 +548,16 @@ impl ScreenLike for TransferTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the transaction with");
                     ui.add_space(10.0);
-                    // Reborrow identity as ref for add_key_chooser; selected_key is &mut self.
-                    let identity = self.identity.as_ref().expect("checked above");
                     if key_status == SigningKeyStatus::ManualChoiceOnly {
                         ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                         ui.add_space(5.0);
                     }
-                    add_key_chooser(
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         identity,
-                        &mut self.selected_key,
                         TransactionType::TokenTransfer,
-                        SigningScope::ContractWide {
-                            contract_id: self.identity_token_balance.data_contract_id,
-                        },
+                        self.identity_token_balance.data_contract_id,
                     );
                     ui.add_space(10.0);
                     ui.separator();
@@ -640,7 +641,7 @@ impl ScreenLike for TransferTokensScreen {
                     SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
                 ) && self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
-                    && self.selected_key.is_some()
+                    && self.selected_key.as_ref().is_some()
                     && self
                         .selected_wallet
                         .as_ref()
@@ -765,8 +766,8 @@ mod tests {
         let mut screen = TransferTokensScreen::new(balance, &ctx);
         screen.amount = Some(Amount::new(1, 0));
         screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
-        screen.selected_key = identity.identity.public_keys().get(&1).cloned();
-        assert!(screen.selected_key.is_some());
+        screen.selected_key.selected = identity.identity.public_keys().get(&1).cloned();
+        assert!(screen.selected_key.as_ref().is_some());
         screen.confirmation_dialog = Some(
             ConfirmationDialog::new("Confirm Transfer", "Send the token?")
                 .confirm_text(Some("Confirm pending transfer")),

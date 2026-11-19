@@ -16,15 +16,19 @@ pub mod unfreeze_tokens_screen;
 pub mod update_token_config;
 pub mod view_token_claims_screen;
 
+use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::identity_key_usability::{KeyCaveat, SigningScope, key_caveats, now_ms};
 use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
-use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
+use crate::ui::helpers::{TransactionType, add_key_chooser_with_selection};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::IdentityPublicKey;
-use std::sync::{Arc, RwLock};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use egui::Ui;
+use std::sync::Arc;
 
 /// Loads local identities, displaying an error banner on failure.
 pub fn load_identities_with_banner(app_context: &AppContext) -> Vec<QualifiedIdentity> {
@@ -72,7 +76,7 @@ pub fn validate_signing_key(
 pub(crate) fn token_action_key_status(
     app_context: &AppContext,
     identity: &QualifiedIdentity,
-    contract_id: dash_sdk::platform::Identifier,
+    contract_id: Identifier,
 ) -> SigningKeyStatus {
     if app_context.user_role().at_least(UserRole::Developer) {
         if identity.identity.public_keys().is_empty() {
@@ -85,21 +89,85 @@ pub(crate) fn token_action_key_status(
     }
 }
 
-/// After `identity` was refreshed, picks the automatic signing key with
-/// `pick` and its unlock wallet when no key is chosen yet, so a key that
-/// became usable since the form opened is the one it signs with. A chosen
-/// key, picked automatically or by hand, is kept.
-pub(crate) fn pick_key_if_none(
-    identity: &QualifiedIdentity,
-    key: &mut Option<IdentityPublicKey>,
-    wallet: &mut Option<Arc<RwLock<Wallet>>>,
-    pick: impl FnOnce(&QualifiedIdentity) -> Option<&IdentityPublicKey>,
-) {
-    if key.is_some() {
-        return;
+/// Keeps the user's explicit signing key choice across identity refreshes.
+struct TokenSigningKey {
+    selected: Option<IdentityPublicKey>,
+    manually_selected: bool,
+}
+
+impl TokenSigningKey {
+    fn automatic(selected: Option<IdentityPublicKey>) -> Self {
+        Self {
+            selected,
+            manually_selected: false,
+        }
     }
-    *key = pick(identity).cloned();
-    *wallet = crate::ui::identity::wallet_for_signing_key(identity, key.as_ref());
+
+    fn as_ref(&self) -> Option<&IdentityPublicKey> {
+        self.selected.as_ref()
+    }
+
+    fn show_chooser(
+        &mut self,
+        ui: &mut Ui,
+        app_context: &Arc<AppContext>,
+        identity: &QualifiedIdentity,
+        transaction_type: TransactionType,
+        contract_id: Identifier,
+    ) -> AppAction {
+        let (action, picked) = add_key_chooser_with_selection(
+            ui,
+            app_context,
+            identity,
+            &mut self.selected,
+            transaction_type,
+            &transaction_type.allowed_security_levels(),
+            SigningScope::ContractWide { contract_id },
+        );
+        self.manually_selected |= picked;
+        action
+    }
+
+    fn refresh(
+        &mut self,
+        app_context: &AppContext,
+        identity: &QualifiedIdentity,
+        transaction_type: TransactionType,
+        contract_id: Identifier,
+    ) {
+        let scope = SigningScope::ContractWide { contract_id };
+        if self.manually_selected
+            && let Some(live) = self
+                .selected
+                .as_ref()
+                .and_then(|key| identity.current_public_key(key))
+            && identity.holds_obtainable_key(live)
+            && !key_caveats(live, scope, now_ms())
+                .iter()
+                .any(KeyCaveat::blocks_signing)
+            && (app_context.user_role().at_least(UserRole::Developer)
+                || (transaction_type
+                    .allowed_purposes()
+                    .contains(&live.purpose())
+                    && transaction_type
+                        .allowed_security_levels()
+                        .contains(&live.security_level())
+                    && transaction_type
+                        .allowed_key_types()
+                        .is_none_or(|types| types.contains(&live.key_type()))))
+        {
+            self.selected = Some(live.clone());
+            return;
+        }
+
+        let automatic = match transaction_type {
+            TransactionType::TokenClaim | TransactionType::TokenTransfer => {
+                identity.single_token_transition_key(contract_id)
+            }
+            _ => identity.token_action_key(contract_id),
+        };
+        *self = Self::automatic(automatic.cloned());
+    }
 }
 
 /// Why a token form opened with its key chooser shown
@@ -128,7 +196,7 @@ pub(crate) mod tests {
     use crate::context::test_support::{auth_key, bound_to, identity_holding};
     use dash_sdk::dpp::identity::SecurityLevel;
     use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
-    use dash_sdk::platform::Identifier;
+    use std::sync::RwLock;
 
     /// The identity [`identity_holding`] builds, holding only an expired
     /// CRITICAL authentication key `1`: no key can sign a token action.
@@ -142,15 +210,25 @@ pub(crate) mod tests {
     pub(crate) fn store_identity_with_usable_wallet_key(
         ctx: &AppContext,
     ) -> crate::model::wallet::WalletSeedHash {
+        store_identity_with_wallet_key(
+            ctx,
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]),
+            1,
+        )
+    }
+
+    pub(super) fn store_identity_with_wallet_key(
+        ctx: &AppContext,
+        mut identity: QualifiedIdentity,
+        key_id: u32,
+    ) -> crate::model::wallet::WalletSeedHash {
         use crate::wallet_backend::DetKv;
         use crate::wallet_backend::kv_test_support::InMemoryKv;
-        use std::sync::{Arc, RwLock};
         let wallet = crate::model::wallet::test_support::open_wallet();
         let seed_hash = wallet.seed_hash();
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
-        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
-        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, key_id, seed_hash);
         ctx.set_det_kv_override_for_test(DetKv::from_store(Arc::new(InMemoryKv::default())));
         ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
             .expect("store identity");

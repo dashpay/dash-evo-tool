@@ -177,13 +177,13 @@ pub fn wallet_for_signing_key(
         .flatten()
 }
 
-/// Follow the selected signing key, including clearing a previous wallet choice.
+/// Follow the selected signing key and return whether its wallet changed.
 pub(crate) fn sync_signing_wallet(
     identity: Option<&QualifiedIdentity>,
     key: Option<&IdentityPublicKey>,
     selected_wallet: &mut Option<Arc<RwLock<Wallet>>>,
     wallet_open_attempted: &mut bool,
-) {
+) -> bool {
     let next = identity.and_then(|identity| wallet_for_signing_key(identity, key));
     let changed = match (&*selected_wallet, &next) {
         (Some(previous), Some(next)) => !Arc::ptr_eq(previous, next),
@@ -194,6 +194,7 @@ pub(crate) fn sync_signing_wallet(
         *wallet_open_attempted = false;
     }
     *selected_wallet = next;
+    changed
 }
 
 /// Retrieves the appropriate wallet (if any) associated with the given identity.

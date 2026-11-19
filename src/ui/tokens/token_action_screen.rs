@@ -6,13 +6,13 @@
 //! and a success screen. [`TokenActionScreen`] implements that shell once; each
 //! action supplies only its differences through the [`TokenAction`] trait.
 
+use super::TokenSigningKey;
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -26,9 +26,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::helpers::{
-    TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
-};
+use crate::ui::helpers::{TransactionType, check_token_authorization, render_group_action_text};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -163,7 +161,7 @@ pub struct TokenActionCommon {
     pub group_action_id: Option<Identifier>,
     pub public_note: Option<String>,
 
-    selected_key: Option<IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
@@ -233,7 +231,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 identity_token_info,
                 group_action_id: None,
                 public_note: None,
-                selected_key: possible_key,
+                selected_key: TokenSigningKey::automatic(possible_key),
                 show_advanced_options: false,
                 group: auth.group,
                 is_unilateral_group_member: auth.is_unilateral_group_member,
@@ -458,7 +456,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.common.app_context.load_local_user_identities()
+        if let Ok(all) = self.common.app_context.load_local_qualified_identities()
             && let Some(updated) = all.into_iter().find(|id| {
                 id.identity.id() == self.common.identity_token_info.identity.identity.id()
             })
@@ -466,11 +464,17 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             self.common.identity_token_info.identity = updated;
         }
         let contract_id = self.common.identity_token_info.data_contract.contract.id();
-        super::pick_key_if_none(
+        self.common.selected_key.refresh(
+            &self.common.app_context,
             &self.common.identity_token_info.identity,
-            &mut self.common.selected_key,
+            TransactionType::TokenAction,
+            contract_id,
+        );
+        crate::ui::identity::sync_signing_wallet(
+            Some(&self.common.identity_token_info.identity),
+            self.common.selected_key.as_ref(),
             &mut self.common.selected_wallet,
-            |identity| identity.token_action_key(contract_id),
+            &mut self.common.wallet_open_attempted,
         );
     }
 
@@ -577,15 +581,12 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                     ui.add_space(5.0);
                 }
-                add_key_chooser(
+                inner_action |= self.common.selected_key.show_chooser(
                     ui,
                     &self.common.app_context,
                     &self.common.identity_token_info.identity,
-                    &mut self.common.selected_key,
                     TransactionType::TokenAction,
-                    SigningScope::ContractWide {
-                        contract_id: self.common.identity_token_info.data_contract.contract.id(),
-                    },
+                    self.common.identity_token_info.data_contract.contract.id(),
                 );
                 ui.add_space(10.0);
                 ui.separator();
@@ -701,7 +702,7 @@ mod tests {
             token_position: 0,
         };
         let mut screen = MintTokensScreen::new(info, &context);
-        assert!(screen.common.selected_key.is_none());
+        assert!(screen.common.selected_key.as_ref().is_none());
         let seed_hash = store_identity_with_usable_wallet_key(&context);
 
         screen.refresh();
@@ -715,5 +716,170 @@ mod tests {
             .as_ref()
             .expect("the key's wallet");
         assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+    }
+
+    #[test]
+    fn token_refresh_replaces_an_automatic_key_with_a_better_key_and_its_wallet() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+            IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+        };
+
+        let budgeted = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000), None);
+        let mut disabled = budgeted.clone();
+        disabled.set_disabled_at(1);
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+
+        for refreshed_first_key in [budgeted.clone(), disabled, expired] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let context = test_app_context(dir.path());
+            let mut identity = identity_holding(std::slice::from_ref(&budgeted));
+            let old_wallet = crate::model::wallet::test_support::open_wallet_on(
+                crate::test_support::keys::labelled_seed("token_refresh_wallet", 0),
+            );
+            let old_wallet_hash = old_wallet.seed_hash();
+            crate::context::test_support::hold_as_wallet_reference(
+                &mut identity,
+                1,
+                old_wallet_hash,
+            );
+            identity
+                .associated_wallets
+                .insert(old_wallet_hash, Arc::new(RwLock::new(old_wallet)));
+            let info = IdentityTokenInfo {
+                token_id: Identifier::from([4; 32]),
+                token_alias: "Test token".into(),
+                identity,
+                data_contract: QualifiedContract {
+                    contract: context.dpns_contract().as_ref().clone(),
+                    alias: None,
+                },
+                token_config: TokenConfigurationV0::default_most_restrictive().into(),
+                token_position: 0,
+            };
+            let mut screen = MintTokensScreen::new(info, &context);
+            assert_eq!(
+                screen.common.selected_key.as_ref().map(|key| key.id()),
+                Some(1)
+            );
+            screen.common.wallet_open_attempted = true;
+            let seed_hash = store_identity_with_wallet_key(
+                &context,
+                identity_holding(&[refreshed_first_key, auth_key(2, SecurityLevel::CRITICAL)]),
+                2,
+            );
+
+            screen.refresh();
+            assert_eq!(
+                screen.common.selected_key.as_ref().map(|key| key.id()),
+                Some(2)
+            );
+            let wallet = screen
+                .common
+                .selected_wallet
+                .as_ref()
+                .expect("the new key's wallet");
+            assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+            assert!(!screen.common.wallet_open_attempted);
+        }
+    }
+
+    #[test]
+    fn token_refresh_keeps_an_explicit_key_only_while_eligible() {
+        use crate::context::test_support::{
+            auth_key, bound_to, identity_holding, test_app_context,
+        };
+        use crate::ui::helpers::format_key_label;
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+            IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+        };
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::Queryable;
+
+        let key = auth_key(1, SecurityLevel::CRITICAL);
+        let group_key = bound_to(
+            key.clone(),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([6; 32]),
+            },
+        );
+        for (key, warning) in [
+            (key.with_limits(Some(1_000_000), None), "spending limit"),
+            (group_key, "contract group"),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let context = test_app_context(dir.path());
+            let info = IdentityTokenInfo {
+                token_id: Identifier::from([4; 32]),
+                token_alias: "Test token".into(),
+                identity: identity_holding(std::slice::from_ref(&key)),
+                data_contract: QualifiedContract {
+                    contract: context.dpns_contract().as_ref().clone(),
+                    alias: None,
+                },
+                token_config: TokenConfigurationV0::default_most_restrictive().into(),
+                token_position: 0,
+            };
+            let mut screen = MintTokensScreen::new(info, &context);
+            screen.common.show_advanced_options = true;
+            let label = format_key_label(&key);
+            let combo = if screen.common.selected_key.as_ref().is_some() {
+                &label
+            } else {
+                "Select Key…"
+            };
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut MintTokensScreen| {
+                        screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_value(combo).click();
+            harness.run();
+            harness
+                .get_by_label(&format!("{label} ({warning})"))
+                .click();
+            harness.run();
+
+            let unlimited_key = auth_key(2, SecurityLevel::CRITICAL);
+            store_identity_with_wallet_key(
+                &context,
+                identity_holding(&[key.clone(), unlimited_key.clone()]),
+                2,
+            );
+            harness.state_mut().refresh();
+            assert_eq!(
+                harness
+                    .state()
+                    .common
+                    .selected_key
+                    .as_ref()
+                    .map(|key| key.id()),
+                Some(1)
+            );
+
+            let mut disabled = key;
+            disabled.set_disabled_at(1);
+            store_identity_with_wallet_key(
+                &context,
+                identity_holding(&[disabled, unlimited_key]),
+                2,
+            );
+            harness.state_mut().refresh();
+            assert_eq!(
+                harness
+                    .state()
+                    .common
+                    .selected_key
+                    .as_ref()
+                    .map(|key| key.id()),
+                Some(2)
+            );
+        }
     }
 }

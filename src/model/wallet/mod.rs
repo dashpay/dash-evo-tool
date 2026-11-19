@@ -2787,7 +2787,7 @@ mod tests {
             as_of_height: 650,
         };
         wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
-        result.found.insert((0, platform), funds.clone());
+        result.found.insert((0, platform), funds);
         provider
             .found_balances
             .insert(Wallet::canonical_address(&address, network), funds);

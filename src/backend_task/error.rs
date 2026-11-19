@@ -2138,6 +2138,18 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The SDK refused the request before sending it, or no node can answer
+    /// it as asked: for example a document query no index of the contract
+    /// covers. Every node answers alike and waiting changes nothing; the
+    /// request itself has to change. The SDK's reason stays in the source.
+    #[error(
+        "This request cannot be answered the way it was entered, and waiting will not change that. Change the request, for example the query or its filters, and try again."
+    )]
+    PlatformRequestInvalid {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Object already exists on Platform (SdkError::AlreadyExists).
     #[error("This object already exists on the platform.")]
     PlatformAlreadyExists {
@@ -4985,6 +4997,9 @@ impl From<SdkError> for TaskError {
             SdkError::AlreadyExists(_) => TaskError::PlatformAlreadyExists {
                 source_error: boxed,
             },
+            SdkError::InvalidRequest(_) => TaskError::PlatformRequestInvalid {
+                source_error: boxed,
+            },
             SdkError::NonceOverflow(_) => TaskError::IdentityNonceOverflow {
                 source_error: boxed,
             },
@@ -5311,6 +5326,40 @@ mod tests {
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
         }
+    }
+
+    /// A request the SDK refuses as invalid, such as a document query no
+    /// index covers, cannot succeed later: every node would answer it alike.
+    /// Every task that passes SDK errors through `TaskError::from`, the
+    /// document fetches among them, must say to change the request, not to
+    /// try again later, and keep the SDK's refusal as the source. Matched on
+    /// the typed variant, never on the SDK's text.
+    #[test]
+    fn an_invalid_request_says_to_change_it_and_keeps_the_sdk_refusal() {
+        use std::error::Error;
+
+        let error = TaskError::from(SdkError::InvalidRequest(
+            "no index covers this query".to_string(),
+        ));
+
+        assert!(
+            matches!(error, TaskError::PlatformRequestInvalid { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This request cannot be answered the way it was entered, and waiting will not change that. Change the request, for example the query or its filters, and try again."
+        );
+        assert!(
+            matches!(
+                error
+                    .source()
+                    .and_then(|source| source.downcast_ref::<Box<SdkError>>())
+                    .map(Box::as_ref),
+                Some(SdkError::InvalidRequest(_))
+            ),
+            "the SDK's refusal must stay in the source chain"
+        );
     }
 
     /// The SDK refuses a contract whose private document type cannot hold its

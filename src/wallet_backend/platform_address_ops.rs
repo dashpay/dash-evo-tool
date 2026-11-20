@@ -833,26 +833,23 @@ mod tests {
             "older proof",
         )
         .await;
-        ctx.apply_platform_address_push(vec![(
-            seed_hash,
-            vec![PlatformAddressEntry {
-                hash: owned_hash,
-                balance: 80_000,
-                nonce: 2,
-                account: 0,
-                index: Some(0),
-                as_of_height: 400,
-            }],
-        )]);
+        // The event bridge writes a coordinator pass into the wallet this way.
+        wallet_arc
+            .write()
+            .expect("wallet lock")
+            .apply_platform_address_entries(
+                &[PlatformAddressEntry {
+                    hash: owned_hash,
+                    balance: 80_000,
+                    nonce: 2,
+                    account: 0,
+                    index: Some(0),
+                    as_of_height: 400,
+                }],
+                Network::Testnet,
+            );
 
         assert_eq!(ctx.platform_balance_duffs(&seed_hash), 41);
-        let pinned = ctx
-            .platform_balance_ledger
-            .lock()
-            .expect("balance ledger")
-            .get(&seed_hash)
-            .and_then(|ledger| ledger.get(&owned_hash).copied());
-        assert_eq!(pinned, Some((41_000, 500)), "the bridge merges into this");
 
         let pw = backend
             .resolve_wallet(&seed_hash)
@@ -873,7 +870,11 @@ mod tests {
             .platform_address_info
             .get(&core_owned)
             .expect("DET has the owned address");
-        assert_eq!((det.balance, det.nonce), (41_000, 3));
+        assert_eq!(
+            (det.balance, det.nonce, det.as_of_height),
+            (41_000, 3, 500),
+            "the coordinator pass merges into this pin"
+        );
         assert!(
             !wallet
                 .platform_address_info

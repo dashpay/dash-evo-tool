@@ -11,6 +11,14 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 SESSION = ROOT / "local/evidence/session.json"
+REQUIRED_SESSION = (
+    "display",
+    "dbus",
+    "app_pid",
+    "window_id",
+    "atspi_bus_name",
+    "atspi_host_pid",
+)
 
 
 def command(*args):
@@ -20,32 +28,41 @@ def command(*args):
 class Gui:
     def __init__(self, evidence, session_path=SESSION):
         session = json.loads(Path(session_path).read_text())
+        if any(not session.get(key) for key in REQUIRED_SESSION):
+            raise RuntimeError(
+                "Session manifest is incomplete; wait until the launcher reports the app ready"
+            )
+        try:
+            os.kill(session["app_pid"], 0)
+        except OSError:
+            raise RuntimeError("The recorded app process is not running") from None
         os.environ.update(
             DISPLAY=session["display"], DBUS_SESSION_BUS_ADDRESS=session["dbus"]
         )
+        for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+            os.environ.pop(name, None)
         import pyatspi
 
         self.spi = pyatspi
-        self.app_bus_name = session.get("atspi_bus_name")
+        self.app_bus_name = session["atspi_bus_name"]
         self.evidence = Path(evidence)
         self.evidence.mkdir(parents=True, exist_ok=True)
-        windows = command(
-            "xdotool", "search", "--onlyvisible", "--name", "^Dash Evo Tool v"
-        ).splitlines()
-        if len(windows) != 1:
-            raise RuntimeError(
-                "Expected exactly one Dash Evo Tool window on the selected display"
-            )
-        self.window = windows[0]
+        self.window = session["window_id"]
         self.display = session["display"]
+        if command("xdotool", "getwindowpid", self.window) != str(session["app_pid"]):
+            raise RuntimeError(
+                "The recorded window does not belong to the recorded app"
+            )
+        apps = [
+            app
+            for app in self.spi.Registry.getDesktop(0)
+            if app.name == "dash-evo-tool" and app.app.bus_name == self.app_bus_name
+        ]
+        if len(apps) != 1 or apps[0].get_process_id() != session["atspi_host_pid"]:
+            raise RuntimeError(
+                "The recorded accessibility registration is unavailable or reused"
+            )
         command("xdotool", "windowactivate", "--sync", self.window)
-        apps = [a for a in self.spi.Registry.getDesktop(0) if a.name == "dash-evo-tool"]
-        if not self.app_bus_name:
-            if len(apps) != 1:
-                raise RuntimeError(
-                    "No unambiguous app registration in session metadata"
-                )
-            self.app_bus_name = apps[0].app.bus_name
 
     def nodes(self):
         def walk(node):

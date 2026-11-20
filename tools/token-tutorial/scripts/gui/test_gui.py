@@ -37,6 +37,9 @@ class Node:
     def getRoleName(self):
         return "frame"
 
+    def get_process_id(self):
+        return 4242
+
 
 def fake_gui(module, tmp_path, apps):
     gui = module.Gui.__new__(module.Gui)
@@ -78,3 +81,78 @@ def test_readable_app_allows_screenshot(module, tmp_path, monkeypatch):
     monkeypatch.setattr(module, "command", lambda *args: calls.append(args))
     assert gui.screenshot("present-app") == tmp_path / "present-app.png"
     assert len(calls) == 1
+
+
+def session(tmp_path, **changes):
+    import json
+    import os
+
+    data = {
+        "display": ":100",
+        "dbus": "unix:path=/synthetic/bus",
+        "app_pid": os.getpid(),
+        "window_id": "12345",
+        "atspi_bus_name": ":1.target",
+        "atspi_host_pid": 4242,
+    }
+    data.update(changes)
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps({k: v for k, v in data.items() if v is not None}))
+    return path
+
+
+@pytest.fixture
+def desktop(module, monkeypatch):
+    import os
+    import sys
+
+    calls, apps = [], [Node(children=[Node(frame=True)])]
+    monkeypatch.setitem(
+        sys.modules,
+        "pyatspi",
+        SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda _: apps)),
+    )
+    for name in ("DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+    for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+        monkeypatch.delenv(name, raising=False)
+
+    def command(*args):
+        calls.append(args)
+        return str(os.getpid()) if args[1] == "getwindowpid" else ""
+
+    monkeypatch.setattr(module, "command", command)
+    return calls, apps
+
+
+@pytest.mark.parametrize("missing", ["window_id", "atspi_bus_name", "app_pid"])
+def test_incomplete_session_manifest_is_refused_before_input(
+    module, tmp_path, desktop, missing
+):
+    with pytest.raises(RuntimeError, match="incomplete"):
+        module.Gui(tmp_path, session(tmp_path, **{missing: None}))
+    assert desktop[0] == []
+
+
+def test_window_of_another_process_is_never_activated(
+    module, tmp_path, desktop, monkeypatch
+):
+    calls, _ = desktop
+    monkeypatch.setattr(module, "command", lambda *args: calls.append(args) or "1")
+    with pytest.raises(RuntimeError, match="window"):
+        module.Gui(tmp_path, session(tmp_path))
+    assert not any("windowactivate" in call for call in calls)
+
+
+def test_registration_of_another_process_is_never_used(module, tmp_path, desktop):
+    calls, _ = desktop
+    with pytest.raises(RuntimeError, match="accessibility"):
+        module.Gui(tmp_path, session(tmp_path, atspi_host_pid=1))
+    assert not any("windowactivate" in call for call in calls)
+
+
+def test_verified_session_activates_only_the_recorded_window(module, tmp_path, desktop):
+    calls, _ = desktop
+    module.Gui(tmp_path, session(tmp_path))
+    assert ("xdotool", "windowactivate", "--sync", "12345") in calls
+    assert not any("search" in call for call in calls)

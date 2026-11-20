@@ -25,6 +25,21 @@ def validate_profile(profile):
             )
 
 
+def prepare_environment(environ, display, profile):
+    """Bind the launched clients to the private X11 display, never a Wayland desktop."""
+    environ.update(
+        DISPLAY=display,
+        DBUS_SESSION_BUS_ADDRESS=environ.get(
+            "DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus"
+        ),
+        DASH_EVO_DATA_DIR=str(profile),
+        DASH_EVO_TOOL_ACCESSIBILITY="1",
+    )
+    # winit prefers Wayland whenever either variable is set.
+    for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "MCP_API_KEY"):
+        environ.pop(name, None)
+
+
 def run(*args):
     return subprocess.check_output(args, text=True).strip()
 
@@ -73,15 +88,7 @@ def main():
         config.chmod(0o600)
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
-    os.environ.update(
-        DISPLAY=args.display,
-        DBUS_SESSION_BUS_ADDRESS=os.environ.get(
-            "DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus"
-        ),
-        DASH_EVO_DATA_DIR=str(profile),
-        DASH_EVO_TOOL_ACCESSIBILITY="1",
-    )
-    os.environ.pop("MCP_API_KEY", None)
+    prepare_environment(os.environ, args.display, profile)
     processes = []
     try:
         log = (evidence / "desktop-launch.log").open("a")

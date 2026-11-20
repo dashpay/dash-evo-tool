@@ -196,6 +196,15 @@ fn small_window_keeps_both_actions_reachable() {
     harness.step();
     assert!(copied_text(&harness).is_some(), "details copied");
 
+    for label in ["Copy question", "Ask ChatGPT"] {
+        let button = harness.get_by_label(label);
+        assert!(
+            screen.contains_rect(button.rect()),
+            "{label} at {:?}",
+            button.rect()
+        );
+    }
+
     let quit_button = harness.get_by_label("Quit");
     assert!(
         screen.contains_rect(quit_button.rect()),

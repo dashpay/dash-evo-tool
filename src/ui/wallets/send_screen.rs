@@ -4888,8 +4888,8 @@ impl WalletSendScreen {
     }
 
     /// The chosen Fee Strategy as a step of the transition, "first" and
-    /// "last" meaning the rows as entered, located in the transition's sorted
-    /// `inputs` and `outputs`.
+    /// "last" meaning the rows as entered that contribute an amount, located
+    /// in the transition's sorted `inputs` and `outputs`.
     fn advanced_platform_fee_step(
         &self,
         inputs: &BTreeMap<PlatformAddress, Credits>,
@@ -4903,17 +4903,19 @@ impl WalletSendScreen {
                 .and_then(|index| u16::try_from(index).ok())
                 .unwrap_or(0)
         }
+        // Only rows that contribute an amount count, as in the confirmation.
+        let contributes = |amount: &str| Self::parse_amount_to_credits(amount).is_ok_and(|c| c > 0);
         let input_rows = || {
             self.platform_inputs
                 .iter()
+                .filter(|row| contributes(&row.amount))
                 .map(|row| row.platform_address)
-                .filter(|address| inputs.contains_key(address))
         };
         let output_rows = || {
             self.advanced_outputs
                 .iter()
+                .filter(|row| contributes(&row.amount))
                 .filter_map(|row| PlatformAddress::from_bech32m_string(row.address.trim()).ok())
-                .filter(|address| outputs.contains_key(address))
         };
         match self.fee_strategy {
             PlatformFeeStrategy::DeductFromFirstInput => {
@@ -7047,6 +7049,77 @@ mod tests {
             message.contains("so the recipient will receive the entered amount"),
             "{message}"
         );
+    }
+
+    /// "First" and "last" count only rows that contribute funds, as the
+    /// confirmation numbers them: with outputs A:0, B, A the first output
+    /// shown is B, so the fee is taken from B; inputs likewise.
+    #[test]
+    fn advanced_fee_strategy_targets_the_first_contributing_row() {
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep::{
+            DeductFromInput, ReduceOutput,
+        };
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let sorted_pair = |first: u8| {
+            let mut pair: Vec<PlatformAddress> = (first..first + 2)
+                .map(|i| PlatformAddress::try_from(testnet_core_address(i)).expect("address"))
+                .collect();
+            pair.sort();
+            (pair[0], pair[1])
+        };
+        // `low` sorts first in the transition, `high` second.
+        let (low_in, high_in) = sorted_pair(5);
+        let (low_out, high_out) = sorted_pair(7);
+        screen.advanced_source_type = AdvancedSourceType::Platform;
+        screen.platform_inputs = [(low_in, "0"), (high_in, "0.4"), (low_in, "0.4")]
+            .into_iter()
+            .map(|(platform_address, amount)| PlatformAddressInput {
+                platform_address,
+                amount: amount.to_string(),
+            })
+            .collect();
+        screen.advanced_outputs = [(low_out, "0"), (high_out, "0.4"), (low_out, "0.4")]
+            .into_iter()
+            .map(|(address, amount)| AdvancedOutput {
+                address: address.to_bech32m_string(Network::Testnet),
+                amount: amount.to_string(),
+            })
+            .collect();
+
+        let message = screen.advanced_send_confirmation_message();
+        let first_shown = format!(
+            "Output 1 sends an entered amount of {} to {}.",
+            format_credits_as_dash(
+                WalletSendScreen::parse_amount_to_credits("0.4").expect("amount")
+            ),
+            high_out.to_bech32m_string(Network::Testnet)
+        );
+        assert!(message.contains(&first_shown), "{message}");
+
+        for (choice, expected) in [
+            (
+                PlatformFeeStrategy::DeductFromFirstInput,
+                DeductFromInput(1),
+            ),
+            (PlatformFeeStrategy::DeductFromLastInput, DeductFromInput(0)),
+            (PlatformFeeStrategy::ReduceFirstOutput, ReduceOutput(1)),
+            (PlatformFeeStrategy::ReduceLastOutput, ReduceOutput(0)),
+        ] {
+            screen.fee_strategy = choice.clone();
+            let action = screen
+                .send_advanced_platform_to_platform(seed_hash)
+                .expect("advanced transfer");
+            let AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::TransferPlatformCredits { fee_strategy, .. },
+            )) = action
+            else {
+                panic!("expected a Platform transfer: {action:?}");
+            };
+            assert_eq!(fee_strategy, vec![expected], "{choice}");
+        }
     }
 
     /// An amount too small to pay its fee is refused with the fee of the

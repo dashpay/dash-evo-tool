@@ -317,6 +317,9 @@ impl AppContext {
         let network = self.network;
         let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
         let backend = self.wallet_backend()?;
+        backend
+            .prepare_platform_address_slots(&wallet_seed_hash, &path_index, inputs.keys().copied())
+            .await?;
 
         // Send to Platform using address funding and wait for response
         let put_result = backend
@@ -450,6 +453,69 @@ mod tests {
             signed,
             BTreeMap::from([(absent, (1, 100)), (known, (5, 200))])
         );
+    }
+
+    /// A funding address issued beyond platform-wallet's gap pool is made
+    /// reconcilable by the registration itself, before its broadcast, so the
+    /// proof afterwards debits it upstream (where Shield reads it) too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_prepares_its_funding_slots_before_broadcast() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        // Nothing reaches a network: the broadcast fails after the slots.
+        ctx.sdk
+            .store(std::sync::Arc::new(dash_sdk::Sdk::new_mock()));
+        let seed = crate::test_support::keys::seed();
+        let mut wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("payer".to_string()), None)
+                .expect("build wallet");
+        let mut issued = None;
+        for _ in 0..=20 {
+            issued = Some(
+                wallet
+                    .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+                    .expect("issued address"),
+            );
+        }
+        let funding = PlatformAddress::try_from(issued.expect("slot 20")).expect("p2pkh");
+        let (seed_hash, wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet with the context");
+        let backend = ctx.wallet_backend().expect("wired backend");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register wallet with the upstream manager");
+
+        let registered = ctx
+            .register_identity_from_platform_addresses(
+                crate::backend_task::identity::IdentityKeySpecs::empty(),
+                wallet_arc,
+                0,
+                BTreeMap::from([(funding, (1, 1_000_000))]),
+                seed_hash,
+            )
+            .await;
+        assert!(registered.is_err(), "the mock SDK refuses the broadcast");
+
+        let proof: dash_sdk::query_types::AddressInfos = [(
+            funding,
+            Some(AddressInfo {
+                address: funding,
+                balance: 750_000,
+                nonce: 1,
+            }),
+        )]
+        .into_iter()
+        .collect();
+        let entries = backend
+            .reconcile_platform_address_proof(&seed_hash, &proof, 600, "test registration")
+            .await
+            .expect("platform-wallet holds the wallet");
+        assert_eq!(entries.len(), 1, "the funding slot must be reconcilable");
     }
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;

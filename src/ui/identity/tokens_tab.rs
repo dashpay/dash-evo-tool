@@ -250,6 +250,7 @@ pub(super) fn render_failure(
     let refreshing = state.refreshing(app_context);
     let text = match failure {
         RefreshFailure::TooSlow => ERROR_REFRESH_SLOW,
+        RefreshFailure::Disconnected => ERROR_REFRESH_DISCONNECTED,
         RefreshFailure::Failed => ERROR_REFRESH_FAILED,
     };
     ui.add_space(Spacing::SM);

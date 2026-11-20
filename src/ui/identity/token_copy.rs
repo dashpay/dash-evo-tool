@@ -62,6 +62,7 @@ pub const ERROR_REFRESH_FAILED: &str =
     "Token balances couldn't be updated. Check your internet connection and try again.";
 pub const ERROR_REFRESH_SLOW: &str =
     "Updating token balances is taking longer than usual. Try again in a moment.";
+pub const ERROR_REFRESH_DISCONNECTED: &str = "Token balances weren't updated because the network connection stopped. Connect again, then try again. If this happens again, disconnect, wait a moment, and connect again.";
 
 // Detail page.
 pub const BACK_LABEL: &str = "‹ Back to tokens";
@@ -189,6 +190,7 @@ mod tests {
         FOOTNOTE,
         ERROR_REFRESH_FAILED,
         ERROR_REFRESH_SLOW,
+        ERROR_REFRESH_DISCONNECTED,
         CAN_BE_SENT_YES,
         CAN_BE_SENT_NO,
         REWARDS_OVER_TIME,

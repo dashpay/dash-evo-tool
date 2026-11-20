@@ -2040,7 +2040,7 @@ pub enum TaskError {
     /// The network connection stopped during a token-balance refresh, so no
     /// fresh balances were fetched.
     #[error(
-        "Token balances were not refreshed because the network connection stopped. Reconnect, then refresh the balances again."
+        "Token balances were not refreshed because the network connection stopped. Connect again, then refresh the balances. If this happens again, disconnect, wait a moment, and connect again."
     )]
     TokenBalanceRefreshDisconnected,
 

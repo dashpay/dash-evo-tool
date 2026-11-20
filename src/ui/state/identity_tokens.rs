@@ -270,6 +270,8 @@ pub fn arrival_refresh_due(arriving: bool, now_ms: u64, last_refreshed_at_ms: Op
 pub enum RefreshFailure {
     /// The network took too long.
     TooSlow,
+    /// The network connection stopped during the refresh.
+    Disconnected,
     /// Anything else; the technical detail is in the log.
     Failed,
 }
@@ -279,6 +281,7 @@ impl RefreshFailure {
         match error {
             TaskError::TokenBalanceRefreshTimeout { .. }
             | TaskError::TokenBalanceSyncStillRunning => RefreshFailure::TooSlow,
+            TaskError::TokenBalanceRefreshDisconnected => RefreshFailure::Disconnected,
             _ => RefreshFailure::Failed,
         }
     }
@@ -1507,6 +1510,16 @@ mod tests {
         assert_eq!(state.refresh_failure(), Some(RefreshFailure::TooSlow));
         state.failure_dismissed = true;
         assert_eq!(state.refresh_failure(), None);
+    }
+
+    /// A refresh a disconnect interrupted asks the user to reconnect, not to
+    /// check their internet connection.
+    #[test]
+    fn a_disconnected_refresh_reports_the_stopped_connection() {
+        let mut state = IdentityTokensState::default();
+        let context = dispatched(state.dispatch_refresh(Vec::new()));
+        state.record_error(&context, &TaskError::TokenBalanceRefreshDisconnected);
+        assert_eq!(state.refresh_failure(), Some(RefreshFailure::Disconnected));
     }
 
     /// A failed full refresh leaves every unknown balance "could not check",

@@ -114,6 +114,9 @@ fn registered_wallet_screen_harness() -> Harness<'static, WalletsBalancesScreen>
     build_wallet_screen_harness(runtime, app_context)
 }
 
+/// Press and release `label` within one frame, then step once more: a dialog
+/// it opens spends its first frame in an invisible sizing pass, which egui keeps
+/// out of the accessibility tree.
 fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &str) {
     let pos = harness.get_by_label(label).rect().center();
     harness.input_mut().events.extend([
@@ -131,6 +134,7 @@ fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &
             modifiers: egui::Modifiers::default(),
         },
     ]);
+    harness.step();
     harness.step();
 }
 

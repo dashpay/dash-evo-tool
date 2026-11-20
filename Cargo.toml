@@ -10,13 +10,14 @@ rust-version = "1.99"
 tokio-util = { version = "0.7.20" }
 bip39 = { version = "2.2.2", features = ["all-languages", "rand", "zeroize"] }
 derive_more = "2.1.1"
-egui = "0.36.2"
-egui_extras = "0.36.2"
-egui_commonmark = "0.25.0"
+# `monochrome_emoji_fonts` bundles the emoji fonts named in `src/bundled.rs` font families.
+egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
+egui_extras = "0.37.0"
+egui_commonmark = "0.26.0"
 rfd = "0.18.0"
 qrcode = "0.14.1"
 nix = { version = "0.32.0", features = ["signal"] }
-eframe = { version = "0.36.2", features = ["persistence", "wgpu"] }
+eframe = { version = "0.37.0", features = ["persistence", "wgpu"] }
 base64 = "0.23.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
 # dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml: serde_with = "2.1.0"). Re-check
@@ -46,6 +47,9 @@ platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "
     "shielded",
     "serde",
 ] }
+# Names `ShutdownReport`/`WorkerStatus` (returned by `platform-wallet`) so
+# their panic text can be redacted before logging.
+dash-async = { git = "https://github.com/dashpay/platform", rev = "6323a430c731a14bbec1d7a18466ca28bb083316" }
 zip32 = "0.2.1"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.12.0"
@@ -164,7 +168,7 @@ cli = [
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
-egui_kittest = { version = "0.36.2", features = ["eframe"] }
+egui_kittest = { version = "0.37.0", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
 criterion = "0.8.2"
 # Used only by error-mapping unit tests to construct a genuine divergent-version

@@ -56,7 +56,7 @@ pub fn render(
     let dark_mode = ui.style().visuals.dark_mode;
     let identity_id = identity.identity.id();
     let requests = app_context.username_requests_for(&identity_id);
-    let session_id = Id::new(SESSION_BANNERS_ID);
+    let session_id = Id::unique(SESSION_BANNERS_ID);
     let mut session: SessionBanners = ui
         .ctx()
         .data(|data| data.get_temp(session_id))
@@ -218,7 +218,7 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let app_context = ctx.clone();
-        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             move |ui, last: &mut Option<AppAction>| {
                 let action = render(ui, &app_context, &identity);
                 if !matches!(action, AppAction::None) {

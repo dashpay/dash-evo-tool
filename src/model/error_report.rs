@@ -241,11 +241,12 @@ pub fn redact_identity(text: &str, env: &QuestionEnvironment) -> String {
         .map(|home| home.trim_end_matches(['/', '\\']))
         .filter(|home| home.len() >= MIN_REDACTED_HOME_LEN);
     if let Some(home) = home {
+        let ignore_case = matches!(env.os, "windows" | "macos");
         if home.contains('\\') {
-            text = text.replace(&home.replace('\\', "\\\\"), "~");
-            text = text.replace(&home.replace('\\', "/"), "~");
+            text = replace_path(&text, &home.replace('\\', "\\\\"), ignore_case);
+            text = replace_path(&text, &home.replace('\\', "/"), ignore_case);
         }
-        text = text.replace(home, "~");
+        text = replace_path(&text, home, ignore_case);
     }
     let profile_folder = home.and_then(|home| home.rsplit(['/', '\\']).next());
     for name in [env.user_name.as_deref(), profile_folder]
@@ -257,6 +258,35 @@ pub fn redact_identity(text: &str, env: &QuestionEnvironment) -> String {
         }
     }
     text
+}
+
+/// `text` with every occurrence of the home folder `home` shown as `~`, in any
+/// letter case when `ignore_case`, as Windows and macOS compare paths.
+fn replace_path(text: &str, home: &str, ignore_case: bool) -> String {
+    if !ignore_case {
+        return text.replace(home, "~");
+    }
+    let same = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(first) = rest.chars().next() {
+        let mut candidate = rest.chars();
+        let mut matched_len = 0;
+        let matched = home.chars().all(|expected| {
+            candidate.next().is_some_and(|found| {
+                matched_len += found.len_utf8();
+                same(found, expected)
+            })
+        });
+        if matched {
+            out.push('~');
+            rest = &rest[matched_len..];
+        } else {
+            out.push(first);
+            rest = &rest[first.len_utf8()..];
+        }
+    }
+    out
 }
 
 /// `text` with every standalone occurrence of `word` replaced by `with`.
@@ -598,6 +628,41 @@ mod tests {
         assert!(question.contains(r#"Path("~\\AppData")"#), "{question}");
         assert!(question.contains("~/x"), "{question}");
         assert!(!question.contains("alice_000"), "{question}");
+    }
+
+    /// On Windows and macOS, where paths ignore case, the home folder is found
+    /// in any letter case; on Linux only as written.
+    #[test]
+    fn question_matches_home_folder_case_as_the_system_does() {
+        for os in ["windows", "macos"] {
+            let env = QuestionEnvironment {
+                os,
+                home_dir: Some(PathBuf::from(r"C:\Users\Alice_000")),
+                user_name: None,
+                ..environment()
+            };
+            let report = ErrorReport::new(
+                r"Folder c:\users\alice_000\AppData is unsafe.",
+                r#"Path("C:\\USERS\\ALICE_000\\AppData")"#,
+            );
+            let question = ai_question(&report, STARTUP_SITUATION, &env);
+            assert!(
+                question.contains(r"Folder ~\AppData is unsafe."),
+                "{os}: {question}"
+            );
+            assert!(
+                question.contains(r#"Path("~\\AppData")"#),
+                "{os}: {question}"
+            );
+        }
+
+        let env = QuestionEnvironment {
+            user_name: None,
+            ..environment()
+        };
+        let report = ErrorReport::new("Message.", "/HOME/ALICE/x");
+        let question = ai_question(&report, STARTUP_SITUATION, &env);
+        assert!(question.contains("/HOME/ALICE/x"), "{question}");
     }
 
     /// A root or very short home folder is left alone instead of turning every

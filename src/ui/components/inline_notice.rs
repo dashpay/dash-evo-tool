@@ -105,12 +105,11 @@ fn glyph(kind: MessageType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
 
     #[test]
     fn links_report_their_index_and_a_disabled_link_does_not_click() {
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, last: &mut InlineNoticeResponse| {
                 let response = InlineNotice::new(MessageType::Error, "It failed.")
                     .with_link_unless("Try again", Some("Not yet."))

@@ -59,7 +59,7 @@ const ROOTS_WITH_UNNAMED_WIDGETS: &[RootScreenType] = &[
 // sign-message field; the DPNS username field and a button on the registration
 // outcome view; an unlabelled `WalletSelector`; the fund-platform dialog's
 // address combo box; the withdrawal destination field; the `AddressInput`
-// type filter combo box; and, on the root
+// type filter combo box; the Add Token by ID field; and, on the root
 // screens in `ROOTS_WITH_UNNAMED_WIDGETS`, the Document Query text fields, the
 // Network Chooser's network selector combo box and the Transition Visualizer
 // input. Unit-test harnesses list theirs in `src/test_support.rs`.

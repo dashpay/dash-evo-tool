@@ -212,8 +212,7 @@ fn render_add_menu(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
             }
         });
     // The glyph is decoration; the accessible name is the label alone.
-    button
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, ADD_TOKEN_LABEL));
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, ADD_TOKEN_LABEL));
     action
 }
 
@@ -322,9 +321,7 @@ fn render_controls(
                     }
                 })
                 .response
-                .widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, SORT_LABEL)
-                });
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, SORT_LABEL));
         }
         ui.checkbox(&mut prefs.hide_zero_balances, HIDE_ZERO_LABEL)
             .clickable_tooltip(HIDE_ZERO_TOOLTIP);
@@ -619,11 +616,7 @@ fn render_row_menu(
         }
     });
     response.response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            true,
-            more_actions_label(row.name()),
-        )
+        egui::WidgetInfo::labeled(egui::Role::Button, true, more_actions_label(row.name()))
     });
     action
 }

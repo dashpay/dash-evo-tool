@@ -642,7 +642,6 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
-    use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
     /// Unreadable saved tokens are explained on Home, though no card shows.
@@ -656,7 +655,7 @@ mod tests {
             Network::Testnet,
         );
         let mut tokens = IdentityTokensState::default();
-        let mut harness = Harness::new_ui(|ui| {
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui(|ui| {
             let _ = render_tokens_card(ui, &context, &identity, &mut tokens);
         });
         harness.run();

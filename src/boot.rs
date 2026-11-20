@@ -13,24 +13,27 @@
 //! not portable — winit forbids a second event loop on macOS) and re-opens the
 //! SAME vault in place with the supplied passphrase. The open is
 //! non-destructive — the vault is never deleted, recreated, or rekeyed — so
-//! wallet seeds are never at risk. Every other boot failure stays fatal exactly
-//! as before.
+//! wallet seeds are never at risk. Every other boot failure is fatal and shows
+//! the startup failure dialog instead of the app.
 //!
 //! Only the GUI binary boots through here; the headless MCP/CLI path keeps the
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
 use platform_wallet_storage::secrets::{SecretStore, SecretString};
 
 use crate::app::AppState;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::ui::components::passphrase_modal::{
     PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
+use crate::ui::components::startup_error_dialog::StartupErrorDialog;
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -51,16 +54,16 @@ pub fn prepare_environment() -> Result<PathBuf, std::io::Error> {
     Ok(data_dir)
 }
 
-/// The eframe application during boot: either still collecting the legacy
-/// vault passphrase, or the fully built [`AppState`].
+/// The eframe application during boot: still collecting the legacy vault
+/// passphrase, the fully built [`AppState`], or a fatal startup failure.
 pub enum BootApp {
     /// The vault is passphrase-protected; collecting the passphrase.
     Unlocking(UnlockState),
     /// The vault is open and the app is running normally.
     Running(Box<AppState>),
-    /// Unlock succeeded but app assembly failed (fatal, e.g. no network could
-    /// be initialized). Renders nothing; a viewport close has been requested.
-    Failed,
+    /// Startup failed. Only the failure dialog is shown; no part of the app
+    /// is built.
+    Failed(StartupFailure),
 }
 
 impl BootApp {
@@ -69,9 +72,15 @@ impl BootApp {
     /// On success the full [`AppState`] is built immediately. If the keyless
     /// open fails *specifically* with a wrong vault passphrase, this returns
     /// [`BootApp::Unlocking`] so the frame loop can prompt for it. Any other
-    /// failure (including app assembly) propagates as an error, aborting boot
-    /// exactly as before.
-    pub fn new(ctx: egui::Context) -> Result<Self, BootError> {
+    /// failure (including app assembly) returns [`BootApp::Failed`].
+    pub fn new(ctx: egui::Context) -> Self {
+        match Self::open(ctx) {
+            Ok(app) => app,
+            Err(error) => Self::failed(&*error, default_log_file()),
+        }
+    }
+
+    fn open(ctx: egui::Context) -> Result<Self, BootError> {
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         let (data_dir, db) = AppState::boot_inputs()?;
         match classify_open(&data_dir)? {
@@ -88,72 +97,73 @@ impl BootApp {
         }
     }
 
+    /// The fatal-failure state for `error`: logs it and shows it in the startup
+    /// failure dialog, naming `log_file` when one was written.
+    pub fn failed(error: &(dyn std::error::Error + 'static), log_file: Option<PathBuf>) -> Self {
+        tracing::error!(error = ?error, "Startup failed; showing the startup failure dialog");
+        STARTUP_FAILED.store(true, Ordering::Relaxed);
+        BootApp::Failed(StartupFailure::new(error, log_file))
+    }
+
     /// Attempt to open the vault with the supplied passphrase and, on success,
-    /// build the full app. A wrong passphrase re-arms the prompt; a genuine
-    /// assembly failure is fatal (the viewport is closed).
-    fn try_unlock(&mut self, passphrase: SecretString, ctx: &egui::Context) {
-        let data_dir = match self {
-            BootApp::Unlocking(state) => state.data_dir.clone(),
-            _ => return,
+    /// build the full app. A wrong passphrase re-arms the prompt; any other
+    /// failure is fatal and shows the startup failure dialog.
+    fn try_unlock(&mut self, passphrase: SecretString) {
+        let BootApp::Unlocking(state) = self else {
+            return;
         };
-        match AppContext::open_secret_store_with_passphrase(&data_dir, passphrase) {
+        match AppContext::open_secret_store_with_passphrase(&state.data_dir, passphrase) {
             Ok(store) => {
-                let BootApp::Unlocking(state) = std::mem::replace(self, BootApp::Failed) else {
-                    return;
+                *self = match AppState::new_inner(
+                    state.ctx.clone(),
+                    Arc::clone(&state.db),
+                    state.data_dir.clone(),
+                    store,
+                ) {
+                    Ok(app) => BootApp::Running(Box::new(app)),
+                    Err(error) => Self::failed(&*error, default_log_file()),
                 };
-                match AppState::new_inner(state.ctx, state.db, state.data_dir, store) {
-                    Ok(app) => *self = BootApp::Running(Box::new(app)),
-                    Err(e) => {
-                        tracing::error!(error = ?e, "Could not start the app after unlocking the vault");
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }
             }
             Err(e) if e.is_recoverable_secret_store_passphrase_error() => {
-                if let BootApp::Unlocking(state) = self {
-                    state.error = Some(if e.is_secret_store_wrong_passphrase() {
-                        UnlockError::WrongPassphrase
-                    } else {
-                        UnlockError::TooLong
-                    });
-                }
+                state.error = Some(if e.is_secret_store_wrong_passphrase() {
+                    UnlockError::WrongPassphrase
+                } else {
+                    UnlockError::TooLong
+                });
             }
             // Any non-passphrase failure on the keyed open is genuinely fatal —
             // mirror BootApp::new's classification. Re-prompting can never
-            // resolve it, so abort cleanly instead of trapping the user behind
-            // a futile prompt (the inverse of the bug this fix addresses).
-            Err(e) => {
-                tracing::error!(error = ?e, "Vault open failed with a non-passphrase error; aborting");
-                *self = BootApp::Failed;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            // resolve it, so stop instead of trapping the user behind a futile
+            // prompt.
+            Err(e) => *self = Self::failed(&e, default_log_file()),
         }
     }
 }
 
 impl eframe::App for BootApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        if let BootApp::Running(app) = self {
-            app.ui(ui, frame);
-            return;
-        }
-        if matches!(self, BootApp::Failed) {
-            return;
-        }
-        // Unlocking: render the prompt, then act on the outcome. Split from the
-        // transition so the prompt's borrow of `self` is released first.
-        let ctx = ui.ctx().clone();
-        let outcome = match self {
-            BootApp::Unlocking(state) => state.show_modal(&ctx),
-            _ => return,
+        let state = match self {
+            BootApp::Running(app) => {
+                app.ui(ui, frame);
+                return;
+            }
+            BootApp::Failed(failure) => {
+                if StartupErrorDialog::new(failure).show(ui) {
+                    tracing::info!("User closed the startup failure dialog");
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                return;
+            }
+            BootApp::Unlocking(state) => state,
         };
-        match outcome {
+        let ctx = ui.ctx().clone();
+        match state.show_modal(&ctx) {
             UnlockOutcome::Pending => {}
             UnlockOutcome::Cancel => {
                 tracing::info!("User chose to quit at the legacy-vault unlock prompt");
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            UnlockOutcome::Submit(passphrase) => self.try_unlock(passphrase, &ctx),
+            UnlockOutcome::Submit(passphrase) => self.try_unlock(passphrase),
         }
     }
 
@@ -162,6 +172,65 @@ impl eframe::App for BootApp {
             app.on_exit();
         }
     }
+}
+
+/// Set once startup has failed, so the process can exit with a failure code
+/// after the user closes the failure dialog.
+static STARTUP_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process entered [`BootApp::Failed`].
+pub fn startup_failed() -> bool {
+    STARTUP_FAILED.load(Ordering::Relaxed)
+}
+
+/// Message shown when a startup error carries no user-facing message of its own.
+pub const GENERIC_STARTUP_FAILURE: &str = "Dash Evo Tool could not start because of an unexpected problem. Restart the application to try again.";
+
+/// A fatal startup failure prepared for the user: a plain-language message,
+/// the technical details to send to support, and the log file location.
+#[derive(Debug, Clone)]
+pub struct StartupFailure {
+    message: String,
+    details: String,
+    log_file: Option<PathBuf>,
+}
+
+impl StartupFailure {
+    /// The message is the `Display` of the first [`TaskError`] in `error`'s
+    /// source chain, so every typed error brings its own wording; any other
+    /// error gets [`GENERIC_STARTUP_FAILURE`]. The details are its `Debug` form.
+    pub fn new(error: &(dyn std::error::Error + 'static), log_file: Option<PathBuf>) -> Self {
+        let message = std::iter::successors(Some(error), |e| e.source())
+            .find_map(|e| e.downcast_ref::<TaskError>())
+            .map_or_else(|| GENERIC_STARTUP_FAILURE.to_owned(), ToString::to_string);
+        Self {
+            message,
+            details: format!("Dash Evo Tool {}\n{error:?}", crate::VERSION),
+            log_file,
+        }
+    }
+
+    /// Plain-language description of what happened and what to try.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Technical details (version and error chain) for a support request.
+    pub fn details(&self) -> &str {
+        &self.details
+    }
+
+    /// The log file holding the full record of this run, when one exists.
+    pub fn log_file(&self) -> Option<&Path> {
+        self.log_file.as_deref()
+    }
+}
+
+/// The app log file, if it exists.
+fn default_log_file() -> Option<PathBuf> {
+    crate::app_dir::app_user_data_file_path("det.log")
+        .ok()
+        .filter(|path| path.exists())
 }
 
 /// State of the legacy-vault unlock prompt.
@@ -282,6 +351,60 @@ fn classify_open(data_dir: &std::path::Path) -> Result<BootDecision, BootError> 
 mod tests {
     use super::*;
     use crate::wallet_backend::single_key::open_secret_store;
+
+    /// Wraps an error as its `source`, like a caller adding context.
+    #[derive(Debug, thiserror::Error)]
+    #[error("wrapped")]
+    struct Wrapped(#[source] TaskError);
+
+    /// A typed error boxed by `?` keeps its own user-facing message.
+    #[test]
+    fn startup_failure_uses_boxed_task_error_message() {
+        let error: BootError = Box::new(TaskError::NoNetworkAvailable);
+        let failure = StartupFailure::new(&*error, None);
+        assert_eq!(failure.message(), TaskError::NoNetworkAvailable.to_string());
+        assert!(failure.details().contains("NoNetworkAvailable"));
+    }
+
+    /// A typed error deeper in the source chain is still found.
+    #[test]
+    fn startup_failure_finds_task_error_in_source_chain() {
+        let failure = StartupFailure::new(&Wrapped(TaskError::NoNetworkAvailable), None);
+        assert_eq!(failure.message(), TaskError::NoNetworkAvailable.to_string());
+    }
+
+    /// An untyped error never leaks its raw text as the message.
+    #[test]
+    fn startup_failure_uses_generic_message_for_untyped_error() {
+        let error = std::io::Error::other("disk exploded");
+        let failure = StartupFailure::new(&error, None);
+        assert_eq!(failure.message(), GENERIC_STARTUP_FAILURE);
+        assert!(failure.details().contains("disk exploded"));
+    }
+
+    /// A non-passphrase failure while unlocking shows the dialog instead of
+    /// closing the window.
+    #[test]
+    fn unlock_with_broken_vault_enters_failed_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets = tmp.path().join("secrets");
+        std::fs::create_dir_all(&secrets).expect("mkdir");
+        std::fs::write(secrets.join("det-secrets.pwsvault"), b"not a vault")
+            .expect("write garbage");
+        let db = Arc::new(crate::database::test_helpers::create_test_database().expect("db"));
+        let mut app = BootApp::Unlocking(UnlockState::new(
+            egui::Context::default(),
+            db,
+            tmp.path().to_path_buf(),
+        ));
+
+        app.try_unlock(SecretString::new("anything"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a broken vault must be fatal");
+        };
+        assert_ne!(failure.message(), GENERIC_STARTUP_FAILURE);
+    }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.
     #[test]

@@ -2,6 +2,7 @@
 
 use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
 use dash_evo_tool::*;
+use std::process::ExitCode;
 
 use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
@@ -10,10 +11,11 @@ use crate::logging::{
     report_startup_failure_to_terminal,
 };
 
-fn main() -> eframe::Result<()> {
+fn main() -> ExitCode {
     // Single owner of dir/env/logger setup; runs again inside `BootApp` boot,
-    // where the logger's `Once` guard makes the repeat a no-op.
-    let app_data_dir = prepare_environment().expect("Failed to prepare app environment");
+    // where the logger's `Once` guard makes the repeat a no-op. A failure here
+    // is shown in the startup failure window below.
+    let environment = prepare_environment();
     // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio
@@ -22,7 +24,7 @@ fn main() -> eframe::Result<()> {
     install_fatal_signal_handler();
     tracing::info!(
         version = VERSION,
-        data_dir = %app_data_dir.display(),
+        data_dir = ?environment.as_ref().ok(),
         "Starting dash-evo-tool"
     );
     check_cpu_compatibility();
@@ -37,16 +39,19 @@ fn main() -> eframe::Result<()> {
         .expect("multi-threading runtime cannot be initialized");
 
     // Run the native application
-    let result = runtime.block_on(start(&app_data_dir));
+    let result = runtime.block_on(start(environment));
     if let Err(e) = &result {
-        // Full technical detail to det.log; the returned Err's Debug repr still
-        // reaches the redirected det-stderr.log via default termination.
+        // Full technical detail to det.log and the redirected det-stderr.log.
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        eprintln!("Error: {e:?}");
+    }
+    if result.is_err() || crate::boot::startup_failed() {
         // Generic, actionable notice to the real terminal (fd 2 is redirected
         // to the sidecar log, so this writes to the preserved original stderr).
         report_startup_failure_to_terminal();
+        return ExitCode::FAILURE;
     }
-    result
+    ExitCode::SUCCESS
 }
 
 fn load_icon() -> egui::IconData {
@@ -64,14 +69,17 @@ fn load_icon() -> egui::IconData {
     }
 }
 
-async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
+async fn start(
+    environment: Result<std::path::PathBuf, std::io::Error>,
+) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
 
     let native_options = eframe::NativeOptions {
-        persist_window: true, // Persist window size and position
-        centered: true,       // Center window on startup if not maximized
-        persistence_path: Some(app_data_dir.join("app.ron")),
+        // Persist window size and position
+        persist_window: environment.is_ok(),
+        centered: true, // Center window on startup if not maximized
+        persistence_path: environment.as_ref().ok().map(|dir| dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
             .with_app_id("org.dash.DashEvoTool")
@@ -90,6 +98,12 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
-        Box::new(|cc| Ok(Box::new(crate::boot::BootApp::new(cc.egui_ctx.clone())?))),
+        Box::new(move |cc| {
+            Ok(Box::new(match environment {
+                Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone()),
+                // No data folder, so no log file either.
+                Err(error) => crate::boot::BootApp::failed(&error, None),
+            }))
+        }),
     )
 }

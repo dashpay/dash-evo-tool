@@ -25,6 +25,7 @@ pub mod progress_overlay;
 pub mod qr_code_image;
 pub mod secret_prompt_host;
 pub mod selection_dialog;
+pub mod startup_error_dialog;
 pub mod styled;
 pub mod subscreen_chooser_panel;
 pub mod tokens_subscreen_chooser_panel;

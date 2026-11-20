@@ -982,12 +982,7 @@ impl AppState {
             }
         }
         if network_contexts.is_empty() {
-            return Err(
-                "No network could be initialized. Check that at least one network has \
-                 DAPI node addresses configured in your settings file. You can use the \
-                 \"Fetch Node List\" button in Network Settings to get addresses."
-                    .into(),
-            );
+            return Err(TaskError::NoNetworkAvailable.into());
         }
         let chosen_network = *network_contexts
             .keys()

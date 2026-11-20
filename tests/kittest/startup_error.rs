@@ -1,0 +1,129 @@
+use crate::support::with_isolated_data_dir;
+use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::boot::{BootApp, StartupFailure};
+use dash_evo_tool::ui::components::startup_error_dialog::{
+    STARTUP_ERROR_TITLE, SUPPORT_URL, StartupErrorDialog,
+};
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use std::cell::Cell;
+use std::rc::Rc;
+
+fn insecure_folder_error() -> TaskError {
+    TaskError::WalletDataFolderInsecure {
+        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+            ancestor: std::path::PathBuf::from("/shared"),
+            reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                mode: 0o777,
+            },
+        },
+    }
+}
+
+fn copied_text(harness: &Harness<'_, impl Sized>) -> Option<String> {
+    harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+/// A boot that fails (here: an unreadable seed vault) opens a window with the
+/// typed error's own message, the technical details and both actions, instead of
+/// aborting before any window appears.
+#[test]
+fn failing_boot_renders_startup_error_dialog() {
+    with_isolated_data_dir(|| {
+        let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
+        let secrets = data_dir.join("secrets");
+        std::fs::create_dir_all(&secrets).expect("mkdir secrets");
+        std::fs::write(secrets.join("det-secrets.pwsvault"), b"not a vault")
+            .expect("write garbage vault");
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_eframe(|cc| BootApp::new(cc.egui_ctx.clone()));
+        harness.run_steps(3);
+
+        assert!(matches!(harness.state(), BootApp::Failed(_)));
+        assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
+        assert!(
+            harness
+                .query_by_label_contains("Your saved keys could not be opened")
+                .is_some(),
+            "the vault failure's own message must be shown"
+        );
+        assert!(harness.query_by_label("Copy details").is_some());
+        assert!(harness.query_by_label("Quit").is_some());
+    });
+}
+
+/// A typed `TaskError` shows its own `Display`, so every typed startup error gets
+/// its own message with no dialog changes.
+#[test]
+fn startup_error_dialog_shows_typed_error_message_and_details() {
+    let error = insecure_folder_error();
+    let expected = error.to_string();
+    let failure = StartupFailure::new(&error, None);
+    assert_eq!(failure.message(), expected);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            StartupErrorDialog::new(&failure).show(ui);
+        });
+    harness.run();
+
+    assert!(harness.query_by_label(&expected).is_some());
+    assert!(harness.query_by_label_contains(SUPPORT_URL).is_some());
+    assert!(
+        harness
+            .query_by_label_contains("WalletDataFolderInsecure")
+            .is_some(),
+        "technical details must be shown"
+    );
+}
+
+/// "Copy details" puts the technical details on the clipboard.
+#[test]
+fn copy_details_copies_technical_details() {
+    let failure = StartupFailure::new(&insecure_folder_error(), None);
+    let details = failure.details().to_owned();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            StartupErrorDialog::new(&failure).show(ui);
+        });
+    harness.run();
+    harness.get_by_label("Copy details").click();
+    harness.step();
+
+    assert_eq!(copied_text(&harness).as_deref(), Some(details.as_str()));
+}
+
+/// "Quit" reports the request to the owner, which closes the app.
+#[test]
+fn quit_button_requests_quit() {
+    let failure = StartupFailure::new(&insecure_folder_error(), None);
+    let quit = Rc::new(Cell::new(false));
+    let seen = Rc::clone(&quit);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            if StartupErrorDialog::new(&failure).show(ui) {
+                seen.set(true);
+            }
+        });
+    harness.run();
+    assert!(!quit.get());
+    harness.get_by_label("Quit").click();
+    harness.run();
+
+    assert!(quit.get());
+}

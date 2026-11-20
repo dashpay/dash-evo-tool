@@ -149,8 +149,9 @@ pub fn add_contract_chooser_panel(
                     egui::ScrollArea::vertical().show(panel_ui, |ui| {
                         // Search box
                         ui.horizontal(|ui| {
-                            ui.label("Filter contracts:");
-                            ui.text_edit_singleline(current_search_term);
+                            let filter_label = ui.label("Filter contracts:");
+                            ui.text_edit_singleline(current_search_term)
+                                .labelled_by(filter_label.id);
                         });
 
                         // List out each matching contract

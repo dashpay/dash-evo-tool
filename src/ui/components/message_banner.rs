@@ -212,6 +212,15 @@ impl BannerHandle {
             .map(|b| b.created_at.elapsed())
     }
 
+    /// Returns the current timer origin for deterministic UI regression tests.
+    #[cfg(feature = "testing")]
+    pub fn created_at(&self) -> Option<Instant> {
+        get_banners(&self.ctx)
+            .iter()
+            .find(|b| b.key == self.key)
+            .map(|b| b.created_at)
+    }
+
     /// Update the display text of this banner.
     /// Returns `None` if the banner no longer exists.
     pub fn set_message(&self, text: impl fmt::Display) -> Option<&Self> {

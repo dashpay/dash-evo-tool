@@ -593,12 +593,12 @@ fn header_identity_id_is_below_usernames_and_copies_in_both_themes() {
                     "The identity ID was copied to the clipboard.",
                     dash_evo_tool::ui::MessageType::Success,
                 );
-            let repeat_started = std::time::Instant::now();
+            let created_before = confirmation.created_at().expect("copy confirmation");
             hub.get_by_role_and_label(Role::Button, "Copy full identity ID")
                 .click();
             hub.run();
-            let elapsed = confirmation.elapsed().expect("copy confirmation");
-            assert!(elapsed < repeat_started.elapsed());
+            let created_after = confirmation.created_at().expect("copy confirmation");
+            assert!(created_after > created_before);
         });
     }
 }

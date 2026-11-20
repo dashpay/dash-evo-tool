@@ -1,7 +1,7 @@
 use crate::support::with_isolated_data_dir;
 use dash_evo_tool::SUPPORT_URL;
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::boot::{BootApp, StartupOutcome};
+use dash_evo_tool::boot::{BootApp, Startup, StartupOutcome};
 use dash_evo_tool::model::error_report::StartupFailure;
 use dash_evo_tool::ui::components::startup_error_dialog::{
     STARTUP_ERROR_TITLE, StartupErrorDialog, StartupErrorDialogAction,
@@ -101,6 +101,58 @@ fn unwritable_env_file_renders_startup_error_dialog() {
         assert!(outcome.failed(), "main must learn that startup failed");
         assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
     });
+}
+
+/// Selecting the technical details of an early startup failure (the data
+/// folder could not be prepared) never reaches the PRIMARY selection, while
+/// Copy details still copies them.
+#[test]
+fn early_failure_details_stay_out_of_primary_selection() {
+    const MARKER: &str = "details-marker-for-primary-selection";
+    let outcome = StartupOutcome::default();
+    let shared = outcome.clone();
+    let mut startup = Startup::prepare(Err::<std::path::PathBuf, _>(std::io::Error::other(MARKER)));
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_eframe(move |cc| startup.boot(cc.egui_ctx.clone(), &shared));
+    harness.run();
+
+    let rect = harness.get_by_label_contains(MARKER).rect();
+    let (start, end) = (rect.left_center(), rect.right_center());
+    let mut commands = Vec::new();
+    for event in [
+        egui::Event::PointerMoved(start),
+        egui::Event::PointerButton {
+            pos: start,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+        egui::Event::PointerMoved(end),
+        egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ] {
+        harness.event(event);
+        for _ in 0..2 {
+            harness.step();
+            commands.extend(harness.output().platform_output.commands.iter().cloned());
+        }
+    }
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, egui::OutputCommand::TextSelectionSettled(_))),
+        "{commands:?}"
+    );
+
+    harness.get_by_label("Copy details").click();
+    harness.step();
+    assert!(copied_text(&harness).is_some_and(|text| text.contains(MARKER)));
+    assert!(outcome.failed());
 }
 
 /// A typed `TaskError` shows its own `Display`, so every typed startup error gets

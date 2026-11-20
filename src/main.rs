@@ -39,13 +39,14 @@ fn main() -> ExitCode {
         .expect("multi-threading runtime cannot be initialized");
 
     // Run the native application
-    let result = runtime.block_on(start(environment));
+    let outcome = crate::boot::StartupOutcome::default();
+    let result = runtime.block_on(start(environment, outcome.clone()));
     if let Err(e) = &result {
-        // Full technical detail to det.log and the redirected det-stderr.log.
+        // Full technical detail to det.log, which stderr is redirected into.
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
         eprintln!("Error: {e:?}");
     }
-    if result.is_err() || crate::boot::startup_failed() {
+    if result.is_err() || outcome.failed() {
         // Generic, actionable notice to the real terminal (fd 2 is redirected
         // to the sidecar log, so this writes to the preserved original stderr).
         report_startup_failure_to_terminal();
@@ -71,6 +72,7 @@ fn load_icon() -> egui::IconData {
 
 async fn start(
     environment: Result<std::path::PathBuf, std::io::Error>,
+    outcome: crate::boot::StartupOutcome,
 ) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
@@ -100,9 +102,8 @@ async fn start(
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(match environment {
-                Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone()),
-                // No data folder, so no log file either.
-                Err(error) => crate::boot::BootApp::failed(&error, None),
+                Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
+                Err(error) => crate::boot::BootApp::failed(&error, &outcome),
             }))
         }),
     )

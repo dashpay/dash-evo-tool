@@ -28,6 +28,7 @@ pub mod selection_dialog;
 pub mod startup_error_dialog;
 pub mod styled;
 pub mod subscreen_chooser_panel;
+pub mod technical_details;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;

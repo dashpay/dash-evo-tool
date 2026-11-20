@@ -19,7 +19,7 @@
 //! Only the GUI binary boots through here; the headless MCP/CLI path keeps the
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,13 +27,13 @@ use eframe::egui;
 use platform_wallet_storage::secrets::{SecretStore, SecretString};
 
 use crate::app::AppState;
-use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::model::error_report::StartupFailure;
 use crate::ui::components::passphrase_modal::{
     PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
-use crate::ui::components::startup_error_dialog::StartupErrorDialog;
+use crate::ui::components::startup_error_dialog::{StartupErrorDialog, StartupErrorDialogAction};
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -73,14 +73,14 @@ impl BootApp {
     /// open fails *specifically* with a wrong vault passphrase, this returns
     /// [`BootApp::Unlocking`] so the frame loop can prompt for it. Any other
     /// failure (including app assembly) returns [`BootApp::Failed`].
-    pub fn new(ctx: egui::Context) -> Self {
-        match Self::open(ctx) {
+    pub fn new(ctx: egui::Context, outcome: StartupOutcome) -> Self {
+        match Self::open(ctx, &outcome) {
             Ok(app) => app,
-            Err(error) => Self::failed(&*error, default_log_file()),
+            Err(error) => Self::failed(&*error, &outcome),
         }
     }
 
-    fn open(ctx: egui::Context) -> Result<Self, BootError> {
+    fn open(ctx: egui::Context, outcome: &StartupOutcome) -> Result<Self, BootError> {
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         let (data_dir, db) = AppState::boot_inputs()?;
         match classify_open(&data_dir)? {
@@ -92,17 +92,25 @@ impl BootApp {
                     "Seed vault is protected by a passphrase from an earlier version; \
                      prompting to unlock instead of aborting boot"
                 );
-                Ok(BootApp::Unlocking(UnlockState::new(ctx, db, data_dir)))
+                Ok(BootApp::Unlocking(UnlockState::new(
+                    ctx,
+                    db,
+                    data_dir,
+                    outcome.clone(),
+                )))
             }
         }
     }
 
-    /// The fatal-failure state for `error`: logs it and shows it in the startup
-    /// failure dialog, naming `log_file` when one was written.
-    pub fn failed(error: &(dyn std::error::Error + 'static), log_file: Option<PathBuf>) -> Self {
+    /// The fatal-failure state for `error`: logs it, records it in `outcome`
+    /// and shows it in the startup failure dialog with this run's log file.
+    pub fn failed(error: &(dyn std::error::Error + 'static), outcome: &StartupOutcome) -> Self {
         tracing::error!(error = ?error, "Startup failed; showing the startup failure dialog");
-        STARTUP_FAILED.store(true, Ordering::Relaxed);
-        BootApp::Failed(StartupFailure::new(error, log_file))
+        outcome.mark_failed();
+        BootApp::Failed(StartupFailure::from_error(
+            error,
+            crate::logging::log_file_path(),
+        ))
     }
 
     /// Attempt to open the vault with the supplied passphrase and, on success,
@@ -121,7 +129,7 @@ impl BootApp {
                     store,
                 ) {
                     Ok(app) => BootApp::Running(Box::new(app)),
-                    Err(error) => Self::failed(&*error, default_log_file()),
+                    Err(error) => Self::failed(&*error, &state.outcome),
                 };
             }
             Err(e) if e.is_recoverable_secret_store_passphrase_error() => {
@@ -135,7 +143,7 @@ impl BootApp {
             // mirror BootApp::new's classification. Re-prompting can never
             // resolve it, so stop instead of trapping the user behind a futile
             // prompt.
-            Err(e) => *self = Self::failed(&e, default_log_file()),
+            Err(e) => *self = Self::failed(&e, &state.outcome),
         }
     }
 }
@@ -148,7 +156,7 @@ impl eframe::App for BootApp {
                 return;
             }
             BootApp::Failed(failure) => {
-                if StartupErrorDialog::new(failure).show(ui) {
+                if StartupErrorDialog::new(failure).show(ui) == StartupErrorDialogAction::Quit {
                     tracing::info!("User closed the startup failure dialog");
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -174,63 +182,20 @@ impl eframe::App for BootApp {
     }
 }
 
-/// Set once startup has failed, so the process can exit with a failure code
-/// after the user closes the failure dialog.
-static STARTUP_FAILED: AtomicBool = AtomicBool::new(false);
+/// Whether startup failed, shared with `main` so the process can exit with a
+/// failure code after the user closes the failure dialog.
+#[derive(Debug, Clone, Default)]
+pub struct StartupOutcome(Arc<AtomicBool>);
 
-/// Whether this process entered [`BootApp::Failed`].
-pub fn startup_failed() -> bool {
-    STARTUP_FAILED.load(Ordering::Relaxed)
-}
-
-/// Message shown when a startup error carries no user-facing message of its own.
-pub const GENERIC_STARTUP_FAILURE: &str = "Dash Evo Tool could not start because of an unexpected problem. Restart the application to try again.";
-
-/// A fatal startup failure prepared for the user: a plain-language message,
-/// the technical details to send to support, and the log file location.
-#[derive(Debug, Clone)]
-pub struct StartupFailure {
-    message: String,
-    details: String,
-    log_file: Option<PathBuf>,
-}
-
-impl StartupFailure {
-    /// The message is the `Display` of the first [`TaskError`] in `error`'s
-    /// source chain, so every typed error brings its own wording; any other
-    /// error gets [`GENERIC_STARTUP_FAILURE`]. The details are its `Debug` form.
-    pub fn new(error: &(dyn std::error::Error + 'static), log_file: Option<PathBuf>) -> Self {
-        let message = std::iter::successors(Some(error), |e| e.source())
-            .find_map(|e| e.downcast_ref::<TaskError>())
-            .map_or_else(|| GENERIC_STARTUP_FAILURE.to_owned(), ToString::to_string);
-        Self {
-            message,
-            details: format!("Dash Evo Tool {}\n{error:?}", crate::VERSION),
-            log_file,
-        }
+impl StartupOutcome {
+    fn mark_failed(&self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 
-    /// Plain-language description of what happened and what to try.
-    pub fn message(&self) -> &str {
-        &self.message
+    /// Whether the app entered [`BootApp::Failed`].
+    pub fn failed(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
     }
-
-    /// Technical details (version and error chain) for a support request.
-    pub fn details(&self) -> &str {
-        &self.details
-    }
-
-    /// The log file holding the full record of this run, when one exists.
-    pub fn log_file(&self) -> Option<&Path> {
-        self.log_file.as_deref()
-    }
-}
-
-/// The app log file, if it exists.
-fn default_log_file() -> Option<PathBuf> {
-    crate::app_dir::app_user_data_file_path("det.log")
-        .ok()
-        .filter(|path| path.exists())
 }
 
 /// State of the legacy-vault unlock prompt.
@@ -242,15 +207,22 @@ pub struct UnlockState {
     ctx: egui::Context,
     db: Arc<Database>,
     data_dir: PathBuf,
+    outcome: StartupOutcome,
     error: Option<UnlockError>,
 }
 
 impl UnlockState {
-    fn new(ctx: egui::Context, db: Arc<Database>, data_dir: PathBuf) -> Self {
+    fn new(
+        ctx: egui::Context,
+        db: Arc<Database>,
+        data_dir: PathBuf,
+        outcome: StartupOutcome,
+    ) -> Self {
         Self {
             ctx,
             db,
             data_dir,
+            outcome,
             error: None,
         }
     }
@@ -350,37 +322,8 @@ fn classify_open(data_dir: &std::path::Path) -> Result<BootDecision, BootError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::error_report::GENERIC_STARTUP_FAILURE;
     use crate::wallet_backend::single_key::open_secret_store;
-
-    /// Wraps an error as its `source`, like a caller adding context.
-    #[derive(Debug, thiserror::Error)]
-    #[error("wrapped")]
-    struct Wrapped(#[source] TaskError);
-
-    /// A typed error boxed by `?` keeps its own user-facing message.
-    #[test]
-    fn startup_failure_uses_boxed_task_error_message() {
-        let error: BootError = Box::new(TaskError::NoNetworkAvailable);
-        let failure = StartupFailure::new(&*error, None);
-        assert_eq!(failure.message(), TaskError::NoNetworkAvailable.to_string());
-        assert!(failure.details().contains("NoNetworkAvailable"));
-    }
-
-    /// A typed error deeper in the source chain is still found.
-    #[test]
-    fn startup_failure_finds_task_error_in_source_chain() {
-        let failure = StartupFailure::new(&Wrapped(TaskError::NoNetworkAvailable), None);
-        assert_eq!(failure.message(), TaskError::NoNetworkAvailable.to_string());
-    }
-
-    /// An untyped error never leaks its raw text as the message.
-    #[test]
-    fn startup_failure_uses_generic_message_for_untyped_error() {
-        let error = std::io::Error::other("disk exploded");
-        let failure = StartupFailure::new(&error, None);
-        assert_eq!(failure.message(), GENERIC_STARTUP_FAILURE);
-        assert!(failure.details().contains("disk exploded"));
-    }
 
     /// A non-passphrase failure while unlocking shows the dialog instead of
     /// closing the window.
@@ -392,10 +335,12 @@ mod tests {
         std::fs::write(secrets.join("det-secrets.pwsvault"), b"not a vault")
             .expect("write garbage");
         let db = Arc::new(crate::database::test_helpers::create_test_database().expect("db"));
+        let outcome = StartupOutcome::default();
         let mut app = BootApp::Unlocking(UnlockState::new(
             egui::Context::default(),
             db,
             tmp.path().to_path_buf(),
+            outcome.clone(),
         ));
 
         app.try_unlock(SecretString::new("anything"));
@@ -403,7 +348,8 @@ mod tests {
         let BootApp::Failed(failure) = &app else {
             panic!("a broken vault must be fatal");
         };
-        assert_ne!(failure.message(), GENERIC_STARTUP_FAILURE);
+        assert_ne!(failure.report().message(), GENERIC_STARTUP_FAILURE);
+        assert!(outcome.failed());
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.

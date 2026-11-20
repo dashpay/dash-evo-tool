@@ -68,7 +68,7 @@ test -x "$BIN"
 
 Prepare isolated state and launch the binary as a detached process. The app
 redirects some diagnostics into its data directory, so inspect both the launch
-log and `det-stderr.log` / `det.log` after a crash or panic.
+log and `det.log` after a crash or panic.
 
 ```bash
 DATADIR=$(mktemp -d)
@@ -160,7 +160,7 @@ skill may still provide convenient screenshot and input tooling.
    owner-key withdrawal forcing the registered payout address), use that path
    over one where you type an arbitrary address by hand.
 7. **Check the logs, not just the screen.** A crash or panic doesn't always
-   show a UI error — check `det-stderr.log` / `det.log` in the test's data
+   show a UI error — check `det.log` in the test's data
    directory (or the default location if unset) for a Rust panic
    (`location=...` line) even when the UI appeared to work.
 

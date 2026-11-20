@@ -492,3 +492,29 @@ fn test_replace_global_resets_show_elapsed() {
     // We verify by checking it's still alive (just created, within 5s window)
     assert!(replaced.elapsed().unwrap() < Duration::from_secs(1));
 }
+
+/// Expanded banner details offer the shared Copy details action.
+#[test]
+fn test_banner_details_can_be_copied() {
+    #[derive(Debug)]
+    struct TechnicalCause {
+        #[expect(dead_code, reason = "read through Debug only")]
+        code: u8,
+    }
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 400.0))
+        .build_ui(|ui| {
+            MessageBanner::show_global(ui);
+        });
+    MessageBanner::set_global(&harness.ctx, "Failed to load", MessageType::Error)
+        .with_details(TechnicalCause { code: 7 });
+    harness.run();
+    harness.get_by_label("Show details").click();
+    harness.run();
+    harness.get_by_label("Copy details").click();
+    harness.step();
+
+    assert!(harness.output().platform_output.commands.iter().any(|command| {
+        matches!(command, egui::OutputCommand::CopyText(text) if text == "TechnicalCause { code: 7 }")
+    }));
+}

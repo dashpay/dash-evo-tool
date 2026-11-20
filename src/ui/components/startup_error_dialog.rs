@@ -3,17 +3,28 @@
 
 use egui::{RichText, Ui};
 
-use crate::boot::StartupFailure;
+use crate::model::error_report::StartupFailure;
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
-use crate::ui::theme::{ComponentStyles, DashColors, Typography};
+use crate::ui::components::technical_details::TechnicalDetails;
+use crate::ui::theme::{ComponentStyles, DashColors, Spacing, Typography};
 
 /// Window title of the startup failure dialog.
 pub const STARTUP_ERROR_TITLE: &str = "Dash Evo Tool could not start";
 
-/// Where users report a startup failure they cannot solve themselves.
-pub const SUPPORT_URL: &str = "https://github.com/dashpay/dash-evo-tool/issues";
+const MIN_WIDTH: f32 = 420.0;
+const MAX_WIDTH: f32 = 640.0;
+const DETAILS_HEIGHT: f32 = 220.0;
 
-/// Renders a [`StartupFailure`] with a Copy details and a Quit action.
+/// What the user asked for in the startup failure dialog this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupErrorDialogAction {
+    /// Nothing.
+    None,
+    /// Quit the app (Quit or the window's close button).
+    Quit,
+}
+
+/// Renders a [`StartupFailure`] with its technical details and a Quit action.
 ///
 /// The only content of the app window after a fatal startup failure; nothing
 /// else is built behind it.
@@ -27,10 +38,9 @@ impl<'a> StartupErrorDialog<'a> {
         Self { failure }
     }
 
-    /// Show the dialog. Returns `true` when the user asked to quit (Quit or the
-    /// window's close button).
-    pub fn show(&self, ui: &mut Ui) -> bool {
-        let mut quit = false;
+    /// Show the dialog and report the user's action.
+    pub fn show(&self, ui: &mut Ui) -> StartupErrorDialogAction {
+        let mut action = StartupErrorDialogAction::None;
         let chrome = modal_chrome(
             ui.ctx(),
             ModalChromeConfig {
@@ -41,26 +51,32 @@ impl<'a> StartupErrorDialog<'a> {
                 resizable: true,
                 show_close_button: true,
                 blocks_input: false,
-                inner_margin: 16,
+                inner_margin: Spacing::MD_I8,
             },
             |ui| {
-                ui.set_min_width(420.0);
-                ui.set_max_width(640.0);
+                ui.set_min_width(MIN_WIDTH);
+                ui.set_max_width(MAX_WIDTH);
                 let dark_mode = ui.style().visuals.dark_mode;
                 self.message(ui, dark_mode);
-                ui.add_space(12.0);
+                ui.add_space(Spacing::MD);
                 self.support(ui, dark_mode);
-                ui.add_space(12.0);
+                ui.add_space(Spacing::MD);
                 self.details(ui, dark_mode);
-                ui.add_space(16.0);
-                quit = self.actions(ui, dark_mode);
+                ui.add_space(Spacing::MD);
+                action = self.actions(ui);
             },
         );
-        quit || chrome.closed_via_x
+        if chrome.closed_via_x {
+            action = StartupErrorDialogAction::Quit;
+        }
+        action
     }
 
     fn message(&self, ui: &mut Ui, dark_mode: bool) {
-        ui.label(RichText::new(self.failure.message()).color(DashColors::text_primary(dark_mode)));
+        ui.label(
+            RichText::new(self.failure.report().message())
+                .color(DashColors::text_primary(dark_mode)),
+        );
     }
 
     fn support(&self, ui: &mut Ui, dark_mode: bool) {
@@ -71,25 +87,23 @@ impl<'a> StartupErrorDialog<'a> {
             .color(DashColors::text_secondary(dark_mode)),
         );
         ui.horizontal(|ui| {
-            ui.label(RichText::new(SUPPORT_URL).font(Typography::monospace()));
-            ui.hyperlink_to("Open in browser", SUPPORT_URL);
+            ui.label(RichText::new(crate::SUPPORT_URL).font(Typography::monospace()));
+            ui.hyperlink_to("Open in browser", crate::SUPPORT_URL);
         });
     }
 
     fn details(&self, ui: &mut Ui, dark_mode: bool) {
         ui.label(RichText::new("Technical details").strong());
-        egui::ScrollArea::vertical()
-            .max_height(220.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new(self.failure.details())
-                        .font(Typography::monospace())
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-            });
+        let details = format!(
+            "Dash Evo Tool {}\n{}",
+            crate::VERSION,
+            self.failure.report().details()
+        );
+        TechnicalDetails::new("startup_error_details", &details)
+            .max_height(DETAILS_HEIGHT)
+            .show(ui);
         if let Some(log_file) = self.failure.log_file() {
-            ui.add_space(8.0);
+            ui.add_space(Spacing::SM);
             ui.label(
                 RichText::new(format!(
                     "The log file is at {path}.",
@@ -100,15 +114,13 @@ impl<'a> StartupErrorDialog<'a> {
         }
     }
 
-    /// Returns `true` when Quit was clicked.
-    fn actions(&self, ui: &mut Ui, dark_mode: bool) -> bool {
-        let mut quit = false;
+    fn actions(&self, ui: &mut Ui) -> StartupErrorDialogAction {
+        let mut action = StartupErrorDialogAction::None;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            quit = ComponentStyles::add_primary_button(ui, "Quit").clicked();
-            if ComponentStyles::add_secondary_button(ui, "Copy details", dark_mode).clicked() {
-                ui.ctx().copy_text(self.failure.details().to_owned());
+            if ComponentStyles::add_primary_button(ui, "Quit").clicked() {
+                action = StartupErrorDialogAction::Quit;
             }
         });
-        quit
+        action
     }
 }

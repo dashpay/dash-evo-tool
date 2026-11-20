@@ -40,7 +40,7 @@
 
 use std::sync::Arc;
 
-use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+use dash_sdk::dpp::dashcore::hashes::sha256;
 
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::CachedAvatar;

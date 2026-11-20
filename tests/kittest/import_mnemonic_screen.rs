@@ -28,7 +28,7 @@ fn import_harness(
 ) -> Harness<'static, ImportMnemonicScreen> {
     let mut screen = ImportMnemonicScreen::new(app_context);
     setup(&mut screen);
-    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+    let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(
             move |ui, screen: &mut ImportMnemonicScreen| {
@@ -418,5 +418,18 @@ fn invalid_recovery_phrase_message_follows_the_words() {
             harness.query_by_label("Save Wallet").is_some(),
             "Save Wallet must appear once the phrase is valid"
         );
+    });
+}
+
+/// Screen readers announce the optional password field by its visible label,
+/// and its reveal control as a button.
+#[test]
+fn optional_password_field_and_reveal_control_are_named() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        harness.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Optional Password:");
+        harness.get_by_role_and_label(egui::accesskit::Role::Button, "Hold to reveal");
     });
 }

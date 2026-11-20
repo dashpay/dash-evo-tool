@@ -253,19 +253,19 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 
 /// Whether a wallet-backend build error is terminal (storage written by a
 /// newer/incompatible app build, an unwritable or insecure data folder, or
-/// a compatibility upgrade that fails the same way on every attempt). These
+/// data only an earlier release can upgrade). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
 /// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    match error {
+    matches!(
+        error,
         TaskError::WalletDataTooNew { .. }
-        | TaskError::WalletDataIncompatible { .. }
-        | TaskError::WalletStorageAccessDenied { .. }
-        | TaskError::WalletDataFolderInsecure { .. } => true,
-        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
-        _ => false,
-    }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletStorageAccessDenied { .. }
+            | TaskError::WalletDataFolderInsecure { .. }
+            | TaskError::WalletDataNeedsUpgradeRelease { .. }
+    )
 }
 
 /// Information about fees for a platform state transition.
@@ -3611,17 +3611,9 @@ mod tests {
                 )),
             }
         ));
-        use crate::wallet_backend::platform_compatibility::UpgradeError;
-        assert!(
-            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::Verification,
-            }),
-            "a deterministic upgrade failure must surface instead of re-running"
-        );
-        // A user-clearable upgrade failure keeps offering a retry.
-        assert!(!is_terminal_storage_open_error(
-            &TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataNeedsUpgradeRelease {
+                database: std::path::PathBuf::from("det-app.sqlite"),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

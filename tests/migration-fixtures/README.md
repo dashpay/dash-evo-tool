@@ -120,12 +120,14 @@ three in the order a real user hits them:
    `MIN_DIRECT_MIGRATION_VERSION` / `MAX_DIRECT_MIGRATION_VERSION`
    (`src/model/data_migration.rs`).
 3. The `refinery` migrations inside `platform-wallet-storage`, shared by
-   `det-app.sqlite` and `det-<network>.sqlite`, plus the compatibility bridge in
-   `src/wallet_backend/platform_compatibility/` that converts databases written
-   by the previously pinned upstream lineage.
+   `det-app.sqlite` and `det-<network>.sqlite`. A database written by the
+   previously pinned upstream lineage (Platform 67d4ef3) is refused before it
+   is opened (`src/wallet_backend/platform_compatibility/`): only
+   `v1.0.0-weekly.20261117`, the last release with the conversion bridge, can
+   upgrade it.
 
-The bridge's own tests use synthetic upstream schemas rather than a profile a
-real binary wrote. Fixtures close exactly that gap. See
+Unit tests use synthetic databases rather than a profile a real binary wrote.
+Fixtures close exactly that gap. See
 [`docs/ai-design/2026-09-10-migration-matrix/design.md`](../../docs/ai-design/2026-09-10-migration-matrix/design.md)
 for the full design and its relationship to PR #981.
 
@@ -458,7 +460,7 @@ Per fixture entry:
 | `host_platform` | Where the capture ran. Linux x86-64 only in v1; Windows/macOS are an open decision, not an omission. |
 | `binary_asset` | The exact release asset downloaded for the capture. Asset naming changed between eras, so it is recorded per fixture rather than derived. |
 | `data_dir_env` | The environment variable that isolated the capture: `XDG_CONFIG_HOME` before `DASH_EVO_DATA_DIR` existed, `DASH_EVO_DATA_DIR` afterwards. |
-| `platform_rev` | The `dashpay/platform` revision the build pinned. Recorded for a current-era profile, whose wallet store a later build may have to upgrade through the `platform_compatibility` bridge. |
+| `platform_rev` | The `dashpay/platform` revision the build pinned. Recorded for a current-era profile, whose wallet store a later build may refuse to open (see `upgrade_release_required`). |
 | `capture_scenario` | Repo-relative path of the procedure that produced it, or `null` for a purely scripted headless capture. |
 | `captured_at` | RFC 3339 UTC timestamp of the capture, or `null` while unpacked. |
 | `artifact` | Where the archive lives; every field is `null` until an upload exists. |
@@ -489,6 +491,7 @@ uploaded:
 | `starting_db_version` | The `data.db` schema version at capture. The boot fails if the staged file disagrees. |
 | `finish_unwire_sentinel` | Whether the boot must record the storage-update completion sentinel. Default `true`. |
 | `derive_address` | Whether to derive a receive address for every listed wallet. Needs a synced chain. Default `true`. |
+| `upgrade_release_required` | Whether every boot must be refused because only an earlier release can upgrade the wallet data, naming that release and leaving the wallet stores and backups unchanged. Default `false`. |
 
 `contents.wallets[]` — one entry per wallet in the captured `data.db`. A
 current-era profile keeps its wallets in `det-<network>.sqlite` instead: it

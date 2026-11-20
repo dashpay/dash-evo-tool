@@ -359,10 +359,21 @@ impl WalletSendScreen {
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
-            SourceSelection::Shielded(_, balance) => (
-                Some(*balance),
-                Some("The maximum is based on your private balance.".to_string()),
-            ),
+            SourceSelection::Shielded(..) => {
+                // Note selection takes the fee on top of the amount, so only
+                // the wallet's quote is a Max it funds. Nothing is offered
+                // until that quote arrives.
+                let max = self
+                    .spend_limit_target_for(source, dest_kind)
+                    .and_then(|(_, kind, _)| self.spend_limit_for(source, dest_kind, kind));
+                if max.is_none() {
+                    quote = self.spend_limit_quote_state(source, dest_kind);
+                }
+                (
+                    max.filter(|max| *max > 0),
+                    Some("The network fee is reserved from your private balance.".to_string()),
+                )
+            }
             SourceSelection::Identity(qi) => {
                 let estimated_fee = self.identity_source_fee_reserve_for(dest_kind);
                 let available = max_spendable_credits(qi.identity.balance(), estimated_fee);

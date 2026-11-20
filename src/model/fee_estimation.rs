@@ -13,7 +13,7 @@
 //! endpoint (when available).
 
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
-use crate::model::spend_limit::{CoreDestinationScript, CoreSendQuoteFee};
+use crate::model::spend_limit::{CoreDestinationScript, CoreSendQuoteFee, ShieldedSpendFee};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
@@ -1504,6 +1504,56 @@ pub fn shielded_fee_for_actions(
     compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
 }
 
+/// The fewest Orchard actions a private-balance payment builds; upstream
+/// note selection never prices fewer.
+pub const SHIELDED_SPEND_MIN_ACTIONS: usize = 2;
+
+/// Fee, in credits, a private-balance payment of kind `fee` charges for
+/// `num_actions` Orchard actions: the formula upstream note selection
+/// reserves against for that kind.
+pub fn shielded_spend_fee(
+    fee: ShieldedSpendFee,
+    num_actions: usize,
+    platform_version: &PlatformVersion,
+) -> Result<Credits, Box<ProtocolError>> {
+    use dash_sdk::dpp::shielded::{
+        compute_minimum_shielded_fee, compute_shielded_unshield_fee,
+        compute_shielded_withdrawal_fee,
+    };
+    match fee {
+        ShieldedSpendFee::Transfer => compute_minimum_shielded_fee(num_actions, platform_version),
+        ShieldedSpendFee::Unshield => compute_shielded_unshield_fee(num_actions, platform_version),
+        ShieldedSpendFee::Withdrawal => {
+            compute_shielded_withdrawal_fee(num_actions, platform_version)
+        }
+    }
+    .map_err(Box::new)
+}
+
+/// The largest amount a private-balance payment of kind `fee` can pay from
+/// notes worth `note_values`, in credits. Note selection spends the largest
+/// notes first and takes the fee for their actions on top of the amount, so
+/// this is the most any largest-first set of notes leaves once its fee is
+/// paid; a note worth less than the fee its action adds is left out. Zero
+/// when no set covers its own fee.
+pub fn shielded_spend_max_credits(
+    note_values: &[Credits],
+    fee: ShieldedSpendFee,
+    platform_version: &PlatformVersion,
+) -> Result<Credits, Box<ProtocolError>> {
+    let mut values = note_values.to_vec();
+    values.sort_unstable_by(|a, b| b.cmp(a));
+    let mut total: Credits = 0;
+    let mut max = 0;
+    for (index, value) in values.into_iter().enumerate() {
+        total = total.saturating_add(value);
+        let actions = (index + 1).max(SHIELDED_SPEND_MIN_ACTIONS);
+        let fee_credits = shielded_spend_fee(fee, actions, platform_version)?;
+        max = max.max(total.saturating_sub(fee_credits));
+    }
+    Ok(max)
+}
+
 /// Fee (credits) shielding from Platform is estimated to cost: the
 /// two-action minimum shielded fee the upstream shield claims from its
 /// fee-paying input. The planner keeps a larger reserve back
@@ -2875,5 +2925,60 @@ mod tests {
         let two_outputs = estimate_platform_fee(&estimator, 1, 2);
 
         assert!(two_outputs > one_output);
+    }
+
+    /// A private-balance Max spends every note and pays the fee for their
+    /// actions, never fewer than the minimum, on top.
+    #[test]
+    fn shielded_spend_max_takes_the_fee_for_the_notes_spent() {
+        let pv = PlatformVersion::latest();
+        for fee in [
+            ShieldedSpendFee::Transfer,
+            ShieldedSpendFee::Unshield,
+            ShieldedSpendFee::Withdrawal,
+        ] {
+            let fee_for = |actions| shielded_spend_fee(fee, actions, pv).expect("fee formula");
+            let notes = [2_000_000_000, 5_000_000_000, 3_000_000_000];
+            assert_eq!(
+                shielded_spend_max_credits(&notes, fee, pv).ok(),
+                Some(10_000_000_000 - fee_for(3)),
+                "{fee:?}"
+            );
+            assert_eq!(
+                shielded_spend_max_credits(&[5_000_000_000], fee, pv).ok(),
+                Some(5_000_000_000 - fee_for(SHIELDED_SPEND_MIN_ACTIONS)),
+                "{fee:?}: one note still pays for the minimum actions"
+            );
+        }
+    }
+
+    /// A note worth less than the fee its action adds is left out of the Max.
+    #[test]
+    fn shielded_spend_max_leaves_out_a_note_worth_less_than_its_action() {
+        let pv = PlatformVersion::latest();
+        let fee = ShieldedSpendFee::Transfer;
+        let fee_for = |actions| shielded_spend_fee(fee, actions, pv).expect("fee formula");
+        let notes = [5_000_000_000, 1, 4_000_000_000];
+        assert!(
+            fee_for(3) - fee_for(2) > 1,
+            "precondition: an action costs more"
+        );
+        assert_eq!(
+            shielded_spend_max_credits(&notes, fee, pv).ok(),
+            Some(9_000_000_000 - fee_for(2))
+        );
+    }
+
+    /// No Max is offered when the fee takes the whole balance.
+    #[test]
+    fn shielded_spend_max_is_zero_when_the_fee_takes_everything() {
+        let pv = PlatformVersion::latest();
+        let fee = ShieldedSpendFee::Unshield;
+        let minimum_fee = shielded_spend_fee(fee, SHIELDED_SPEND_MIN_ACTIONS, pv).expect("fee");
+        assert_eq!(
+            shielded_spend_max_credits(&[minimum_fee], fee, pv).ok(),
+            Some(0)
+        );
+        assert_eq!(shielded_spend_max_credits(&[], fee, pv).ok(), Some(0));
     }
 }

@@ -39,7 +39,7 @@ impl WalletBackend {
     /// Returns `ShieldedNotConfigured` when `configure_shielded` was not called
     /// during backend construction (should never happen in practice — it is
     /// called unconditionally in `WalletBackend::new`).
-    async fn shielded_coordinator_arc(
+    pub(super) async fn shielded_coordinator_arc(
         &self,
     ) -> Result<
         std::sync::Arc<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>,

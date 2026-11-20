@@ -85,6 +85,35 @@ pub enum SpendLimitKind {
     /// Shielding credits from the wallet's Platform addresses, under the
     /// upstream shield planner's input rules.
     ShieldFromPlatform,
+    /// A payment from the wallet's private balance, under upstream note
+    /// selection, which takes the payment's fee on top of the amount.
+    ShieldedSpend { fee: ShieldedSpendFee },
+}
+
+/// Which payment from the private balance a Max is quoted for: each pays
+/// its own fee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShieldedSpendFee {
+    /// A payment to a private address.
+    Transfer,
+    /// A payment to a Platform address.
+    Unshield,
+    /// A payment to a Core address.
+    Withdrawal,
+}
+
+impl ShieldedSpendFee {
+    /// The fee a private-balance payment to `destination` pays; `None` where
+    /// the private balance cannot pay that kind directly.
+    pub fn for_destination(destination: crate::model::address::AddressKind) -> Option<Self> {
+        use crate::model::address::AddressKind;
+        match destination {
+            AddressKind::Shielded => Some(Self::Transfer),
+            AddressKind::Platform => Some(Self::Unshield),
+            AddressKind::Core => Some(Self::Withdrawal),
+            AddressKind::Identity => None,
+        }
+    }
 }
 
 impl SpendLimitKind {
@@ -98,6 +127,9 @@ impl SpendLimitKind {
             // The shield transition and planner only require a positive
             // amount; the Platform-address output minimum does not apply.
             Self::ShieldFromPlatform => 1,
+            // A positive amount; the route's own output minimum applies
+            // separately.
+            Self::ShieldedSpend { .. } => 1,
         }
     }
 }

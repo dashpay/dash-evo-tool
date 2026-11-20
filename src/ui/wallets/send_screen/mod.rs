@@ -19,7 +19,7 @@ use crate::model::fee_estimation::{
     shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::spend_limit::SpendLimitKind;
+use crate::model::spend_limit::{ShieldedSpendFee, SpendLimitKind};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::{PlatformAddressInfo, Wallet, WalletSeedHash};
 use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
@@ -1059,6 +1059,14 @@ impl WalletSendScreen {
                 seed_hash,
                 self.core_send_limit_kind(),
                 self.app_context.core_send_quote_revision(&seed_hash),
+            )),
+            // A payment changes the private balance, so it re-keys the quote.
+            (SourceSelection::Shielded(_, balance), Some(destination)) => Some((
+                seed_hash,
+                SpendLimitKind::ShieldedSpend {
+                    fee: ShieldedSpendFee::for_destination(destination)?,
+                },
+                *balance,
             )),
             _ => None,
         }
@@ -5889,6 +5897,59 @@ mod tests {
             failed_message, loading_message,
             "a permanently failed probe must not be described as still loading"
         );
+    }
+
+    /// Note selection takes a private payment's fee on top of the amount,
+    /// so Max from the private balance is the wallet's quote for that kind
+    /// of payment, never the whole balance; until the quote arrives, nothing
+    /// is offered and Auto waits for it.
+    #[test]
+    fn private_balance_max_is_the_wallet_quote_for_the_payment() {
+        const BALANCE_CREDITS: u64 = 300_000_000_000;
+        const QUOTE_CREDITS: u64 = 299_000_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, BALANCE_CREDITS);
+        let destination = ValidatedAddress::Core(testnet_core_address(47));
+        screen.selected_source = Some(source.clone());
+        screen.validated_destination = Some(destination.clone());
+
+        let limits = screen.amount_limits_for(&source, Some(&destination));
+        assert_eq!(limits.max_credits, None, "no Max before the quote");
+        assert_eq!(
+            limits.quote,
+            resolve::QuoteState::Pending,
+            "Auto waits for the quote"
+        );
+
+        let kind = SpendLimitKind::ShieldedSpend {
+            fee: ShieldedSpendFee::Withdrawal,
+        };
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind: asked,
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("a private payment must ask for the wallet's quote");
+        };
+        assert_eq!(asked, kind);
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+
+        let limits = screen.amount_limits_for(&source, Some(&destination));
+        assert_eq!(limits.max_credits, Some(QUOTE_CREDITS));
+        assert_eq!(limits.quote, resolve::QuoteState::Ready);
     }
 
     /// The shield planner decides which Platform addresses it may spend, so

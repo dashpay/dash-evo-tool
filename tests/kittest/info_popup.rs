@@ -3,7 +3,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
 fn info_popup(title: impl Into<egui::WidgetText>, message: impl Into<String>) -> InfoPopup {
-    InfoPopup::new(egui::Id::new("kittest_info_popup"), title, message)
+    InfoPopup::new(egui::Id::unique("kittest_info_popup"), title, message)
 }
 
 #[test]

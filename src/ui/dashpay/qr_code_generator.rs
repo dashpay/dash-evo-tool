@@ -353,7 +353,7 @@ impl ScreenLike for QRCodeGeneratorScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("dashpay_contact_qr_code_info_popup"),
+                        egui::Id::unique("dashpay_contact_qr_code_info_popup"),
                         "About Contact QR Codes",
                         QR_CODE_INFO_TEXT,
                     );

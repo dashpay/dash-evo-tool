@@ -123,6 +123,7 @@ pub mod helpers;
 pub mod identity;
 pub mod masternodes;
 pub mod network_chooser_screen;
+pub mod primary_selection_guard;
 pub mod state;
 pub(crate) mod task_feedback;
 pub mod theme;

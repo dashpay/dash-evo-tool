@@ -890,6 +890,7 @@ fn another_contacts_details_open_at_the_top_of_the_pane() {
         hub.hover_at(hub.get_by_label(DETAIL_HEADING).rect().center());
         hub.event(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Unknown,
             delta: egui::vec2(0.0, -400.0),
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,

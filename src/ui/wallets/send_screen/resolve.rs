@@ -7,9 +7,8 @@ use super::*;
 use crate::model::address::recipient_row_address;
 use crate::model::send_route::{
     AutoDestination, AutoMax, AutoSource, CandidateMax, CandidateMaxima, PayFromKind,
-    RecipientRowsRefusal, RouteRefusal, recipient_rows_complete, recipient_rows_refusal,
-    resolve_auto_max, resolve_destination_auto, resolve_source_auto, route_refusal,
-    ticked_source_refusal,
+    RecipientRowsRefusal, RouteRefusal, recipient_rows_refusal, resolve_auto_max,
+    resolve_destination_auto, resolve_source_auto, route_refusal, ticked_source_refusal,
 };
 use crate::model::spend_limit::CoreSendShortfall;
 use crate::model::wallet::DerivationPathHelpers;
@@ -808,12 +807,6 @@ impl WalletSendScreen {
             RecipientRowsRefusal::InvalidAddress => RECIPIENT_ROWS_INVALID,
             RecipientRowsRefusal::Route => SEVERAL_RECIPIENTS_ROUTE,
         })
-    }
-
-    /// Whether every recipient row names an address and a positive amount.
-    /// A row missing either would be left out of the payment.
-    pub(super) fn recipient_rows_complete(&self) -> bool {
-        recipient_rows_complete(self.recipient_row_inputs())
     }
 
     /// Each recipient row's address and its amount in credits, when it parses.

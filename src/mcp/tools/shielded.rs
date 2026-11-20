@@ -181,7 +181,9 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
             amount: param.amount_credits,
         });
 
-        let result = dispatch_task(&ctx, task).await.map_err(shield_task_error)?;
+        let result = dispatch_task(&ctx, task)
+            .await
+            .map_err(|error| shield_task_error(error, param.amount_credits))?;
 
         match result {
             BackendTaskSuccessResult::ShieldedCreditsShielded { .. } => {
@@ -214,22 +216,30 @@ async fn ensure_amount_shieldable(
         Err(error) => return Err(McpToolError::TaskFailed(error)),
     };
     if amount_credits > max_credits {
-        return Err(McpToolError::InvalidParam {
-            message: format!(
-                "Insufficient platform balance. At most {max_credits} credits can be shielded \
-                 but {amount_credits} were requested."
-            ),
-        });
+        return Err(amount_not_shieldable(max_credits, amount_credits));
     }
     Ok(())
 }
 
+/// The refusal of an amount above the shieldable maximum, whichever check
+/// made it.
+fn amount_not_shieldable(max_credits: u64, amount_credits: u64) -> McpToolError {
+    McpToolError::InvalidParam {
+        message: format!(
+            "Insufficient platform balance. At most {max_credits} credits can be shielded \
+             but {amount_credits} were requested."
+        ),
+    }
+}
+
 /// The shield's own refusal of an amount the wallet cannot shield is a
 /// parameter error, as the pre-flight's is.
-fn shield_task_error(error: TaskError) -> McpToolError {
+fn shield_task_error(error: TaskError, amount_credits: u64) -> McpToolError {
     match error {
-        TaskError::ShieldFromPlatformCapacityExceeded { .. }
-        | TaskError::ShieldFromPlatformNothingShieldable { .. } => McpToolError::InvalidParam {
+        TaskError::ShieldFromPlatformCapacityExceeded { max_shieldable, .. } => {
+            amount_not_shieldable(max_shieldable, amount_credits)
+        }
+        TaskError::ShieldFromPlatformNothingShieldable { .. } => McpToolError::InvalidParam {
             message: error.to_string(),
         },
         other => McpToolError::TaskFailed(other),
@@ -805,16 +815,27 @@ mod tests {
             })
         };
 
-        let exceeded = shield_task_error(TaskError::ShieldFromPlatformCapacityExceeded {
-            max_shieldable: 200,
-            source: refusal(),
-        });
-        let nothing =
-            shield_task_error(TaskError::ShieldFromPlatformNothingShieldable { source: refusal() });
-        let other = shield_task_error(TaskError::SpendInProgress);
+        let exceeded = shield_task_error(
+            TaskError::ShieldFromPlatformCapacityExceeded {
+                max_shieldable: 200,
+                source: refusal(),
+            },
+            250,
+        );
+        let nothing = shield_task_error(
+            TaskError::ShieldFromPlatformNothingShieldable { source: refusal() },
+            250,
+        );
+        let other = shield_task_error(TaskError::SpendInProgress, 250);
 
+        // The same message, in credits, as the pre-flight's refusal.
         assert!(
-            matches!(exceeded, McpToolError::InvalidParam { .. }),
+            matches!(
+                &exceeded,
+                McpToolError::InvalidParam { message } if message
+                    == "Insufficient platform balance. At most 200 credits can be shielded \
+                        but 250 were requested."
+            ),
             "{exceeded:?}"
         );
         assert!(

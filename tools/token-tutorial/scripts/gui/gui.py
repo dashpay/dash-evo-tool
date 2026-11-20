@@ -293,12 +293,20 @@ class Gui:
             raise
         finally:
             self.recording = False
-            if recorder and recorder.poll() is None:
-                recorder.send_signal(signal.SIGINT)
-                recorder.wait(timeout=20)
-            if sensitive and partial:
-                # The clip may show a credential prompt; it is never kept.
-                partial.unlink(missing_ok=True)
+            killed = False
+            try:
+                if recorder and recorder.poll() is None:
+                    recorder.send_signal(signal.SIGINT)
+                    try:
+                        recorder.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        recorder.kill()
+                        recorder.wait()
+                        killed = True
+            finally:
+                if (sensitive or killed) and partial:
+                    # A flagged or killed clip may show a prompt; it is never kept.
+                    partial.unlink(missing_ok=True)
         if recorder and recorder.returncode not in (0, 255):
             raise RuntimeError("Recording failed")
         if partial:

@@ -306,3 +306,42 @@ def test_prompt_seen_after_capture_stops_discards_the_clip(
         gui.scene({"steps": [{"action": "wait", "target": {"name": "Ready"}}]}, output)
     assert not output.exists()
     assert not any(path.exists() for path in Recorder.started)
+
+
+class StalledRecorder(Recorder):
+    killed = False
+
+    def send_signal(self, _):
+        pass
+
+    def wait(self, timeout=None):
+        import subprocess
+
+        if self.returncode is None and timeout is not None:
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
+        return self.returncode
+
+    def kill(self):
+        StalledRecorder.killed = True
+        self.returncode = -9
+
+
+@pytest.mark.parametrize("prompt", [True, False])
+def test_stalled_recorder_is_killed_and_its_clip_deleted(
+    module, recording, monkeypatch, prompt
+):
+    gui, tree, output = recording
+    output.parent.mkdir()
+    StalledRecorder.killed = False
+    monkeypatch.setattr(module.subprocess, "Popen", StalledRecorder)
+    if prompt:
+        monkeypatch.setattr(
+            module.time,
+            "sleep",
+            lambda _: tree.children[0].children.append(Element("", "password text")),
+        )
+    with pytest.raises(RuntimeError):
+        gui.scene({"steps": [{"action": "hold", "seconds": 1}]}, output)
+    assert StalledRecorder.killed
+    assert not output.exists()
+    assert not any(path.exists() for path in Recorder.started)

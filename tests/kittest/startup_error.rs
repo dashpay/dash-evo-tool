@@ -13,12 +13,14 @@ use std::rc::Rc;
 
 fn insecure_folder_error() -> TaskError {
     TaskError::WalletDataFolderInsecure {
-        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-            ancestor: std::path::PathBuf::from("/shared"),
-            reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                mode: 0o777,
+        source: Box::new(
+            platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                ancestor: std::path::PathBuf::from("/shared"),
+                reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                    mode: 0o777,
+                },
             },
-        },
+        ),
     }
 }
 

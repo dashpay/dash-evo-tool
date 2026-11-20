@@ -34,7 +34,6 @@ use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
@@ -1220,13 +1219,14 @@ impl KeyInfoScreen {
         });
         ui.add_space(5.0);
 
-        ui.label(RichText::new("Enter message to sign:").color(text_primary));
+        let message_label = ui.label(RichText::new("Enter message to sign:").color(text_primary));
         ui.add_space(5.0);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_input)
                 .desired_width(f32::INFINITY)
                 .desired_rows(3),
-        );
+        )
+        .labelled_by(message_label.id);
         ui.add_space(5.0);
 
         if ui.button("Sign Message").clicked() {
@@ -1241,13 +1241,15 @@ impl KeyInfoScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
+            let signed_label =
+                ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
                     .desired_width(f32::INFINITY)
                     .desired_rows(3),
-            );
+            )
+            .labelled_by(signed_label.id);
         }
     }
 

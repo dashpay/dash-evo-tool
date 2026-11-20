@@ -371,10 +371,12 @@ impl AddNewWalletScreen {
             ui.add_space(-6.0);
             // Language and word count selectors with generate button
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(7.0);
-                    ui.label("Language:");
-                });
+                let label = ui
+                    .vertical(|ui| {
+                        ui.add_space(7.0);
+                        ui.label("Language:")
+                    })
+                    .inner;
 
                 ui.vertical(|ui| {
                     ComboBox::from_id_salt("language_selector")
@@ -406,15 +408,19 @@ impl AddNewWalletScreen {
                                 Language::Portuguese,
                                 "Portuguese",
                             );
-                        });
+                        })
+                        .response
+                        .labelled_by(label.id);
                 });
 
                 ui.add_space(10.0);
 
-                ui.vertical(|ui| {
-                    ui.add_space(7.0);
-                    ui.label("Word Count:");
-                });
+                let label = ui
+                    .vertical(|ui| {
+                        ui.add_space(7.0);
+                        ui.label("Word Count:")
+                    })
+                    .inner;
 
                 ui.vertical(|ui| {
                     ComboBox::from_id_salt("word_count_selector")
@@ -446,7 +452,9 @@ impl AddNewWalletScreen {
                                 WordCount::Words24,
                                 "24 words",
                             );
-                        });
+                        })
+                        .response
+                        .labelled_by(label.id);
                 });
 
                 ui.add_space(10.0);
@@ -613,8 +621,9 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Optional Password:");
+                        let label = ui.label("Optional Password:");
                         let pw_response = self.password_input.show(ui);
+                        pw_response.response.labelled_by(label.id);
                         if pw_response.changed {
                             if !self.password_input.is_empty() {
                                 let estimate = zxcvbn(self.password_input.text(), &[]);

@@ -738,7 +738,7 @@ fn fund_platform_dialog_last_popup_row_stays_open_until_fund_is_clicked() {
 
         let funding_tasks = Rc::new(Cell::new(0));
         let task_counter = funding_tasks.clone();
-        let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
             .build_ui_state(
                 move |ui, screen: &mut WalletsBalancesScreen| {

@@ -885,7 +885,10 @@ impl ProgressOverlay {
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
-                ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
+                let sink = ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
+                // An input sink, not content: keep it out of the accessibility tree.
+                ui.ctx()
+                    .accesskit_node_builder(sink.id, |node| node.set_hidden());
             });
 
         let card_layer =

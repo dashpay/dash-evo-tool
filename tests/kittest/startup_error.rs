@@ -123,6 +123,12 @@ fn startup_error_dialog_shows_typed_error_message_and_details() {
     assert!(harness.query_by_label_contains(SUPPORT_URL).is_some());
     assert!(
         harness
+            .query_by_label_contains("The issue page is public")
+            .is_some(),
+        "the user must be told to review the details before posting them"
+    );
+    assert!(
+        harness
             .query_by_label_contains("WalletDataFolderInsecure")
             .is_some(),
         "technical details must be shown"

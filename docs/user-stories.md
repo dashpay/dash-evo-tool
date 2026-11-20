@@ -1806,6 +1806,7 @@ As Alex, I want to open the Identities section on a fresh device and be offered 
 As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
 
 - A compact identity summary sits above Home, Contacts, and Profile. It shows the published avatar (initial fallback), balance, and up to three usernames with the main name first. `+` registers another name for this identity; `…` opens its complete username list.
+- On every tab, the header shows the Base58 identity ID below the usernames, shortened in the middle. The accessible copy icon sits beside the ID, centered on the same line. It copies the full ID and renews the success confirmation on each copy in either theme.
 - Home offers Send, Receive, and Top up. Send reuses the Wallets send form with this identity fixed as sender; Top up fixes it as recipient. Retry and Send another preserve that identity, and switching networks requires reopening the form.
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.

@@ -1962,6 +1962,7 @@ type App = egui_kittest::Harness<'static, dash_evo_tool::app::AppState>;
 fn wheel_down(harness: &mut App) {
     harness.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
+        source: egui::MouseWheelSource::Unknown,
         delta: egui::vec2(0.0, -300.0),
         phase: egui::TouchPhase::Move,
         modifiers: egui::Modifiers::NONE,

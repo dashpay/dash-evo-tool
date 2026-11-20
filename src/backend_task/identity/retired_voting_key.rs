@@ -24,7 +24,7 @@ use crate::utils::egui_mpsc::SenderAsync;
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::dashcore::{ProTxHash, hashes::Hash};
+use dash_sdk::dpp::dashcore::ProTxHash;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{IdentityPublicKey, KeyID};
@@ -380,7 +380,7 @@ mod tests {
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::wallet_backend::IdentityKeyView;
-    use dash_sdk::dpp::dashcore::{Network, PrivateKey, ProTxHash, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{Network, PrivateKey, ProTxHash};
     use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose, SecurityLevel};

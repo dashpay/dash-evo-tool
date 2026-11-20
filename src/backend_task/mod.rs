@@ -3610,7 +3610,8 @@ mod tests {
             &TaskError::WalletDataIncompatible {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
-                )),
+                ))
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
@@ -3620,14 +3621,16 @@ mod tests {
                     reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
                         mode: 0o777,
                     },
-                },
+                }
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
                     std::io::ErrorKind::PermissionDenied,
-                )),
+                ))
+                .into(),
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;

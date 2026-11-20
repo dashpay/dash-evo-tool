@@ -19,8 +19,8 @@
 
 use std::sync::Arc;
 
-use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress, SyncState};
-use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
+use dash_sdk::dash_spv::{ProgressPercentage, SyncProgress, SyncState};
+use dash_sdk::dpp::dashcore::hashes::hash160;
 use dash_sdk::dpp::dashcore::{Address, Network, PubkeyHash, ScriptBuf};
 use dash_sdk::dpp::key_wallet::account::{AccountType, ManagedAccountTrait};
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -470,7 +470,7 @@ fn map_masternode_withdraw_error(error: PlatformWalletError) -> TaskError {
 mod tests {
     use super::*;
     use crate::context::test_support::wired_test_app_context;
-    use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+    use dash_sdk::dash_spv::{BlockHeadersProgress, MasternodesProgress};
     use dash_sdk::dpp::dashcore::address::Payload;
 
     /// Whether `progress` shows its own masternode list current.

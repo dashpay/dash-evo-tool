@@ -72,6 +72,7 @@ impl BootApp {
     /// failure (including app assembly) propagates as an error, aborting boot
     /// exactly as before.
     pub fn new(ctx: egui::Context) -> Result<Self, BootError> {
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         let (data_dir, db) = AppState::boot_inputs()?;
         match classify_open(&data_dir)? {
             BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
@@ -191,7 +192,7 @@ impl UnlockState {
     /// vault.
     fn show_modal(&mut self, ctx: &egui::Context) -> UnlockOutcome {
         let config = PassphraseModalConfig {
-            state_id: egui::Id::new("boot_secret_store_passphrase"),
+            state_id: egui::Id::unique("boot_secret_store_passphrase"),
             window_title: "Unlock your saved keys",
             body: "Your saved keys are protected by a passphrase set in an earlier version. \
                    Enter it to open them. The app asks for this passphrase every time it starts.",

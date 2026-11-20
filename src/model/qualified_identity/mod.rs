@@ -22,7 +22,6 @@ use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::dashcore::address::Payload;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -447,7 +446,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
                     use dash_sdk::dpp::dashcore::PublicKey;
                     use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
-                    use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+                    use dash_sdk::dpp::dashcore::hashes::{ripemd160, sha256};
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
@@ -983,7 +982,7 @@ impl QualifiedIdentity {
         platform_key_data: &[u8],
     ) -> Result<Option<BinaryData>, ProtocolError> {
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+        use dash_sdk::dpp::dashcore::hashes::{ripemd160, sha256};
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
 
         let (Some(secret_access), Some(seed_hash)) =

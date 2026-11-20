@@ -132,3 +132,16 @@ fn duplicate_wallet_name_is_rejected_and_not_saved() {
         );
     });
 }
+
+/// Screen readers announce the optional password field by its visible label,
+/// and its reveal control as a button.
+#[test]
+fn optional_password_field_and_reveal_control_are_named() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let harness = create_wallet_harness(runtime, &app_context);
+
+        harness.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Optional Password:");
+        harness.get_by_role_and_label(egui::accesskit::Role::Button, "Hold to reveal");
+    });
+}

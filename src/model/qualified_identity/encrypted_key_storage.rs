@@ -329,7 +329,7 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, Priva
 impl KeyStorage {
     /// Canonicalize valid compressed public keys saved in legacy HASH160 snapshots.
     pub(crate) fn normalize_legacy_hash160_keys(&mut self) -> bool {
-        use dash_sdk::dpp::dashcore::{PublicKey, hashes::Hash};
+        use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::identity::KeyType;
 
         let mut changed = false;
@@ -1001,7 +1001,7 @@ mod tests {
 
     #[test]
     fn legacy_hash160_normalization_preserves_key_identity_and_is_idempotent() {
-        use dash_sdk::dpp::dashcore::{PublicKey, hashes::Hash};
+        use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::identity::KeyType;
 
         let public = PublicKey::from_slice(

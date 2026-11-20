@@ -238,7 +238,8 @@ pub async fn send_contact_request_with_proof(
     account_label: Option<String>,
     qr_code: Option<crate::model::dashpay_contact_qr::ContactQrCode>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    send_contact_request_inner(
+    let owner = identity.identity.id();
+    let sent = send_contact_request_inner(
         app_context,
         sdk,
         identity,
@@ -248,7 +249,34 @@ pub async fn send_contact_request_with_proof(
         qr_code,
         None,
     )
-    .await
+    .await?;
+    sent.settle(|peer, recorded| recover_on_this_device(app_context, owner, peer, false, recorded))
+        .await
+}
+
+/// Whether this device recorded a contact request it published; an error is
+/// recovered by [`recover_unrecorded`].
+type Recorded = Result<(), TaskError>;
+
+/// A published contact request: what the user is told, its recipient,
+/// whether this device recorded it, and whether it re-engaged the recipient.
+struct Sent {
+    result: BackendTaskSuccessResult,
+    recipient: Identifier,
+    recorded: Recorded,
+    re_engaged: Result<(), TaskError>,
+}
+
+impl Sent {
+    /// Run `recover` for an unrecorded request, then report the request: a
+    /// failed re-engagement is still the user's error, after the recovery.
+    async fn settle<F: Future<Output = ()>>(
+        self,
+        recover: impl FnOnce(Identifier, Recorded) -> F,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        recover(self.recipient, self.recorded).await;
+        self.re_engaged.map(|()| self.result)
+    }
 }
 
 /// Body of [`send_contact_request_with_proof`]; `held` is the request-action
@@ -263,7 +291,7 @@ async fn send_contact_request_inner(
     account_label: Option<String>,
     qr_code: Option<crate::model::dashpay_contact_qr::ContactQrCode>,
     held: Option<&HeldPeerLock>,
-) -> Result<BackendTaskSuccessResult, TaskError> {
+) -> Result<Sent, TaskError> {
     if let Some(label) = account_label.as_deref()
         && let Err(error) = crate::model::dashpay::validate_account_label(label)
     {
@@ -339,9 +367,14 @@ async fn send_contact_request_inner(
             && restore_under_peer_lock(&backend, identity.identity.id(), to_identity_id, held)
                 .await?
         {
-            return Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
-                to_username_or_id.to_string(),
-            ));
+            return Ok(Sent {
+                result: BackendTaskSuccessResult::DashPayContactRequestSent(
+                    to_username_or_id.to_string(),
+                ),
+                recipient: to_identity_id,
+                recorded: Ok(()),
+                re_engaged: Ok(()),
+            });
         }
         return Err(DashPayError::ContactRequestAlreadySent {
             to: to_username_or_id.to_string(),
@@ -600,9 +633,8 @@ async fn send_contact_request_inner(
     // DET's custom send path bypasses
     // `IdentityWallet::send_contact_request_with_external_signer`, so we
     // must call `add_sent_contact_request` explicitly after the state
-    // transition commits.  Without this, `established_contacts` is never
-    // populated and contact receiving-account registration is silently
-    // skipped for all users who send a contact request from DET.
+    // transition commits. A failed record is recovered by a sync (see
+    // `recover_unrecorded`).
     let contact_record = UpstreamContactRequest::new(
         owner_id,
         to_identity_id,
@@ -613,24 +645,32 @@ async fn send_contact_request_inner(
         core_height_created_at,
         created_at_ts,
     );
-    if let Ok(backend) = app_context.wallet_backend() {
-        finish_send(
-            &backend,
-            &seed_hash,
-            owner_id,
-            to_identity_id,
-            contact_record,
-            held,
-        )
-        .await?;
-    }
+    let (recorded, re_engaged) = match app_context.wallet_backend() {
+        Ok(backend) => {
+            finish_send(
+                &backend,
+                &seed_hash,
+                owner_id,
+                to_identity_id,
+                contact_record,
+                held,
+            )
+            .await
+        }
+        Err(_) => (Ok(()), Ok(())),
+    };
 
-    Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
-        to_username_or_id.to_string(),
-    ))
+    Ok(Sent {
+        result: BackendTaskSuccessResult::DashPayContactRequestSent(to_username_or_id.to_string()),
+        recipient: to_identity_id,
+        recorded,
+        re_engaged,
+    })
 }
 
-/// Record a just-published request locally and re-engage its recipient.
+/// Record a just-published request locally and re-engage its recipient;
+/// returns both outcomes, so the caller recovers an unrecorded request once
+/// it holds no lock, even when the re-engagement failed.
 async fn finish_send(
     backend: &crate::wallet_backend::WalletBackend,
     seed_hash: &crate::model::wallet::WalletSeedHash,
@@ -638,32 +678,26 @@ async fn finish_send(
     to_identity_id: Identifier,
     contact_record: UpstreamContactRequest,
     held: Option<&HeldPeerLock>,
-) -> Result<(), TaskError> {
-    // A cancel ignores the person and then records the withdrawal; a
-    // re-engagement landing in between would leave this fresh request
-    // withdrawn, so it waits for the person's lock.
-    let _peer_guard = lock_peer_unless_held(backend, owner_id, to_identity_id, held).await;
-
-    if let Err(err) = backend
-        .record_sent_contact_request(seed_hash, &owner_id, contact_record)
-        .await
+) -> (Recorded, Result<(), TaskError>) {
     {
-        tracing::warn!(
-            %err,
-            "record_sent_contact_request failed; contact was sent but \
-             local wallet-manager state not updated",
-        );
+        // A cancel ignores the person and then records the withdrawal; a
+        // re-engagement landing in between would leave this fresh request
+        // withdrawn, so it waits for the person's lock.
+        let _peer_guard = lock_peer_unless_held(backend, owner_id, to_identity_id, held).await;
+        let recorded = backend
+            .record_sent_contact_request(seed_hash, &owner_id, contact_record)
+            .await;
+        // Sending to someone retires an earlier decline of their request and
+        // an earlier withdrawal of ours: the user has deliberately re-engaged,
+        // so neither direction may stay filtered out of the list.
+        let re_engaged = re_engage_after_send(&PlatformReEngage {
+            backend,
+            owner: owner_id,
+            peer: to_identity_id,
+        })
+        .await;
+        (recorded, re_engaged)
     }
-
-    // Sending to someone retires an earlier decline of their request and an
-    // earlier withdrawal of ours: the user has deliberately re-engaged, so
-    // neither direction may stay filtered out of the list.
-    re_engage_after_send(&PlatformReEngage {
-        backend,
-        owner: owner_id,
-        peer: to_identity_id,
-    })
-    .await
 }
 
 /// `owner`'s request-action lock for `peer`, or `None` when `held` already
@@ -728,6 +762,25 @@ pub async fn accept_contact_request(
     request_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = identity.identity.id();
+    // The locks are released before a request this device could not record
+    // is recovered: the sync is a network call.
+    accept_under_locks(app_context, sdk, identity, request_id)
+        .await?
+        .settle(|sender, recorded| {
+            recover_on_this_device(app_context, owner_id, sender, true, recorded)
+        })
+        .await
+}
+
+/// [`accept_contact_request`] under the owner's locks for the request and its
+/// sender.
+async fn accept_under_locks(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: QualifiedIdentity,
+    request_id: Identifier,
+) -> Result<Sent, TaskError> {
+    let owner_id = identity.identity.id();
     let _action_guard = app_context
         .wallet_backend()?
         .dashpay_lock_contact_request_action(&owner_id, &request_id)
@@ -784,13 +837,19 @@ pub async fn accept_contact_request(
             Some(&peer_lock),
         )
         .await?;
-        return Ok(if restored {
+        let result = if restored {
             BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)
         } else {
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
                 request_id,
                 contact_id: from_identity_id,
             }
+        };
+        return Ok(Sent {
+            result,
+            recipient: from_identity_id,
+            recorded: Ok(()),
+            re_engaged: Ok(()),
         });
     }
 
@@ -807,83 +866,194 @@ pub async fn accept_contact_request(
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
-    // Option A fix: record A's incoming CR into B's wallet-manager
-    // BEFORE sending the reciprocal.
-    //
-    // After record_sent_contact_request populates sent[A], upstream
-    // sync_contact_requests skips A's document (skip guard:
-    //   sent[A] || incoming[A] || established[A] → continue)
-    // so dashpay_sync can never call add_incoming_contact_request and
-    // established_contacts stays empty.
-    //
-    // By pre-populating incoming[A] here, add_sent_contact_request for
-    // B's outgoing CR (fired by record_sent_contact_request at the end of
-    // send_contact_request_with_proof) finds incoming[A] and auto-establishes
-    // established_contacts[A] in-process — no dashpay_sync round-trip needed.
-    if let Some(seed_hash) = identity.dashpay_wallet_seed_hash() {
-        let owner_id = identity.identity.id();
-        let props = doc.properties();
-        let maybe_incoming_cr = (|| -> Option<UpstreamContactRequest> {
-            let sender_key_index = props.get("senderKeyIndex")?.to_integer::<u32>().ok()?;
-            let recipient_key_index = props.get("recipientKeyIndex")?.to_integer::<u32>().ok()?;
-            let account_reference = props.get("accountReference")?.to_integer::<u32>().ok()?;
-            let encrypted_public_key = props.get("encryptedPublicKey")?.as_bytes()?.clone();
-            Some(UpstreamContactRequest::new(
-                from_identity_id, // sender = A
-                owner_id,         // recipient = B
-                sender_key_index,
-                recipient_key_index,
-                account_reference,
-                encrypted_public_key,
-                doc.created_at_core_block_height().unwrap_or(0),
-                doc.created_at().unwrap_or(0),
-            ))
-        })();
+    let ops = PlatformAcceptOps {
+        app_context,
+        sdk,
+        identity: &identity,
+        signing_key,
+        sender: from_identity_id,
+        peer_lock: &peer_lock,
+    };
+    Ok(Sent {
+        result: BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id),
+        ..accept_flow(&ops, &doc).await?
+    })
+}
 
-        match maybe_incoming_cr {
-            Some(incoming_cr) => {
-                if let Ok(backend) = app_context.wallet_backend()
-                    && let Err(err) = backend
-                        .record_incoming_contact_request(&seed_hash, &owner_id, incoming_cr)
-                        .await
-                {
-                    tracing::warn!(
-                        %err,
-                        "record_incoming_contact_request failed; \
-                         auto-establishment will depend on dashpay_sync",
-                    );
-                }
-            }
-            None => {
+/// The steps of accepting a request that has not been answered, behind a
+/// trait so tests can drive them.
+trait AcceptOps {
+    /// The identity accepting the request.
+    fn owner(&self) -> Identifier;
+    /// The identity that sent the request.
+    fn sender(&self) -> Identifier;
+    /// Record the request on this device before the reply is published.
+    fn record_incoming(
+        &self,
+        request: UpstreamContactRequest,
+    ) -> impl Future<Output = Recorded> + Send;
+    /// Publish the reply, a paid contact request back to the sender.
+    fn publish_reply(&self) -> impl Future<Output = Result<Sent, TaskError>> + Send;
+}
+
+/// Accept the request `doc`; returns the reply, recorded only when this
+/// device recorded both it and the request.
+///
+/// # Errors
+///
+/// [`DashPayError::UnreadableContactRequest`] before anything is published
+/// when `doc` lacks a field a contact is built from: no sync can repair it,
+/// so a reply would be paid for and never form a contact.
+async fn accept_flow<O: AcceptOps>(ops: &O, doc: &Document) -> Result<Sent, TaskError> {
+    let request = incoming_contact_request(doc, ops.sender(), ops.owner())
+        .ok_or(TaskError::DashPay(DashPayError::UnreadableContactRequest))?;
+    // Recorded first, so recording the reply establishes the contact
+    // in-process.
+    let recorded_request = ops.record_incoming(request).await;
+    let reply = match ops.publish_reply().await {
+        Ok(reply) => reply,
+        Err(error) => {
+            if let Err(record_error) = recorded_request {
                 tracing::warn!(
-                    sender_id = %from_identity_id,
-                    "accept_contact_request: incoming CR document missing required \
-                     fields; auto-establishment will depend on dashpay_sync",
+                    ?record_error,
+                    "accepted contact request not recorded on this device, and no reply was published"
                 );
             }
+            return Err(error);
+        }
+    };
+    Ok(Sent {
+        recorded: recorded_request.and(reply.recorded),
+        ..reply
+    })
+}
+
+/// [`AcceptOps`] against the live Platform, under the person's lock.
+struct PlatformAcceptOps<'a> {
+    app_context: &'a Arc<AppContext>,
+    sdk: &'a Sdk,
+    identity: &'a QualifiedIdentity,
+    signing_key: IdentityPublicKey,
+    sender: Identifier,
+    peer_lock: &'a HeldPeerLock,
+}
+
+impl AcceptOps for PlatformAcceptOps<'_> {
+    fn owner(&self) -> Identifier {
+        self.identity.identity.id()
+    }
+
+    fn sender(&self) -> Identifier {
+        self.sender
+    }
+
+    async fn record_incoming(&self, request: UpstreamContactRequest) -> Recorded {
+        match (
+            self.identity.dashpay_wallet_seed_hash(),
+            self.app_context.wallet_backend(),
+        ) {
+            (Some(seed_hash), Ok(backend)) => {
+                backend
+                    .record_incoming_contact_request(&seed_hash, &self.owner(), request)
+                    .await
+            }
+            _ => Ok(()),
         }
     }
 
-    // The reply is sent under the person's lock taken above, which the send
-    // would otherwise wait on forever.
-    let result = send_contact_request_inner(
-        app_context,
-        sdk,
-        identity,
-        signing_key,
-        from_identity_id.to_string(Encoding::Base58),
-        Some("Accepted contact".to_string()),
-        None,
-        Some(&peer_lock),
-    )
-    .await;
-
-    match result {
-        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
-            request_id,
-        )),
-        Err(e) => Err(e),
+    async fn publish_reply(&self) -> Result<Sent, TaskError> {
+        // Sent under the person's lock the accept holds, which the send would
+        // otherwise wait on forever.
+        send_contact_request_inner(
+            self.app_context,
+            self.sdk,
+            self.identity.clone(),
+            self.signing_key.clone(),
+            self.sender.to_string(Encoding::Base58),
+            Some("Accepted contact".to_string()),
+            None,
+            Some(self.peer_lock),
+        )
+        .await
     }
+}
+
+/// [`recover_unrecorded`] through the wallet backend, for `owner`'s request
+/// with `peer`; `accepted` asks for the contact, not just the sent request.
+async fn recover_on_this_device(
+    app_context: &Arc<AppContext>,
+    owner: Identifier,
+    peer: Identifier,
+    accepted: bool,
+    recorded: Recorded,
+) {
+    if let Ok(backend) = app_context.wallet_backend() {
+        recover_unrecorded(
+            recorded,
+            || backend.dashpay_sync(&owner),
+            || backend.dashpay_request_recorded(&owner, &peer, accepted),
+        )
+        .await;
+    }
+}
+
+/// The contact request `doc`, sent by `sender` to `recipient`, as
+/// platform-wallet records it; `None` when a required field is missing or
+/// unreadable.
+fn incoming_contact_request(
+    doc: &Document,
+    sender: Identifier,
+    recipient: Identifier,
+) -> Option<UpstreamContactRequest> {
+    let props = doc.properties();
+    let sender_key_index = props.get("senderKeyIndex")?.to_integer::<u32>().ok()?;
+    let recipient_key_index = props.get("recipientKeyIndex")?.to_integer::<u32>().ok()?;
+    let account_reference = props.get("accountReference")?.to_integer::<u32>().ok()?;
+    // Any byte variant, as platform-wallet's sync reads it.
+    let encrypted_public_key = props.get("encryptedPublicKey")?.to_binary_bytes().ok()?;
+    Some(UpstreamContactRequest::new(
+        sender,
+        recipient,
+        sender_key_index,
+        recipient_key_index,
+        account_reference,
+        encrypted_public_key,
+        doc.created_at_core_block_height().unwrap_or(0),
+        doc.created_at().unwrap_or(0),
+    ))
+}
+
+/// Recover a contact request this device could not record: `resync` re-reads
+/// the owner's sent and received requests from Platform and records them,
+/// and `is_recorded` checks the outcome, since a sync can end without error
+/// and without recording it. Returns whether it is recorded now; if not, the
+/// next contacts load runs the same sync.
+async fn recover_unrecorded<S, R>(
+    recorded: Recorded,
+    resync: impl FnOnce() -> S,
+    is_recorded: impl FnOnce() -> R,
+) -> bool
+where
+    S: Future<Output = Result<(), TaskError>>,
+    R: Future<Output = bool>,
+{
+    let Err(error) = recorded else {
+        return true;
+    };
+    tracing::debug!(
+        ?error,
+        "contact request not recorded on this device; syncing it"
+    );
+    let synced = resync().await;
+    let now_recorded = is_recorded().await;
+    if !now_recorded {
+        tracing::warn!(
+            ?error,
+            sync_error = ?synced.err(),
+            "contact request still not recorded on this device; the next contacts load retries"
+        );
+    }
+    now_recorded
 }
 
 /// The local state that re-engages someone the owner withdrew a request
@@ -1648,7 +1818,9 @@ mod tests {
             .dashpay_mark_withdrawn(&owner, &peer)
             .expect("withdraw");
         drop(cancel_guard);
-        send.await.expect("send finished");
+        // The record fails (no such wallet); only the re-engagement matters here.
+        let (_recorded, re_engaged) = send.await;
+        re_engaged.expect("send finished");
 
         assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
@@ -1742,7 +1914,8 @@ mod tests {
         .await
         .expect("the send must not wait on its caller's lock");
 
-        finished.expect("send finished");
+        let (_recorded, re_engaged) = finished;
+        re_engaged.expect("send finished");
         assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
 
@@ -2476,5 +2649,254 @@ mod tests {
             !*ops.unignored.lock().unwrap(),
             "the withdrawal's ignore stands"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Recovery of contact requests this device could not record.
+    // -----------------------------------------------------------------
+
+    fn full_request_doc(encrypted_public_key: Value) -> Document {
+        let mut doc = request_doc(id(2), Some(id(1)));
+        let props = doc.properties_mut();
+        props.insert("senderKeyIndex".into(), Value::U32(3));
+        props.insert("recipientKeyIndex".into(), Value::U32(4));
+        props.insert("accountReference".into(), Value::U32(5));
+        props.insert("encryptedPublicKey".into(), encrypted_public_key);
+        doc
+    }
+
+    /// Read like platform-wallet's sync reads it, whatever byte variant the
+    /// query returns, so a request sync would take in is never refused here.
+    #[test]
+    fn an_incoming_request_reads_any_byte_variant() {
+        let key = vec![9_u8; 96];
+        for value in [
+            Value::Bytes(key.clone()),
+            Value::Array(key.iter().copied().map(Value::U8).collect()),
+        ] {
+            let request = incoming_contact_request(&full_request_doc(value), id(2), id(1))
+                .expect("a complete request is read");
+            assert_eq!(request.encrypted_public_key, key);
+            assert_eq!(request.account_reference, 5);
+        }
+    }
+
+    #[test]
+    fn an_incoming_request_without_its_account_is_unreadable() {
+        let mut doc = full_request_doc(Value::Bytes(vec![9; 96]));
+        doc.properties_mut().remove("accountReference");
+
+        assert!(incoming_contact_request(&doc, id(2), id(1)).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unrecorded_request_is_recovered_by_one_sync() {
+        let syncs = Mutex::new(0);
+        let recovered = recover_unrecorded(
+            Err(TaskError::WalletStateInconsistent),
+            || async {
+                *syncs.lock().unwrap() += 1;
+                Err(TaskError::WalletStateInconsistent)
+            },
+            || async { true },
+        )
+        .await;
+        assert_eq!(*syncs.lock().unwrap(), 1);
+        assert!(recovered);
+
+        assert!(
+            recover_unrecorded(
+                Ok(()),
+                || async {
+                    *syncs.lock().unwrap() += 1;
+                    Ok(())
+                },
+                || async { false },
+            )
+            .await
+        );
+        assert_eq!(
+            *syncs.lock().unwrap(),
+            1,
+            "a recorded request needs no sync"
+        );
+    }
+
+    /// A sync can end without error and without recording the request (no
+    /// wallet, or a partial pass); only the check after it tells.
+    #[tokio::test]
+    async fn a_sync_that_records_nothing_does_not_count_as_recovery() {
+        let recovered = recover_unrecorded(
+            Err(TaskError::WalletStateInconsistent),
+            || async { Ok(()) },
+            || async { false },
+        )
+        .await;
+
+        assert!(!recovered);
+    }
+
+    #[derive(Default)]
+    struct ScriptedAcceptOps {
+        record_fails: bool,
+        reply_record_fails: bool,
+        re_engage_fails: bool,
+        publish_fails: bool,
+        /// Steps in the order they ran.
+        steps: Mutex<Vec<&'static str>>,
+    }
+
+    impl AcceptOps for ScriptedAcceptOps {
+        fn owner(&self) -> Identifier {
+            id(1)
+        }
+
+        fn sender(&self) -> Identifier {
+            id(2)
+        }
+
+        async fn record_incoming(&self, _request: UpstreamContactRequest) -> Recorded {
+            self.steps.lock().unwrap().push("record");
+            if self.record_fails {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+            Ok(())
+        }
+
+        async fn publish_reply(&self) -> Result<Sent, TaskError> {
+            self.steps.lock().unwrap().push("publish");
+            if self.publish_fails {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+            let failed = |fails| {
+                if fails {
+                    Err(TaskError::WalletStateInconsistent)
+                } else {
+                    Ok(())
+                }
+            };
+            Ok(Sent {
+                result: BackendTaskSuccessResult::DashPayContactRequestSent("reply".into()),
+                recipient: id(2),
+                recorded: failed(self.reply_record_fails),
+                re_engaged: failed(self.re_engage_fails),
+            })
+        }
+    }
+
+    /// An unreadable request could never form a contact, so no paid reply is
+    /// published for it.
+    #[tokio::test]
+    async fn an_unreadable_request_is_not_answered() {
+        let ops = ScriptedAcceptOps::default();
+        let mut doc = full_request_doc(Value::Bytes(vec![9; 96]));
+        doc.properties_mut().remove("accountReference");
+
+        assert!(matches!(
+            accept_flow(&ops, &doc).await,
+            Err(TaskError::DashPay(DashPayError::UnreadableContactRequest))
+        ));
+        assert!(ops.steps.lock().unwrap().is_empty(), "nothing is published");
+    }
+
+    /// The request is recorded before the reply, and a failure to record
+    /// either is handed back for one recovery after the locks are released.
+    #[tokio::test]
+    async fn accepting_records_the_request_before_the_reply() {
+        let ops = ScriptedAcceptOps::default();
+        let doc = full_request_doc(Value::Bytes(vec![9; 96]));
+        assert!(matches!(
+            accept_flow(&ops, &doc).await,
+            Ok(Sent {
+                recorded: Ok(()),
+                ..
+            })
+        ));
+        assert_eq!(*ops.steps.lock().unwrap(), ["record", "publish"]);
+
+        for ops in [
+            ScriptedAcceptOps {
+                record_fails: true,
+                ..Default::default()
+            },
+            ScriptedAcceptOps {
+                reply_record_fails: true,
+                ..Default::default()
+            },
+            ScriptedAcceptOps {
+                record_fails: true,
+                reply_record_fails: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                accept_flow(&ops, &doc).await,
+                Ok(Sent {
+                    recorded: Err(_),
+                    ..
+                })
+            ));
+            assert_eq!(*ops.steps.lock().unwrap(), ["record", "publish"]);
+        }
+    }
+
+    /// A reply whose recipient could not be re-engaged still hands back the
+    /// request this device did not record, so it is recovered before the
+    /// error is reported.
+    #[tokio::test]
+    async fn a_failed_re_engagement_keeps_the_unrecorded_request() {
+        let ops = ScriptedAcceptOps {
+            record_fails: true,
+            re_engage_fails: true,
+            ..Default::default()
+        };
+        let doc = full_request_doc(Value::Bytes(vec![9; 96]));
+
+        assert!(matches!(
+            accept_flow(&ops, &doc).await,
+            Ok(Sent {
+                recorded: Err(_),
+                re_engaged: Err(_),
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn settling_recovers_before_reporting_a_failed_re_engagement() {
+        let recoveries = Mutex::new(0);
+        let sent = Sent {
+            result: BackendTaskSuccessResult::DashPayContactRequestSent("x".into()),
+            recipient: id(2),
+            recorded: Err(TaskError::WalletStateInconsistent),
+            re_engaged: Err(TaskError::WalletStateInconsistent),
+        };
+
+        let settled = sent
+            .settle(|peer, recorded| {
+                assert_eq!(peer, id(2));
+                assert!(recorded.is_err());
+                *recoveries.lock().unwrap() += 1;
+                async {}
+            })
+            .await;
+
+        assert!(
+            settled.is_err(),
+            "the user still learns of the re-engagement"
+        );
+        assert_eq!(*recoveries.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_was_not_published_is_an_error() {
+        let ops = ScriptedAcceptOps {
+            record_fails: true,
+            publish_fails: true,
+            ..Default::default()
+        };
+        let doc = full_request_doc(Value::Bytes(vec![9; 96]));
+
+        assert!(accept_flow(&ops, &doc).await.is_err());
     }
 }

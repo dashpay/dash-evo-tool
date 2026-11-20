@@ -168,6 +168,13 @@ pub enum DashPayError {
     )]
     ContactRequestNotAddressedToYou,
 
+    /// The request to accept lacks a field a contact is built from, so
+    /// replying to it could never establish the contact. Nothing was sent.
+    #[error(
+        "This contact request cannot be read, so it cannot be accepted. Ask the sender to send you a new request."
+    )]
+    UnreadableContactRequest,
+
     /// Encrypted contact info fields exceed DashPay contract limits.
     #[error("Contact info is too large to save. Try shortening your nickname or note.")]
     ContactInfoValidationFailed { errors: Vec<String> },

@@ -49,13 +49,13 @@ def prepare(config_path):
         ),
     )
     for sid, segment in manifest["segments"].items():
-        if sid == "00" or sid.endswith("-intro"):
+        if sid == "00":
             visual = {
                 "kind": "slide",
                 "path": "slides/opening-1920x1080.png",
                 "fade": False,
             }
-        elif sid == "53" or sid.endswith("-outro"):
+        elif sid == "53":
             visual = {"kind": "slide", "path": "slides/closing-1920x1080.png"}
         elif sid in ("01", "02", "50"):
             visual = {"kind": "slide", "path": f"slides/scene-{sid}.png"}
@@ -73,23 +73,17 @@ def prepare(config_path):
 
 def transcript(source):
     document = media.read_json(source)
-    lines = [document["title"], ""]
-    for scene in document["scenes"]:
-        lines += [f"[Scene {scene['id']}] {scene['title']}"]
-        lines += [
-            f"{document['speakers'][turn['speaker']]['name']}: {turn['text']}"
-            for turn in scene["turns"]
-        ]
-        lines += [""]
-    lines += ["Standalone episode bridges (excluded from combined):", ""]
-    for part in document["parts"]:
-        for kind in ("intro", "outro"):
-            lines += [f"[Part {part['id']} {kind}]"]
+    lines, scenes = [document["title"], ""], {s["id"]: s for s in document["scenes"]}
+    for chapter, scene_ids in media.chapter_scenes(document):
+        lines += [f"Chapter {chapter['id']}: {chapter['title']}", ""]
+        for scene in map(scenes.get, scene_ids):
+            lines += [f"[Scene {scene['id']}] {scene['title']}"]
             lines += [
                 f"{document['speakers'][turn['speaker']]['name']}: {turn['text']}"
-                for turn in part[kind]
+                for turn in scene["turns"]
             ]
-    return "\n".join(lines) + "\n"
+            lines += [""]
+    return "\n".join(lines)
 
 
 def reuse(source, root, old_media_path):
@@ -109,11 +103,7 @@ def reuse(source, root, old_media_path):
         for job in manifest["jobs"]:
             if job["status"] != "planned":
                 continue
-            sid = (
-                job["scene_id"]
-                if job["segment"] == "scene"
-                else f"p{job['part']}-{job['segment']}"
-            )
+            sid = job["scene_id"]
             paths = old_media.get("segments", {}).get(sid, {}).get("audio", [])
             if job["turn_index"] >= len(paths) or not paths[job["turn_index"]]:
                 continue

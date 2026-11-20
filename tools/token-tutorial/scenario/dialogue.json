@@ -17,7 +17,7 @@
   },
   "source": {
     "scenario": "scenario.txt",
-    "scenario_sha256": "f461fcb3b63613cbd15fe14a724314cbd3d30457a351c21726e379ab1552e0d2",
+    "scenario_sha256": "df1516d24f852ef0db7279147716a395310990e1d5177b58d7bc582691bdc266",
     "det_revision": "77c2a6c92e0d136dcb1be616277bbe1d4a9ed94c",
     "platform_revision": "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb",
     "review_status": "Core source review and original/follow-up evidence retain separate scopes and hashes. Both authorized registrations matched their reviewed canonical contracts, excluding only created/updated metadata. Eleven export checks and four navigation checks passed. Unknown-outcome/conflict/local-restoration branches, 54 help topics and other stated gates remain unverified. No recording or narration approval.",
@@ -45,128 +45,54 @@
     "preparation_evidence_sha256": "f32cd0d26571e83446c8cc4bcbdeb1db0a7a43b49584044b8d1c9e88a2990198"
   },
   "packaging": {
-    "standalone": "Each part intro, its scenes, then its outro.",
-    "combined": "All 54 scenes in order; omit standalone bridges.",
+    "deliverable": "One tutorial video with all 54 scenes in order; its six chapters follow the scene ranges below.",
     "opening_silence_seconds": 3.0,
     "opening_disclosure": "This presentation was generated entirely by AI and may contain mistakes.",
     "recording_gate": "No recording, audio generation or provider API calls in this refresh. Future recording requires independent source approval and observed GUI outcomes; paid steps need their own authorization.",
-    "spoken_content": "Only turns, part intro and part outro are spoken. Screen plans, controls, checks, formulas and verification states are production metadata."
+    "spoken_content": "Only scene turns are spoken. Screen plans, controls, checks, formulas and verification states are production metadata."
   },
-  "parts": [
+  "chapters": [
     {
       "id": 1,
       "title": "A fixed-supply draft and the creation gates",
       "start": "00",
-      "end": "09",
-      "intro": [
-        {
-          "speaker": "teacher",
-          "text": "Welcome to the seven-section creator. We will prepare a small fixed-supply draft and distinguish preparation from paid creation."
-        }
-      ],
-      "outro": [
-        {
-          "speaker": "learner",
-          "text": "Keep the draft and any genuinely confirmed identifiers separate. Next we explore the owner-managed example and its rules."
-        }
-      ]
+      "end": "09"
     },
     {
       "id": 2,
       "title": "Names, supply and permission structure",
       "start": "10",
-      "end": "18",
-      "intro": [
-        {
-          "speaker": "teacher",
-          "text": "We continue with CloudPoint: names, amount units, discovery, histories, and the distinction between a performer and a rule administrator."
-        }
-      ],
-      "outro": [
-        {
-          "speaker": "learner",
-          "text": "Our draft is still editable. Next we inspect each action and demonstrate weighted groups."
-        }
-      ]
+      "end": "18"
     },
     {
       "id": 3,
       "title": "Action powers and weighted groups",
       "start": "19",
-      "end": "29",
-      "intro": [
-        {
-          "speaker": "teacher",
-          "text": "This chapter examines supply ceilings, recipients, intervention powers, marketplace permissions and group authority."
-        }
-      ],
-      "outro": [
-        {
-          "speaker": "learner",
-          "text": "The practice group is removed and the intended permissions restored. Next we compare eight recurring formulas."
-        }
-      ]
+      "end": "29"
     },
     {
       "id": 4,
       "title": "Recurring distribution and eight worked formulas",
       "start": "30",
-      "end": "44",
-      "intro": [
-        {
-          "speaker": "teacher",
-          "text": "Keep two decimal places and the base-unit table in view. We will compare all eight formulas using the current-parameter preview."
-        }
-      ],
-      "outro": [
-        {
-          "speaker": "learner",
-          "text": "Recurring distribution is off and its rule locked. Next we inspect scheduled allocations, once-per-identity claims and document types."
-        }
-      ]
+      "end": "44"
     },
     {
       "id": 5,
       "title": "Allocations, documents and the prepared contract",
       "start": "45",
-      "end": "49",
-      "intro": [
-        {
-          "speaker": "teacher",
-          "text": "This chapter covers absolute local dates, once-per-identity allocations, optional document types and the exact contract prepared for review."
-        }
-      ],
-      "outro": [
-        {
-          "speaker": "learner",
-          "text": "Our practice features are cleared. The final chapter checks every authority and explains creation and recovery gates."
-        }
-      ]
+      "end": "49"
     },
     {
       "id": 6,
       "title": "Final review, creation and recovery",
       "start": "50",
-      "end": "53",
-      "intro": [
-        {
-          "speaker": "teacher",
-          "text": "Compare the complete CloudPoint target with the actual reviewed snapshot. A funded network result must be observed before it is called confirmed."
-        }
-      ],
-      "outro": [
-        {
-          "speaker": "learner",
-          "text": "Keep the reviewed configuration and any confirmed identifiers. Recheck the relevant controls whenever the application or your token policy changes."
-        }
-      ]
+      "end": "53"
     }
   ],
   "scenes": [
     {
       "id": "00",
       "title": "Hello from Chad and Ewa",
-      "part": 1,
       "screen": "Opening slide. Hold for 3.0 seconds in silence before the first turn. Display both names and the AI disclosure.",
       "controls": [
         "Opening silence: 3 seconds",
@@ -203,7 +129,6 @@
     {
       "id": "01",
       "title": "One workspace, six chapters",
-      "part": 1,
       "screen": "Chapter overview, then the seven section labels. No paid operation.",
       "controls": [
         "Basics",
@@ -254,7 +179,6 @@
     {
       "id": "02",
       "title": "Draft now, prepare an issuer later",
-      "part": 1,
       "screen": "Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain synchronization and selecting a newly generated wallet as a separate funding source for the existing identity.",
       "controls": [
         "Network",
@@ -342,7 +266,6 @@
     {
       "id": "03",
       "title": "Find Create a token",
-      "part": 1,
       "screen": "Tokens → Token Creator. Show header, context, summary, scroll area, seven tabs and footer. Open one help dialog and return.",
       "controls": [
         "Tokens",
@@ -406,7 +329,6 @@
     {
       "id": "04",
       "title": "Name the fixed example",
-      "part": 1,
       "screen": "Basics: enter CloudCredit and CloudCredits in the two required fields. Do not add spaces.",
       "controls": [
         "Token name",
@@ -461,7 +383,6 @@
     {
       "id": "05",
       "title": "Read amounts in both units",
-      "part": 1,
       "screen": "Basics: open Compare fixed example, inspect changed rows and Apply these changes. Supply & permissions: inspect both amounts and unit switches, toggle No maximum supply, then restore the finite cap of 1,000 tokens.",
       "controls": [
         "Compare fixed example",
@@ -540,7 +461,6 @@
     {
       "id": "06",
       "title": "Compare before applying",
-      "part": 1,
       "screen": "Return to Basics. Compare owner example; scroll changed rows and full comparison; Keep my draft. Demonstrate Apply then Undo and restore fixed example.",
       "controls": [
         "Compare owner example",
@@ -608,7 +528,6 @@
     {
       "id": "07",
       "title": "What fixed supply promises",
-      "part": 1,
       "screen": "Supply & permissions: select All 13 rules; inspect every fixed rule and the cap consequence. Distribution is off, Groups is empty, and all six histories are on.",
       "controls": [
         "All 13 rules",
@@ -669,7 +588,6 @@
     {
       "id": "08",
       "title": "Preparation and payment are separate",
-      "part": 1,
       "screen": "Review: inspect issuer/key readiness and Final review. Distinguish the earlier insufficient-credit gate from the later successful fixed-policy registration; verify the accepted receipt against its exact prepared contract.",
       "controls": [
         "Review your token",
@@ -740,7 +658,6 @@
     {
       "id": "09",
       "title": "Recognize a real receipt",
-      "part": 1,
       "screen": "Inspect the accepted fixed-policy receipt, copied identifiers and fetched contract. On the navigation patch, select Token Creator to return to the retained receipt, then use Create another token to start a fresh draft. These navigation checks do not submit a token.",
       "controls": [
         "Token created",
@@ -837,7 +754,6 @@
     {
       "id": "10",
       "title": "Begin the owner-managed practice draft",
-      "part": 2,
       "screen": "Use the current unsubmitted draft, rename it CloudPoint/CloudPoints, compare and apply owner example. If a previous authorized creation is confirmed, use Create another token first.",
       "controls": [
         "Token name",
@@ -892,7 +808,6 @@
     {
       "id": "11",
       "title": "Names in other languages",
-      "part": 2,
       "screen": "Basics: expand localizations. Show English search toggle, add Polish Punkt/Punkty, choose language, toggle searchable, remove practice language. Restore capitalization off.",
       "controls": [
         "Names in other languages",
@@ -952,7 +867,6 @@
     {
       "id": "12",
       "title": "Supply and discovery belong to different sections",
-      "part": 2,
       "screen": "Supply & permissions: inspect initial supply 1,000 and maximum 10,000 tokens. In Search & documents, enter the final description, try education as an extra keyword, then remove that extra keyword.",
       "controls": [
         "Initial supply",
@@ -1016,7 +930,6 @@
     {
       "id": "13",
       "title": "Precision without a hundredfold mistake",
-      "part": 2,
       "screen": "Supply & permissions: show Decimal places = 2 and amount conversions. Change to 3 and back. Demonstrate an unrepresentable fractional amount, then correct it.",
       "controls": [
         "Decimal places",
@@ -1084,7 +997,6 @@
     {
       "id": "14",
       "title": "Transfers, pauses and frozen recipients",
-      "part": 2,
       "screen": "Supply & permissions: toggle the three transfer-state checkboxes and inspect their consequences. Restore Allow transfers between holders on, Start with transfers paused off, and Allow transfers to frozen identities off.",
       "controls": [
         "Allow transfers between holders",
@@ -1140,7 +1052,6 @@
     {
       "id": "15",
       "title": "Choose all six histories explicitly",
-      "part": 2,
       "screen": "History: show Keep all six histories and its six child checkboxes. Demonstrate a mixed state, then restore all six.",
       "controls": [
         "Keep all six histories",
@@ -1192,7 +1103,6 @@
     {
       "id": "16",
       "title": "Protocol templates are separate proposals",
-      "part": 2,
       "screen": "Basics: expand Existing protocol templates. Compare each of the five templates, scroll the full comparison, and Keep my draft each time. Retain the owner-managed example.",
       "controls": [
         "Existing protocol templates",
@@ -1274,7 +1184,6 @@
     {
       "id": "17",
       "title": "Who can perform an action",
-      "part": 2,
       "screen": "Supply & permissions: inspect All 13 rules, Enabled powers and Changeable rules. Edit Mint additional tokens; inspect performer choices. Try Specific identity with an invalid ID, then restore Contract owner.",
       "controls": [
         "All 13 rules",
@@ -1348,7 +1257,6 @@
     {
       "id": "18",
       "title": "Who can change the rule",
-      "part": 2,
       "screen": "In the rule editor, inspect the administrator and all three Later changes flags. Temporarily select Contract owner and toggle each allowance, then restore No one and all flags off. Demonstrate Open Groups.",
       "controls": [
         "Who can change this rule",
@@ -1404,7 +1312,6 @@
     {
       "id": "19",
       "title": "Lock the outstanding-supply ceiling",
-      "part": 3,
       "screen": "Supply & permissions: edit Change maximum supply. Set performer and administrator to No one and all three allowances off. Inspect the permanent hard-cap notice.",
       "controls": [
         "Change maximum supply",
@@ -1464,7 +1371,6 @@
     {
       "id": "20",
       "title": "Minting and the initial recipient",
-      "part": 3,
       "screen": "Inspect Mint additional tokens. Show Contract owner, Specific identity and No fixed destination as default recipient choices. Restore owner and enable Allow choosing a recipient on each mint.",
       "controls": [
         "Mint additional tokens",
@@ -1530,7 +1436,6 @@
     {
       "id": "21",
       "title": "Lock the two destination policies",
-      "part": 3,
       "screen": "Edit Change the default mint recipient and Change per-mint recipient choice separately. Set both performers and administrators to No one and all flags off, while keeping Allow choosing a recipient on each mint on.",
       "controls": [
         "Change the default mint recipient",
@@ -1594,7 +1499,6 @@
     {
       "id": "22",
       "title": "Burning the performer’s own tokens",
-      "part": 3,
       "screen": "Edit Burn own tokens: performer Contract owner, administrator No one, all three flags off. Do not execute a burn.",
       "controls": [
         "Burn own tokens",
@@ -1654,7 +1558,6 @@
     {
       "id": "23",
       "title": "Freeze and unfreeze are separate",
-      "part": 3,
       "screen": "Edit Freeze an account, then Unfreeze an account. Inspect their actor choices and restore both rules permanently off. Revisit Allow transfers to frozen identities and leave it off.",
       "controls": [
         "Freeze an account",
@@ -1721,7 +1624,6 @@
     {
       "id": "24",
       "title": "Destroying frozen funds is destructive authority",
-      "part": 3,
       "screen": "Edit Destroy frozen funds and open its help. Restore performer and administrator No one and all allowances off. Do not execute destruction.",
       "controls": [
         "Destroy frozen funds",
@@ -1781,7 +1683,6 @@
     {
       "id": "25",
       "title": "Pause authority and display conventions",
-      "part": 3,
       "screen": "Edit Pause or resume transfers with Contract owner as performer. Lock Change names and display conventions off. Verify Start with transfers paused is off.",
       "controls": [
         "Pause or resume transfers",
@@ -1844,7 +1745,6 @@
     {
       "id": "26",
       "title": "Marketplace and pricing powers without a sale",
-      "part": 3,
       "screen": "Inspect Change marketplace trade mode, Change direct-purchase pricing and Marketplace at creation. Set Contract owner as performer for both rules, administrator No one and all three flags off.",
       "controls": [
         "Change marketplace trade mode",
@@ -1907,7 +1807,6 @@
     {
       "id": "27",
       "title": "The main group is an alias",
-      "part": 3,
       "screen": "Groups: inspect Main group and Who can change the main group. Demonstrate a missing-main-group validation message, then restore No main group and replacement authority No one.",
       "controls": [
         "Main control group",
@@ -1980,7 +1879,6 @@
     {
       "id": "28",
       "title": "Build a weighted practice group",
-      "part": 3,
       "screen": "Add group creates two blank identity rows. Enter two distinct known public Testnet identity IDs, power 1 each, Required power 2. Add a third temporary member row, then remove it.",
       "controls": [
         "Add group",
@@ -2041,7 +1939,6 @@
     {
       "id": "29",
       "title": "Assign, then remove the practice group safely",
-      "part": 3,
       "screen": "Select the practice group as Main group; temporarily assign Mint to Main group and Burn to the specific draft group. Show Used by and blocked deletion. Clear all references, restore mint/burn performers to owner, select No main group, then Delete group.",
       "controls": [
         "Main group",
@@ -2112,7 +2009,6 @@
     {
       "id": "30",
       "title": "Three independent distribution mechanisms",
-      "part": 4,
       "screen": "Distribution: show the recurring, scheduled and once-per-identity switches off, including their retained-settings summaries.",
       "controls": [
         "Enable recurring distribution",
@@ -2174,7 +2070,6 @@
     {
       "id": "31",
       "title": "Choose time, blocks or epochs",
-      "part": 4,
       "screen": "Enable recurring distribution. Select each interval basis and inspect every Time unit. Finish on Elapsed time, Repeat every 1, Time unit days.",
       "controls": [
         "Interval based on",
@@ -2257,7 +2152,6 @@
     {
       "id": "32",
       "title": "Recurring recipients and amount units",
-      "part": 4,
       "screen": "Inspect Contract owner, Specific identity and EvoNodes by participation. Show that EvoNodes requires Platform epochs, then restore Contract owner and elapsed time every 1 day.",
       "controls": [
         "Recurring recipient",
@@ -2319,7 +2213,6 @@
     {
       "id": "33",
       "title": "A live preview, not a prediction",
-      "part": 4,
       "screen": "Select an emission function and Restore worked example parameters. Open its help formula and inspect Current-parameter preview. Change one parameter and verify the table updates, then restore the example.",
       "controls": [
         "Restore worked example parameters",
@@ -2382,7 +2275,6 @@
     {
       "id": "34",
       "title": "Period zero and the registration reference",
-      "part": 4,
       "screen": "Leave Assumed registration reference for preview blank to use zero. Inspect rows 0 through 10 and cumulative allocation starting at period 1. Demonstrate an optional start with a nonzero assumed reference, then restore zero reference and blank start.",
       "controls": [
         "Assumed registration reference for preview",
@@ -2436,7 +2328,6 @@
     {
       "id": "35",
       "title": "Fixed amount: one token per interval",
-      "part": 4,
       "screen": "Select Fixed amount, then Restore worked example parameters. Show 1.00 tokens; switch to 100 base units and back. Inspect the preview table.",
       "controls": [
         "Fixed amount",
@@ -2535,7 +2426,6 @@
     {
       "id": "36",
       "title": "Step decreasing: subtract a fraction",
-      "part": 4,
       "screen": "Select Step decreasing and Restore worked example parameters. Inspect all eight parameters and preview rows 0 through 10.",
       "controls": [
         "Step decreasing",
@@ -2642,7 +2532,6 @@
     {
       "id": "37",
       "title": "Stepwise: thresholds and phases",
-      "part": 4,
       "screen": "Select Stepwise and Restore worked example parameters. Show exactly three phases: 0 / 0.10 tokens, 3 / 0.05 tokens, 5 / 0 tokens. Add and remove a temporary phase. Demonstrate duplicate-index rejection, then restore the recipe.",
       "controls": [
         "Stepwise",
@@ -2756,7 +2645,6 @@
     {
       "id": "38",
       "title": "Linear: a slope with an interval ceiling",
-      "part": 4,
       "screen": "Select Linear and Restore worked example parameters. Inspect all six parameters, including Maximum per interval = 0.20 tokens.",
       "controls": [
         "Linear",
@@ -2859,7 +2747,6 @@
     {
       "id": "39",
       "title": "Polynomial: a squared example",
-      "part": 4,
       "screen": "Select Polynomial and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
       "controls": [
         "Polynomial",
@@ -2968,7 +2855,6 @@
     {
       "id": "40",
       "title": "Exponential: base e, then a cap",
-      "part": 4,
       "screen": "Select Exponential and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
       "controls": [
         "Exponential",
@@ -3077,7 +2963,6 @@
     {
       "id": "41",
       "title": "Logarithmic: positive input and integer rounding",
-      "part": 4,
       "screen": "Select Logarithmic and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
       "controls": [
         "Logarithmic",
@@ -3186,7 +3071,6 @@
     {
       "id": "42",
       "title": "Inverted logarithmic: negative floor matters",
-      "part": 4,
       "screen": "Select Inverted logarithmic and Restore worked example parameters. Inspect all nine parameters and compare every preview row.",
       "controls": [
         "Inverted logarithmic",
@@ -3295,7 +3179,6 @@
     {
       "id": "43",
       "title": "Check boundaries and invalid inputs",
-      "part": 4,
       "screen": "Inspect optional blank versus zero values. Demonstrate an invalid zero divisor, invalid amount, duplicate phase and invalid preview reference. Read the validation messages, then restore valid example parameters.",
       "controls": [
         "Restore worked example parameters",
@@ -3362,7 +3245,6 @@
     {
       "id": "44",
       "title": "Who can change recurring distribution later",
-      "part": 4,
       "screen": "Use Edit permission to change recurring distribution. Demonstrate performer and administrator effects; restore both to No one and all three flags off. Turn Enable recurring distribution off.",
       "controls": [
         "Edit permission to change recurring distribution",
@@ -3427,7 +3309,6 @@
     {
       "id": "45",
       "title": "Schedule an absolute local date",
-      "part": 5,
       "screen": "Enable scheduled distributions and Add scheduled distribution. Enter a future ISO date, hour and minute; inspect the local offset and UTC milliseconds. Inspect owner and specific identity recipients; set 5 tokens. Remove practice rows and turn the feature off.",
       "controls": [
         "Enable scheduled distributions",
@@ -3504,7 +3385,6 @@
     {
       "id": "46",
       "title": "Once per identity is not once per person",
-      "part": 5,
       "screen": "Enable once-per-identity distribution; enter 0.50 tokens, inspect the equivalent 50 base units and protocol help, then turn the feature off.",
       "controls": [
         "Enable once-per-identity distribution",
@@ -3559,7 +3439,6 @@
     {
       "id": "47",
       "title": "Clear the practice settings deliberately",
-      "part": 5,
       "screen": "Verify all three distribution switches are off, scheduled rows removed, and Groups empty. Inspect the summary and the locked recurring rule; do not reset the whole draft.",
       "controls": [
         "Enable recurring distribution",
@@ -3624,7 +3503,6 @@
     {
       "id": "48",
       "title": "Optional document types and safe JSON input",
-      "part": 5,
       "screen": "Search & documents: paste the corrected note-type mapping, including text.position = 0. Run free Check settings and inspect note in the prepared JSON. Demonstrate invalid JSON, a top-level array, duplicate keys and external-reference rejection. Clear document types before the final token.",
       "controls": [
         "Description (optional)",
@@ -3740,7 +3618,6 @@
     {
       "id": "49",
       "title": "Prepare and inspect the exact contract",
-      "part": 5,
       "screen": "Review: Check settings, expand Technical details and inspect/copy the complete contract JSON. Open Save contract JSON; enter File path or Browse, then explicitly Save. Exercise Cancel, existing-file replacement and a failed destination separately. No paid action.",
       "controls": [
         "Check settings",
@@ -3905,7 +3782,6 @@
     {
       "id": "50",
       "title": "CloudPoint’s complete final policy",
-      "part": 6,
       "screen": "Compare the complete CloudPoint policy with its reviewed and accepted canonical contract. Scroll each section; verify the five owner performers and per-mint choice explicitly instead of assuming the limited owner example includes them.",
       "controls": [
         "Reviewed Basics",
@@ -3982,7 +3858,6 @@
     {
       "id": "51",
       "title": "The paid action and its failure gates",
-      "part": 6,
       "screen": "Review charge/balance readiness, the historical failed funding attempt and the later successful fresh-wallet funding. Inspect both genuinely accepted registrations; read each current charge and allow additional processing/storage costs.",
       "controls": [
         "Registration charge",
@@ -4077,7 +3952,6 @@
     {
       "id": "52",
       "title": "Recover without paying twice",
-      "part": 6,
       "screen": "Explain pending, unknown, conflicting and confirmed outcomes and local receipt restoration. Show only a branch actually available in the observed app; label other branches as source-based explanations.",
       "controls": [
         "Creation not yet confirmed",
@@ -4145,7 +4019,6 @@
     {
       "id": "53",
       "title": "Leave with a review habit",
-      "part": 6,
       "screen": "Closing slide with cast, AI reminder and pinned source revision. Do not show a success montage without verified accepted results.",
       "controls": [
         "Closing",
@@ -4180,8 +4053,6 @@
     }
   ],
   "word_count": {
-    "scenes": 5769,
-    "standalone_extras": 213,
-    "total": 5982
+    "scenes": 5769
   }
 }

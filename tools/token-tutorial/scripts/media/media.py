@@ -15,7 +15,6 @@ import textwrap
 import wave
 
 FPS = 30
-RANGES = [(0, 9), (10, 18), (19, 29), (30, 44), (45, 49), (50, 53)]
 VOICES = {"cedar", "onyx", "echo", "ash", "ballad"}
 NOTICE = "This presentation was generated entirely by AI and may contain mistakes. Dash Testnet demonstration."
 
@@ -174,28 +173,26 @@ def init_manifest(scenario_path, target):
             "visual": visual,
             "audio": [None] * len(scene["turns"]),
         }
-    for part in scenario["parts"]:
-        for kind in ("intro", "outro"):
-            manifest["segments"][f"p{part['id']}-{kind}"] = {
-                "visual": {
-                    "kind": "slide",
-                    "path": str(
-                        slides
-                        / (
-                            "opening-1920x1080.png"
-                            if kind == "intro"
-                            else "closing-1920x1080.png"
-                        )
-                    ),
-                },
-                "audio": [None] * len(part[kind]),
-            }
     with target.open("x", encoding="utf-8") as out:
         json.dump(manifest, out, ensure_ascii=False, indent=2)
         out.write("\n")
 
 
-def load_plan(manifest_path, part=None):
+def chapter_scenes(scenario):
+    """Pair each chapter with its scene IDs; ranges must cover every scene once, in order."""
+    ids, groups, expected = [scene["id"] for scene in scenario["scenes"]], [], 0
+    for chapter in scenario["chapters"]:
+        start, end = int(chapter["start"]), int(chapter["end"])
+        if start != expected or not start <= end < len(ids):
+            raise ValueError("Chapter ranges must cover every scene once, in order")
+        groups.append((chapter, ids[start : end + 1]))
+        expected = end + 1
+    if expected != len(ids):
+        raise ValueError("Chapter ranges must cover every scene once, in order")
+    return groups
+
+
+def load_plan(manifest_path):
     manifest_path = Path(manifest_path).resolve()
     manifest = read_json(manifest_path)
     if manifest.get("teacher_voice") not in VOICES:
@@ -220,28 +217,13 @@ def load_plan(manifest_path, part=None):
     scenario = read_json(scenario_path)
     if [s["id"] for s in scenario["scenes"]] != [f"{i:02}" for i in range(54)]:
         raise ValueError("Expected exactly scenes 00 through 53 in order")
-    if [(int(p["start"]), int(p["end"])) for p in scenario["parts"]] != RANGES:
-        raise ValueError("The six part ranges do not match the agreed series")
+    chapters = chapter_scenes(scenario)
     credits = existing(manifest.get("credits"), "official brand credits")
     license_path = existing(manifest.get("font_license"), "font license")
     gap = float(manifest.get("turn_gap_seconds", 0.2))
     if not math.isfinite(gap) or not 0 <= gap <= 5:
         raise ValueError("turn_gap_seconds must be between zero and five")
     specs = [(s["id"], s["title"], s["turns"]) for s in scenario["scenes"]]
-    if part is not None:
-        begin, end = RANGES[part - 1]
-        specs = [spec for spec in specs if begin <= int(spec[0]) <= end]
-    for part_spec in scenario["parts"]:
-        if part is not None and part_spec["id"] != part:
-            continue
-        for kind in ("intro", "outro"):
-            specs.append(
-                (
-                    f"p{part_spec['id']}-{kind}",
-                    f"Part {part_spec['id']}: {part_spec['title']} — {kind}",
-                    part_spec[kind],
-                )
-            )
     segments = {}
     for sid, title, turns in specs:
         entry = manifest.get("segments", {}).get(sid)
@@ -366,7 +348,7 @@ def load_plan(manifest_path, part=None):
             "title_lead_seconds must be between zero and 30 and use whole frames"
         )
     if lead:
-        first = segments[f"p{part}-intro" if part is not None else "00"]
+        first = segments["00"]
         if first["visual"]["kind"] != "slide":
             raise ValueError("A title lead requires an opening slide")
         segments["title-lead"] = {
@@ -383,15 +365,15 @@ def load_plan(manifest_path, part=None):
     return {
         "manifest": manifest,
         "scenario": scenario,
+        "chapters": chapters,
         "segments": segments,
         "credits": credits,
         "font_license": license_path,
         "gap": gap,
-        "selected_part": part,
     }
 
 
-def import_audio(media_manifest, audio_manifest, output, part=None):
+def import_audio(media_manifest, audio_manifest, output):
     media_manifest, audio_manifest, output = map(
         lambda p: Path(p).resolve(), (media_manifest, audio_manifest, output)
     )
@@ -421,29 +403,13 @@ def import_audio(media_manifest, audio_manifest, output, part=None):
         job_id = job["id"]
         if "segment_id" in job:
             sid, index = job["segment_id"], int(job["turn_index"])
-            if sid.startswith("p"):
-                pid, kind = sid[1:].split("-")
-                job_id = f"part-{int(pid):02}-{kind}-{index:02}"
-            else:
-                job_id = f"scene-{sid}-turn-{index:02}"
+            job_id = f"scene-{sid}-turn-{index:02}"
         if job_id in jobs:
             raise ValueError(f"Duplicate narration job: {job_id}")
         jobs[job_id] = job
     for sid, segment in manifest["segments"].items():
-        if part is not None:
-            if sid.startswith("p"):
-                if not sid.startswith(f"p{part}-"):
-                    continue
-            else:
-                begin, end = RANGES[part - 1]
-                if not begin <= int(sid) <= end:
-                    continue
         for index in range(len(segment["audio"])):
-            if sid.startswith("p"):
-                pid, kind = sid[1:].split("-")
-                job_id = f"part-{int(pid):02}-{kind}-{index:02}"
-            else:
-                job_id = f"scene-{sid}-turn-{index:02}"
+            job_id = f"scene-{sid}-turn-{index:02}"
             job = jobs.get(job_id)
             if not job or job.get("status") != "ready":
                 raise ValueError(f"Narration job is not ready: {job_id}")
@@ -578,18 +544,14 @@ def concat_file(path):
     return "file '" + value.replace("'", "'\\''") + "'\n"
 
 
-def package_video(name, ids, plan, rendered, scratch, dest, log):
-    (dest / f"{name}.transcript.txt").write_text(
+def package_video(name, plan, rendered, scratch, dest, log):
+    ids = [sid for _, scene_ids in plan["chapters"] for sid in scene_ids]
+    (dest / "transcript.txt").write_text(
         package_transcript(plan, ids), encoding="utf-8"
     )
     if "title-lead" in plan["segments"]:
         ids = ["title-lead", *ids]
-    timeline, cues, chapters, offset = (
-        [],
-        [],
-        [";FFMETADATA1", f"title={metadata_escape(name)}", f"comment={NOTICE}"],
-        0.0,
-    )
+    timeline, cues, offset = [], [], 0.0
     listing, joined = scratch / f"{name}.ffconcat", scratch / f"{name}.wav"
     listing.write_text(
         "ffconcat version 1.0\n" + "".join(concat_file(rendered[sid][0]) for sid in ids)
@@ -610,13 +572,6 @@ def package_video(name, ids, plan, rendered, scratch, dest, log):
                 for cue in segment["cues"]
             ]
             end = offset + segment["duration"]
-            chapters += [
-                "[CHAPTER]",
-                "TIMEBASE=1/1000",
-                f"START={round(offset * 1000)}",
-                f"END={round(end * 1000)}",
-                f"title={metadata_escape(segment['title'])}",
-            ]
             timeline.append(
                 {
                     "segment": sid,
@@ -626,6 +581,22 @@ def package_video(name, ids, plan, rendered, scratch, dest, log):
                 }
             )
             offset = end
+    bounds = {item["segment"]: item for item in timeline}
+    chapters = []
+    metadata = [";FFMETADATA1", f"title={metadata_escape(name)}", f"comment={NOTICE}"]
+    for index, (chapter, scene_ids) in enumerate(plan["chapters"]):
+        # The first chapter also covers the silent opening lead.
+        start = 0.0 if index == 0 else bounds[scene_ids[0]]["start"]
+        end = bounds[scene_ids[-1]]["end"]
+        title = f"Chapter {chapter['id']}: {chapter['title']}"
+        chapters.append({"title": title, "start": start, "end": end})
+        metadata += [
+            "[CHAPTER]",
+            "TIMEBASE=1/1000",
+            f"START={round(start * 1000)}",
+            f"END={round(end * 1000)}",
+            f"title={metadata_escape(title)}",
+        ]
     srt, vtt, meta = (
         dest / f"{name}.en.srt",
         dest / f"{name}.en.vtt",
@@ -633,7 +604,7 @@ def package_video(name, ids, plan, rendered, scratch, dest, log):
     )
     srt.write_text(captions(cues), encoding="utf-8")
     vtt.write_text(captions(cues, vtt=True), encoding="utf-8")
-    meta.write_text("\n".join(chapters) + "\n", encoding="utf-8")
+    meta.write_text("\n".join(metadata) + "\n", encoding="utf-8")
     output = dest / f"{name}.mp4"
     ffmpeg(
         [
@@ -685,13 +656,15 @@ def package_video(name, ids, plan, rendered, scratch, dest, log):
     actual = float(info["format"]["duration"])
     if abs(actual - offset) > 0.08 or max(cue["end"] for cue in cues) > actual + 0.001:
         raise ValueError(f"{name}: final duration/captions drift exceeds tolerance")
+    if len(info["chapters"]) != len(chapters):
+        raise ValueError(f"{name}: embedded chapters differ from the chapter plan")
     result = {
         "file": output.name,
         "planned_duration": offset,
         "actual_duration": actual,
         "timeline": timeline,
+        "chapters": chapters,
         "cues": cues,
-        "chapters": len(info["chapters"]),
     }
     (dest / f"{name}.timeline.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n"
@@ -699,35 +672,26 @@ def package_video(name, ids, plan, rendered, scratch, dest, log):
     return result
 
 
-def watch_page(plan, packages, dest):
+def watch_page(plan, video, dest):
     esc = html.escape
     synthetic = plan["manifest"].get("synthetic_test", False)
     title = ("SYNTHETIC PIPELINE CHECK — " if synthetic else "") + plan["scenario"][
         "title"
     ]
-    cards = []
-    default_key = "combined" if "combined" in packages else next(iter(packages))
-    for key, item in packages.items():
-        label = "Full tutorial" if key == "combined" else f"Part {key.split('-')[-1]}"
-        cards.append(
-            f'<button data-video="{item["file"]}" data-captions="{key}.en.vtt">{label}</button> <a download href="{item["file"]}">MP4</a> <a download href="{key}.en.srt">SRT</a> <a download href="{key}.en.vtt">VTT</a>'
-        )
+    stem = Path(video["file"]).stem
     chapter_links = "".join(
-        f'<li><button data-seek="{item["start"]:.6f}">{esc(plan["segments"][item["segment"]]["title"])}</button></li>'
-        for item in packages[default_key]["timeline"]
+        f'<li><button data-seek="{item["start"]:.6f}">{esc(item["title"])}</button></li>'
+        for item in video["chapters"]
     )
     page = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title>
-+<style>body{{margin:0;background:#0b1629;color:#ecf5ff;font:17px system-ui}}main{{max-width:1180px;margin:auto;padding:32px}}h1{{font-size:32px}}video{{width:100%;border-radius:12px;background:#000}}button,a{{font:inherit;color:#b8e6ff}}button{{border:1px solid #356081;background:#122944;padding:8px 12px;border-radius:8px;cursor:pointer}}nav{{display:grid;gap:12px;margin:22px 0}}li{{margin:8px 0}}small{{color:#b6cce5}}a{{margin:0 8px}}</style>
-+<main><h1>{esc(title)}</h1><p>{esc(NOTICE)}</p><video controls preload="metadata" src="combined.mp4"><track default kind="subtitles" label="English — speaker labels" srclang="en" src="combined.en.vtt"></video><nav>{"".join("<div>" + card + "</div>" for card in cards)}</nav><details><summary>Full tutorial chapters</summary><ol>{chapter_links}</ol></details><p><a href="transcript.txt" download>Transcript</a><a href="credits.txt">Brand and font credits</a><a href="checksums.sha256">Checksums</a></p><small>Dash Evolution logo © Dash, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, <a href="https://www.dash.org/brand-guidelines/">Dash brand guidelines</a>.</small></main>
-+<script>const video=document.querySelector('video');document.querySelectorAll('[data-video]').forEach(b=>b.onclick=()=>{{video.src=b.dataset.video;video.querySelector('track').src=b.dataset.captions;video.load()}});document.querySelectorAll('[data-seek]').forEach(b=>b.onclick=()=>{{if(!video.getAttribute('src').endsWith('combined.mp4')){{video.src='combined.mp4';video.querySelector('track').src='combined.en.vtt';video.load();video.addEventListener('loadedmetadata',()=>{{video.currentTime=+b.dataset.seek;video.play()}},{{once:true}})}}else{{video.currentTime=+b.dataset.seek;video.play()}}}})</script></html>"""
-    page = page.replace("combined.mp4", f"{default_key}.mp4").replace(
-        "combined.en.vtt", f"{default_key}.en.vtt"
-    )
++<style>body{{margin:0;background:#0b1629;color:#ecf5ff;font:17px system-ui}}main{{max-width:1180px;margin:auto;padding:32px}}h1{{font-size:32px}}video{{width:100%;border-radius:12px;background:#000}}button,a{{font:inherit;color:#b8e6ff}}button{{border:1px solid #356081;background:#122944;padding:8px 12px;border-radius:8px;cursor:pointer}}li{{margin:8px 0}}small{{color:#b6cce5}}a{{margin:0 8px}}</style>
++<main><h1>{esc(title)}</h1><p>{esc(NOTICE)}</p><video controls preload="metadata" src="{esc(video["file"])}"><track default kind="subtitles" label="English — speaker labels" srclang="en" src="{esc(stem)}.en.vtt"></video><p><a download href="{esc(video["file"])}">MP4</a><a download href="{esc(stem)}.en.srt">SRT</a><a download href="{esc(stem)}.en.vtt">VTT</a></p><details open><summary>Chapters</summary><ol>{chapter_links}</ol></details><p><a href="transcript.txt" download>Transcript</a><a href="credits.txt">Brand and font credits</a><a href="checksums.sha256">Checksums</a></p><small>Dash Evolution logo © Dash, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, <a href="https://www.dash.org/brand-guidelines/">Dash brand guidelines</a>.</small></main>
++<script>const video=document.querySelector('video');document.querySelectorAll('[data-seek]').forEach(b=>b.onclick=()=>{{video.currentTime=+b.dataset.seek;video.play()}})</script></html>"""
     (dest / "index.html").write_text(page.replace("\n+", "\n"), encoding="utf-8")
 
 
-def build(manifest_path, output, preset="veryfast", part=None):
-    plan = load_plan(manifest_path, part)
+def build(manifest_path, output, preset="veryfast"):
+    plan = load_plan(manifest_path)
     output = Path(output)
     output.mkdir(mode=0o700)
     pending = output / "pending"
@@ -743,51 +707,20 @@ def build(manifest_path, output, preset="veryfast", part=None):
         for sid, segment in plan["segments"].items():
             print(f"Rendering {sid} ({segment['duration']:.3f}s)", flush=True)
             rendered[sid] = render_segment(segment, scratch, plan["gap"], preset, log)
-        packages = {}
-        for part_spec in plan["scenario"]["parts"]:
-            pid = part_spec["id"]
-            if part is not None and pid != part:
-                continue
-            ids = (
-                [f"p{pid}-intro"]
-                + [s["id"] for s in plan["scenario"]["scenes"] if s["part"] == pid]
-                + [f"p{pid}-outro"]
-            )
-            packages[f"part-{pid:02}"] = package_video(
-                f"part-{pid:02}", ids, plan, rendered, scratch, pending, log
-            )
-        if part is None:
-            packages["combined"] = package_video(
-                "combined",
-                [s["id"] for s in plan["scenario"]["scenes"]],
-                plan,
-                rendered,
-                scratch,
-                pending,
-                log,
-            )
+        video = package_video("tutorial", plan, rendered, scratch, pending, log)
         shutil.copyfile(manifest_path, output / "input-manifest.json")
         shutil.copyfile(plan["credits"], pending / "credits.txt")
         shutil.copyfile(plan["font_license"], pending / "font-license.txt")
-        slide_ids = (
-            (("opening", "00"), ("closing", "53"))
-            if part is None
-            else (("opening", f"p{part}-intro"), ("closing", f"p{part}-outro"))
-        )
-        for kind, sid in slide_ids:
+        for kind, sid in (("opening", "00"), ("closing", "53")):
             shutil.copyfile(
                 plan["segments"][sid]["visual"]["path"], pending / f"{kind}-slide.png"
             )
-        default_package = "combined" if "combined" in packages else next(iter(packages))
-        shutil.copyfile(
-            pending / f"{default_package}.transcript.txt", pending / "transcript.txt"
-        )
-        watch_page(plan, packages, pending)
+        watch_page(plan, video, pending)
         report = {
             "synthetic_test": plan["manifest"].get("synthetic_test", False),
             "scenario_sha256": plan["manifest"]["scenario_sha256"],
             "caption_timing": "Actual WAV turn boundaries; within-turn chunks proportional to word counts, not word-aligned",
-            "packages": packages,
+            "video": video,
         }
         (pending / "delivery.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -821,16 +754,12 @@ def main():
     render.add_argument(
         "--preset", choices=("ultrafast", "veryfast", "fast"), default="veryfast"
     )
-    for command_parser in (validate, imported, render):
-        selection = command_parser.add_mutually_exclusive_group()
-        selection.add_argument("--part", type=int, choices=range(1, 7))
-        selection.add_argument("--part1", dest="part", action="store_const", const=1)
     args = parser.parse_args()
     try:
         if args.command == "init":
             init_manifest(args.scenario, args.manifest)
         elif args.command == "plan":
-            plan = load_plan(args.manifest, args.part)
+            plan = load_plan(args.manifest)
             print(
                 json.dumps(
                     {
@@ -846,9 +775,9 @@ def main():
                 )
             )
         elif args.command == "import-audio":
-            import_audio(args.manifest, args.narration_manifest, args.output, args.part)
+            import_audio(args.manifest, args.narration_manifest, args.output)
         else:
-            build(args.manifest, args.output, args.preset, args.part)
+            build(args.manifest, args.output, args.preset)
     except (
         OSError,
         ValueError,

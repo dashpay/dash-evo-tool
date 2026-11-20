@@ -69,60 +69,74 @@ def test_caption_chunks_are_readable_and_preserve_all_words(media):
         assert len(textwrap.wrap(cue["speaker"] + ": " + cue["text"], width=42)) <= 2
 
 
-def test_import_episode_one_root_audio_map_ignores_other_parts(media, tmp_path):
+def test_template_has_one_segment_per_scene_and_no_bridges(media, tmp_path):
+    scenario = Path(__file__).resolve().parents[2] / "scenario/dialogue.json"
+    target = tmp_path / "manifest.json"
+    media.init_manifest(scenario, target)
+    assert list(media.read_json(target)["segments"]) == [f"{i:02}" for i in range(54)]
+
+
+def test_import_requires_every_scene_turn(media, tmp_path):
     import json
 
     scenario = Path(__file__).resolve().parents[2] / "scenario/dialogue.json"
     source = tmp_path / "media.json"
     media.init_manifest(scenario, source)
     manifest = json.loads(source.read_text())
-    jobs = []
-    for sid, segment in manifest["segments"].items():
-        if sid in [f"{i:02}" for i in range(10)] + ["p1-intro", "p1-outro"]:
-            for index in range(len(segment["audio"])):
-                jobs.append(
-                    {
-                        "id": f"{sid}-{index:02}",
-                        "segment_id": sid,
-                        "turn_index": index,
-                        "take": str(tmp_path / f"take-{sid}-{index}"),
-                        "status": "ready",
-                    }
-                )
+    jobs = [
+        {
+            "id": f"{sid}-{index:02}",
+            "segment_id": sid,
+            "turn_index": index,
+            "take": str(tmp_path / f"take-{sid}-{index}"),
+            "status": "ready",
+        }
+        for sid, segment in manifest["segments"].items()
+        if sid != "53"
+        for index in range(len(segment["audio"]))
+    ]
     mapping = tmp_path / "audio-map.json"
     mapping.write_text(
         json.dumps({"source_sha256": manifest["scenario_sha256"], "jobs": jobs})
     )
-    output = tmp_path / "filled.json"
-    media.import_audio(source, mapping, output, part=1)
-    imported = json.loads(output.read_text())
-    assert imported["segments"]["00"]["audio"][0].endswith("take-00-0/ready/audio.wav")
-    assert imported["segments"]["10"]["audio"][0] is None
+    with pytest.raises(ValueError, match="scene-53-turn-00"):
+        media.import_audio(source, mapping, tmp_path / "filled.json")
+    assert not (tmp_path / "filled.json").exists()
 
 
-def test_standalone_transcript_includes_its_spoken_bridges(media):
-    plan = {
-        "segments": {
-            "p1-intro": {
-                "title": "Intro",
-                "turns": [{"speaker": "Teacher", "text": "Start here."}],
-            },
-            "00": {
-                "title": "Lesson",
-                "turns": [{"speaker": "Learner", "text": "Why?"}],
-            },
-            "p1-outro": {
-                "title": "Outro",
-                "turns": [{"speaker": "Teacher", "text": "Continue next."}],
-            },
-        }
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        [("00", "01"), ("03", "03")],
+        [("00", "02"), ("02", "03")],
+        [("00", "02")],
+        [("00", "01"), ("02", "04")],
+    ],
+)
+def test_chapter_ranges_must_cover_every_scene_once(media, ranges):
+    scenario = {
+        "scenes": [{"id": f"{i:02}"} for i in range(4)],
+        "chapters": [
+            {"id": index + 1, "title": "Chapter", "start": start, "end": end}
+            for index, (start, end) in enumerate(ranges)
+        ],
     }
-    transcript = media.package_transcript(plan, ["p1-intro", "00", "p1-outro"])
-    assert (
-        transcript.index("Start here.")
-        < transcript.index("Why?")
-        < transcript.index("Continue next.")
-    )
+    with pytest.raises(ValueError, match="Chapter ranges"):
+        media.chapter_scenes(scenario)
+
+
+def test_chapter_ranges_group_scenes_in_order(media):
+    scenario = {
+        "scenes": [{"id": f"{i:02}"} for i in range(4)],
+        "chapters": [
+            {"id": 1, "title": "First", "start": "00", "end": "01"},
+            {"id": 2, "title": "Second", "start": "02", "end": "03"},
+        ],
+    }
+    assert [ids for _, ids in media.chapter_scenes(scenario)] == [
+        ["00", "01"],
+        ["02", "03"],
+    ]
 
 
 def test_subtitle_mp4_roundtrip_keeps_apostrophes_quotes_and_symbols(media, tmp_path):
@@ -272,12 +286,12 @@ def test_public_export_excludes_private_input_paths(media, tmp_path, monkeypatch
     }
     plan = {
         "manifest": {"scenario_sha256": "approved", "source_path": private_marker},
-        "scenario": {
-            "title": "Public tutorial",
-            "parts": [{"id": 1}],
-            "scenes": [{"id": "00", "part": 1}],
-        },
-        "segments": {sid: dict(segment) for sid in ("p1-intro", "00", "p1-outro")},
+        "scenario": {"title": "Public tutorial"},
+        "chapters": [
+            ({"id": 1, "title": "Opening"}, ["00"]),
+            ({"id": 2, "title": "Closing"}, ["53"]),
+        ],
+        "segments": {sid: dict(segment) for sid in ("title-lead", "00", "53")},
         "credits": credits,
         "font_license": license_path,
         "gap": 0,
@@ -290,15 +304,21 @@ def test_public_export_excludes_private_input_paths(media, tmp_path, monkeypatch
         lambda args, _: Path(args[-1]).write_bytes(b"public video fixture"),
     )
     monkeypatch.setattr(
-        media, "probe", lambda _: {"format": {"duration": "0.3"}, "chapters": [{}] * 3}
+        media, "probe", lambda _: {"format": {"duration": "0.3"}, "chapters": [{}] * 2}
     )
     output = tmp_path / "delivery"
-    ready = media.build(manifest, output, part=1)
+    ready = media.build(manifest, output)
     assert not (ready / "input-manifest.json").exists()
     assert (output / "input-manifest.json").read_bytes() == manifest.read_bytes()
-    assert {"delivery.json", "part-01.timeline.json", "index.html"} <= {
+    assert {"delivery.json", "tutorial.timeline.json", "index.html"} <= {
         p.name for p in ready.iterdir()
     }
+    assert [p.name for p in ready.glob("*.mp4")] == ["tutorial.mp4"]
+    video = media.read_json(ready / "delivery.json")["video"]
+    assert [(c["title"], c["start"], c["end"]) for c in video["chapters"]] == [
+        ("Chapter 1: Opening", 0.0, pytest.approx(0.2)),
+        ("Chapter 2: Closing", pytest.approx(0.2), pytest.approx(0.3)),
+    ]
     assert all(
         private_marker.encode() not in p.read_bytes()
         for p in ready.rglob("*")

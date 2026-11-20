@@ -1,5 +1,7 @@
 Creating tokens in Dash Evolution: a conversation
 
+Chapter 1: A fixed-supply draft and the creation gates
+
 [Scene 00] Hello from Chad and Ewa
 Chad G. P. Taylor: Hello, I'm Chad G. P. Taylor. Welcome to creating tokens in Dash Evolution. We'll build a small draft, then work through what its owners and holders would actually be allowed to do.
 Ewa Dashwood: And I'm Ewa Dashwood. I want to understand the choices that survive my enthusiasm, especially the permanent ones.
@@ -61,6 +63,8 @@ Chad G. P. Taylor: The Token created receipt contains identifiers from the accep
 Ewa Dashwood: Then we copy the confirmed Contract ID and Token ID, and use Open contract to inspect the result. We check the intended recipient rather than assuming every allocation belongs to the issuer.
 Chad G. P. Taylor: Yes. Our fixed-policy check has a real accepted receipt under a separate Testnet name. We copied its identifiers and fetched its contract. Return to Token Creator to keep that receipt; Create another token starts a fresh draft. We checked both steps without making another payment.
 
+Chapter 2: Names, supply and permission structure
+
 [Scene 10] Begin the owner-managed practice draft
 Chad G. P. Taylor: Our second example is CloudPoint, with CloudPoints as the plural. We can replace the names in an unsubmitted draft, or use Create another token after a confirmed creation.
 Ewa Dashwood: There's no Simple or Advanced mode to switch on. The same seven sections contain the controls we need.
@@ -114,6 +118,8 @@ Ewa Dashwood: The administrator controls who holds the action, rather than autom
 Chad G. P. Taylor: Yes. Three separate allowances let the administrator remove all action performers, remove all rule administrators, or replace itself. Those flags are not one master permission switch.
 Ewa Dashwood: If the performer is No one but an administrator remains, the action might be enabled later. And if the administrator is No one, there's currently nobody to use these allowances.
 Chad G. P. Taylor: Exactly. For our final draft, every rule administrator will be No one and all three allowances off. Open Groups takes us to the group editor; it doesn't create or assign a group automatically.
+
+Chapter 3: Action powers and weighted groups
 
 [Scene 19] Lock the outstanding-supply ceiling
 Chad G. P. Taylor: To make the ten-thousand ceiling permanent, inspect Change maximum supply. Its performer and administrator are both No one, and all three change allowances are off.
@@ -180,6 +186,8 @@ Chad G. P. Taylor: We can assign a named draft group directly to a rule, or choo
 Ewa Dashwood: The Used by message prevents me from deleting a group that the draft still references.
 Chad G. P. Taylor: Yes. Clear the rule references and main-group selection first, including any authority to replace the main group. Then Delete group is available. Stable draft labels and stored contract positions should not be confused.
 Ewa Dashwood: We'll restore mint and burn performers to the owner, remove the practice group, and leave no main group. The group lesson changes no published contract.
+
+Chapter 4: Recurring distribution and eight worked formulas
 
 [Scene 30] Three independent distribution mechanisms
 Chad G. P. Taylor: Distribution offers recurring allocations, scheduled distributions, and once-per-identity distribution. They are independent of each other and of the initial supply.
@@ -272,6 +280,8 @@ Chad G. P. Taylor: Yes. This one rule governs the recurring configuration and re
 Ewa Dashwood: We'll inspect both authorities and all three allowances, then set both to No one and every allowance off.
 Chad G. P. Taylor: Finally turn recurring distribution off. The worked parameters remain saved in the draft, while the locked rule prevents later enabling through that authority. A disabled checkbox alone would not establish that promise.
 
+Chapter 5: Allocations, documents and the prepared contract
+
 [Scene 45] Schedule an absolute local date
 Chad G. P. Taylor: Add scheduled distribution creates a row with a date, hour and minute in your local time zone, a recipient, and an amount. Choose a future instant and read the displayed zone offset and allocation instant.
 Ewa Dashwood: Let's use five tokens for the owner as a practice amount. If I leave the section and return, the date should stay the same; it isn't recalculated as a number of days after my next click.
@@ -304,6 +314,8 @@ Chad G. P. Taylor: Save contract JSON opens a window with File path and Browse. 
 Ewa Dashwood: If the file chooser never appears, Cancel file chooser lets me enter the path myself. I close any native chooser separately if it appears later. I wait for the save result before treating the file as exported.
 Chad G. P. Taylor: Correct. Expand Technical details if you need the protocol version. Editing the draft, changing the issuer or key, or changing the network invalidates the prepared review. Check the current settings again before any payment.
 
+Chapter 6: Final review, creation and recovery
+
 [Scene 50] CloudPoint’s complete final policy
 Chad G. P. Taylor: Our final target is CloudPoint and CloudPoints in English, searchable, capitalization off, two decimals, one thousand initial tokens and a permanent ten-thousand maximum. The owner receives the initial supply and is the default mint recipient; choosing a recipient on each mint is allowed.
 Ewa Dashwood: Ordinary transfers are on, starting paused is off, and receiving while frozen is off. The owner may mint, burn its own tokens, pause or resume transfers, change marketplace trade mode, and change direct-purchase pricing. No sale or price is configured at creation.
@@ -329,30 +341,3 @@ Ewa Dashwood: I now have a better checklist: amount and unit, recipient, current
 Chad G. P. Taylor: That's the habit to keep. Revisit the relevant chapter when the token's purpose changes, and check a newer app against its own controls. This lesson is tied to a particular revision, not a promise that every future screen will look identical.
 Ewa Dashwood: Thanks for joining us. I'm Ewa Dashwood, and this has been a careful tour of token creation in Dash Evolution.
 Chad G. P. Taylor: And I'm Chad G. P. Taylor. Review the rules before signing. My confidence may still be plentiful, but your token supply should be exactly the amount you intended.
-
-Standalone episode bridges (excluded from combined):
-
-[Part 1 intro]
-Chad G. P. Taylor: Welcome to the seven-section creator. We will prepare a small fixed-supply draft and distinguish preparation from paid creation.
-[Part 1 outro]
-Ewa Dashwood: Keep the draft and any genuinely confirmed identifiers separate. Next we explore the owner-managed example and its rules.
-[Part 2 intro]
-Chad G. P. Taylor: We continue with CloudPoint: names, amount units, discovery, histories, and the distinction between a performer and a rule administrator.
-[Part 2 outro]
-Ewa Dashwood: Our draft is still editable. Next we inspect each action and demonstrate weighted groups.
-[Part 3 intro]
-Chad G. P. Taylor: This chapter examines supply ceilings, recipients, intervention powers, marketplace permissions and group authority.
-[Part 3 outro]
-Ewa Dashwood: The practice group is removed and the intended permissions restored. Next we compare eight recurring formulas.
-[Part 4 intro]
-Chad G. P. Taylor: Keep two decimal places and the base-unit table in view. We will compare all eight formulas using the current-parameter preview.
-[Part 4 outro]
-Ewa Dashwood: Recurring distribution is off and its rule locked. Next we inspect scheduled allocations, once-per-identity claims and document types.
-[Part 5 intro]
-Chad G. P. Taylor: This chapter covers absolute local dates, once-per-identity allocations, optional document types and the exact contract prepared for review.
-[Part 5 outro]
-Ewa Dashwood: Our practice features are cleared. The final chapter checks every authority and explains creation and recovery gates.
-[Part 6 intro]
-Chad G. P. Taylor: Compare the complete CloudPoint target with the actual reviewed snapshot. A funded network result must be observed before it is called confirmed.
-[Part 6 outro]
-Ewa Dashwood: Keep the reviewed configuration and any confirmed identifiers. Recheck the relevant controls whenever the application or your token policy changes.

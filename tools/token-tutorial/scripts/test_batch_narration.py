@@ -20,17 +20,9 @@ def script(tmp_path):
     source.write_text(
         json.dumps(
             {
-                "parts": [
-                    {
-                        "id": 1,
-                        "intro": [{"speaker": "teacher", "text": "Welcome."}],
-                        "outro": [{"speaker": "learner", "text": "Thank you."}],
-                    }
-                ],
                 "scenes": [
                     {
                         "id": "00",
-                        "part": 1,
                         "turns": [
                             {
                                 "speaker": "teacher" if i % 2 == 0 else "learner",
@@ -116,9 +108,9 @@ def test_free_plan_expands_sources_and_never_calls_key_or_api(
         batch.voice, "request_audio", lambda *_: pytest.fail("HTTP access")
     )
     manifest = batch.run_batch(script, tmp_path / "audio")
-    assert len(manifest["jobs"]) == 10
-    assert manifest["jobs"][0]["id"] == "scene-00-turn-00"
-    assert manifest["jobs"][-2]["id"] == "part-01-intro-00"
+    assert [job["id"] for job in manifest["jobs"]] == [
+        f"scene-00-turn-{index:02d}" for index in range(8)
+    ]
     assert {job["voice"] for job in manifest["jobs"]} == {"cedar", "nova"}
     assert all(
         Path(j["source_path"]).read_text() == j["text"] + "\n" for j in manifest["jobs"]
@@ -143,7 +135,7 @@ def test_selected_pilot_and_resume_do_not_repeat_green_jobs(script, tmp_path, ap
     assert len(api[0]) == 1
     assert second["jobs"][0]["audio_path"] == first["jobs"][0]["audio_path"]
     execute(script, root)
-    assert len(api[0]) == 10
+    assert len(api[0]) == 8
     assert "fabricated-secret-never-persist" not in (root / "manifest.json").read_text()
     assert all(
         "Authorization" not in p.read_text() for p in (root / "requests").glob("*.json")
@@ -226,7 +218,7 @@ def test_concurrency_is_bounded_and_second_coordinator_locked(
 
     monkeypatch.setattr(batch.voice, "request_audio", slow)
     result = execute(script, root, workers=5)
-    assert result["summary"]["ready"] == 10
+    assert result["summary"]["ready"] == 8
     assert 1 < state["peak"] <= 5
 
 
@@ -265,31 +257,6 @@ def test_unknown_ids_and_worker_overflow_refuse_before_api(script, tmp_path, api
     with pytest.raises(ValueError):
         execute(script, tmp_path / "b", workers=6)
     assert api[0] == []
-
-
-def test_part_selection_includes_its_extras_only(script, tmp_path, api):
-    doc = json.loads(script.read_text())
-    doc["parts"].append(
-        {
-            "id": 2,
-            "intro": [{"speaker": "teacher", "text": "Next."}],
-            "outro": [{"speaker": "learner", "text": "Later."}],
-        }
-    )
-    doc["scenes"].append(
-        {
-            "id": "01",
-            "part": 2,
-            "turns": [{"speaker": "teacher", "text": "Another scene."}],
-        }
-    )
-    script.write_text(json.dumps(doc))
-    result = execute(script, tmp_path / "audio", part=1)
-    assert len(api[0]) == 10
-    assert all(
-        j["status"] == ("ready" if j["part"] == 1 else "planned")
-        for j in result["jobs"]
-    )
 
 
 def test_empty_selection_never_expands_to_all_jobs(script, tmp_path, api):

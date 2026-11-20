@@ -1,6 +1,7 @@
 # Token tutorial source toolkit
 
-Maintain the six-part English token tutorial here when the application changes.
+Maintain the English token tutorial here when the application changes. The
+deliverable is one video with six chapters.
 This directory contains source, tests and explicit input mappings. Recordings,
 validated narration, fonts, private profiles and rendered deliveries stay outside
 Git. A fresh checkout can plan narration, generate branded slides and assemble
@@ -15,7 +16,7 @@ Do not execute narration merely to check this toolkit.
 
 | File | Role |
 |---|---|
-| `scenario/dialogue.json` | Canonical 54 ordered scenes, current screen/control plans, speaker turns and 12 standalone bridges. Edit this source for future tutorials. |
+| `scenario/dialogue.json` | Canonical 54 ordered scenes, six chapter ranges, current screen/control plans and speaker turns. Edit this source for future tutorials. |
 | `scenario/dialogue.txt` | Readable English rendering, deterministically generated from the JSON. |
 | `scenario/scenario.txt` | Current non-spoken scene plan; its actual SHA-256 is recorded by the canonical JSON. |
 | `scenario/current-walkthrough.md` | Reusable scene/control/help checklist, pinned source anchors, worked formulas and pending live gates. |
@@ -93,9 +94,9 @@ scratch directory before rendering; the system temporary directory is the defaul
    exact final configuration. Check protocol behavior against the pinned Platform
    evaluator and validators, not just help text. The emission generator's links
    identify its original primary sources; review them for the new revision.
-3. Update `dialogue.json` in place, preserving scene identifiers and the six part
-   ranges unless deliberately revising the format. Only `turns`, `intro` and
-   `outro` are spoken. Synchronize `scenario.txt` and `current-walkthrough.md`
+3. Update `dialogue.json` in place, preserving scene identifiers and the six
+   chapter ranges unless deliberately revising the format. The ranges must cover
+   every scene once, in order. Only scene `turns` are spoken. Synchronize `scenario.txt` and `current-walkthrough.md`
    with the scene controls, source anchors and evidence states. Recompute
    `source.scenario_sha256` from the actual `scenario.txt` bytes and update the
    word counts from the spoken turns. Regenerate the readable source:
@@ -116,9 +117,9 @@ scratch directory before rendering; the system temporary directory is the defaul
 ## Reuse and narration planning
 
 All **278 historical turns already have audio** for the old source only. None is
-approved for this rewritten scenario. In particular, 46 manually made
-first-episode takes remain `planned` in the historical batch journal. Replaying
-that journal would pay for duplicates. Preserve the explicit accepted mapping
+approved for this rewritten scenario. In particular, 46 manually made takes
+from the historical first episode remain `planned` in the historical batch
+journal. Replaying that journal would pay for duplicates. Preserve the explicit accepted mapping
 for archival inspection only.
 
 If the operator has the original production files, restore their `audio/`,
@@ -190,9 +191,8 @@ python3 assets/emission-examples/generate.py --font "$FONT" --output local/emiss
 Outputs must be empty. Add `--browser chromium` when appropriate. Browser
 sandboxing stays enabled by default; `--no-sandbox` is available only when an
 operator deliberately uses an isolated restricted desktop. Generated SVGs refer
-to the external font; generated PNGs are standalone. The opening includes the AI
-mistake disclosure. It precedes narration with **three seconds of silence in every
-standalone episode and the combined package**.
+to the external font; generated PNGs are self-contained. The opening includes the
+AI mistake disclosure. It precedes narration with **three seconds of silence**.
 
 Scenes 01/02/50 have small editable editorial SVGs. Update these when their script
 or final policies change. The eight emission charts are explanatory calculations,
@@ -278,14 +278,13 @@ python3 scripts/media/media.py plan local/media-with-audio.json
 python3 scripts/media/media.py build local/media-with-audio.json local/delivery
 ```
 
-For a partial episode, append `--part 1` to import/plan/build and use a fresh
-output directory. Full build creates six standalone MP4s plus a combined MP4.
-Standalone episodes include their bridges; combined includes only scenes 00–53.
-It measures WAV frame counts, renders at 30 fps, concatenates PCM, and encodes AAC
-once per final package. Caption chunks preserve speaker labels and all words;
+Import and build require narration for every scene. The build creates one
+`tutorial.mp4` with scenes 00–53 in order and one embedded chapter marker per
+chapter range. It measures WAV frame counts, renders at 30 fps, concatenates PCM,
+and encodes AAC once. Caption chunks preserve speaker labels and all words;
 within-turn timing is proportional to word counts, not forced word alignment.
-SRT, VTT, per-package transcripts/timelines, chapters, credits, checksums and a
-small local HTML player are exported under `local/delivery/ready/`.
+SRT, VTT, the transcript, timeline, credits, checksums and a small local HTML
+player with chapter links are exported under `local/delivery/ready/`.
 The input manifest and ffmpeg log remain private in the parent
 `local/delivery/` directory; publish or serve only its reviewed `ready/` child.
 
@@ -299,16 +298,16 @@ Run the offline regression suite and the synthetic render check (no API or GUI):
 
 ```sh
 python3 -m pytest scripts -q
-python3 scripts/media/integration_check.py --part1
+python3 scripts/media/integration_check.py
 ```
 
 The integration check prints its temporary output/proof path; `TMPDIR` controls
-placement. Without `--part1` it verifies all seven packages, including exact
-main-scene coverage. It checks streams, actual durations, chapters, bounded
-speaker captions, embedded SRT parity and the silent lead. AAC may produce a
+placement. It renders the complete synthetic tutorial and verifies exact scene
+coverage, streams, actual durations, chapter markers against the chapter ranges,
+bounded speaker captions, embedded SRT parity and the silent lead. AAC may produce a
 boundary pre-echo up to 32/32768 amplitude; the first 2.98 seconds must be exactly
 zero. These synthetic checks do not validate real GUI behavior or human audio
-quality. Listen/watch every final package and verify no secrets or misleading
+quality. Watch and listen to the final video and verify no secrets or misleading
 states appear before publication.
 
 For local preview, serve only the reviewed `ready/` directory with

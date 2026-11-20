@@ -60,28 +60,22 @@ def coordinator_lock(root):
 
 def expand(document, root):
     jobs = []
-    part_ids = [p["id"] for p in document["parts"]]
-    if any(type(p) is not int or p < 1 for p in part_ids) or len(set(part_ids)) != len(
-        part_ids
-    ):
-        raise ValueError("Part identifiers must be unique positive integers")
-
-    def add(turns, prefix, part, segment, scene_id=None):
-        if not turns:
-            raise ValueError("A scene or standalone segment has no turns")
-        for index, turn in enumerate(turns):
+    for scene in document["scenes"]:
+        if not re.fullmatch(r"\d{2}", scene["id"]):
+            raise ValueError("Invalid scene identifier")
+        if not scene["turns"]:
+            raise ValueError("A scene has no turns")
+        for index, turn in enumerate(scene["turns"]):
             speaker, text = turn["speaker"], turn["text"]
             if speaker not in VOICES or not isinstance(text, str) or not text.strip():
                 raise ValueError(
                     "Every turn needs a supported speaker and nonempty text"
                 )
-            job_id = f"{prefix}-{index:02d}"
+            job_id = f"scene-{scene['id']}-turn-{index:02d}"
             jobs.append(
                 {
                     "id": job_id,
-                    "scene_id": scene_id,
-                    "part": part,
-                    "segment": segment,
+                    "scene_id": scene["id"],
                     "turn_index": index,
                     "speaker": speaker,
                     "voice": VOICES[speaker],
@@ -92,20 +86,6 @@ def expand(document, root):
                     "attempts": [],
                 }
             )
-
-    for scene in document["scenes"]:
-        if not re.fullmatch(r"\d{2}", scene["id"]) or scene["part"] not in part_ids:
-            raise ValueError("Invalid scene identifier or part reference")
-        add(
-            scene["turns"],
-            f"scene-{scene['id']}-turn",
-            scene["part"],
-            "scene",
-            scene["id"],
-        )
-    for part in document["parts"]:
-        for segment in ("intro", "outro"):
-            add(part[segment], f"part-{part['id']:02d}-{segment}", part["id"], segment)
     if len({j["id"] for j in jobs}) != len(jobs):
         raise ValueError("Duplicate narration job identifier")
     return jobs
@@ -305,7 +285,6 @@ def run_batch(
     approved_script_sha256=None,
     ids=None,
     retry_failed=None,
-    part=None,
     workers=5,
     plain_prompt=False,
 ):
@@ -317,8 +296,8 @@ def run_batch(
         )
     if not 1 <= workers <= 5:
         raise ValueError("Workers must be between one and five")
-    if sum(value is not None for value in (ids, retry_failed, part)) > 1:
-        raise ValueError("Select only one of ids, retry-failed or part")
+    if ids is not None and retry_failed is not None:
+        raise ValueError("Select only one of ids or retry-failed")
     with coordinator_lock(root):
         manifest = load_plan(source, root, source_bytes)
         all_ids = {j["id"] for j in manifest["jobs"]}
@@ -331,10 +310,6 @@ def run_batch(
         )
         if not selected <= all_ids:
             raise ValueError("Selection contains an unknown job identifier")
-        if part is not None:
-            selected = {j["id"] for j in manifest["jobs"] if j["part"] == part}
-            if not selected:
-                raise ValueError("No jobs belong to the requested part")
         if retry_failed is not None and any(
             j["status"] != "failed" for j in manifest["jobs"] if j["id"] in selected
         ):
@@ -471,7 +446,6 @@ def main():
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--ids", nargs="+")
     selection.add_argument("--retry-failed", nargs="+")
-    selection.add_argument("--part", type=int)
     args = parser.parse_args()
     try:
         manifest = run_batch(
@@ -482,7 +456,6 @@ def main():
             workers=args.workers,
             ids=args.ids,
             retry_failed=args.retry_failed,
-            part=args.part,
             plain_prompt=args.plain_prompt,
         )
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:

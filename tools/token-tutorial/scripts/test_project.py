@@ -112,7 +112,7 @@ def test_current_source_inventory_provenance_and_readable_rendering():
         "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb"
     )
     assert [s["id"] for s in data["scenes"]] == [f"{i:02}" for i in range(54)]
-    assert [(p["start"], p["end"]) for p in data["parts"]] == [
+    assert [(c["start"], c["end"]) for c in data["chapters"]] == [
         ("00", "09"),
         ("10", "18"),
         ("19", "29"),
@@ -120,7 +120,8 @@ def test_current_source_inventory_provenance_and_readable_rendering():
         ("45", "49"),
         ("50", "53"),
     ]
-    assert sum(len(p[k]) for p in data["parts"] for k in ("intro", "outro")) == 12
+    assert "parts" not in data and all("part" not in s for s in data["scenes"])
+    assert set(data["chapters"][0]) == {"id", "title", "start", "end"}
     assert data["packaging"]["opening_silence_seconds"] == 3
     assert project.transcript(source) == (source.parent / "dialogue.txt").read_text()
     assert data["word_count"]["scenes"] == sum(

@@ -47,6 +47,15 @@ type BootError = Box<dyn std::error::Error + Send + Sync>;
 /// `Once` guard makes the second call a no-op, so this stays the single place
 /// the sequence is written.
 pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
+    let data_dir = ensure_data_folder()?;
+    // Logging first, so a failure to write the settings file is logged too.
+    crate::logging::initialize_logger();
+    ensure_settings_file(&data_dir)?;
+    Ok(data_dir)
+}
+
+/// Locate the app data folder and create it if it is missing.
+pub(crate) fn ensure_data_folder() -> Result<PathBuf, PrepareEnvironmentError> {
     use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
     let data_dir =
         app_user_data_dir_path().map_err(|source| PrepareEnvironmentError::Locate { source })?;
@@ -56,9 +65,6 @@ pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
             source,
         }
     })?;
-    // Logging first, so a failure to write the settings file is logged too.
-    crate::logging::initialize_logger();
-    ensure_settings_file(&data_dir)?;
     Ok(data_dir)
 }
 

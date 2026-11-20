@@ -94,6 +94,14 @@ fn unwritable_env_file_renders_startup_error_dialog() {
             panic!("an unwritable .env must be fatal");
         };
         assert!(
+            failure
+                .report()
+                .message()
+                .starts_with("Dash Evo Tool could not prepare its data at "),
+            "the dialog must give the production advice: {}",
+            failure.report().message()
+        );
+        assert!(
             failure.report().details().contains("WriteSettingsFile"),
             "the details must name the failed step: {}",
             failure.report().details()

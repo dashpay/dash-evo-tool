@@ -29,8 +29,6 @@ use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
-#[cfg(feature = "testing")]
-use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -886,9 +884,10 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = app_user_data_dir_path()?;
-        ensure_data_dir_exists(&data_dir)?;
-        crate::boot::ensure_settings_file(&data_dir)?;
+        // Same steps and error mapping as production, without the logger.
+        let data_dir = crate::boot::ensure_data_folder()
+            .and_then(|data_dir| crate::boot::ensure_settings_file(&data_dir).map(|()| data_dir))
+            .map_err(TaskError::from_prepare_environment_error)?;
 
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()

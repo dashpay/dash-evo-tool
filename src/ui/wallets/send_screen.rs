@@ -7053,7 +7053,7 @@ mod tests {
 
     /// "First" and "last" count only rows that contribute funds, as the
     /// confirmation numbers them: with outputs A:0, B, A the first output
-    /// shown is B, so the fee is taken from B; inputs likewise.
+    /// shown is B, and with B, A, B:0 the last is A; inputs likewise.
     #[test]
     fn advanced_fee_strategy_targets_the_first_contributing_row() {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep::{
@@ -7119,6 +7119,39 @@ mod tests {
                 panic!("expected a Platform transfer: {action:?}");
             };
             assert_eq!(fee_strategy, vec![expected], "{choice}");
+        }
+
+        // A trailing zero row repeating an earlier address is not the last
+        // output or input: with high, low, high:0 the last one shown is low.
+        screen.platform_inputs = [(high_in, "0.4"), (low_in, "0.4"), (high_in, "0")]
+            .into_iter()
+            .map(|(platform_address, amount)| PlatformAddressInput {
+                platform_address,
+                amount: amount.to_string(),
+            })
+            .collect();
+        screen.advanced_outputs = [(high_out, "0.4"), (low_out, "0.4"), (high_out, "0")]
+            .into_iter()
+            .map(|(address, amount)| AdvancedOutput {
+                address: address.to_bech32m_string(Network::Testnet),
+                amount: amount.to_string(),
+            })
+            .collect();
+        for (choice, expected) in [
+            (PlatformFeeStrategy::DeductFromLastInput, DeductFromInput(0)),
+            (PlatformFeeStrategy::ReduceLastOutput, ReduceOutput(0)),
+        ] {
+            screen.fee_strategy = choice.clone();
+            let action = screen
+                .send_advanced_platform_to_platform(seed_hash)
+                .expect("advanced transfer");
+            let AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::TransferPlatformCredits { fee_strategy, .. },
+            )) = action
+            else {
+                panic!("expected a Platform transfer: {action:?}");
+            };
+            assert_eq!(fee_strategy, vec![expected], "trailing zero row: {choice}");
         }
     }
 

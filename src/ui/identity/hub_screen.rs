@@ -3300,7 +3300,7 @@ mod tests {
 
         ctx.set_selected_identity(Some(id));
         assert_eq!(ctx.selected_identity_id(), Some(id));
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<Identifier>)| {

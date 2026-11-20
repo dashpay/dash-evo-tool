@@ -161,7 +161,7 @@ impl UpdateTokenConfigScreen {
         // Step 1 (choosing the signing key) only shows in advanced mode.
         let first_step = if self.show_advanced_options { 2 } else { 1 };
 
-        ui.heading(format!("{first_step}. Select the item to update"));
+        let item_heading = ui.heading(format!("{first_step}. Select the item to update"));
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -498,7 +498,9 @@ impl UpdateTokenConfigScreen {
                     {
                         self.update_group_based_on_change_item();
                     }
-                });
+                })
+                .response
+                .labelled_by(item_heading.id);
 
 
         if self.change_item != item_before_selection {

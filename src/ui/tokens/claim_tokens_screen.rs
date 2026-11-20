@@ -186,7 +186,7 @@ impl ClaimTokensScreen {
             .is_some();
         let show_once_per_identity = once_per_identity_amount(&self.token_configuration).is_some();
         ui.horizontal(|ui| {
-            ui.label("Select Distribution Type:");
+            let type_label = ui.label("Select Distribution Type:");
             egui::ComboBox::from_id_salt("claim_distribution_type_selector")
                 .selected_text(match &self.distribution_type {
                     Some(TokenDistributionType::Perpetual) => "Perpetual".to_string(),
@@ -219,7 +219,9 @@ impl ClaimTokensScreen {
                             "Once per identity",
                         );
                     }
-                });
+                })
+                .response
+                .labelled_by(type_label.id);
         });
     }
 
@@ -628,12 +630,16 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.heading("2. Public note (optional)");
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.label("Public note (optional):").info_tooltip(
+                    let note_label = ui.label("Public note (optional):").info_tooltip(
                         "A note about the transaction that can be seen by the public.",
                     );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .labelled_by(note_label.id)
+                        .changed()
+                    {
                         self.public_note = Some(txt);
                     }
                 });

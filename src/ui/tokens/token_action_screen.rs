@@ -333,11 +333,16 @@ impl<A: TokenAction> TokenActionScreen<A> {
             ));
         } else {
             ui.horizontal(|ui| {
-                ui.label("Public note (optional):")
+                let note_label = ui
+                    .label("Public note (optional):")
                     .info_tooltip("A note about the transaction that can be seen by the public.");
                 ui.add_space(10.0);
                 let mut txt = self.common.public_note.clone().unwrap_or_default();
-                if ui.text_edit_singleline(&mut txt).changed() {
+                if ui
+                    .text_edit_singleline(&mut txt)
+                    .labelled_by(note_label.id)
+                    .changed()
+                {
                     self.common.public_note = if !txt.is_empty() { Some(txt) } else { None };
                 }
             });

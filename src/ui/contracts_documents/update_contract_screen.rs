@@ -181,19 +181,21 @@ impl UpdateDataContractScreen {
         }
     }
 
-    fn ui_input_field(&mut self, ui: &mut egui::Ui) {
+    fn ui_input_field(&mut self, ui: &mut egui::Ui, label_id: egui::Id) {
         ScrollArea::vertical()
             .max_height(ui.available_height() - 100.0)
             .show(ui, |ui| {
                 let dark_mode = ui.style().visuals.dark_mode;
-                let response = ui.add(
-                    TextEdit::multiline(&mut self.contract_json_input)
-                        .desired_rows(6)
-                        .desired_width(ui.available_width())
-                        .text_color(DashColors::text_primary(dark_mode))
-                        .background_color(DashColors::input_background(dark_mode))
-                        .code_editor(),
-                );
+                let response = ui
+                    .add(
+                        TextEdit::multiline(&mut self.contract_json_input)
+                            .desired_rows(6)
+                            .desired_width(ui.available_width())
+                            .text_color(DashColors::text_primary(dark_mode))
+                            .background_color(DashColors::input_background(dark_mode))
+                            .code_editor(),
+                    )
+                    .labelled_by(label_id);
                 if response.changed() {
                     self.parse_contract();
                 }
@@ -573,7 +575,7 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.heading("2. Select contract to update");
             ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label("Contract:");
+                let contract_label = ui.label("Contract:");
                 egui::ComboBox::from_id_salt("contract_selector")
                     .selected_text(
                         self.selected_contract
@@ -612,7 +614,9 @@ impl ScreenLike for UpdateDataContractScreen {
                                 };
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(contract_label.id);
             });
 
             ui.add_space(10.0);
@@ -620,9 +624,9 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.add_space(10.0);
 
             // Input for the contract
-            ui.heading("2. Edit the contract JSON below or paste a new one");
+            let json_heading = ui.heading("2. Edit the contract JSON below or paste a new one");
             ui.add_space(10.0);
-            self.ui_input_field(ui);
+            self.ui_input_field(ui, json_heading.id);
 
             // Parse the contract and show the result
             self.ui_parsed_contract(ui)

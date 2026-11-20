@@ -159,16 +159,18 @@ impl RegisterDataContractScreen {
         }
     }
 
-    fn ui_input_field(&mut self, ui: &mut egui::Ui) {
+    fn ui_input_field(&mut self, ui: &mut egui::Ui, label_id: egui::Id) {
         let dark_mode = ui.style().visuals.dark_mode;
-        let response = ui.add(
-            TextEdit::multiline(&mut self.contract_json_input)
-                .desired_rows(12)
-                .desired_width(ui.available_width())
-                .text_color(DashColors::text_primary(dark_mode))
-                .background_color(DashColors::input_background(dark_mode))
-                .code_editor(),
-        );
+        let response = ui
+            .add(
+                TextEdit::multiline(&mut self.contract_json_input)
+                    .desired_rows(12)
+                    .desired_width(ui.available_width())
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode))
+                    .code_editor(),
+            )
+            .labelled_by(label_id);
         if response.changed() {
             self.parse_contract();
         }
@@ -540,16 +542,17 @@ impl ScreenLike for RegisterDataContractScreen {
                 }
 
                 // Input for the alias
-                ui.heading("2. Contract alias for DET (optional)");
+                let alias_heading = ui.heading("2. Contract alias for DET (optional)");
                 ui.add_space(5.0);
-                ui.text_edit_singleline(&mut self.contract_alias_input);
+                ui.text_edit_singleline(&mut self.contract_alias_input)
+                    .labelled_by(alias_heading.id);
 
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 
                 // Input for the contract
-                ui.heading("3. Paste the contract JSON below");
+                let json_heading = ui.heading("3. Paste the contract JSON below");
                 ui.add_space(5.0);
 
                 ui.label(
@@ -557,7 +560,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 );
                 ui.add_space(5.0);
 
-                self.ui_input_field(ui);
+                self.ui_input_field(ui, json_heading.id);
 
                 // Parse the contract and show the result
                 self.ui_parsed_contract(ui)

@@ -462,8 +462,9 @@ impl TokensScreen {
                                 // Row 1: Token Name
                                 let mut token_to_remove: Option<u8> = None;
                                 for i in 0..self.token_names_input.len() {
-                                    ui.label("Token Name (singular)*:");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].0);
+                                    let singular_label = ui.label("Token Name (singular)*:");
+                                    ui.text_edit_singleline(&mut self.token_names_input[i].0)
+                                        .labelled_by(singular_label.id);
                                     ui.horizontal(|ui| {
                                         let allow_all_languages = i != 0;
                                         ui.push_id(format!("combo_{i}"), |ui| {
@@ -499,8 +500,9 @@ impl TokensScreen {
                                     ui.end_row();
 
                                     // Plural name
-                                    ui.label("Token Name (plural)*:");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].1);
+                                    let plural_label = ui.label("Token Name (plural)*:");
+                                    ui.text_edit_singleline(&mut self.token_names_input[i].1)
+                                        .labelled_by(plural_label.id);
                                     ui.end_row();
 
                                 }
@@ -522,10 +524,11 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 4: Contract Keywords
-                                ui.horizontal(|ui| {
-                                    ui.label("Contract Keywords (comma separated):");
-                                });
-                                ui.text_edit_singleline(&mut self.contract_keywords_input);
+                                let keywords_label = ui
+                                    .horizontal(|ui| ui.label("Contract Keywords (comma separated):"))
+                                    .inner;
+                                ui.text_edit_singleline(&mut self.contract_keywords_input)
+                                    .labelled_by(keywords_label.id);
                                 let response = crate::ui::helpers::info_icon_button(ui, "Each searchable keyword costs 0.1 Dash");
                                     if response.clicked() {
                                         self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
@@ -549,8 +552,9 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 5: Token Description
-                                ui.label("Token Description (3–100 chars):");
-                                ui.text_edit_singleline(&mut self.token_description_input);
+                                let description_label = ui.label("Token Description (3–100 chars):");
+                                ui.text_edit_singleline(&mut self.token_description_input)
+                                    .labelled_by(description_label.id);
                                 ui.end_row();
                             });
 
@@ -987,7 +991,9 @@ impl TokensScreen {
                     }
                     ui.selectable_value(current_language, language, language.ui_label());
                 }
-            });
+            })
+            .response
+            .accessible_name("Token name language");
     }
 
     fn reset_token_creator_collapsing_states(&mut self) {

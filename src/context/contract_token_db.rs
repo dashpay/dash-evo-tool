@@ -1569,7 +1569,7 @@ mod tests {
             },
         };
         use dash_sdk::query_types::DataContracts;
-        use egui_kittest::{Harness, kittest::Queryable};
+        use egui_kittest::kittest::Queryable;
         use std::{collections::BTreeMap, sync::Arc};
 
         let dir = tempfile::tempdir().unwrap();
@@ -1675,7 +1675,7 @@ mod tests {
         assert!(stored.contract.document_types().contains_key("note"));
 
         let label = id.to_string(Encoding::Base58);
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentQueryScreen| {

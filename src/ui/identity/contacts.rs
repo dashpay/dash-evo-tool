@@ -614,7 +614,7 @@ fn render_populated(
 /// open at the top instead of at the previous subject's scroll offset.
 fn detail_subject_changed(ui: &Ui, identity: &QualifiedIdentity, state: &ContactsState) -> bool {
     let subject = (identity.identity.id(), state.detail().selected());
-    let key = eframe::egui::Id::new("identity_hub_contact_detail_subject");
+    let key = eframe::egui::Id::unique("identity_hub_contact_detail_subject");
     ui.data_mut(|data| {
         let changed = data.get_temp::<(Identifier, Option<Identifier>)>(key) != Some(subject);
         data.insert_temp(key, subject);

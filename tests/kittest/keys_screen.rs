@@ -1192,7 +1192,7 @@ fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
             },
         });
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1100.0, 900.0))
             .build_ui(move |ui| {
                 key_info.ui(ui);

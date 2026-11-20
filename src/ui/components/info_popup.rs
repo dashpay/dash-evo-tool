@@ -200,7 +200,7 @@ mod tests {
 
         ctx.run_ui(outside_press(), |ui| {
             let mut popup = InfoPopup::new(
-                egui::Id::new("first_info_popup"),
+                egui::Id::unique("first_info_popup"),
                 "First popup",
                 "First message.",
             );
@@ -209,7 +209,7 @@ mod tests {
         .drop_without_applying_deltas();
         ctx.run_ui(outside_press(), |ui| {
             let mut popup = InfoPopup::new(
-                egui::Id::new("first_info_popup"),
+                egui::Id::unique("first_info_popup"),
                 "First popup",
                 "First message.",
             );
@@ -219,7 +219,7 @@ mod tests {
 
         ctx.run_ui(outside_press(), |ui| {
             let mut popup = InfoPopup::new(
-                egui::Id::new("second_info_popup"),
+                egui::Id::unique("second_info_popup"),
                 "Second popup",
                 "Second message.",
             );

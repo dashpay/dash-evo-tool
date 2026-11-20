@@ -1761,7 +1761,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("create_identity_info_popup"),
+                        egui::Id::unique("create_identity_info_popup"),
                         "Identity Information",
                         &show_pop_up_info_text,
                     );
@@ -1953,7 +1953,7 @@ mod funding_method_tests {
             FundingMethod::UsePlatformAddress;
         screen.user_chose_funding_method = true;
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

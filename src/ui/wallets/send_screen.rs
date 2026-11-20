@@ -5689,12 +5689,13 @@ mod tests {
     }
 
     fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, screen: &mut WalletSendScreen| {
-                screen.render_unified_send(ui);
-            },
-            screen,
-        );
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    screen.render_unified_send(ui);
+                },
+                screen,
+            );
         harness.run();
         harness
     }
@@ -6717,6 +6718,9 @@ mod tests {
         );
     }
 
+    /// Press and release `label` within one frame, then step once more: a dialog
+    /// it opens spends its first frame in an invisible sizing pass, which egui keeps
+    /// out of the accessibility tree.
     fn click_in_one_frame(harness: &mut Harness<'_, WalletSendScreen>, label: &str) {
         let pos = harness.get_by_label(label).rect().center();
         harness.input_mut().events.extend([
@@ -6734,6 +6738,7 @@ mod tests {
                 modifiers: egui::Modifiers::default(),
             },
         ]);
+        harness.step();
         harness.step();
     }
 

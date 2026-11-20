@@ -3,7 +3,9 @@
 
 usage: gallery.py --root DIR --meta meta.json [--title TITLE]
 
-DIR holds annotated/<name>.png and annotated/clean/<name>.png (render.py output).
+DIR holds annotated/<name>.png, annotated/clean/<name>.png and
+annotated/defects.json (render.py output). Images with a defect get a badge
+and are listed under "Known issues".
 meta.json:
   {"intro": "text",
    "images": [{"name": "08-masternodes-nodes", "title": "Masternodes: Nodes"}],
@@ -26,7 +28,13 @@ CSS = """:root{--bg:#fff;--fg:#1c1e21;--mut:#666;--line:#d0d4da}
 body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:16px}
 img{max-width:100%;height:auto;border:1px solid var(--line)}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
-.mut{color:var(--mut)}"""
+.mut{color:var(--mut)}
+.badge{background:#f57c00;color:#1e1e28;border-radius:6px;padding:0 8px;font-size:14px;vertical-align:middle;margin-left:8px}"""
+PRE_EXISTING = " (existed before this release)"
+
+
+def label(n, i):
+    return f"{e(n[:3].rstrip('-'))} &middot; {e(i['title'])}"
 
 
 def main():
@@ -46,19 +54,33 @@ def main():
         for n in r.get("images", []):
             if n not in known:
                 raise SystemExit(f"coverage refers to an image not listed: {n}")
+    dpath = os.path.join(a.root, "annotated", "defects.json")
+    if not os.path.exists(dpath):
+        raise SystemExit(f"{dpath} is missing: rerun render.py")
+    defects = json.load(open(dpath))
+    for n in sorted(defects):
+        if n not in known:
+            raise SystemExit(f"defects.json lists an image not listed: {n}")
     o = [
         f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{e(a.title)}</title><style>{CSS}</style></head><body>"
     ]
     o.append(f"<h1>{e(a.title)}</h1><p>{e(m.get('intro', ''))}</p>")
     for i in m.get("images", []):
         n = i["name"]
-        o.append(
-            f'<h2 id="{e(n)}">{e(n[:3].rstrip("-"))} &middot; {e(i["title"])}</h2>'
-        )
+        badge = '<span class="badge">&#9888; Known issue</span>' if n in defects else ""
+        o.append(f'<h2 id="{e(n)}">{label(n, i)}{badge}</h2>')
         o.append(f'<img src="annotated/{e(n)}.png" alt="{e(i["title"])}">')
         o.append(
             f'<p><a href="annotated/clean/{e(n)}.png">Version without labels</a></p>'
         )
+    issues = [
+        f'<li><a href="#{e(i["name"])}">{label(i["name"], i)}</a>: '
+        f"{e(d['label'])}{PRE_EXISTING if d['pre_existing'] else ''}</li>"
+        for i in m.get("images", [])
+        for d in defects.get(i["name"], [])
+    ]
+    if issues:
+        o.append("<h2>Known issues</h2><ul>" + "".join(issues) + "</ul>")
     o.append(
         "<h2>Commit coverage</h2><table><tr><th>Commit<th>Subject<th>Screen<th>Image<th>Note</tr>"
     )

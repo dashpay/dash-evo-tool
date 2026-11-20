@@ -86,6 +86,21 @@
     430,
     484
    ]
+  },
+  {
+   "kind": "defect",
+   "rect": [
+    203,
+    560,
+    700,
+    590
+   ],
+   "label": "Defect: path cut off",
+   "pill": [
+    760,
+    600
+   ],
+   "pre_existing": true
   }
  ]
 }

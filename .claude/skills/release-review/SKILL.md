@@ -444,7 +444,10 @@ testing over every image and caption first: once inlined, a leaked secret travel
 the page. Save it to your artifacts location.
 Then produce the visual diff with the `visual-diff` skill in its default NEW-only mode: one
 spotlight image per changed NEW screen, annotated from the diff, plus the commit-coverage table
-(pair mode only after an A/B). Reuse Phase 4's NEW captures where they show the change.
+(pair mode only after an A/B). Reuse Phase 4's NEW captures where they show the change. Mark a
+Phase 4 defect visible on a captured screen with the `defect` kind; set `pre_existing` only on the
+evidence visual-diff §5 names, and keep the introduced vs pre-existing/unknown classification in the
+report.
 Merge Phase 4's findings into Phase 2's report as an additional section, re-validate the combined
 report against whatever schema/format it uses, and re-render any human-readable version. The
 combined report is then ready to hand to the user for triage — code-review and GUI-regression

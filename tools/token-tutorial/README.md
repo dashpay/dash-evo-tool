@@ -212,8 +212,12 @@ or point a whole explanatory scene's visual at its generated native Full HD PNG.
 ## Record the actual application
 
 Read [the GUI testing rules](../../docs/gui-testing/README.md) first. Build or
-supply the reviewed app; Cargo's `metadata --format-version 1 --no-deps` reports
-its actual `target_directory`. Keep a new private profile outside public assets.
+obtain the app from the pinned DET revision named above, not from the branch
+that carries this toolkit: that branch need not contain the Creator workspace
+the lesson describes. Cargo's `metadata --format-version 1 --no-deps` reports
+its actual `target_directory`. Copy the reviewed binary's SHA-256 from the
+private production record (step 1 above); never compute it from whichever
+binary is currently at the path. Keep a new private profile outside public assets.
 Import/unlock keys while recording is stopped. Never capture a recovery phrase,
 private key, password, credential dialog, environment file or live user database.
 
@@ -222,7 +226,7 @@ Run a checked, isolated launcher in one terminal:
 ```sh
 BINARY=/absolute/path/to/dash-evo-tool
 PROFILE=/absolute/private/path/to/tutorial-profile
-BINARY_SHA256=$(sha256sum "$BINARY" | cut -d ' ' -f1)
+BINARY_SHA256=REVIEWED_SHA256_FROM_PRODUCTION_RECORD
 python3 scripts/gui/launch.py --check --binary "$BINARY" \
   --binary-sha256 "$BINARY_SHA256" --profile "$PROFILE" \
   --config ../../.env.example --evidence "$TOOL/local/evidence"

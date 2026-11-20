@@ -75,16 +75,35 @@ impl BootApp {
     /// [`BootApp::Unlocking`] so the frame loop can prompt for it. Any other
     /// failure (including app assembly) returns [`BootApp::Failed`].
     pub fn new(ctx: egui::Context, outcome: StartupOutcome) -> Self {
-        match Self::open(ctx, &outcome) {
+        Self::start(ctx, BootPreparation::run(), &outcome)
+    }
+
+    /// Build the boot app from the steps [`BootPreparation`] already ran.
+    pub fn start(
+        ctx: egui::Context,
+        preparation: BootPreparation,
+        outcome: &StartupOutcome,
+    ) -> Self {
+        match preparation
+            .0
+            .and_then(|prepared| Self::open(ctx, prepared, outcome))
+        {
             Ok(app) => app,
-            Err(error) => Self::failed(&*error, &outcome),
+            Err(error) => Self::failed(&*error, outcome),
         }
     }
 
-    fn open(ctx: egui::Context, outcome: &StartupOutcome) -> Result<Self, BootError> {
+    fn open(
+        ctx: egui::Context,
+        Prepared {
+            data_dir,
+            db,
+            decision,
+        }: Prepared,
+        outcome: &StartupOutcome,
+    ) -> Result<Self, BootError> {
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
-        let (data_dir, db) = AppState::boot_inputs()?;
-        match classify_open(&data_dir)? {
+        match decision {
             BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
                 ctx, db, data_dir, store,
             )?))),
@@ -186,6 +205,38 @@ impl eframe::App for BootApp {
         if let BootApp::Running(app) = self {
             app.on_exit();
         }
+    }
+}
+
+/// The boot steps that need no window: data folder, database and the seed
+/// vault open. `main` runs them before the window opens, so a failure here,
+/// such as the vault held by another running instance, is known in time to
+/// keep the window from saving into a profile that instance owns.
+pub struct BootPreparation(Result<Prepared, BootError>);
+
+struct Prepared {
+    data_dir: PathBuf,
+    db: Arc<Database>,
+    decision: BootDecision,
+}
+
+impl BootPreparation {
+    /// Prepare the data folder and database, and open the seed vault.
+    pub fn run() -> Self {
+        Self(AppState::boot_inputs().and_then(|(data_dir, db)| {
+            let decision = classify_open(&data_dir)?;
+            Ok(Prepared {
+                data_dir,
+                db,
+                decision,
+            })
+        }))
+    }
+
+    /// Whether the window may save its state into the profile: only when
+    /// these steps succeeded and this instance holds the vault.
+    pub fn may_persist(&self) -> bool {
+        self.0.is_ok()
     }
 }
 
@@ -396,6 +447,41 @@ mod tests {
             .status()
             .expect("run child");
         assert!(status.success(), "child failed: {status}");
+    }
+
+    /// A second launch whose vault another instance holds fails before the
+    /// window opens, so the window gets no permission to save into the shared
+    /// profile, and the boot shows the failure dialog.
+    #[test]
+    fn locked_vault_fails_preparation_without_profile_writes() {
+        let _lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prior = std::env::var_os("DASH_EVO_DATA_DIR");
+        // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK; restored below.
+        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", tmp.path()) };
+        let first_instance = AppContext::open_secret_store(tmp.path()).expect("first instance");
+
+        let preparation = BootPreparation::run();
+        let may_persist = preparation.may_persist();
+        let outcome = StartupOutcome::default();
+        let app = BootApp::start(egui::Context::default(), preparation, &outcome);
+
+        drop(first_instance);
+        // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK.
+        unsafe {
+            match prior {
+                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+        assert!(
+            !may_persist,
+            "a failed preparation must not let the window save"
+        );
+        assert!(matches!(app, BootApp::Failed(_)));
+        assert!(outcome.failed());
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.

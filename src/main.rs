@@ -89,10 +89,18 @@ async fn start(
 ) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
+    // Boot steps that need no window run first: the window saves its state
+    // into the profile only when they succeed, never for a failed launch
+    // (e.g. a second instance) that would overwrite another's `app.ron`.
+    let preparation = environment
+        .as_ref()
+        .map(|_| crate::boot::BootPreparation::run());
 
     let native_options = eframe::NativeOptions {
         // Persist window size and position
-        persist_window: environment.is_ok(),
+        persist_window: preparation
+            .as_ref()
+            .is_ok_and(crate::boot::BootPreparation::may_persist),
         centered: true, // Center window on startup if not maximized
         // Without a data folder this is None, and eframe 0.37 falls back to its
         // default storage folder: it creates that folder (empty) at start-up.
@@ -118,8 +126,10 @@ async fn start(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(match environment {
-                Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
+            Ok(Box::new(match preparation {
+                Ok(preparation) => {
+                    crate::boot::BootApp::start(cc.egui_ctx.clone(), preparation, &outcome)
+                }
                 Err(error) => crate::boot::BootApp::failed(error, &outcome),
             }))
         }),

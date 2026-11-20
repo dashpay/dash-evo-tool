@@ -19,7 +19,7 @@ impl TokensScreen {
             let screen_rect = ui.ctx().content_rect();
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Background,
-                egui::Id::new("json_popup_overlay"),
+                egui::Id::unique("json_popup_overlay"),
             ));
             painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 

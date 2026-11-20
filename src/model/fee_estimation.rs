@@ -165,12 +165,9 @@ pub fn document_create_contest_fund_cap(
     use dash_sdk::dpp::document::DocumentV0Getters;
     let mut document = document.clone();
     document_type.regenerate_generated_properties(document.properties_mut(), platform_version)?;
-    use dash_sdk::dpp::voting::vote_polls::VotePoll;
     Ok(document_type
         .contested_vote_poll_for_document(&document, platform_version)?
-        .map(|VotePoll::ContestedDocumentResourceVotePoll(vote_poll)| {
-            vote_poll.required_vote_resolution_fund(platform_version)
-        }))
+        .map(|vote_poll| vote_poll.required_vote_resolution_fund(platform_version)))
 }
 
 /// Subtract an estimated fee from a credit balance without floating-point conversion.

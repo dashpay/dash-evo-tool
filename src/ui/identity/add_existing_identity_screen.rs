@@ -113,6 +113,45 @@ pub struct AddExistingIdentityScreen {
 }
 
 impl AddExistingIdentityScreen {
+    /// Enter the waiting state a search or load enters when it is sent, with
+    /// the progress banner its reports update.
+    fn begin_search(&mut self) {
+        self.add_identity_status = AddIdentityStatus::WaitingForResult;
+        self.success_message = None;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Loading identity...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
+    }
+
+    /// Test seam: enter the state the Search button enters, without sending
+    /// the search.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_wallet_search_for_test(&mut self) {
+        self.begin_search();
+    }
+
+    /// Test seam: whether the form still waits for its search or load.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn is_searching_for_test(&self) -> bool {
+        matches!(
+            self.add_identity_status,
+            AddIdentityStatus::WaitingForResult
+        )
+    }
+
+    /// Test seam: the text of the form's progress banner, while it has one.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn search_banner_text_for_test(&self) -> Option<String> {
+        self.refresh_banner.as_ref().and_then(BannerHandle::text)
+    }
+
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallet_context().first_hd();
         Self {
@@ -449,14 +488,7 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add_enabled(is_valid_id, button).clicked() {
-            self.add_identity_status = AddIdentityStatus::WaitingForResult;
-            let handle = MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Loading identity...",
-                MessageType::Info,
-            );
-            handle.with_elapsed();
-            self.refresh_banner = Some(handle);
+            self.begin_search();
             action = self.load_identity_clicked();
         }
 
@@ -606,15 +638,7 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add(button).clicked() {
-            self.add_identity_status = AddIdentityStatus::WaitingForResult;
-            self.success_message = None;
-            let handle = MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Loading identity...",
-                MessageType::Info,
-            );
-            handle.with_elapsed();
-            self.refresh_banner = Some(handle);
+            self.begin_search();
 
             // Parse and bound-check the identity index (model validator is the
             // single source of truth for the sane range).
@@ -726,7 +750,7 @@ impl AddExistingIdentityScreen {
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
         ui.set_style(new_style);
 
-        let name_trimmed = self.dpns_name_input.trim();
+        let name_trimmed = self.dpns_name_input.trim().to_owned();
         let is_valid = !name_trimmed.is_empty() && name_trimmed.len() >= 3;
 
         let button = egui::Button::new(RichText::new("Search by Username").color(Color32::WHITE))
@@ -739,15 +763,7 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add_enabled(is_valid, button).clicked() {
-            self.add_identity_status = AddIdentityStatus::WaitingForResult;
-            self.success_message = None;
-            let handle = MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Loading identity...",
-                MessageType::Info,
-            );
-            handle.with_elapsed();
-            self.refresh_banner = Some(handle);
+            self.begin_search();
 
             // Get the selected wallet seed hash for key derivation
             let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
@@ -760,7 +776,7 @@ impl AddExistingIdentityScreen {
 
             action = AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::SearchIdentityByDpnsName(
-                    name_trimmed.to_string(),
+                    name_trimmed.clone(),
                     selected_wallet_seed_hash,
                 ),
             ));
@@ -1042,7 +1058,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("load_identity_info_popup"),
+                        egui::Id::unique("load_identity_info_popup"),
                         "Load Identity Information",
                         &show_pop_up_info_text,
                     );
@@ -1128,7 +1144,7 @@ mod wallet_picker_tests {
 
     /// Render the screen and return what hovering the wallet picker shows.
     fn picker_breakdown(screen: &mut AddExistingIdentityScreen, closed_text: &str) -> Vec<String> {
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

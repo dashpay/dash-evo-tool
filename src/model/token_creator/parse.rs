@@ -606,12 +606,16 @@ mod tests {
             "file:///etc/passwd",
             "../private.json",
         ] {
-            let mut draft = TokenDraft::default();
-            draft.documents = serde_json::json!({"note": {"type": "object", "properties": {"field": {"$ref": reference}}}}).to_string();
+            let draft = TokenDraft {
+                documents: serde_json::json!({"note": {"type": "object", "properties": {"field": {"$ref": reference}}}}).to_string(),
+                ..TokenDraft::default()
+            };
             assert!(draft.parse_documents().is_err(), "accepted {reference}");
         }
-        let mut draft = TokenDraft::default();
-        draft.documents = r##"{"note":{"type":"object","$defs":{"name":{"type":"string"}},"properties":{"name":{"$ref":"#/$defs/name"}}}}"##.into();
+        let draft = TokenDraft {
+            documents: r##"{"note":{"type":"object","$defs":{"name":{"type":"string"}},"properties":{"name":{"$ref":"#/$defs/name"}}}}"##.into(),
+            ..TokenDraft::default()
+        };
         assert!(draft.parse_documents().is_ok());
     }
 

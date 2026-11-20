@@ -41,7 +41,7 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
         .build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_prompt_body"),
+                state_id: egui::Id::unique("test_prompt_body"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: Some("granny's birthday"),
@@ -103,7 +103,7 @@ fn remember_checkbox_toggles() {
         .build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_prompt_remember"),
+                state_id: egui::Id::unique("test_prompt_remember"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: None,
@@ -153,7 +153,7 @@ fn cancellable_passphrase_modal_blocks_clicks_beneath_a_yielding_overlay() {
             // prompt, then the prompt renders on top.
             ProgressOverlay::render_global(ui.ctx(), true);
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_jit_prompt_sink"),
+                state_id: egui::Id::unique("test_jit_prompt_sink"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: None,
@@ -230,7 +230,7 @@ fn transition_frame_click_leaks_through_a_newly_activated_prompt() {
                 // the prompt (paints no sink of its own), the prompt renders on top.
                 ProgressOverlay::render_global(ui.ctx(), true);
                 let config = PassphraseModalConfig {
-                    state_id: egui::Id::new("test_transition_prompt_sink"),
+                    state_id: egui::Id::unique("test_transition_prompt_sink"),
                     window_title: "Unlock to continue",
                     body: "My Wallet",
                     hint: None,
@@ -311,7 +311,7 @@ fn transition_frame_click_leaks_through_a_newly_activated_migration_prompt() {
             if active {
                 ProgressOverlay::render_global(ui.ctx(), true);
                 let config = PassphraseModalConfig {
-                    state_id: egui::Id::new("test_transition_migration_prompt_sink"),
+                    state_id: egui::Id::unique("test_transition_migration_prompt_sink"),
                     window_title: "Continue the storage update",
                     body: "Enter the password for \"Savings\" to update this wallet now.",
                     hint: None,
@@ -395,9 +395,12 @@ fn appstate_jit_prompt_activation_drops_transition_frame_click() {
             harness.state().show_welcome_screen,
             "the real update loop must drop the onboarding click completed on the JIT prompt's activation frame",
         );
+        // The prompt's first frame is an invisible sizing pass, which egui keeps
+        // out of the accessibility tree.
+        harness.step();
         assert!(
             harness.query_by_label_contains("Test prompt").is_some(),
-            "the JIT prompt must render on the transition frame",
+            "the JIT prompt must render from the transition frame on",
         );
     });
 }
@@ -465,11 +468,14 @@ fn appstate_migration_prompt_activation_drops_transition_frame_click() {
             harness.state().show_welcome_screen,
             "the real update loop must drop the onboarding click completed on the migration prompt's activation frame",
         );
+        // The prompt's first frame is an invisible sizing pass, which egui keeps
+        // out of the accessibility tree.
+        harness.step();
         assert!(
             harness
                 .query_by_label("Enter the password for \"Savings\" to update this wallet now.")
                 .is_some(),
-            "the migration password prompt must render on the transition frame",
+            "the migration password prompt must render from the transition frame on",
         );
     });
 }
@@ -495,7 +501,7 @@ fn primed_prompt_blocks_the_same_injected_click_sequence() {
             if show_prompt_ui.get() {
                 ProgressOverlay::render_global(ui.ctx(), true);
                 let config = PassphraseModalConfig {
-                    state_id: egui::Id::new("test_primed_prompt_sink"),
+                    state_id: egui::Id::unique("test_primed_prompt_sink"),
                     window_title: "Unlock to continue",
                     body: "My Wallet",
                     hint: None,
@@ -555,7 +561,7 @@ fn cancellable_passphrase_modal_still_dismisses_from_its_own_controls() {
         .with_size(egui::vec2(640.0, 480.0))
         .build_ui(move |ui| {
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_jit_prompt_cancel"),
+                state_id: egui::Id::unique("test_jit_prompt_cancel"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: None,
@@ -610,11 +616,14 @@ fn passphrase_modal_password_field_focuses_and_blocks_background() {
             // A widget behind the modal. It must never receive the typed text.
             {
                 let mut bg = background_ui.borrow_mut();
-                ui.add(egui::TextEdit::singleline(&mut *bg).id(egui::Id::new("background_field")));
+                ui.add(
+                    egui::TextEdit::singleline(&mut *bg).id(egui::Id::unique("background_field")),
+                )
+                .accessible_name("Field behind the prompt");
             }
 
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_focus_blocks_bg"),
+                state_id: egui::Id::unique("test_focus_blocks_bg"),
                 window_title: "Unlock Wallet",
                 body: "My Wallet",
                 hint: None,
@@ -634,7 +643,7 @@ fn passphrase_modal_password_field_focuses_and_blocks_background() {
     harness.step();
 
     // The modal layer is the window's OWN Foreground layer, not a separate sink.
-    let sink_id = egui::Id::new("passphrase_modal_overlay")
+    let sink_id = egui::Id::unique("passphrase_modal_overlay")
         .with("Unlock Wallet")
         .with("input_sink");
     let modal_layer = harness
@@ -694,7 +703,7 @@ fn blocking_passphrase_modal_has_no_dismiss_control() {
         .with_size(egui::vec2(640.0, 480.0))
         .build_ui(|ui| {
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_storage_update_prompt"),
+                state_id: egui::Id::unique("test_storage_update_prompt"),
                 window_title: "Continue the storage update",
                 body: "Enter the password for \"Savings\" to update this wallet now.",
                 hint: None,

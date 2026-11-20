@@ -325,19 +325,17 @@ fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
         })
         .inner
         .on_hover_text(&name);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &name));
     let restore = ui.ctx().data(|data| {
-        data.get_temp::<bool>(egui::Id::new("creator_restore_help_focus")) == Some(true)
-            && data.get_temp::<egui::Id>(egui::Id::new(HELP_OPENER)) == Some(response.id)
+        data.get_temp::<bool>(egui::Id::unique("creator_restore_help_focus")) == Some(true)
+            && data.get_temp::<egui::Id>(egui::Id::unique(HELP_OPENER)) == Some(response.id)
     });
     if restore {
         if ui.memory(|memory| memory.allows_interaction(response.layer_id)) {
             response.request_focus();
             ui.ctx().data_mut(|data| {
-                data.remove::<bool>(egui::Id::new("creator_restore_help_focus"));
-                data.remove::<egui::Id>(egui::Id::new(HELP_OPENER));
+                data.remove::<bool>(egui::Id::unique("creator_restore_help_focus"));
+                data.remove::<egui::Id>(egui::Id::unique(HELP_OPENER));
             });
         } else {
             // Modal focus restrictions clear at frame end; wait until the opener's layer is active.
@@ -346,7 +344,7 @@ fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
     }
     if response.clicked() {
         ui.ctx()
-            .data_mut(|data| data.insert_temp(egui::Id::new(HELP_OPENER), response.id));
+            .data_mut(|data| data.insert_temp(egui::Id::unique(HELP_OPENER), response.id));
         *topic = Some(key.into());
     }
 }
@@ -439,7 +437,7 @@ fn amount(
             .response
             .widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::ComboBox,
+                    egui::Role::ComboBox,
                     ui.is_enabled(),
                     format!("{caption} units"),
                 )

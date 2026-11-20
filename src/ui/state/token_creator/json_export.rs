@@ -217,7 +217,7 @@ mod tests {
         );
         let (task, _) = request(export.save(Network::Testnet, true));
         assert!(
-            matches!(task, TokenTask::SaveTokenContractJson { path, replace: true, .. } if path == PathBuf::from("/different/path.json"))
+            matches!(task, TokenTask::SaveTokenContractJson { path, replace: true, .. } if path.as_path() == std::path::Path::new("/different/path.json"))
         );
     }
 

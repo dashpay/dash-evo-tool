@@ -875,11 +875,13 @@ impl ProgressOverlay {
         // SelectionDialog) that would otherwise float over a Middle-order block and
         // stay clickable. The secret prompt is raised to match and rendered later
         // (focus-raised), so it still wins above the overlay (R-1, TC-OVL-048).
-        let sink_layer =
-            egui::LayerId::new(egui::Order::Foreground, egui::Id::new(OVERLAY_DIM_SINK_ID));
+        let sink_layer = egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique(OVERLAY_DIM_SINK_ID),
+        );
         ctx.layer_painter(sink_layer)
             .rect_filled(rect, 0.0, DashColors::modal_overlay());
-        egui::Area::new(egui::Id::new(OVERLAY_DIM_SINK_ID))
+        egui::Area::new(egui::Id::unique(OVERLAY_DIM_SINK_ID))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
@@ -887,9 +889,9 @@ impl ProgressOverlay {
             });
 
         let card_layer =
-            egui::LayerId::new(egui::Order::Foreground, egui::Id::new(OVERLAY_CARD_ID));
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(OVERLAY_CARD_ID));
         let mut clicked = None;
-        egui::Area::new(egui::Id::new(OVERLAY_CARD_ID))
+        egui::Area::new(egui::Id::unique(OVERLAY_CARD_ID))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
@@ -1255,16 +1257,16 @@ fn render_buttons(
 
 /// Reads the overlay stack from egui context data.
 fn get_overlay_state(ctx: &egui::Context) -> Vec<OverlayState> {
-    ctx.data(|d| d.get_temp::<Vec<OverlayState>>(egui::Id::new(OVERLAY_STATE_ID)))
+    ctx.data(|d| d.get_temp::<Vec<OverlayState>>(egui::Id::unique(OVERLAY_STATE_ID)))
         .unwrap_or_default()
 }
 
 /// Writes the overlay stack to egui context data. Removes the slot when empty.
 fn set_overlay_state(ctx: &egui::Context, stack: Vec<OverlayState>) {
     if stack.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<OverlayState>>(egui::Id::new(OVERLAY_STATE_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<OverlayState>>(egui::Id::unique(OVERLAY_STATE_ID)));
     } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(OVERLAY_STATE_ID), stack));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(OVERLAY_STATE_ID), stack));
     }
 }
 
@@ -1279,16 +1281,16 @@ struct OverlayAction {
 
 /// Reads the pending overlay-action queue (FIFO) from egui context data.
 fn get_overlay_actions(ctx: &egui::Context) -> Vec<OverlayAction> {
-    ctx.data(|d| d.get_temp::<Vec<OverlayAction>>(egui::Id::new(OVERLAY_ACTIONS_ID)))
+    ctx.data(|d| d.get_temp::<Vec<OverlayAction>>(egui::Id::unique(OVERLAY_ACTIONS_ID)))
         .unwrap_or_default()
 }
 
 /// Writes the pending overlay-action queue. Removes the slot when empty.
 fn set_overlay_actions(ctx: &egui::Context, actions: Vec<OverlayAction>) {
     if actions.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<OverlayAction>>(egui::Id::new(OVERLAY_ACTIONS_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<OverlayAction>>(egui::Id::unique(OVERLAY_ACTIONS_ID)));
     } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(OVERLAY_ACTIONS_ID), actions));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(OVERLAY_ACTIONS_ID), actions));
     }
 }
 

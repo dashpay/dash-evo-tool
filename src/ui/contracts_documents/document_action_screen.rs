@@ -572,7 +572,7 @@ impl DocumentActionScreen {
                             self.document_id_input = doc_id_str.clone();
                         }
 
-                        let popup_id = egui::Id::new(format!("popup_{}", doc_id_str));
+                        let popup_id = egui::Id::unique(format!("popup_{}", doc_id_str));
                         egui::Popup::new(
                             popup_id,
                             ui.ctx().clone(),
@@ -2509,7 +2509,7 @@ mod tests {
                     screen.broadcast_status = BroadcastStatus::Fetching;
                 }
 
-                let mut harness = Harness::builder()
+                let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2582,7 +2582,7 @@ mod tests {
                 screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
                 screen.broadcast_status = status;
 
-                let mut harness = Harness::builder()
+                let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2683,7 +2683,7 @@ mod tests {
         screen.original_doc = Some(DocumentV0::default().into());
         screen.field_inputs.insert("label".into(), "old".into());
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {
@@ -2727,7 +2727,7 @@ mod tests {
         screen.identities_map =
             HashMap::from([(alice.identity.id(), alice), (bob.identity.id(), bob)]);
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {

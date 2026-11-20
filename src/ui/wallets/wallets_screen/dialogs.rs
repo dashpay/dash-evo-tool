@@ -124,7 +124,7 @@ impl WalletsBalancesScreen {
         let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
-            egui::Id::new(id),
+            egui::Id::unique(id),
         ));
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
     }

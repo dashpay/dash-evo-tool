@@ -443,7 +443,7 @@ impl ScreenLike for SendPaymentScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("dashpay_send_payment_info_popup"),
+                        egui::Id::unique("dashpay_send_payment_info_popup"),
                         "Payment Guidelines",
                         PAYMENT_GUIDELINES_INFO_TEXT,
                     );

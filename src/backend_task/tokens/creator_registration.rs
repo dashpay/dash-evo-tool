@@ -9,7 +9,7 @@ use crate::model::token_creator::{
         PreparedRegistration, RegistrationOutcome, RegistrationRecord, RegistrationStatus,
     },
 };
-use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+use dash_sdk::dpp::dashcore::hashes::sha256;
 use dash_sdk::dpp::{
     data_contract::{
         accessors::{v0::DataContractV0Getters, v1::DataContractV1Getters},

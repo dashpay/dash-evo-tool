@@ -4026,7 +4026,8 @@ mod tests {
         for kept in ["Spv", "IdentitySync", "Panicked", "Timeout", "detached: 1"] {
             assert!(text.contains(kept), "the report must keep {kept}:\n{text}");
         }
-        assert!(text.contains("<redacted: 30 bytes>"), "{text}");
+        let panicked_field = format!("<redacted: {} bytes>", "seed ".len() + planted_marker.len());
+        assert!(text.contains(&panicked_field), "{text}");
     }
 
     #[test]

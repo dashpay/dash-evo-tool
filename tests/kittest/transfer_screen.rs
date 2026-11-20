@@ -109,7 +109,7 @@ fn the_transfer_action_is_reachable_in_a_small_window() {
             vec![transfer],
         );
         let mut screen = TransferScreen::new(identity, &app_context);
-        let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(800.0, 600.0))
             .build_ui(move |ui| {
                 if !crate::support::prepare_app_theme(ui) {

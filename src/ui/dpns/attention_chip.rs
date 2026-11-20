@@ -7,7 +7,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::dpns::urgency_window;
 use crate::model::dpns_voting::operator::{AttentionSummary, TimeLeft, time_left};
 use crate::ui::RootScreenType;
-use crate::ui::components::pill::accent_pill;
+use crate::ui::components::pill::accent_pill_button;
 use crate::ui::dpns::copy::{deadline_line, needs_vote_chip_label, unresolved_chip_label};
 use crate::ui::theme::DashColors;
 use crate::utils::time::now_ms;
@@ -66,16 +66,25 @@ pub fn show(ui: &mut Ui, app_context: &AppContext) -> AppAction {
         now_ms(),
         urgency_window(app_context.network()),
     );
+    if render_chips(ui, &chips) {
+        // Resolves to Masternodes ▸ Votes ▸ To decide (see `resolve_root_screen`).
+        AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSActiveContests)
+    } else {
+        AppAction::None
+    }
+}
+
+/// Paint `chips`; returns whether one was activated.
+fn render_chips(ui: &mut Ui, chips: &AttentionChips) -> bool {
     let dark_mode = ui.visuals().dark_mode;
     let mut clicked = false;
     if let Some(label) = &chips.unresolved {
-        clicked |= accent_pill(
+        clicked |= accent_pill_button(
             ui,
             label,
             DashColors::warning_color(dark_mode),
             Some("Dash Evo Tool is still checking these votes with Platform. Don't submit them again."),
         )
-        .interact(eframe::egui::Sense::click())
         .clicked();
     }
     if let Some((label, urgent)) = &chips.needs_vote {
@@ -85,21 +94,19 @@ pub fn show(ui: &mut Ui, app_context: &AppContext) -> AppAction {
             DashColors::text_secondary(dark_mode)
         };
         let tooltip = (!chips.tooltip.is_empty()).then_some(chips.tooltip.as_str());
-        clicked |= accent_pill(ui, label, accent, tooltip)
-            .interact(eframe::egui::Sense::click())
-            .clicked();
+        clicked |= accent_pill_button(ui, label, accent, tooltip).clicked();
     }
-    if clicked {
-        // Resolves to Masternodes ▸ Votes ▸ To decide (see `resolve_root_screen`).
-        AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSActiveContests)
-    } else {
-        AppAction::None
-    }
+    clicked
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::{Key, accesskit::Role};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use std::cell::Cell;
+    use std::rc::Rc;
     use std::time::Duration;
 
     const HOUR: u64 = 3_600_000;
@@ -169,5 +176,47 @@ mod tests {
             chips.unresolved,
             Some("1 vote is still being checked".to_owned())
         );
+    }
+
+    /// Each chip is a button a keyboard user reaches with Tab and
+    /// activates with Enter or Space, and focus shows on screen.
+    #[test]
+    fn chips_take_keyboard_focus_and_activate_with_enter_or_space() {
+        const UNRESOLVED: &str = "1 vote is still being checked";
+        for key in [Key::Enter, Key::Space] {
+            let chips = AttentionChips {
+                needs_vote: Some(("1 name needs your vote".to_owned(), false)),
+                unresolved: Some(UNRESOLVED.to_owned()),
+                tooltip: String::new(),
+            };
+            let activations = Rc::new(Cell::new(0));
+            let counted = Rc::clone(&activations);
+            let mut harness = Harness::builder().build_ui(move |ui| {
+                ui.horizontal(|ui| {
+                    if render_chips(ui, &chips) {
+                        counted.set(counted.get() + 1);
+                    }
+                });
+            });
+            harness.run();
+            let unfocused = harness.output().shapes.clone();
+
+            harness.key_press(Key::Tab);
+            harness.run();
+            assert!(
+                harness
+                    .get_by_role_and_label(Role::Button, UNRESOLVED)
+                    .is_focused(),
+                "Tab must focus the first chip"
+            );
+            assert!(
+                harness.output().shapes != unfocused,
+                "the focused chip must show a focus ring"
+            );
+
+            harness.key_press(key);
+            harness.run();
+            assert_eq!(activations.get(), 1, "{key:?} must activate the chip");
+        }
     }
 }

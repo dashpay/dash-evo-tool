@@ -236,9 +236,18 @@ fn amount_not_shieldable(max_credits: u64, amount_credits: u64) -> McpToolError 
 /// parameter error, as the pre-flight's is.
 fn shield_task_error(error: TaskError, amount_credits: u64) -> McpToolError {
     match error {
-        TaskError::ShieldFromPlatformCapacityExceeded { max_shieldable, .. } => {
+        TaskError::ShieldFromPlatformCapacityExceeded { max_shieldable, .. }
+            if max_shieldable < amount_credits =>
+        {
             amount_not_shieldable(max_shieldable, amount_credits)
         }
+        // A live input shortfall: the cached maximum still holds the amount.
+        TaskError::ShieldFromPlatformCapacityExceeded { .. } => McpToolError::InvalidParam {
+            message: format!(
+                "Insufficient platform balance. The platform balance changed and no longer \
+                 covers {amount_credits} credits. Wait for the balance to refresh, then try again."
+            ),
+        },
         TaskError::ShieldFromPlatformNothingShieldable { .. } => McpToolError::InvalidParam {
             message: error.to_string(),
         },
@@ -846,6 +855,32 @@ mod tests {
             matches!(other, McpToolError::TaskFailed(TaskError::SpendInProgress)),
             "{other:?}"
         );
+    }
+
+    /// A live input shortfall refuses an amount the cached plan still holds.
+    /// The refusal then quotes no maximum, which would say the amount fits.
+    #[test]
+    fn a_live_shortfall_within_the_cached_maximum_quotes_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        for max_shieldable in [250, 300] {
+            let refused = shield_task_error(
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable,
+                    source: Box::new(P::PlatformShieldCapacityExceeded {
+                        available: 100,
+                        required: 400,
+                    }),
+                },
+                250,
+            );
+            let McpToolError::InvalidParam { message } = &refused else {
+                panic!("a capacity refusal is a parameter error: {refused:?}");
+            };
+            assert!(!message.contains("At most"), "{message}");
+            assert!(!message.contains("300"), "{message}");
+            assert!(message.contains("try again"), "{message}");
+        }
     }
 
     /// An amount the wallet's Platform balance holds but the shield planner

@@ -511,7 +511,10 @@ fn test_banner_details_can_be_copied() {
     harness.run();
     harness.get_by_label("Show details").click();
     harness.run();
-    harness.get_by_label("Copy details").click();
+    // A button, so assistive technology announces it as one.
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Copy details")
+        .click();
     harness.step();
 
     assert!(harness.output().platform_output.commands.iter().any(|command| {

@@ -151,7 +151,7 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
         let _guard = rt.enter();
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
-            .build_eframe(|cc| BootApp::new(cc.egui_ctx.clone()));
+            .build_eframe(|cc| BootApp::new(cc.egui_ctx.clone(), StartupOutcome::default()));
         harness.run_steps(3);
 
         let BootApp::Failed(failure) = harness.state() else {
@@ -161,7 +161,7 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
             database: app_db.clone(),
         }
         .to_string();
-        assert_eq!(failure.message(), expected);
+        assert_eq!(failure.report().message(), expected);
         assert!(harness.query_by_label(&expected).is_some());
         assert_eq!(
             std::fs::read(&app_db).expect("read app database"),

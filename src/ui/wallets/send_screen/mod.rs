@@ -4577,13 +4577,15 @@ mod tests {
     }
 
     fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
-            .build_ui_state(
-                |ui, screen: &mut WalletSendScreen| {
-                    screen.render_unified_send(ui);
-                },
-                screen,
-            );
+        let mut harness = crate::test_support::allowing_unnamed_widgets(
+            crate::test_support::harness_builder_with_app_fonts(),
+        )
+        .build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_unified_send(ui);
+            },
+            screen,
+        );
         harness.run();
         harness
     }
@@ -4875,7 +4877,7 @@ mod tests {
         let expected = identity.identity.balance() - reserve(&ctx.fee_estimator());
         let mut screen = WalletSendScreen::for_identity(&ctx, identity, mode);
         screen.validated_destination = Some(destination);
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -5035,7 +5037,7 @@ mod tests {
         let mut screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
         screen.validated_destination = Some(identity_destination());
         screen.amount = Some(Amount::new_dash(0.01));
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen| {
                 screen.render_send_button(ui);
             },
@@ -5105,7 +5107,7 @@ mod tests {
         screen.validated_destination = Some(ValidatedAddress::Core(owned.clone()));
         let observed_action = Rc::new(RefCell::new(AppAction::None));
         let captured_action = observed_action.clone();
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(700.0, 500.0))
             .build_ui_state(
                 move |ui, screen: &mut WalletSendScreen| {
@@ -5619,7 +5621,7 @@ mod tests {
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -5713,7 +5715,7 @@ mod tests {
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -5964,7 +5966,7 @@ mod tests {
         };
         assert!(screen.refresh_form_inputs(&quote));
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -6014,7 +6016,7 @@ mod tests {
             })
         );
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -6101,7 +6103,7 @@ mod tests {
         assert_eq!(limits.max_credits, None);
         assert_eq!(limits.quote, resolve::QuoteState::Ready);
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -6271,7 +6273,7 @@ mod tests {
             })
         );
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -6317,7 +6319,7 @@ mod tests {
             })
         );
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -6371,7 +6373,7 @@ mod tests {
             })
         );
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -6583,7 +6585,7 @@ mod tests {
             limits.quote,
             resolve::QuoteState::Shortfall(CoreSendShortfall::NothingSpendable)
         );
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| {
                 screen.render_amount_input(ui);
                 screen.render_spend_limit_status(ui);
@@ -6714,7 +6716,7 @@ mod tests {
             screen.request_spend_limit().is_none(),
             "the same wallet state must not be re-quoted"
         );
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| {
                 screen.render_amount_input(ui);
                 screen.render_spend_limit_status(ui);
@@ -6773,7 +6775,7 @@ mod tests {
         let captured_action = observed_action.clone();
         let background = Rc::new(std::cell::Cell::new(false));
         let background_flag = background.clone();
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(700.0, 500.0))
             .build_ui_state(
                 move |ui, screen: &mut WalletSendScreen| {
@@ -7014,7 +7016,7 @@ mod tests {
 
         let observed_action = Rc::new(RefCell::new(AppAction::None));
         let captured_action = observed_action.clone();
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(700.0, 500.0))
             .build_ui_state(
                 move |ui, screen: &mut WalletSendScreen| {
@@ -7306,7 +7308,7 @@ mod tests {
         assert!(ctx.wallet_context().wallets().is_empty());
 
         let screen = WalletSendScreen::for_identity(&ctx, sender, IdentitySendMode::Send);
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_destination_input(ui),
             screen,
         );
@@ -7379,7 +7381,7 @@ mod tests {
             .app_context
             .insert_local_qualified_identity(&identity, &Some((hash, 0)))
             .unwrap();
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_destination_input(ui),
             screen,
         );
@@ -7731,7 +7733,7 @@ mod tests {
     /// Render the amount field, press Max when it is offered, and report the
     /// resulting amount and whether the "nothing covers the fee" notice is shown.
     fn press_max(screen: WalletSendScreen) -> (Option<Amount>, bool) {
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -8039,7 +8041,7 @@ mod tests {
         let seed_hash = core_source_with_ceiling(&mut screen, CEILING_DUFFS);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
             screen,
         );
@@ -8857,7 +8859,7 @@ mod tests {
         screen.selected_source = Some(SourceSelection::PlatformAddresses(source));
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
         screen.amount = Some(Amount::new_dash(0.5));
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_summary_details(ui),
             screen,
         );
@@ -9053,7 +9055,7 @@ mod tests {
         let mut amount_input = WalletSendScreen::new_amount_input();
         amount_input.set_value(Amount::new_dash(0.01));
         screen.amount_input = Some(amount_input);
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(700.0, 900.0))
             .build_ui_state(
                 |ui, screen: &mut WalletSendScreen| {
@@ -9304,7 +9306,7 @@ mod tests {
         let mut amount_input = WalletSendScreen::new_amount_input();
         amount_input.set_value(Amount::new_dash(0.01));
         screen.amount_input = Some(amount_input);
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(800.0, 1200.0))
             .build_ui_state(
                 |ui, screen: &mut WalletSendScreen| {
@@ -9365,7 +9367,7 @@ mod tests {
         let mut amount_input = WalletSendScreen::new_amount_input();
         amount_input.set_value(Amount::new_dash(0.2));
         screen.amount_input = Some(amount_input);
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(800.0, 1400.0))
             .build_ui_state(
                 |ui, screen: &mut WalletSendScreen| {

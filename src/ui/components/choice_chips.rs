@@ -250,7 +250,7 @@ mod tests {
             chips,
             selected: Pick::A,
         };
-        let mut harness = Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, state: &mut State| {
                 state.chips.set_chips(vec![
                     ChoiceChip::new(Pick::A, "Alpha"),

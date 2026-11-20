@@ -112,7 +112,7 @@ type Observed = Rc<RefCell<AppAction>>;
 fn harness(screen: WalletSendScreen, width: f32) -> (Harness<'static, WalletSendScreen>, Observed) {
     let observed: Observed = Rc::new(RefCell::new(AppAction::None));
     let captured = observed.clone();
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::builder_with_app_fonts()
         .with_size(egui::vec2(width, 1200.0))
         .build_ui_state(
             move |ui, screen: &mut WalletSendScreen| {

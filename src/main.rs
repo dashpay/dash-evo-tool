@@ -26,7 +26,7 @@ fn main() -> eframe::Result<()> {
         "Starting dash-evo-tool"
     );
     check_cpu_compatibility();
-    // Initialize the Tokio runtime
+    // Initialize the multi-threaded Tokio runtime shared by all backend tasks
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
         .thread_stack_size(SDK_THREAD_STACK_SIZE)

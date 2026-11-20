@@ -371,6 +371,19 @@ fn map_platform_address_spend_error(e: platform_wallet::error::PlatformWalletErr
             source: Box::new(nonce),
         },
         other => match identity_op_error_kind(&other) {
+            IdentityOpErrorKind::TooManyInputs { count, max } => {
+                TaskError::AssetLockTransferTooManyInputs {
+                    count,
+                    max,
+                    source: Box::new(other),
+                }
+            }
+            IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+                TaskError::AssetLockFundsAwaitingConfirmation {
+                    waiting,
+                    source: Some(Box::new(other)),
+                }
+            }
             IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
                 txid: None,
                 source: Box::new(other),
@@ -415,7 +428,6 @@ mod tests {
     #[test]
     fn spend_error_keeps_sdk_classification() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let consensus = dash_sdk::dpp::consensus::ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),

@@ -250,20 +250,33 @@ pub async fn send_contact_request_with_proof(
         None,
     )
     .await?;
-    recover_on_this_device(app_context, owner, sent.recipient, false, sent.recorded).await;
-    Ok(sent.result)
+    sent.settle(|peer, recorded| recover_on_this_device(app_context, owner, peer, false, recorded))
+        .await
 }
 
 /// Whether this device recorded a contact request it published; an error is
 /// recovered by [`recover_unrecorded`].
 type Recorded = Result<(), TaskError>;
 
-/// A sent contact request: what the user is told, its recipient, and whether
-/// this device recorded it.
+/// A published contact request: what the user is told, its recipient,
+/// whether this device recorded it, and whether it re-engaged the recipient.
 struct Sent {
     result: BackendTaskSuccessResult,
     recipient: Identifier,
     recorded: Recorded,
+    re_engaged: Result<(), TaskError>,
+}
+
+impl Sent {
+    /// Run `recover` for an unrecorded request, then report the request: a
+    /// failed re-engagement is still the user's error, after the recovery.
+    async fn settle<F: Future<Output = ()>>(
+        self,
+        recover: impl FnOnce(Identifier, Recorded) -> F,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        recover(self.recipient, self.recorded).await;
+        self.re_engaged.map(|()| self.result)
+    }
 }
 
 /// Body of [`send_contact_request_with_proof`]; `held` is the request-action
@@ -360,6 +373,7 @@ async fn send_contact_request_inner(
                 ),
                 recipient: to_identity_id,
                 recorded: Ok(()),
+                re_engaged: Ok(()),
             });
         }
         return Err(DashPayError::ContactRequestAlreadySent {
@@ -631,7 +645,7 @@ async fn send_contact_request_inner(
         core_height_created_at,
         created_at_ts,
     );
-    let recorded = match app_context.wallet_backend() {
+    let (recorded, re_engaged) = match app_context.wallet_backend() {
         Ok(backend) => {
             finish_send(
                 &backend,
@@ -641,21 +655,22 @@ async fn send_contact_request_inner(
                 contact_record,
                 held,
             )
-            .await?
+            .await
         }
-        Err(_) => Ok(()),
+        Err(_) => (Ok(()), Ok(())),
     };
 
     Ok(Sent {
         result: BackendTaskSuccessResult::DashPayContactRequestSent(to_username_or_id.to_string()),
         recipient: to_identity_id,
         recorded,
+        re_engaged,
     })
 }
 
 /// Record a just-published request locally and re-engage its recipient;
-/// returns whether the request was recorded, for the caller to recover once
-/// it holds no lock.
+/// returns both outcomes, so the caller recovers an unrecorded request once
+/// it holds no lock, even when the re-engagement failed.
 async fn finish_send(
     backend: &crate::wallet_backend::WalletBackend,
     seed_hash: &crate::model::wallet::WalletSeedHash,
@@ -663,8 +678,8 @@ async fn finish_send(
     to_identity_id: Identifier,
     contact_record: UpstreamContactRequest,
     held: Option<&HeldPeerLock>,
-) -> Result<Recorded, TaskError> {
-    let (recorded, re_engaged) = {
+) -> (Recorded, Result<(), TaskError>) {
+    {
         // A cancel ignores the person and then records the withdrawal; a
         // re-engagement landing in between would leave this fresh request
         // withdrawn, so it waits for the person's lock.
@@ -682,14 +697,7 @@ async fn finish_send(
         })
         .await;
         (recorded, re_engaged)
-    };
-    if let (Err(error), Err(_)) = (&recorded, &re_engaged) {
-        tracing::warn!(
-            ?error,
-            "contact request neither recorded nor re-engaged on this device; the next contacts load records it"
-        );
     }
-    re_engaged.map(|()| recorded)
 }
 
 /// `owner`'s request-action lock for `peer`, or `None` when `held` already
@@ -756,22 +764,22 @@ pub async fn accept_contact_request(
     let owner_id = identity.identity.id();
     // The locks are released before a request this device could not record
     // is recovered: the sync is a network call.
-    let (result, unrecorded) = accept_under_locks(app_context, sdk, identity, request_id).await?;
-    if let Some((sender, recorded)) = unrecorded {
-        recover_on_this_device(app_context, owner_id, sender, true, recorded).await;
-    }
-    Ok(result)
+    accept_under_locks(app_context, sdk, identity, request_id)
+        .await?
+        .settle(|sender, recorded| {
+            recover_on_this_device(app_context, owner_id, sender, true, recorded)
+        })
+        .await
 }
 
 /// [`accept_contact_request`] under the owner's locks for the request and its
-/// sender; also returns the sender and whether this device recorded the
-/// contact, when a reply was published.
+/// sender.
 async fn accept_under_locks(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
-) -> Result<(BackendTaskSuccessResult, Option<(Identifier, Recorded)>), TaskError> {
+) -> Result<Sent, TaskError> {
     let owner_id = identity.identity.id();
     let _action_guard = app_context
         .wallet_backend()?
@@ -837,7 +845,12 @@ async fn accept_under_locks(
                 contact_id: from_identity_id,
             }
         };
-        return Ok((result, None));
+        return Ok(Sent {
+            result,
+            recipient: from_identity_id,
+            recorded: Ok(()),
+            re_engaged: Ok(()),
+        });
     }
 
     // Get an AUTHENTICATION key for signing the state transition
@@ -861,11 +874,10 @@ async fn accept_under_locks(
         sender: from_identity_id,
         peer_lock: &peer_lock,
     };
-    let recorded = accept_flow(&ops, &doc).await?;
-    Ok((
-        BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id),
-        Some((from_identity_id, recorded)),
-    ))
+    Ok(Sent {
+        result: BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id),
+        ..accept_flow(&ops, &doc).await?
+    })
 }
 
 /// The steps of accepting a request that has not been answered, behind a
@@ -881,25 +893,39 @@ trait AcceptOps {
         request: UpstreamContactRequest,
     ) -> impl Future<Output = Recorded> + Send;
     /// Publish the reply, a paid contact request back to the sender.
-    fn publish_reply(&self) -> impl Future<Output = Result<Recorded, TaskError>> + Send;
+    fn publish_reply(&self) -> impl Future<Output = Result<Sent, TaskError>> + Send;
 }
 
-/// Accept the request `doc`; returns whether this device recorded both it
-/// and the reply.
+/// Accept the request `doc`; returns the reply, recorded only when this
+/// device recorded both it and the request.
 ///
 /// # Errors
 ///
 /// [`DashPayError::UnreadableContactRequest`] before anything is published
 /// when `doc` lacks a field a contact is built from: no sync can repair it,
 /// so a reply would be paid for and never form a contact.
-async fn accept_flow<O: AcceptOps>(ops: &O, doc: &Document) -> Result<Recorded, TaskError> {
+async fn accept_flow<O: AcceptOps>(ops: &O, doc: &Document) -> Result<Sent, TaskError> {
     let request = incoming_contact_request(doc, ops.sender(), ops.owner())
         .ok_or(TaskError::DashPay(DashPayError::UnreadableContactRequest))?;
     // Recorded first, so recording the reply establishes the contact
     // in-process.
     let recorded_request = ops.record_incoming(request).await;
-    let recorded_reply = ops.publish_reply().await?;
-    Ok(recorded_request.and(recorded_reply))
+    let reply = match ops.publish_reply().await {
+        Ok(reply) => reply,
+        Err(error) => {
+            if let Err(record_error) = recorded_request {
+                tracing::warn!(
+                    ?record_error,
+                    "accepted contact request not recorded on this device, and no reply was published"
+                );
+            }
+            return Err(error);
+        }
+    };
+    Ok(Sent {
+        recorded: recorded_request.and(reply.recorded),
+        ..reply
+    })
 }
 
 /// [`AcceptOps`] against the live Platform, under the person's lock.
@@ -935,10 +961,10 @@ impl AcceptOps for PlatformAcceptOps<'_> {
         }
     }
 
-    async fn publish_reply(&self) -> Result<Recorded, TaskError> {
+    async fn publish_reply(&self) -> Result<Sent, TaskError> {
         // Sent under the person's lock the accept holds, which the send would
         // otherwise wait on forever.
-        let sent = send_contact_request_inner(
+        send_contact_request_inner(
             self.app_context,
             self.sdk,
             self.identity.clone(),
@@ -948,8 +974,7 @@ impl AcceptOps for PlatformAcceptOps<'_> {
             None,
             Some(self.peer_lock),
         )
-        .await?;
-        Ok(sent.recorded)
+        .await
     }
 }
 
@@ -1794,7 +1819,8 @@ mod tests {
             .expect("withdraw");
         drop(cancel_guard);
         // The record fails (no such wallet); only the re-engagement matters here.
-        let _recorded = send.await.expect("send finished");
+        let (_recorded, re_engaged) = send.await;
+        re_engaged.expect("send finished");
 
         assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
@@ -1888,7 +1914,8 @@ mod tests {
         .await
         .expect("the send must not wait on its caller's lock");
 
-        let _recorded = finished.expect("send finished");
+        let (_recorded, re_engaged) = finished;
+        re_engaged.expect("send finished");
         assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
 
@@ -2713,6 +2740,8 @@ mod tests {
     struct ScriptedAcceptOps {
         record_fails: bool,
         reply_record_fails: bool,
+        re_engage_fails: bool,
+        publish_fails: bool,
         /// Steps in the order they ran.
         steps: Mutex<Vec<&'static str>>,
     }
@@ -2734,12 +2763,23 @@ mod tests {
             Ok(())
         }
 
-        async fn publish_reply(&self) -> Result<Recorded, TaskError> {
+        async fn publish_reply(&self) -> Result<Sent, TaskError> {
             self.steps.lock().unwrap().push("publish");
-            Ok(if self.reply_record_fails {
-                Err(TaskError::WalletStateInconsistent)
-            } else {
-                Ok(())
+            if self.publish_fails {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+            let failed = |fails| {
+                if fails {
+                    Err(TaskError::WalletStateInconsistent)
+                } else {
+                    Ok(())
+                }
+            };
+            Ok(Sent {
+                result: BackendTaskSuccessResult::DashPayContactRequestSent("reply".into()),
+                recipient: id(2),
+                recorded: failed(self.reply_record_fails),
+                re_engaged: failed(self.re_engage_fails),
             })
         }
     }
@@ -2765,7 +2805,13 @@ mod tests {
     async fn accepting_records_the_request_before_the_reply() {
         let ops = ScriptedAcceptOps::default();
         let doc = full_request_doc(Value::Bytes(vec![9; 96]));
-        assert!(matches!(accept_flow(&ops, &doc).await, Ok(Ok(()))));
+        assert!(matches!(
+            accept_flow(&ops, &doc).await,
+            Ok(Sent {
+                recorded: Ok(()),
+                ..
+            })
+        ));
         assert_eq!(*ops.steps.lock().unwrap(), ["record", "publish"]);
 
         for ops in [
@@ -2783,7 +2829,74 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(matches!(accept_flow(&ops, &doc).await, Ok(Err(_))));
+            assert!(matches!(
+                accept_flow(&ops, &doc).await,
+                Ok(Sent {
+                    recorded: Err(_),
+                    ..
+                })
+            ));
+            assert_eq!(*ops.steps.lock().unwrap(), ["record", "publish"]);
         }
+    }
+
+    /// A reply whose recipient could not be re-engaged still hands back the
+    /// request this device did not record, so it is recovered before the
+    /// error is reported.
+    #[tokio::test]
+    async fn a_failed_re_engagement_keeps_the_unrecorded_request() {
+        let ops = ScriptedAcceptOps {
+            record_fails: true,
+            re_engage_fails: true,
+            ..Default::default()
+        };
+        let doc = full_request_doc(Value::Bytes(vec![9; 96]));
+
+        assert!(matches!(
+            accept_flow(&ops, &doc).await,
+            Ok(Sent {
+                recorded: Err(_),
+                re_engaged: Err(_),
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn settling_recovers_before_reporting_a_failed_re_engagement() {
+        let recoveries = Mutex::new(0);
+        let sent = Sent {
+            result: BackendTaskSuccessResult::DashPayContactRequestSent("x".into()),
+            recipient: id(2),
+            recorded: Err(TaskError::WalletStateInconsistent),
+            re_engaged: Err(TaskError::WalletStateInconsistent),
+        };
+
+        let settled = sent
+            .settle(|peer, recorded| {
+                assert_eq!(peer, id(2));
+                assert!(recorded.is_err());
+                *recoveries.lock().unwrap() += 1;
+                async {}
+            })
+            .await;
+
+        assert!(
+            settled.is_err(),
+            "the user still learns of the re-engagement"
+        );
+        assert_eq!(*recoveries.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_was_not_published_is_an_error() {
+        let ops = ScriptedAcceptOps {
+            record_fails: true,
+            publish_fails: true,
+            ..Default::default()
+        };
+        let doc = full_request_doc(Value::Bytes(vec![9; 96]));
+
+        assert!(accept_flow(&ops, &doc).await.is_err());
     }
 }

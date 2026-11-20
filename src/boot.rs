@@ -141,6 +141,9 @@ impl BootApp {
         preparation: BootPreparation,
         outcome: &StartupOutcome,
     ) -> Self {
+        // Every boot outcome, the failure dialog included, keeps selections
+        // out of PRIMARY.
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match preparation
             .0
             .and_then(|prepared| Self::open(ctx, prepared, outcome))
@@ -159,7 +162,6 @@ impl BootApp {
         }: Prepared,
         outcome: &StartupOutcome,
     ) -> Result<Self, BootError> {
-        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match decision {
             BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
                 ctx, db, data_dir, store,
@@ -363,6 +365,7 @@ impl Startup {
     /// Build the boot app. Successful steps are handed over and the startup
     /// becomes [`Self::Spent`]; a failure stays here for the terminal notice.
     pub fn boot(&mut self, ctx: egui::Context, outcome: &StartupOutcome) -> BootApp {
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match std::mem::replace(self, Self::Spent) {
             Self::Prepared {
                 preparation: preparation @ BootPreparation(Ok(_)),
@@ -638,7 +641,7 @@ mod tests {
 
     /// A second launch whose vault another instance holds fails before the
     /// window opens: no profile writes, the failure stays reportable without a
-    /// window, and the boot shows the failure dialog.
+    /// window, and the boot shows the failure dialog with the selection guard.
     #[test]
     fn locked_vault_fails_preparation_without_profile_writes() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -658,9 +661,14 @@ mod tests {
         );
         let ctx = egui::Context::default();
         let outcome = StartupOutcome::default();
-        let app = startup.boot(ctx, &outcome);
+        let app = startup.boot(ctx.clone(), &outcome);
         assert!(matches!(app, BootApp::Failed(_)));
         assert!(outcome.failed());
+        assert!(
+            ctx.plugin_opt::<crate::ui::primary_selection_guard::PrimarySelectionGuard>()
+                .is_some(),
+            "the failure dialog must not leak selections to PRIMARY"
+        );
         assert!(
             startup.error().is_some(),
             "the error stays for the terminal notice"

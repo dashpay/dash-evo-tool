@@ -1576,7 +1576,7 @@ mod tests {
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
 
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
@@ -1635,7 +1635,7 @@ mod tests {
         let owner = seed_user_identity(&context, 0x5B);
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
@@ -1692,7 +1692,7 @@ mod tests {
         let owner = seed_user_identity(&context, 0x60);
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, usize, usize)| {
@@ -1725,7 +1725,7 @@ mod tests {
         let owner = seed_user_identity(&context, 0x5F);
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<&'static str>)| {
@@ -1909,7 +1909,7 @@ mod tests {
 
         let mut hub = IdentityHubScreen::new(&context);
         hub.select_tab(IdentityHubTab::Settings);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
@@ -1937,7 +1937,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authoritative_profile_refresh_rebases_seeded_settings_before_save() {
         use crate::model::dashpay::ProfileSnapshot;
-        use egui_kittest::{Harness, kittest::Queryable};
+        use egui_kittest::kittest::Queryable;
         let (_dir, context) = wired_test_context().await;
         let identity = seed_cached_profile(&context).await;
         let owner = identity.identity.id();
@@ -1950,7 +1950,7 @@ mod tests {
                 else {
                     panic!("load dispatch")
                 };
-                let mut editor = Harness::builder()
+                let mut editor = crate::test_support::harness_builder_with_app_fonts()
                     .with_size(egui::vec2(1100.0, 1100.0))
                     .build_ui_state(
                         |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
@@ -2160,7 +2160,7 @@ mod tests {
         let (_dir, context) = wired_test_context().await;
         let identity = seed_cached_profile(&context).await;
         let id = identity.identity.id();
-        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut IdentityHubScreen| {
                 screen.ui(ui);
             },

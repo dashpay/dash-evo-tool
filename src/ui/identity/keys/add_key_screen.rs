@@ -457,7 +457,7 @@ impl AddKeyScreen {
 
     fn show_derivation_index(&mut self, ui: &mut Ui) {
         self.derivation_visible = true;
-        ui.label("Wallet key slot:");
+        let slot_label = ui.label("Wallet key slot:");
         ui.vertical(|ui| {
             match self.derivation.status() {
                 // Unreachable while "Create from wallet" is on; kept for totality.
@@ -499,7 +499,7 @@ impl AddKeyScreen {
                         "All wallet key slots available to this identity are in use. Turn off Create from wallet to enter a private key instead.",
                     );
                 }
-                ChooserStatus::Ready => self.show_slot_list(ui),
+                ChooserStatus::Ready => self.show_slot_list(ui, slot_label.id),
             }
             if self.derivation.identity_protected() {
                 ui.label(
@@ -510,7 +510,7 @@ impl AddKeyScreen {
         ui.end_row();
     }
 
-    fn show_slot_list(&mut self, ui: &mut Ui) {
+    fn show_slot_list(&mut self, ui: &mut Ui, label_id: egui::Id) {
         let limit = self.derivation.limit();
         let selected = self.derivation.selected_index();
         egui::ComboBox::from_id_salt("derived_key_index")
@@ -530,7 +530,9 @@ impl AddKeyScreen {
                         .inner
                         .disabled_tooltip("This slot is already used by a key on this identity.");
                 }
-            });
+            })
+            .response
+            .labelled_by(label_id);
         if let Some(suggested) = self.derivation.suggested_index() {
             ui.label(format!(
                 "Other wallet apps restore this key most reliably from slot {suggested}. Choose slot {suggested} unless you need a different one."
@@ -1048,7 +1050,7 @@ impl ScreenLike for AddKeyScreen {
                         // Use interact with hover sense to detect hover on disabled widget
                         let hover_response = ui.interact(
                             inner_response.response.rect,
-                            egui::Id::new("security_level_tooltip"),
+                            egui::Id::unique("security_level_tooltip"),
                             egui::Sense::hover(),
                         );
                         hover_response.info_tooltip(format!(

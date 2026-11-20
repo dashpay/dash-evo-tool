@@ -458,7 +458,7 @@ impl IdentityHeroCard {
     /// growth becomes a concern.
     fn try_paint_avatar_image(&self, ui: &mut Ui, bytes: &[u8]) -> bool {
         let hash = fnv1a_hash(bytes);
-        let cache_id = egui::Id::new(("identity_avatar", hash));
+        let cache_id = egui::Id::unique(("identity_avatar", hash));
 
         // Retrieve from the egui context's per-session temp store.
         let handle: Option<TextureHandle> =

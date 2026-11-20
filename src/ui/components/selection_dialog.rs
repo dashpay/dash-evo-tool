@@ -214,7 +214,7 @@ impl SelectionDialog {
                         .map(|s| s.as_str())
                         .unwrap_or_default();
 
-                    let salt = ui.id().with("selection_dialog_combo");
+                    let salt = ui.scope_id().with("selection_dialog_combo");
                     combo_popup_id = Some(ui.make_persistent_id(salt).with("popup"));
                     egui::ComboBox::from_id_salt(salt)
                         .selected_text(selected_text)
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_selection_dialog_creation() {
         let dialog = SelectionDialog::new(
-            egui::Id::new("selection_dialog_creation_test"),
+            egui::Id::unique("selection_dialog_creation_test"),
             "Pick Wallet",
             "Choose the wallet to use",
             vec!["Wallet A".into(), "Wallet B".into(), "Wallet C".into()],
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn test_selection_dialog_default_buttons() {
         let dialog = SelectionDialog::new(
-            egui::Id::new("selection_dialog_default_buttons_test"),
+            egui::Id::unique("selection_dialog_default_buttons_test"),
             "Title",
             "Message",
             vec!["A".into(), "B".into()],
@@ -363,7 +363,7 @@ mod tests {
     fn test_selection_dialog_preselect() {
         // Normal preselection
         let dialog = SelectionDialog::new(
-            egui::Id::new("selection_dialog_preselect_test"),
+            egui::Id::unique("selection_dialog_preselect_test"),
             "Title",
             "Message",
             vec!["A".into(), "B".into(), "C".into()],
@@ -373,7 +373,7 @@ mod tests {
 
         // Out-of-bounds clamped to last index
         let dialog = SelectionDialog::new(
-            egui::Id::new("selection_dialog_preselect_clamped_test"),
+            egui::Id::unique("selection_dialog_preselect_clamped_test"),
             "Title",
             "Message",
             vec!["A".into(), "B".into()],
@@ -383,7 +383,7 @@ mod tests {
 
         // Empty options: stays at 0
         let dialog = SelectionDialog::new(
-            egui::Id::new("selection_dialog_preselect_empty_test"),
+            egui::Id::unique("selection_dialog_preselect_empty_test"),
             "Title",
             "Message",
             vec![],
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn test_selection_dialog_no_buttons() {
         let dialog = SelectionDialog::new(
-            egui::Id::new("selection_dialog_no_buttons_test"),
+            egui::Id::unique("selection_dialog_no_buttons_test"),
             "Title",
             "Message",
             vec!["Only".into()],

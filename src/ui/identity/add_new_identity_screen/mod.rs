@@ -711,7 +711,9 @@ impl AddNewIdentityScreen {
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
-            });
+            })
+            .response
+            .accessible_name("Funding method");
     }
 
     /// Return the deposit chooser to its initial state so the user is never
@@ -1761,7 +1763,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("create_identity_info_popup"),
+                        egui::Id::unique("create_identity_info_popup"),
                         "Identity Information",
                         &show_pop_up_info_text,
                     );

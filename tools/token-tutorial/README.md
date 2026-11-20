@@ -258,6 +258,14 @@ Full HD X11 frames. Missing/ambiguous accessibility state stops the action;
 absence cannot succeed after losing the app. The helper intentionally does not
 automate secret entry. Prepare fields manually with recording stopped as needed.
 
+A recorded scene refuses to click controls that open credential prompts (for
+example `Unlock Wallet`): stop recording, unlock or import, then record the next
+scene. While recording, every wait, hold and step checks for visible password
+fields or credential labels without reading their values. A detected prompt
+stops capture and deletes the clip. The clip is written as `NAME.incomplete.mkv`
+and appears at the requested path only after the whole scene passes; an
+interrupted clip keeps the `.incomplete` name and is never a media input.
+
 For a future separately authorized recording, use scenes 03–49 and 51–52 from
 the current JSON's screen/control plan. Use real
 completed-state evidence for scenes 08/09 and 51/52. **Never repeat token

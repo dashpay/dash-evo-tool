@@ -160,3 +160,106 @@ def test_verified_session_activates_only_the_recorded_window(module, tmp_path, d
     assert ("xdotool", "windowactivate", "--sync", "12345") in calls
     assert module.os.environ["XAUTHORITY"] == "/synthetic/xauthority"
     assert not any("search" in call for call in calls)
+
+
+class Element:
+    def __init__(self, name, role, children=()):
+        self.name, self.role, self.children = name, role, list(children)
+
+    def __iter__(self):
+        return iter(self.children)
+
+    def queryComponent(self):
+        return SimpleNamespace(getExtents=lambda _: (10, 10, 200, 40))
+
+    def getRoleName(self):
+        return self.role
+
+
+def screen(*elements):
+    return Node(children=[Element("", "frame", elements)])
+
+
+@pytest.mark.parametrize(
+    "element",
+    [Element("", "password text"), Element("Enter the wallet password", "label")],
+)
+def test_credential_prompt_blocks_screenshots(module, tmp_path, monkeypatch, element):
+    gui = fake_gui(module, tmp_path, [screen(element)])
+    calls = []
+    monkeypatch.setattr(module, "command", lambda *args: calls.append(args))
+    with pytest.raises(RuntimeError, match="Sensitive"):
+        gui.screenshot("prompt")
+    assert calls == []
+
+
+class Recorder:
+    started = []
+
+    def __init__(self, args, **_):
+        self.path = Path(args[-1])
+        self.path.write_bytes(b"synthetic frames")
+        self.returncode = None
+        Recorder.started.append(self.path)
+
+    def poll(self):
+        return self.returncode
+
+    def send_signal(self, _):
+        self.returncode = 255
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+@pytest.fixture
+def recording(module, tmp_path, monkeypatch):
+    Recorder.started = []
+    tree = screen(Element("Ready", "label"))
+    gui = fake_gui(module, tmp_path, [tree])
+    gui.display = ":100"
+    monkeypatch.setattr(module, "command", lambda *args: None)
+    monkeypatch.setattr(module.subprocess, "Popen", Recorder)
+    return gui, tree, tmp_path / "captures" / "03.mkv"
+
+
+def test_recorded_scene_cannot_click_into_a_credential_prompt(recording):
+    gui, _, output = recording
+    output.parent.mkdir()
+    spec = {"steps": [{"action": "click", "target": {"name": "Unlock Wallet"}}]}
+    with pytest.raises(ValueError, match="credential"):
+        gui.scene(spec, output)
+    assert Recorder.started == []
+
+
+def test_prompt_during_hold_stops_and_discards_the_clip(module, recording, monkeypatch):
+    gui, tree, output = recording
+    output.parent.mkdir()
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda _: tree.children[0].children.append(Element("", "password text")),
+    )
+    with pytest.raises(RuntimeError, match="Sensitive"):
+        gui.scene({"steps": [{"action": "hold", "seconds": 2}]}, output)
+    assert not output.exists()
+    assert not any(path.exists() for path in Recorder.started)
+
+
+def test_clip_appears_at_its_path_only_after_a_verified_scene(recording):
+    gui, _, output = recording
+    output.parent.mkdir()
+    gui.scene({"steps": [{"action": "wait", "target": {"name": "Ready"}}]}, output)
+    assert Recorder.started and Recorder.started[0] != output
+    assert output.read_bytes() == b"synthetic frames"
+    assert not Recorder.started[0].exists()
+
+
+def test_interrupted_clip_stays_out_of_the_media_inputs(recording):
+    gui, _, output = recording
+    output.parent.mkdir()
+    with pytest.raises(ValueError):
+        gui.scene({"steps": [{"action": "unknown"}]}, output)
+    assert not output.exists()
+    assert Recorder.started[0].exists()
+    assert Recorder.started[0].name == "03.incomplete.mkv"

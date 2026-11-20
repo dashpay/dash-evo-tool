@@ -20,6 +20,20 @@ REQUIRED_SESSION = (
     "atspi_bus_name",
     "atspi_host_pid",
 )
+SENSITIVE_WORDS = (
+    "recovery phrase",
+    "seed phrase",
+    "mnemonic",
+    "private key",
+    "password",
+    "passphrase",
+)
+# Clicks that open credential prompts must happen while recording is stopped.
+CREDENTIAL_TRIGGERS = SENSITIVE_WORDS + ("unlock",)
+
+
+class SensitiveScreen(RuntimeError):
+    """A credential prompt may be visible; nothing may be captured."""
 
 
 def command(*args):
@@ -27,6 +41,8 @@ def command(*args):
 
 
 class Gui:
+    recording = False
+
     def __init__(self, evidence, session_path=SESSION):
         session = json.loads(Path(session_path).read_text())
         if any(not session.get(key) for key in REQUIRED_SESSION):
@@ -67,7 +83,9 @@ class Gui:
             )
         command("xdotool", "windowactivate", "--sync", self.window)
 
-    def nodes(self):
+    def scan(self):
+        """Return visible non-entry nodes and whether a password field is visible."""
+
         def walk(node):
             yield node
             for child in node:
@@ -84,16 +102,18 @@ class Gui:
                 "The recorded app accessibility registration is unavailable"
             )
         nodes = []
-        has_frame = False
+        has_frame = secret_field = False
         for node in walk(apps[0]):
             try:
                 bounds = tuple(
                     node.queryComponent().getExtents(self.spi.DESKTOP_COORDS)
                 )
                 role = node.getRoleName()
+                visible = bounds[2] > 0 and bounds[3] > 0
                 if role in ("text", "password text", "entry"):
+                    secret_field = secret_field or (visible and role == "password text")
                     continue
-                if bounds[2] > 0 and bounds[3] > 0:
+                if visible:
                     has_frame = has_frame or role == "frame"
                     nodes.append(
                         (node, {"name": node.name, "role": role, "bounds": bounds})
@@ -104,7 +124,22 @@ class Gui:
             raise RuntimeError(
                 "The app accessibility tree has no readable window frame"
             )
-        yield from nodes
+        return nodes, secret_field
+
+    def nodes(self):
+        yield from self.scan()[0]
+
+    def guard(self):
+        """Refuse a screen that may show a credential prompt; field values are never read."""
+        nodes, secret_field = self.scan()
+        if secret_field or any(
+            word in (data["name"] or "").lower()
+            for _, data in nodes
+            for word in SENSITIVE_WORDS
+        ):
+            raise SensitiveScreen(
+                "Sensitive form detected; screenshots and recorded scenes must stay paused"
+            )
 
     def match(self, target):
         return [
@@ -118,6 +153,8 @@ class Gui:
         deadline = time.monotonic() + timeout
         previous = None
         while time.monotonic() < deadline:
+            if self.recording:
+                self.guard()
             found = self.match(target)
             if absent and not found:
                 if previous == "absent":
@@ -138,19 +175,7 @@ class Gui:
     def screenshot(self, name):
         if Path(name).name != name:
             raise ValueError("Screenshot name must be a filename without directories")
-        for _, data in self.nodes():
-            if any(
-                word in (data["name"] or "").lower()
-                for word in (
-                    "recovery phrase",
-                    "seed phrase",
-                    "mnemonic",
-                    "private key",
-                )
-            ):
-                raise RuntimeError(
-                    "Sensitive form detected; screenshots and recorded scenes must stay paused"
-                )
+        self.guard()
         path = self.evidence / f"{name}.png"
         command("scrot", str(path))
         return path
@@ -179,11 +204,27 @@ class Gui:
         command("xdotool", "mouseup", "1")
 
     def scene(self, spec, output=None):
-        recorder = None
+        recorder = partial = None
         if output:
+            output = Path(output)
+            if any(
+                step["action"] == "click"
+                and any(
+                    word in step["target"]["name"].lower()
+                    for word in CREDENTIAL_TRIGGERS
+                )
+                for step in spec["steps"]
+            ):
+                raise ValueError(
+                    "A recorded scene cannot open a credential prompt; stop recording, "
+                    "unlock or import, then record the next scene"
+                )
             self.screenshot(f"recording-preflight-{time.time_ns()}")
-            if Path(output).exists():
+            # Only a verified, completed scene is published at the requested path.
+            partial = output.with_name(f"{output.stem}.incomplete{output.suffix}")
+            if output.exists() or partial.exists():
                 raise FileExistsError(output)
+            self.recording = True
             recorder = subprocess.Popen(
                 [
                     "ffmpeg",
@@ -211,9 +252,10 @@ class Gui:
                     "18",
                     "-pix_fmt",
                     "yuv420p",
-                    str(output),
+                    str(partial),
                 ]
             )
+        sensitive = False
         try:
             for step in spec["steps"]:
                 if recorder and recorder.poll() is not None:
@@ -228,15 +270,31 @@ class Gui:
                 elif action == "screenshot":
                     self.screenshot(step["name"])
                 elif action == "hold":
-                    time.sleep(min(max(float(step["seconds"]), 0), 60))
+                    end = time.monotonic() + min(max(float(step["seconds"]), 0), 60)
+                    while time.monotonic() < end:
+                        if recorder:
+                            self.guard()
+                        time.sleep(min(0.15, max(0.0, end - time.monotonic())))
                 else:
                     raise ValueError(f"Unknown action: {action}")
+                if recorder:
+                    self.guard()
+        except SensitiveScreen:
+            sensitive = True
+            raise
         finally:
+            self.recording = False
             if recorder and recorder.poll() is None:
                 recorder.send_signal(signal.SIGINT)
                 recorder.wait(timeout=20)
+            if sensitive and partial:
+                # The clip may show a credential prompt; it is never kept.
+                partial.unlink(missing_ok=True)
         if recorder and recorder.returncode not in (0, 255):
             raise RuntimeError("Recording failed")
+        if partial:
+            os.link(partial, output)
+            partial.unlink()
 
 
 def main():

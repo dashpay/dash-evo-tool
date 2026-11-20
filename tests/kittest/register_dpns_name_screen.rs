@@ -129,10 +129,9 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
             fee_result: FeeResult::new(0, 0),
         });
 
-        let mut harness =
-            crate::support::allowing_unnamed_widgets(Harness::builder()).build_ui(move |ui| {
-                screen.ui(ui);
-            });
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            screen.ui(ui);
+        });
         harness.run();
 
         assert!(harness.query_by_label(expected).is_some());

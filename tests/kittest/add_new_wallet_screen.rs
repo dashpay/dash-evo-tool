@@ -22,7 +22,7 @@ fn create_wallet_harness(
     let mut screen = AddNewWalletScreen::new(app_context);
     // Fixed test entropy — never a literal recovery phrase.
     screen.set_seed_phrase_for_test(dash_evo_tool::test_support::keys::mnemonic(12));
-    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+    let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(
             move |ui, screen: &mut AddNewWalletScreen| {
@@ -130,5 +130,18 @@ fn duplicate_wallet_name_is_rejected_and_not_saved() {
             harness.query_by_label("Close").is_some(),
             "the rejection must be shown to the user"
         );
+    });
+}
+
+/// Screen readers announce the optional password field by its visible label,
+/// and its reveal control as a button.
+#[test]
+fn optional_password_field_and_reveal_control_are_named() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let harness = create_wallet_harness(runtime, &app_context);
+
+        harness.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Optional Password:");
+        harness.get_by_role_and_label(egui::accesskit::Role::Button, "Hold to reveal");
     });
 }

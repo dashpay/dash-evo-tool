@@ -10,6 +10,9 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+/// Upper bound, in health ticks, on the wait before retrying a failed read.
+const MAX_RETRY_TICKS: u32 = 32;
+
 /// Coalesced metadata refreshes admitted only during the active SPV session.
 #[derive(Default)]
 pub(super) struct ProtocolRefresh {
@@ -58,14 +61,20 @@ impl ProtocolRefresh {
                         .await
                         .is_some_and(|progress| progress.is_synced())
                         && spv.wait_until_ready(Duration::from_millis(50)).await
-                        && !ctx.sdk().address_list().get_live_addresses().is_empty()
+                        && !ctx
+                            .sdk
+                            .load()
+                            .address_list()
+                            .get_live_addresses()
+                            .is_empty()
                 }
             },
             move || {
                 let context = context.clone();
                 async move {
                     if let Some(ctx) = context.upgrade() {
-                        ctx.refresh_platform_protocol(&ctx.sdk()).await
+                        let sdk = ctx.sdk.load_full();
+                        ctx.refresh_platform_protocol(&sdk).await
                     } else {
                         false
                     }
@@ -106,6 +115,8 @@ impl ProtocolRefresh {
             let mut has_synced = false;
             let mut last_probe_succeeded = false;
             let mut first_healthy_waiting = false;
+            let mut retry_backoff = 0u32;
+            let mut retry_in = 0u32;
             loop {
                 let event = tokio::select! {
                     biased;
@@ -131,6 +142,14 @@ impl ProtocolRefresh {
                             pending |= !succeeded && previously_healthy;
                             first_healthy_waiting = false;
                         }
+                        // A healthy session has no recovery edge to retry on.
+                        if succeeded {
+                            retry_backoff = 0;
+                            retry_in = 0;
+                        } else if previously_healthy {
+                            retry_backoff = (retry_backoff * 2).clamp(1, MAX_RETRY_TICKS);
+                            retry_in = retry_backoff;
+                        }
                     }
                     ProbeEvent::HealthTick => {
                         let healthy = tokio::select! {
@@ -146,6 +165,12 @@ impl ProtocolRefresh {
                             } else {
                                 pending |= !last_probe_succeeded;
                             }
+                        }
+                        if !healthy {
+                            retry_in = 0;
+                        } else if retry_in > 0 && current.is_none() {
+                            retry_in -= 1;
+                            pending |= retry_in == 0;
                         }
                         previously_healthy = healthy;
                         has_synced |= healthy;
@@ -314,6 +339,7 @@ mod tests {
                 assert!(probe.queue());
                 next(&mut calls_rx).await;
             }
+            response.store(true, Ordering::SeqCst);
             healthy.store(true, Ordering::SeqCst);
             while !next(&mut checks_rx).await {}
             if !initial_succeeded || rebuild_failed {
@@ -332,6 +358,40 @@ mod tests {
             assert!(calls_rx.try_recv().is_err(), "stable Synced does not retry");
             probe.stop().await;
         }
+    }
+
+    #[tokio::test]
+    async fn protocol_refresh_retries_a_failed_read_while_healthy() {
+        let probe = ProtocolRefresh::default();
+        let ready = Arc::new(CoordinatorGate::default());
+        ready.on_masternodes_ready();
+        let (checks, mut checks_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (calls, mut calls_rx) = tokio::sync::mpsc::unbounded_channel();
+        let responses = Mutex::new(std::collections::VecDeque::from([true, false, true]));
+        probe.start_with(
+            ready,
+            move || {
+                checks.send(()).expect("health receiver");
+                std::future::ready(true)
+            },
+            move || {
+                calls.send(()).expect("probe receiver");
+                std::future::ready(responses.lock_recover().pop_front().unwrap_or(true))
+            },
+            Duration::from_millis(10),
+        );
+        assert!(probe.queue());
+        next(&mut calls_rx).await;
+        next(&mut checks_rx).await;
+        assert!(probe.queue());
+        next(&mut calls_rx).await;
+        next(&mut calls_rx).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            calls_rx.try_recv().is_err(),
+            "a successful retry ends the backoff"
+        );
+        probe.stop().await;
     }
 
     #[tokio::test]

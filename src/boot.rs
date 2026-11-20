@@ -101,6 +101,22 @@ pub enum PrepareEnvironmentError {
 }
 
 impl PrepareEnvironmentError {
+    /// What to tell the user about this step; the path and the I/O error stay
+    /// in the technical details.
+    pub fn user_message(&self) -> &'static str {
+        match self {
+            Self::Locate { .. } => {
+                "Dash Evo Tool could not find a place for its data because your user account has no home folder. Sign in with an account that has one, then start the application again."
+            }
+            Self::CreateDataFolder { .. } => {
+                "Dash Evo Tool could not create its data folder. Make sure the location shown in the technical details is a folder you can change, not a file, then start the application again."
+            }
+            Self::WriteSettingsFile { .. } => {
+                "Dash Evo Tool could not create its settings file in its data folder. Make sure the disk has free space and that you can change that folder, then start the application again."
+            }
+        }
+    }
+
     /// The underlying I/O error.
     pub fn io_error(&self) -> &std::io::Error {
         match self {
@@ -186,8 +202,17 @@ impl BootApp {
     pub fn failed(error: &(dyn std::error::Error + 'static), outcome: &StartupOutcome) -> Self {
         tracing::error!(error = ?error, "Startup failed; showing the startup failure dialog");
         outcome.mark_failed();
-        BootApp::Failed(StartupFailure::from_error(
+        // A data folder step names itself; a typed task error in the chain
+        // still takes precedence over this fallback.
+        let fallback = std::iter::successors(Some(error), |&error| error.source())
+            .find_map(|error| error.downcast_ref::<PrepareEnvironmentError>())
+            .map_or(
+                crate::model::error_report::GENERIC_STARTUP_FAILURE,
+                PrepareEnvironmentError::user_message,
+            );
+        BootApp::Failed(StartupFailure::with_fallback(
             error,
+            fallback,
             crate::logging::log_file_path(),
         ))
     }
@@ -710,6 +735,43 @@ mod tests {
         });
         assert!(startup.error().is_none());
         assert!(!startup.persist_window());
+    }
+
+    /// Each data folder step gets its own plain message; paths and I/O
+    /// details stay in the technical details.
+    #[test]
+    fn data_folder_failures_name_their_step() {
+        let io = || std::io::Error::from(std::io::ErrorKind::NotFound);
+        let path = PathBuf::from("/data/det");
+        for (error, expected) in [
+            (
+                PrepareEnvironmentError::Locate { source: io() },
+                "no home folder",
+            ),
+            (
+                PrepareEnvironmentError::CreateDataFolder {
+                    path: path.clone(),
+                    source: io(),
+                },
+                "could not create its data folder",
+            ),
+            (
+                PrepareEnvironmentError::WriteSettingsFile {
+                    path: path.join(".env"),
+                    source: io(),
+                },
+                "could not create its settings file",
+            ),
+        ] {
+            let app = BootApp::failed(&error, &StartupOutcome::default());
+            let BootApp::Failed(failure) = &app else {
+                panic!("expected the failure dialog");
+            };
+            let message = failure.report().message();
+            assert!(message.contains(expected), "{message}");
+            assert!(!message.contains("/data/det"), "{message}");
+            assert!(failure.report().details().contains("NotFound"));
+        }
     }
 
     /// Booting the prepared steps a second time never runs them again: it

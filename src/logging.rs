@@ -176,12 +176,19 @@ fn report_panic(info: &panic::PanicHookInfo<'_>) {
     let mut text = report.terminal_text();
     // Like the default hook, print a backtrace on stderr only when
     // RUST_BACKTRACE asks for one; the log above always carries it.
-    let terminal_backtrace = Backtrace::capture();
-    if terminal_backtrace.status() == BacktraceStatus::Captured {
-        text.push_str(&format!("stack backtrace:\n{terminal_backtrace}\n"));
+    if backtrace.status() == BacktraceStatus::Captured
+        && terminal_backtrace_requested(std::env::var_os("RUST_BACKTRACE").as_deref())
+    {
+        text.push_str(&format!("stack backtrace:\n{backtrace}\n"));
     }
     // Nothing useful can be done if stderr is gone.
     let _ = std::io::stderr().lock().write_all(text.as_bytes());
+}
+
+/// Whether a `RUST_BACKTRACE` value asks for a backtrace: set and not `0`,
+/// as for the default hook. `RUST_LIB_BACKTRACE` does not apply to panics.
+fn terminal_backtrace_requested(rust_backtrace: Option<&std::ffi::OsStr>) -> bool {
+    rust_backtrace.is_some_and(|value| value != "0")
 }
 
 /// What a panic report may say about a panic message.
@@ -758,7 +765,11 @@ mod tests {
     /// Re-runs the test `test_name` in a child process that installs the real
     /// panic hook (process-global, so it must not run in this test process)
     /// and panics in `mode`. Returns `None` inside that child.
-    fn run_panic_hook_child(test_name: &str, mode: &str) -> Option<PanicChildOutput> {
+    fn run_panic_hook_child(
+        test_name: &str,
+        mode: &str,
+        env: &[(&str, &str)],
+    ) -> Option<PanicChildOutput> {
         if std::env::var_os(PANIC_CHILD_MODE).is_some() {
             return None;
         }
@@ -775,6 +786,7 @@ mod tests {
             .env("DASH_EVO_DATA_DIR", dir.path())
             .env_remove("RUST_BACKTRACE")
             .env_remove("RUST_LIB_BACKTRACE")
+            .envs(env.iter().copied())
             .output()
             .expect("run panic-hook child");
         assert!(
@@ -833,7 +845,7 @@ mod tests {
     fn panic_hook_keeps_formatted_panic_messages_out_of_stderr_and_the_log() {
         let name =
             libtest_name("panic_hook_keeps_formatted_panic_messages_out_of_stderr_and_the_log");
-        let Some(child) = run_panic_hook_child(&name, "formatted") else {
+        let Some(child) = run_panic_hook_child(&name, "formatted", &[]) else {
             panic_as_child();
         };
         for (sink, text) in [("terminal", &child.terminal), ("log", &child.log)] {
@@ -873,7 +885,7 @@ mod tests {
     #[test]
     fn panic_hook_keeps_static_panic_messages_verbatim() {
         let name = libtest_name("panic_hook_keeps_static_panic_messages_verbatim");
-        let Some(child) = run_panic_hook_child(&name, "literal") else {
+        let Some(child) = run_panic_hook_child(&name, "literal", &[]) else {
             panic_as_child();
         };
         for (sink, text) in [("terminal", &child.terminal), ("log", &child.log)] {
@@ -885,10 +897,38 @@ mod tests {
         }
     }
 
+    /// `RUST_BACKTRACE` alone decides the terminal backtrace, as for the
+    /// default hook; `RUST_LIB_BACKTRACE` governs only `Backtrace::capture`.
+    #[test]
+    fn panic_hook_prints_a_terminal_backtrace_when_rust_backtrace_asks() {
+        let name = libtest_name("panic_hook_prints_a_terminal_backtrace_when_rust_backtrace_asks");
+        let env = [("RUST_BACKTRACE", "1"), ("RUST_LIB_BACKTRACE", "0")];
+        let Some(child) = run_panic_hook_child(&name, "literal", &env) else {
+            panic_as_child();
+        };
+        assert!(
+            child.terminal.contains("stack backtrace:"),
+            "stderr must carry the backtrace RUST_BACKTRACE asked for:\n{}",
+            child.terminal
+        );
+    }
+
+    #[test]
+    fn terminal_backtrace_follows_rust_backtrace_like_the_default_hook() {
+        assert!(!terminal_backtrace_requested(None));
+        assert!(!terminal_backtrace_requested(Some("0".as_ref())));
+        for value in ["1", "full", "short"] {
+            assert!(
+                terminal_backtrace_requested(Some(value.as_ref())),
+                "{value}"
+            );
+        }
+    }
+
     #[test]
     fn unit_tests_that_boot_the_logger_keep_assertion_values() {
         let name = libtest_name("unit_tests_that_boot_the_logger_keep_assertion_values");
-        let Some(child) = run_panic_hook_child(&name, "unit-test-boot") else {
+        let Some(child) = run_panic_hook_child(&name, "unit-test-boot", &[]) else {
             panic_as_child();
         };
         assert!(

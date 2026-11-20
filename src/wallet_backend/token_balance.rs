@@ -114,6 +114,9 @@ pub(super) struct TokenBalanceStore {
     /// Serializes foreground and periodic sync, including watch registration.
     /// Frame reads and local writes never take this lock.
     pub(super) sync_lock: tokio::sync::Mutex<Option<PendingTokenBalanceRead>>,
+    /// A local write [`Self::load_with`] makes as its upstream read starts.
+    #[cfg(test)]
+    write_during_baseline_read: std::sync::Mutex<Option<(Identifier, Identifier, u64)>>,
 }
 
 /// A foreground read can time out after upstream changed some balances.
@@ -141,6 +144,15 @@ impl TokenBalanceStore {
         read: impl std::future::Future<Output = T>,
     ) -> (Arc<TokenBalanceSnapshot>, T) {
         let before = self.load();
+        #[cfg(test)]
+        if let Some((identity_id, token_id, balance)) =
+            crate::wallet_backend::poison::MutexRecover::lock_recover(
+                &self.write_during_baseline_read,
+            )
+            .take()
+        {
+            self.apply(identity_id, token_id, balance);
+        }
         (before, read.await)
     }
 
@@ -559,6 +571,78 @@ mod tests {
             backend.token_balances().get(&identity_id, &token_id),
             Some(25)
         );
+    }
+
+    /// Both sync paths take their baseline before the upstream read, so a
+    /// local write made during that read wins over the pass that follows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn both_sync_paths_keep_a_local_write_made_during_the_baseline_read() {
+        use crate::context::test_support::test_app_context_for_network;
+        use dash_sdk::platform::tokens::identity_token_balances::{
+            IdentityTokenBalances, IdentityTokenBalancesQuery,
+        };
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().expect("app data directory");
+        let network = Network::Regtest;
+        let ctx = test_app_context_for_network(directory.path(), network);
+        let (identity_id, token_id, second_token) = (id(1), id(2), id(3));
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_network(network)
+            .build()
+            .expect("mock Platform SDK");
+        for (token_ids, balances) in [
+            (vec![token_id], vec![(token_id, Some(10))]),
+            (
+                vec![token_id, second_token],
+                vec![(token_id, Some(30)), (second_token, Some(0))],
+            ),
+        ] {
+            sdk.mock()
+                .expect_fetch_many::<Identifier, u64, _, IdentityTokenBalances>(
+                    IdentityTokenBalancesQuery {
+                        identity_id,
+                        token_ids,
+                    },
+                    Some(balances.into_iter().collect()),
+                )
+                .await
+                .expect("token balance mock response");
+        }
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, ctx.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        let store = &backend.inner.token_balances;
+        let cancel = CancellationToken::new();
+
+        *crate::wallet_backend::poison::MutexRecover::lock_recover(
+            &store.write_during_baseline_read,
+        ) = Some((identity_id, token_id, 20));
+        backend
+            .sync_token_balances_now(
+                vec![(identity_id, vec![token_id])],
+                Duration::from_secs(5),
+                &cancel,
+            )
+            .await
+            .expect("foreground refresh");
+        let foreground = backend.token_balances().get(&identity_id, &token_id);
+
+        backend
+            .register_identity_tokens(identity_id, vec![token_id, second_token])
+            .await;
+        *crate::wallet_backend::poison::MutexRecover::lock_recover(
+            &store.write_during_baseline_read,
+        ) = Some((identity_id, token_id, 40));
+        store
+            .sync_periodically(backend.inner.pwm.identity_sync(), &cancel)
+            .await;
+        let periodic = backend.token_balances().get(&identity_id, &token_id);
+        backend.shutdown().await;
+        assert_eq!((foreground, periodic), (Some(20), Some(40)));
     }
 
     fn store_with(

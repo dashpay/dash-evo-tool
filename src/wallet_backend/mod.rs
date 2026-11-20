@@ -180,23 +180,36 @@ pub(crate) enum TokenBalanceSyncError {
 
 /// Whether DET's stops left upstream identity sync admitting passes: even
 /// means open, odd means a stop closed it. Every stop raises the value, so a
-/// refresh sees a stop that began and ended during its call.
+/// refresh sees a stop that began and ended during its call. Callers hold the
+/// start/stop lifecycle lock.
 #[derive(Debug, Default)]
-pub(crate) struct TokenSyncAdmission(AtomicU64);
+pub(crate) struct TokenSyncAdmission {
+    state: AtomicU64,
+    /// Shutdown seals upstream identity sync for good.
+    sealed: AtomicBool,
+}
 
 impl TokenSyncAdmission {
     fn close(&self) {
-        self.0.fetch_or(1, Ordering::SeqCst);
-        self.0.fetch_add(2, Ordering::SeqCst);
+        self.state.fetch_or(1, Ordering::SeqCst);
+        self.state.fetch_add(2, Ordering::SeqCst);
     }
 
-    /// Call only after identity sync drained, which reopens upstream's gate.
+    fn seal(&self) {
+        self.sealed.store(true, Ordering::SeqCst);
+        self.close();
+    }
+
+    /// Call only after identity sync drained, which reopens upstream's gate
+    /// unless shutdown sealed it.
     fn reopen(&self) {
-        self.0.fetch_and(!1, Ordering::SeqCst);
+        if !self.sealed.load(Ordering::SeqCst) {
+            self.state.fetch_and(!1, Ordering::SeqCst);
+        }
     }
 
     fn current(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst)
     }
 }
 
@@ -2160,7 +2173,7 @@ impl WalletBackend {
     pub async fn shutdown(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
         self.inner.coordinator_gate.disarm();
-        self.inner.token_sync_admission.close();
+        self.inner.token_sync_admission.seal();
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
@@ -4443,6 +4456,40 @@ mod tests {
             .await;
         assert!(matches!(result, Err(TokenBalanceSyncError::SyncStopped)));
         assert_eq!(upstream.own_passes.get(), 0);
+    }
+
+    /// A drained disconnect reopens refreshes; after shutdown sealed upstream
+    /// identity sync, a later disconnect must not reopen them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stops_close_token_balance_refreshes_and_shutdown_keeps_them_closed() {
+        let directory = tempfile::tempdir().expect("app data directory");
+        let ctx = crate::context::test_support::test_app_context_for_network(
+            directory.path(),
+            Network::Regtest,
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, ctx.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        let cancel = CancellationToken::new();
+        let refresh = || {
+            backend.sync_token_balances_now(Vec::new(), std::time::Duration::from_secs(5), &cancel)
+        };
+        let admission = &backend.inner.token_sync_admission;
+
+        let opened = admission.current();
+        backend.stop_in_place().await;
+        assert_eq!(admission.current(), opened + 2, "a drained stop reopens");
+        assert!(refresh().await.is_ok());
+
+        backend.shutdown().await;
+        assert_eq!(admission.current() & 1, 1, "shutdown closes");
+        backend.stop_in_place().await;
+        assert!(matches!(
+            refresh().await,
+            Err(TokenBalanceSyncError::SyncStopped)
+        ));
     }
 
     /// Shutdown ends the wait at once.

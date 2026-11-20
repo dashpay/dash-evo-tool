@@ -163,7 +163,7 @@ pub fn render_header(
                                 .clickable_tooltip("Copy the full identity ID.");
                             copy.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     true,
                                     "Copy full identity ID",
                                 )

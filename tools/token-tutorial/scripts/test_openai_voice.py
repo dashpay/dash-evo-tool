@@ -69,13 +69,13 @@ def test_existing_take_refused_before_key_or_api(voice, source, tmp_path):
     take.mkdir()
     (take / "previous.wav").write_bytes(b"original")
     with pytest.raises(FileExistsError):
-        voice.generate_take(source, take)
+        voice.generate_take(source, take, speaker="teacher")
     assert (take / "previous.wav").read_bytes() == b"original"
 
 
 def test_source_collision_refused_before_key_or_api(voice, source):
     with pytest.raises(FileExistsError):
-        voice.generate_take(source, source)
+        voice.generate_take(source, source, speaker="teacher")
     assert source.read_text() == "Hello, Czatosław Klałdowski.\n"
 
 
@@ -90,7 +90,7 @@ def test_success_publishes_complete_consistent_take(voice, source, tmp_path):
         return response()
 
     ready = voice.generate_take(
-        source, take, key_loader=lambda: "fake-key", requester=api
+        source, take, key_loader=lambda: "fake-key", requester=api, speaker="teacher"
     )
     assert ready == take / "ready"
     assert len(calls) == 1
@@ -137,7 +137,9 @@ def test_invalid_paid_response_retained_unapproved_without_retry(
 
     take = tmp_path / "take"
     with pytest.raises(voice.VoiceGenerationError):
-        voice.generate_take(source, take, key_loader=lambda: "fake", requester=api)
+        voice.generate_take(
+            source, take, key_loader=lambda: "fake", requester=api, speaker="teacher"
+        )
     assert len(calls) == 1
     assert not (take / "ready").exists()
     assert (take / "unapproved/response.json").read_bytes() == result
@@ -158,7 +160,11 @@ def test_write_failure_never_publishes_partial_take(
     take = tmp_path / "take"
     with pytest.raises(voice.VoiceGenerationError):
         voice.generate_take(
-            source, take, key_loader=lambda: "fake", requester=lambda *_: response()
+            source,
+            take,
+            key_loader=lambda: "fake",
+            requester=lambda *_: response(),
+            speaker="teacher",
         )
     assert not (take / "ready").exists()
     assert (take / "unapproved/response.json").read_bytes() == response()
@@ -169,16 +175,18 @@ def test_concurrent_same_name_cannot_make_second_paid_request(voice, source, tmp
 
     def api(*_):
         with pytest.raises(FileExistsError):
-            voice.generate_take(source, take)
+            voice.generate_take(source, take, speaker="teacher")
         return response()
 
-    voice.generate_take(source, take, key_loader=lambda: "fake", requester=api)
+    voice.generate_take(
+        source, take, key_loader=lambda: "fake", requester=api, speaker="teacher"
+    )
 
 
 def test_empty_source_fails_before_credentials(voice, source, tmp_path):
     source.write_text(" \n")
     with pytest.raises(ValueError):
-        voice.generate_take(source, tmp_path / "take")
+        voice.generate_take(source, tmp_path / "take", speaker="teacher")
 
 
 def test_whitespace_only_transcript_differences_are_allowed(voice, source, tmp_path):
@@ -187,6 +195,7 @@ def test_whitespace_only_transcript_differences_are_allowed(voice, source, tmp_p
         tmp_path / "take",
         key_loader=lambda: "fake",
         requester=lambda *_: response(transcript="Hello,\nCzatosław  Klałdowski.  "),
+        speaker="teacher",
     )
 
 
@@ -195,7 +204,9 @@ def test_key_failure_is_not_retried_and_is_unapproved(voice, source, tmp_path):
         raise OSError("credential unavailable")
 
     with pytest.raises(voice.VoiceGenerationError):
-        voice.generate_take(source, tmp_path / "take", key_loader=unavailable)
+        voice.generate_take(
+            source, tmp_path / "take", key_loader=unavailable, speaker="teacher"
+        )
     assert (tmp_path / "take/UNAPPROVED.txt").exists()
     assert not (tmp_path / "take/ready").exists()
 
@@ -207,7 +218,12 @@ def test_voice_selection_reaches_request_and_metadata(voice, source, tmp_path, n
         return response()
 
     ready = voice.generate_take(
-        source, tmp_path / name, voice=name, key_loader=lambda: "fake", requester=api
+        source,
+        tmp_path / name,
+        voice=name,
+        key_loader=lambda: "fake",
+        requester=api,
+        speaker="teacher",
     )
     assert json.loads((ready / "metadata.json").read_text())["voice"] == name
 
@@ -221,7 +237,9 @@ def test_http_error_body_retained_without_retry(voice, source, tmp_path):
 
     take = tmp_path / "take"
     with pytest.raises(voice.VoiceGenerationError):
-        voice.generate_take(source, take, key_loader=lambda: "fake", requester=api)
+        voice.generate_take(
+            source, take, key_loader=lambda: "fake", requester=api, speaker="teacher"
+        )
     assert len(calls) == 1
     assert (
         take / "unapproved/response.json"
@@ -238,6 +256,7 @@ def test_invalid_base64_retained_unapproved(voice, source, tmp_path):
             tmp_path / "take",
             key_loader=lambda: "fake",
             requester=lambda *_: json.dumps(result).encode(),
+            speaker="teacher",
         )
     assert not (tmp_path / "take/ready").exists()
 
@@ -264,6 +283,7 @@ def test_nova_uses_natural_learner_prompt(voice, source, tmp_path):
         source,
         tmp_path / "nova",
         voice="nova",
+        speaker="learner",
         key_loader=lambda: "fake",
         requester=api,
     )
@@ -287,7 +307,12 @@ def test_script_is_an_explicit_recording_task_not_a_conversation(
         return response()
 
     ready = voice.generate_take(
-        source, tmp_path / name, voice=name, key_loader=lambda: "fake", requester=api
+        source,
+        tmp_path / name,
+        voice=name,
+        key_loader=lambda: "fake",
+        requester=api,
+        speaker="teacher",
     )
     assert (ready / "script.txt").read_text() == source.read_text()
     assert (ready / "transcript.txt").read_text() == source.read_text().strip()
@@ -306,6 +331,7 @@ def test_unknown_size_pcm_wav_is_normalized(voice, source, tmp_path):
         tmp_path / "take",
         key_loader=lambda: "fake",
         requester=lambda *_: response(data=streaming_wav()),
+        speaker="teacher",
     )
     assert (ready / "audio.wav").read_bytes() == wav_bytes()
     raw = json.loads((ready / "response.json").read_bytes())
@@ -333,6 +359,7 @@ def test_invalid_or_partial_unknown_size_header_is_rejected(
             tmp_path / "take",
             key_loader=lambda: "fake",
             requester=lambda *_: response(data=mutate(streaming_wav())),
+            speaker="teacher",
         )
     assert not (tmp_path / "take/ready").exists()
 
@@ -399,6 +426,7 @@ def test_finite_riff_size_cannot_claim_missing_bytes(voice, source, tmp_path):
             tmp_path / "take",
             key_loader=lambda: "fake",
             requester=lambda *_: response(data=bytes(data)),
+            speaker="teacher",
         )
     assert not (tmp_path / "take/ready").exists()
 
@@ -442,13 +470,16 @@ def test_only_complete_mono_16bit_pcm_is_publishable(
             tmp_path / "take",
             key_loader=lambda: "fake",
             requester=lambda *_: response(data=audio),
+            speaker="teacher",
         )
     assert not (tmp_path / "take/ready").exists()
 
 
 def test_unapproved_script_hash_refused_before_credentials(voice, source, tmp_path):
     with pytest.raises(ValueError, match="approved"):
-        voice.generate_take(source, tmp_path / "take", approved_sha256="0" * 64)
+        voice.generate_take(
+            source, tmp_path / "take", approved_sha256="0" * 64, speaker="teacher"
+        )
     assert not (tmp_path / "take").exists()
 
 
@@ -472,6 +503,7 @@ def test_request_uses_the_approved_snapshot(voice, source, tmp_path):
         approved_sha256=hashlib.sha256(original.encode()).hexdigest(),
         key_loader=edit_after_check,
         requester=api,
+        speaker="teacher",
     )
 
 
@@ -483,6 +515,21 @@ def test_cli_execute_requires_the_approved_hash(
         "sys.argv",
         ["openai_voice.py", str(source), str(tmp_path / "take"), "--execute"]
         + approved,
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        voice.main()
+    assert exit_info.value.code != 0
+    assert not (tmp_path / "take").exists()
+
+
+def test_cli_execute_requires_the_speaker_persona(voice, source, tmp_path, monkeypatch):
+    import hashlib
+
+    approved = hashlib.sha256(source.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        "sys.argv",
+        ["openai_voice.py", str(source), str(tmp_path / "take"), "--execute"]
+        + ["--approved-script-sha256", approved],
     )
     with pytest.raises(SystemExit) as exit_info:
         voice.main()

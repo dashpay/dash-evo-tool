@@ -56,6 +56,7 @@ def test_reuse_only_exact_approved_turn_and_no_paid_calls(tmp_path, monkeypatch)
         voice="cedar",
         key_loader=lambda: "fake",
         requester=lambda *_: response(transcript=text),
+        speaker="teacher",
     )
     media = tmp_path / "old-media.json"
     media.write_text(
@@ -162,6 +163,7 @@ def test_declared_voice_change_rejects_the_old_take(tmp_path, monkeypatch):
         voice="cedar",
         key_loader=lambda: "fake",
         requester=lambda *_: response(transcript=text),
+        speaker="teacher",
     )
     media = tmp_path / "old-media.json"
     media.write_text(
@@ -182,3 +184,37 @@ def test_declared_voice_change_rejects_the_old_take(tmp_path, monkeypatch):
     result = project.reuse(changed, tmp_path / "reused", media)
     assert result["reused"] == []
     assert result["rejected"]["scene-00-turn-00"]
+
+
+def test_reuse_accepts_a_learner_take_with_a_non_nova_voice(tmp_path, monkeypatch):
+    source = scenario(tmp_path)
+    original = json.loads(source.read_text())
+    original["speakers"]["learner"]["voice"] = "ballad"
+    source.write_text(json.dumps(original))
+    turn = original["scenes"][0]["turns"][1]
+    assert turn["speaker"] == "learner"
+    old_script = tmp_path / "old.txt"
+    old_script.write_text(turn["text"] + "\n")
+    ready = voice.generate_take(
+        old_script,
+        tmp_path / "take",
+        voice="ballad",
+        speaker="learner",
+        key_loader=lambda: "fake",
+        requester=lambda *_: response(transcript=turn["text"]),
+    )
+    media = tmp_path / "old-media.json"
+    media.write_text(
+        json.dumps(
+            {
+                "scenario": str(source),
+                "scenario_sha256": project.batch.digest(source.read_bytes()),
+                "segments": {"00": {"audio": [None, str(ready / "audio.wav")]}},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        voice, "request_audio", lambda *_: pytest.fail("Paid API access")
+    )
+    result = project.reuse(source, tmp_path / "reused", media)
+    assert result["reused"] == ["scene-00-turn-01"]

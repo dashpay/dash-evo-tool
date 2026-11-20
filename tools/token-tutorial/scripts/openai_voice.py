@@ -35,6 +35,8 @@ LEARNER_INSTRUCTIONS = (
     "Pronounce Ewa as EH-vah and Dashwood as DASH-wood, without exaggeration. "
     "Do not add her name unless it appears in the supplied script."
 )
+# Personas follow the speaker's role, never the voice that reads it.
+PERSONAS = {"teacher": INSTRUCTIONS, "learner": LEARNER_INSTRUCTIONS}
 
 
 class VoiceGenerationError(Exception):
@@ -167,6 +169,7 @@ def generate_take(
     source,
     take,
     *,
+    speaker,
     voice="cedar",
     key_loader=None,
     requester=None,
@@ -178,6 +181,8 @@ def generate_take(
     any credential is loaded; the request is built from that same snapshot.
     """
     script = preflight(source, take, voice)
+    if speaker not in PERSONAS:
+        raise ValueError("Unknown narration speaker persona")
     if (
         approved_sha256 is not None
         and hashlib.sha256(script.encode()).hexdigest() != approved_sha256
@@ -188,7 +193,9 @@ def generate_take(
         key = (key_loader or load_key)()
         return (requester or request_audio)(payload, key)
 
-    return _write_take(source, take, voice, fetch, script=script)
+    return _write_take(
+        source, take, voice, fetch, instructions=PERSONAS[speaker], script=script
+    )
 
 
 def recover_take(source, failed_take, take, *, voice="cedar"):
@@ -205,12 +212,15 @@ def recover_take(source, failed_take, take, *, voice="cedar"):
         take,
         voice,
         lambda _: raw,
+        instructions=None,
         script=script,
         recovery_from=cached / "response.json",
     )
 
 
-def _write_take(source, take, voice, fetch, *, script=None, recovery_from=None):
+def _write_take(
+    source, take, voice, fetch, *, instructions, script=None, recovery_from=None
+):
     source, take = Path(source), Path(take)
     if script is None:
         script = preflight(source, take, voice)
@@ -224,7 +234,6 @@ def _write_take(source, take, voice, fetch, *, script=None, recovery_from=None):
             encoding="utf-8",
         )
         (pending / "script.txt").write_text(script, encoding="utf-8")
-        instructions = LEARNER_INSTRUCTIONS if voice == "nova" else INSTRUCTIONS
         payload = {
             "model": MODEL,
             "modalities": ["text", "audio"],
@@ -314,6 +323,11 @@ def main():
     )
     parser.add_argument("--voice", choices=VOICES, default="cedar")
     parser.add_argument(
+        "--speaker",
+        choices=PERSONAS,
+        help="Speaker role whose persona instructions are sent; required with --execute",
+    )
+    parser.add_argument(
         "--key-file", type=Path, help="Optional explicit env file; never executed"
     )
     parser.add_argument(
@@ -332,6 +346,8 @@ def main():
     args = parser.parse_args()
     if args.execute and not args.approved_script_sha256:
         parser.error("--execute requires --approved-script-sha256")
+    if args.execute and not args.speaker:
+        parser.error("--execute requires --speaker")
     try:
         if args.recover_from:
             ready = recover_take(
@@ -348,6 +364,7 @@ def main():
                 args.source,
                 args.take_directory,
                 voice=args.voice,
+                speaker=args.speaker,
                 key_loader=lambda: load_key(args.key_file),
                 approved_sha256=args.approved_script_sha256,
             )

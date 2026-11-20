@@ -117,12 +117,7 @@ def reuse(source, root, old_media_path):
                 wav = (old_media_path.parent / paths[job["turn_index"]]).resolve()
                 ready = wav.parent
                 metadata = media.read_json(ready / "metadata.json")
-                expected_instructions = (
-                    voice.LEARNER_INSTRUCTIONS
-                    if job["voice"] == "nova"
-                    else voice.INSTRUCTIONS
-                )
-                if metadata.get("instructions") != expected_instructions:
+                if metadata.get("instructions") != voice.PERSONAS[job["speaker"]]:
                     raise ValueError(
                         "Instructions changed or provenance is unavailable"
                     )

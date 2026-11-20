@@ -349,3 +349,29 @@ def test_missing_or_unsupported_declared_voice_is_refused(script, tmp_path, decl
     doc["speakers"]["learner"]["voice"] = declared
     with pytest.raises(ValueError, match="voice"):
         batch.expand(doc, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "speaker,declared,other",
+    [("learner", "ballad", "teacher"), ("teacher", "nova", "learner")],
+)
+def test_persona_follows_the_speaker_not_the_voice(
+    script, tmp_path, api, speaker, declared, other
+):
+    doc = json.loads(script.read_text())
+    doc["speakers"][speaker]["voice"] = declared
+    doc["speakers"][other]["voice"] = "echo"
+    script.write_text(json.dumps(doc))
+    index = 0 if speaker == "teacher" else 1
+    execute(script, tmp_path / "audio", ids=[f"scene-00-turn-{index:02d}"])
+    payload = api[0][0]
+    assert payload["audio"]["voice"] == declared
+    assert payload["messages"][0]["content"] == batch.voice.PERSONAS[speaker]
+
+
+def test_speaker_without_a_persona_is_refused(script, tmp_path):
+    doc = json.loads(script.read_text())
+    doc["speakers"]["narrator"] = {"name": "Narrator", "voice": "ash"}
+    doc["scenes"][0]["turns"][0]["speaker"] = "narrator"
+    with pytest.raises(ValueError, match="persona"):
+        batch.expand(doc, tmp_path)

@@ -76,6 +76,8 @@ def expand(document, root):
                 raise ValueError(
                     "Every turn needs a supported speaker and nonempty text"
                 )
+            if speaker not in voice.PERSONAS:
+                raise ValueError("Every speaker needs a narration persona")
             job_id = f"scene-{scene['id']}-turn-{index:02d}"
             jobs.append(
                 {
@@ -367,6 +369,7 @@ def run_batch(
                     job["source_path"],
                     attempt["take_directory"],
                     voice=job["voice"],
+                    speaker=job["speaker"],
                     requester=request,
                     approved_sha256=job["text_sha256"],
                 )

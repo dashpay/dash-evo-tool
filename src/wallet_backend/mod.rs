@@ -4876,7 +4876,7 @@ mod tests {
             );
 
             assert!(
-                !matches!(mapped, TaskError::ShieldFromPlatformCapacityExceeded { .. }),
+                matches!(mapped, TaskError::ShieldFromPlatformBalanceChanged { .. }),
                 "{mapped:?}"
             );
             let message = mapped.to_string();

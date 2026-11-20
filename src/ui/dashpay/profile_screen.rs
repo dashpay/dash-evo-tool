@@ -921,7 +921,7 @@ impl ProfileScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("dashpay_profile_guidelines_info_popup"),
+                        egui::Id::unique("dashpay_profile_guidelines_info_popup"),
                         "Profile Guidelines",
                         PROFILE_GUIDELINES_INFO_TEXT,
                     );
@@ -937,7 +937,7 @@ impl ProfileScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("dashpay_profile_avatar_guidelines_info_popup"),
+                        egui::Id::unique("dashpay_profile_avatar_guidelines_info_popup"),
                         "Avatar Image Guidelines",
                         AVATAR_URL_INFO_TEXT,
                     );
@@ -956,7 +956,7 @@ impl ProfileScreen {
                 let screen_rect = ui.ctx().content_rect();
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Background,
-                    egui::Id::new("avatar_popup_overlay"),
+                    egui::Id::unique("avatar_popup_overlay"),
                 ));
                 painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 

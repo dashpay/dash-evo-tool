@@ -1177,7 +1177,7 @@ mod tests {
         let ctx = egui::Context::default();
         let window_rect =
             egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
-        let id = egui::Id::new("test_modal_outside_click_pass");
+        let id = egui::Id::unique("test_modal_outside_click_pass");
 
         // Opening frame (first render): the outside press must be ignored.
         let mut closed = true;
@@ -1205,7 +1205,7 @@ mod tests {
         let ctx = egui::Context::default();
         let window_rect =
             egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
-        let id = egui::Id::new("test_modal_rearm_pass");
+        let id = egui::Id::unique("test_modal_rearm_pass");
 
         // First open + a continuation pass so the guard is disarmed.
         ctx.run_ui(outside_press(), |ui| {

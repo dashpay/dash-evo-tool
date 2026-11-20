@@ -303,7 +303,7 @@ impl AddNewWalletScreen {
         let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
-            egui::Id::new("receive_funds_overlay"),
+            egui::Id::unique("receive_funds_overlay"),
         ));
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 

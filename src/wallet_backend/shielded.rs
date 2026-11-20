@@ -7,7 +7,7 @@
 //! activity/notes list reads remain `#[allow(dead_code)]` until the Phase-F
 //! upstream-coordinator read path lands.
 
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{BackendTaskJoinError, TaskError};
 use crate::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
@@ -472,14 +472,20 @@ impl WalletBackend {
         // of its own.
         let runtime = tokio::runtime::Handle::current();
         let pass = tokio::task::spawn_blocking(move || runtime.block_on(coordinator.sync_now()));
-        match tokio::time::timeout(wait, pass).await {
-            Ok(Ok(_summary)) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(?error, "Platform-address sync after a spend did not finish");
-            }
-            Err(_elapsed) => {
-                tracing::debug!("Platform-address sync after a spend is still running");
-            }
+        await_post_spend_sync(pass, wait).await;
+    }
+}
+
+/// Wait up to `wait` for a post-spend sync pass; its outcome is only logged.
+async fn await_post_spend_sync<T>(pass: tokio::task::JoinHandle<T>, wait: std::time::Duration) {
+    match tokio::time::timeout(wait, pass).await {
+        Ok(Ok(_summary)) => {}
+        Ok(Err(error)) => {
+            let error = BackendTaskJoinError::from(error);
+            tracing::warn!(?error, "Platform-address sync after a spend did not finish");
+        }
+        Err(_elapsed) => {
+            tracing::debug!("Platform-address sync after a spend is still running");
         }
     }
 }
@@ -488,6 +494,21 @@ impl WalletBackend {
 mod tests {
     use super::*;
     use zeroize::Zeroizing;
+
+    /// A post-spend sync pass that panicked is logged without its panic text.
+    #[tokio::test]
+    async fn panicked_post_spend_sync_is_logged_without_its_panic_message() {
+        let panic_text = "synthetic-seed-words-for-a-sync-pass";
+        let log = crate::test_support::CapturedLog::start();
+        let pass = tokio::task::spawn_blocking(move || {
+            panic!("{panic_text}");
+        });
+
+        await_post_spend_sync(pass, std::time::Duration::from_secs(30)).await;
+        let text = log.text();
+        assert!(!text.contains(panic_text), "{text}");
+        assert!(text.contains("panicked: true"), "{text}");
+    }
 
     /// An HD-seed secret resolves to its 64 raw bytes — the common shielded-spend
     /// path.

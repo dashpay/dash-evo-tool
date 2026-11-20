@@ -1,5 +1,5 @@
 use crate::backend_task::TaskResult;
-use crate::backend_task::error::{DapiAddressAvailability, TaskError};
+use crate::backend_task::error::{BackendTaskJoinError, DapiAddressAvailability, TaskError};
 use crate::backend_task::{
     BackendTaskSuccessResult, contextualize_dapi_task_result, in_current_request,
 };
@@ -81,7 +81,8 @@ async fn every_contest_query_succeeded(queries: Vec<JoinHandle<bool>>) -> bool {
         match query.await {
             Ok(refreshed) => succeeded &= refreshed,
             Err(e) => {
-                tracing::error!("Task failed: {:?}", e);
+                let error = BackendTaskJoinError::from(e);
+                tracing::error!(?error, "A contested-name query task did not finish");
                 succeeded = false;
             }
         }
@@ -441,6 +442,22 @@ mod tests {
         let stopped = tokio::spawn(std::future::pending::<bool>());
         stopped.abort();
         assert!(!every_contest_query_succeeded(vec![stopped, query(true)]).await);
+    }
+
+    /// A contest query that panicked fails the pass without its panic text
+    /// reaching the log.
+    #[tokio::test]
+    async fn panicked_contest_query_is_logged_without_its_panic_message() {
+        let panic_text = "synthetic-seed-words-for-a-contest-query";
+        let log = crate::test_support::CapturedLog::start();
+        let panicked = tokio::spawn(async move {
+            panic!("{panic_text}");
+        });
+
+        assert!(!every_contest_query_succeeded(vec![panicked]).await);
+        let text = log.text();
+        assert!(!text.contains(panic_text), "{text}");
+        assert!(text.contains("panicked: true"), "{text}");
     }
 
     /// A context on an in-memory store and a mock SDK that lists `names` as

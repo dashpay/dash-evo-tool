@@ -33,10 +33,9 @@ use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
-/// Maximum number of bytes of an upstream SPV error message kept for the UI
-/// tooltip. The full message is logged; the stored snippet is truncated on a
-/// char boundary so it never splits a multibyte sequence.
-const SPV_ERROR_SNIPPET_MAX: usize = 200;
+/// Shown for an SPV error reported by a sync manager or the error callback,
+/// whose own text is withheld.
+const SPV_ERROR_GUIDANCE: &str = "Chain sync reported a problem. If it does not recover, disconnect and connect again in Settings, or restart Dash Evo Tool.";
 
 /// DET-authored handler registered with `PlatformWalletManager` at
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`
@@ -219,14 +218,15 @@ impl EventHandler for EventBridge {
                 self.nudge_refresh();
             }
             SyncEvent::ManagerError { manager, error } => {
-                // The manager id is a useful log dimension but internal jargon —
-                // keep it out of the stored error text the UI surfaces. The raw
-                // upstream message is stored verbatim (truncated) and shown only
-                // as a tooltip behind a fixed user-facing label.
-                tracing::error!(%manager, error, "SPV manager error");
-                let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
+                // The text can hold a manager task's formatted panic message,
+                // so only the manager and the text's length are logged.
+                tracing::error!(
+                    %manager,
+                    error_bytes = error.len(),
+                    "SPV manager error; its text is withheld"
+                );
                 self.connection_status
-                    .set_spv_last_error(Some(error[..limit].to_string()));
+                    .set_spv_last_error(Some(SPV_ERROR_GUIDANCE.to_string()));
                 self.apply_status(SpvStatus::Error);
                 self.nudge_refresh();
             }
@@ -331,9 +331,15 @@ impl EventHandler for EventBridge {
     }
 
     fn on_error(&self, error: &str) {
-        let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
+        // The text can hold a worker's formatted panic message (dash-spv
+        // formats a `JoinError` into it and logs it itself), so DET keeps only
+        // its length and shows fixed guidance.
+        tracing::error!(
+            error_bytes = error.len(),
+            "Chain sync reported an error; its text is withheld"
+        );
         self.connection_status
-            .set_spv_last_error(Some(error[..limit].to_string()));
+            .set_spv_last_error(Some(SPV_ERROR_GUIDANCE.to_string()));
         self.apply_status(SpvStatus::Error);
         self.nudge_refresh();
     }
@@ -816,15 +822,38 @@ mod tests {
         assert!(drained_repaint(&mut rx));
     }
 
+    /// A manager error's text can carry a formatted panic message, so the
+    /// error state shows fixed guidance and the log keeps only the manager.
     #[test]
-    fn manager_error_sets_error_status_and_records_message() {
+    fn manager_error_sets_error_with_fixed_guidance_and_withholds_its_text() {
+        let panic_text = "synthetic-seed-words-for-an-spv-manager";
         let (bridge, cs, mut rx) = make_bridge();
+        let log = crate::test_support::CapturedLog::start();
+
         bridge.on_sync_event(&SyncEvent::ManagerError {
             manager: dash_sdk::dash_spv::ManagerIdentifier::BlockHeader,
-            error: "boom".to_string(),
+            error: format!("Manager task panicked: task 3 panicked with message \"{panic_text}\""),
         });
+        let shown = cs
+            .spv_last_error()
+            .expect("the error state keeps a message");
+        let tooltip = cs.tooltip_text();
+        bridge.on_error("network down");
+
         assert_eq!(cs.spv_status(), SpvStatus::Error);
-        assert!(cs.spv_last_error().is_some_and(|e| e.contains("boom")));
+        assert!(!shown.contains(panic_text), "{shown}");
+        assert!(!tooltip.contains(panic_text), "{tooltip}");
+        let text = log.text();
+        assert!(!text.contains(panic_text), "{text}");
+        assert!(
+            text.contains("BlockHeader"),
+            "the log keeps the manager: {text}"
+        );
+        assert_eq!(
+            cs.spv_last_error().as_deref(),
+            Some(shown.as_str()),
+            "manager and callback errors show the same guidance"
+        );
         assert!(drained_repaint(&mut rx));
     }
 
@@ -966,14 +995,31 @@ mod tests {
         );
     }
 
+    /// The callback text can carry a worker's formatted panic message, so the
+    /// error state shows fixed guidance and neither it nor the log holds that text.
     #[test]
-    fn on_error_sets_error_and_records_message() {
+    fn on_error_sets_error_with_fixed_guidance_and_withholds_the_callback_text() {
+        let panic_text = "synthetic-seed-words-for-an-spv-worker";
         let (bridge, cs, mut rx) = make_bridge();
+        let log = crate::test_support::CapturedLog::start();
+
+        bridge.on_error(&format!(
+            "Invalid state: Manager task panicked: task 7 panicked with message \"{panic_text}\""
+        ));
+        let shown = cs
+            .spv_last_error()
+            .expect("the error state keeps a message");
+        let tooltip = cs.tooltip_text();
         bridge.on_error("network down");
+
         assert_eq!(cs.spv_status(), SpvStatus::Error);
-        assert!(
-            cs.spv_last_error()
-                .is_some_and(|e| e.contains("network down"))
+        assert!(!shown.contains(panic_text), "{shown}");
+        assert!(!tooltip.contains(panic_text), "{tooltip}");
+        assert!(!log.text().contains(panic_text), "{}", log.text());
+        assert_eq!(
+            cs.spv_last_error().as_deref(),
+            Some(shown.as_str()),
+            "every callback error shows the same guidance"
         );
         assert!(drained_repaint(&mut rx));
     }

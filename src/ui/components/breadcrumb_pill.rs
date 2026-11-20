@@ -20,7 +20,7 @@
 use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{DashColors, ResponseExt};
 use eframe::egui::{
-    self, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Ui, WidgetInfo, WidgetType,
+    self, Color32, CornerRadius, Frame, Margin, RichText, Role, Sense, Stroke, Ui, WidgetInfo,
 };
 
 /// The three rendering modes for a breadcrumb pill.
@@ -260,7 +260,7 @@ impl BreadcrumbPill {
         };
         response.widget_info(|| {
             WidgetInfo::labeled(
-                WidgetType::Link,
+                Role::Link,
                 matches!(self.mode, BreadcrumbPillMode::Interactive),
                 accessible_name.clone(),
             )

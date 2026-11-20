@@ -260,7 +260,10 @@ python3 scripts/gui/gui.py --session local/evidence/session.json \
   --execute --record local/captures/03.mkv
 ```
 
-Scene dry-run reads JSON without touching a GUI. Supported steps are exact-label
+`list`, `wait`, screenshots and scenes refuse a screen showing a password
+field or credential label (recovery or seed phrase, mnemonic, private key,
+password, passphrase), so recovery words or a WIF shown as labels are never
+printed or captured. Scene dry-run reads JSON without touching a GUI. Supported steps are exact-label
 `wait`, `wait_absent`, `click`, `screenshot` and bounded `hold`. Capture uses real
 Full HD X11 frames. Missing/ambiguous accessibility state stops the action;
 absence cannot succeed after losing the app. The helper intentionally does not

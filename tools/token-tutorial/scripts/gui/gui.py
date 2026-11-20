@@ -43,8 +43,6 @@ def command(*args):
 
 
 class Gui:
-    recording = False
-
     def __init__(self, evidence, session_path=SESSION):
         session = json.loads(Path(session_path).read_text())
         if any(not session.get(key) for key in REQUIRED_SESSION):
@@ -135,11 +133,11 @@ class Gui:
             )
         return nodes, secret_field
 
-    def nodes(self):
-        yield from self.scan()[0]
-
     def guard(self):
-        """Refuse a screen that may show a credential prompt; field values are never read."""
+        """Return one snapshot's nodes, refusing a screen that may show a credential.
+
+        Field values are never read. Every inspection, wait and capture uses this check.
+        """
         nodes, secret_field = self.scan()
         if secret_field or any(
             word in (data["name"] or "").lower()
@@ -149,11 +147,12 @@ class Gui:
             raise SensitiveScreen(
                 "Sensitive form detected; screenshots and recorded scenes must stay paused"
             )
+        return nodes
 
     def match(self, target):
         return [
             (node, data)
-            for node, data in self.nodes()
+            for node, data in self.guard()
             if data["name"] == target["name"]
             and (not target.get("role") or data["role"] == target["role"])
         ]
@@ -162,8 +161,6 @@ class Gui:
         deadline = time.monotonic() + timeout
         previous = None
         while time.monotonic() < deadline:
-            if self.recording:
-                self.guard()
             found = self.match(target)
             if absent and not found:
                 if previous == "absent":
@@ -233,7 +230,6 @@ class Gui:
             partial = output.with_name(f"{output.stem}.incomplete{output.suffix}")
             if output.exists() or partial.exists():
                 raise FileExistsError(output)
-            self.recording = True
             recorder = subprocess.Popen(
                 [
                     "ffmpeg",
@@ -292,7 +288,6 @@ class Gui:
             sensitive = True
             raise
         finally:
-            self.recording = False
             killed = False
             try:
                 if recorder and recorder.poll() is None:
@@ -368,7 +363,7 @@ def main():
             return
     gui = Gui(args.evidence, args.session)
     if args.command == "list":
-        print(json.dumps([data for _, data in gui.nodes()], indent=2))
+        print(json.dumps([data for _, data in gui.guard()], indent=2))
     elif args.command in ("wait", "click"):
         target = {"name": args.name, "role": args.role}
         if args.command == "click" and args.execute:

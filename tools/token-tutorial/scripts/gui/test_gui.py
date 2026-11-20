@@ -345,3 +345,19 @@ def test_stalled_recorder_is_killed_and_its_clip_deleted(
     assert StalledRecorder.killed
     assert not output.exists()
     assert not any(path.exists() for path in Recorder.started)
+
+
+@pytest.mark.parametrize("command", [["list"], ["wait", "abandon", "--timeout", "1"]])
+def test_inspection_never_prints_labels_of_a_credential_screen(
+    module, tmp_path, monkeypatch, capsys, command
+):
+    seed_screen = screen(
+        Element("3. Write down the passphrase on a piece of paper.", "heading"),
+        Element("abandon", "label"),
+    )
+    gui = fake_gui(module, tmp_path, [seed_screen])
+    monkeypatch.setattr(module, "Gui", lambda *_: gui)
+    monkeypatch.setattr("sys.argv", ["gui.py", *command])
+    with pytest.raises(RuntimeError, match="Sensitive"):
+        module.main()
+    assert "abandon" not in capsys.readouterr().out

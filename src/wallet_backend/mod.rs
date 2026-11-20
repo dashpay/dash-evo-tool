@@ -3379,19 +3379,32 @@ fn bip44_account0_xpub<'a>(
 /// with the fee reserve still in it, or the whole account balance when no
 /// address can keep the reserve back. Without a plan there is no trustworthy
 /// maximum, so the refusal keeps the generic envelope; with a plan that can
-/// shield nothing, there is no Max to point to. Pure — unit-testable.
+/// shield nothing, there is no Max to point to. A later plan whose maximum
+/// covers `amount` does not show which check refused it: a selected input may
+/// have held less than its cached balance, or a sync may have raised the
+/// cached maximum between the refusal and this plan. Either way no maximum is
+/// stated. Pure — unit-testable.
 fn shield_capacity_exceeded_error(
     source: platform_wallet::error::PlatformWalletError,
     preflight: Result<
         platform_wallet::ShieldedShieldPreflight,
         platform_wallet::error::PlatformWalletError,
     >,
+    amount: u64,
 ) -> TaskError {
     match preflight {
         Ok(preflight) if preflight.can_shield && preflight.max_shieldable_credits > 0 => {
-            TaskError::ShieldFromPlatformCapacityExceeded {
-                max_shieldable: preflight.max_shieldable_credits,
-                source: Box::new(source),
+            if amount > preflight.max_shieldable_credits {
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable: preflight.max_shieldable_credits,
+                    source: Box::new(source),
+                }
+            } else {
+                // The later plan covers the amount, so the refusal came from a
+                // live input shortfall or an earlier, smaller snapshot.
+                TaskError::ShieldFromPlatformBalanceChanged {
+                    source: Box::new(source),
+                }
             }
         }
         Ok(_) => TaskError::ShieldFromPlatformNothingShieldable {
@@ -5090,6 +5103,7 @@ mod tests {
                 required: USABLE + RESERVE,
             },
             Ok(shield_preflight(USABLE, RESERVE)),
+            USABLE,
         );
 
         assert!(
@@ -5117,6 +5131,39 @@ mod tests {
         );
     }
 
+    /// A selected input can hold less than the cached balance the planner
+    /// read, so upstream refuses an amount within the planner's maximum. That
+    /// maximum would say the amount fits, so the message states none.
+    #[test]
+    fn a_live_shortfall_within_the_planner_maximum_states_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const USABLE: u64 = 300_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+        const MAX: u64 = USABLE - RESERVE;
+
+        for amount in [MAX, MAX - 1] {
+            let mapped = shield_capacity_exceeded_error(
+                P::PlatformShieldCapacityExceeded {
+                    available: 50_000_000_000,
+                    required: amount + RESERVE,
+                },
+                Ok(shield_preflight(USABLE, RESERVE)),
+                amount,
+            );
+
+            assert!(
+                matches!(mapped, TaskError::ShieldFromPlatformBalanceChanged { .. }),
+                "{mapped:?}"
+            );
+            let message = mapped.to_string();
+            assert!(
+                !message.contains(&crate::model::fee_estimation::format_credits_as_dash(MAX)),
+                "{message}"
+            );
+            assert!(message.contains("try again"), "{message}");
+        }
+    }
+
     /// When no address can keep the fee reserve back, upstream reports the
     /// whole account balance, but nothing at all can be shielded — so the
     /// message says so instead of pointing at a Max of zero.
@@ -5134,6 +5181,7 @@ mod tests {
                 required: 1 + RESERVE,
             },
             Ok(preflight),
+            1,
         );
 
         assert!(
@@ -5160,6 +5208,7 @@ mod tests {
                 required: 9,
             },
             Err(P::ShieldedNotBound),
+            9,
         );
 
         assert!(

@@ -365,14 +365,15 @@ impl AppContext {
                 qualified_identity.identity = updated_identity;
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 
-                // Update source address balances using proof-verified data from SDK response
-                if let Err(e) = self.update_wallet_platform_address_info_from_sdk(
+                // Show the spent balances in platform-wallet, DET's view and
+                // the wallet total at once, pinned at the proof's height.
+                self.record_platform_address_spend_proof(
                     wallet_seed_hash,
                     &address_infos,
                     height,
-                ) {
-                    tracing::warn!("Failed to update wallet platform address info: {}", e);
-                }
+                    "identity registration",
+                )
+                .await;
 
                 // The creation proof's height orders this first balance, so a
                 // later fetch from a lagging node cannot replace it.

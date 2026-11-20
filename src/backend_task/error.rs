@@ -804,6 +804,17 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
+    /// The seed vault's folder, or a folder above it, can be changed by other
+    /// accounts, so the vault is refused. Only tightening those folders fixes
+    /// it; the folder and reason travel in `source`.
+    #[error(
+        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make these folders writable only by your own account, then restart the application."
+    )]
+    SecretStoreFolderInsecure {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
     /// The encrypted seed vault could not be read or written. Distinct
     /// from [`Self::SecretStore`] so the banner can speak about "your
     /// wallet" rather than imported keys. Backed by the same upstream
@@ -4008,8 +4019,9 @@ impl TaskError {
 }
 
 /// Wrap a vault failure in its caller's class variant, except the
-/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`]
-/// whichever class hit it.
+/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
+/// and an insecure vault folder, which becomes
+/// [`TaskError::SecretStoreFolderInsecure`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4020,16 +4032,18 @@ pub(crate) fn vault_error(
     source: platform_wallet_storage::secrets::SecretStoreError,
     class: impl FnOnce(Box<platform_wallet_storage::secrets::SecretStoreError>) -> TaskError,
 ) -> TaskError {
-    // `max` is `usize`, so binding it here copies rather than moves `source`.
-    if let platform_wallet_storage::secrets::SecretStoreError::PassphraseTooLong { max, .. } =
-        source
-    {
-        return TaskError::PassphraseTooLong {
+    use platform_wallet_storage::secrets::SecretStoreError;
+    match source {
+        // `max` is `usize`, so binding it here copies rather than moves `source`.
+        SecretStoreError::PassphraseTooLong { max, .. } => TaskError::PassphraseTooLong {
             max,
             source: Box::new(source),
-        };
+        },
+        SecretStoreError::InsecureParentDir { .. } => TaskError::SecretStoreFolderInsecure {
+            source: Box::new(source),
+        },
+        source => class(Box::new(source)),
     }
-    class(Box::new(source))
 }
 
 /// User-facing text for [`TaskError::ShieldedRecoveryCorrupted`]. Upstream

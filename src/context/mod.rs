@@ -787,8 +787,10 @@ impl AppContext {
             .map_err(|source| TaskError::FileSystem { source })?;
         crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
+            .map_err(|source| {
+                crate::backend_task::error::vault_error(source, |source| TaskError::SecretStore {
+                    source,
+                })
             })
     }
 
@@ -1950,6 +1952,38 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A seed vault under a folder other accounts can change is refused with
+    /// advice about folder permissions, on the keyless and the passphrase
+    /// open alike, not with "close other copies".
+    #[cfg(unix)]
+    #[test]
+    fn vault_in_an_insecure_folder_gets_permission_advice() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir(&shared).expect("mkdir shared");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777))
+            .expect("make shared world-writable");
+        let data_dir = shared.join("data");
+
+        let keyless = AppContext::open_secret_store(&data_dir).err();
+        let keyed = AppContext::open_secret_store_with_passphrase(
+            &data_dir,
+            platform_wallet_storage::secrets::SecretString::new("legacy-pass"),
+        )
+        .err();
+
+        for error in [keyless, keyed] {
+            let error = error.expect("an insecure folder must be refused");
+            assert!(
+                matches!(error, TaskError::SecretStoreFolderInsecure { .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("other accounts"), "{error}");
+        }
+    }
 
     /// A network whose saved node addresses cannot be parsed reports that
     /// reason instead of an unexplained failure.

@@ -6,7 +6,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use super::storage_failure::StorageFailure;
 
 const OLD_SCHEMA: &str = include_str!("fixtures/67d4ef3.sql");
-const TARGET_SCHEMA: &str = include_str!("fixtures/033ecae.sql");
+const TARGET_SCHEMA: &str = include_str!("fixtures/0c08eb6.sql");
 const HISTORY: &str = "refinery_schema_history";
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
 
@@ -175,6 +175,27 @@ fn target_reference() -> Result<Connection, UpgradeError> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch(TARGET_SCHEMA)?;
     Ok(conn)
+}
+
+/// Copy legacy rows into V020 before upstream's accounting backfill runs.
+pub(super) fn initialize_stage(path: &Path) -> Result<(), UpgradeError> {
+    Connection::open(path)?.execute_batch(TARGET_SCHEMA)?;
+    Ok(())
+}
+
+/// Require the populated stage to match the current public migration runner.
+pub(super) fn verify_current_schema(path: &Path, reference: &Path) -> Result<(), UpgradeError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let target = Connection::open_with_flags(path, flags)?;
+    let reference = Connection::open_with_flags(reference, flags)?;
+    if objects(&target)? != objects(&reference)?
+        || history(&target)? != history(&reference)?
+        || target.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+            != reference.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+    {
+        return Err(UpgradeError::Unrecognized);
+    }
+    verify(&target)
 }
 
 fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeError> {
@@ -740,7 +761,7 @@ fn allowed_columns(
             "winner_mined_height",
         ],
         "core_sync_state" => &["chainlock_height"],
-        "asset_locks" => &["operation_id"],
+        "asset_locks" => &["operation_id", "shielded_recipient"],
         _ => &[],
     };
     let expected_removed: &[&str] = if table == "identities" {
@@ -905,6 +926,13 @@ fn upgrade_with_hook_locked(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    // Publish the schema produced by migrations on the populated stage.
+    let target_objects = objects(&target)?;
+    let new_tables = target_objects
+        .iter()
+        .filter(|o| o.kind == "table")
+        .map(|o| o.name.as_str())
+        .collect::<BTreeSet<_>>();
     // Rebuild under one SQLite transaction; power loss exposes either complete schema.
     for o in existing.iter().filter(|o| o.kind == "trigger") {
         source.execute_batch(&format!("DROP TRIGGER {}", quote(&o.name)))?;

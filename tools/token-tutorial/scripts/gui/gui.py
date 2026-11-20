@@ -14,6 +14,7 @@ SESSION = ROOT / "local/evidence/session.json"
 REQUIRED_SESSION = (
     "display",
     "dbus",
+    "xauthority",
     "app_pid",
     "window_id",
     "atspi_bus_name",
@@ -37,7 +38,9 @@ class Gui:
         except OSError:
             raise RuntimeError("The recorded app process is not running") from None
         os.environ.update(
-            DISPLAY=session["display"], DBUS_SESSION_BUS_ADDRESS=session["dbus"]
+            DISPLAY=session["display"],
+            DBUS_SESSION_BUS_ADDRESS=session["dbus"],
+            XAUTHORITY=session["xauthority"],
         )
         for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
             os.environ.pop(name, None)

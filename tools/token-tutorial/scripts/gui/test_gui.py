@@ -90,6 +90,7 @@ def session(tmp_path, **changes):
     data = {
         "display": ":100",
         "dbus": "unix:path=/synthetic/bus",
+        "xauthority": "/synthetic/xauthority",
         "app_pid": os.getpid(),
         "window_id": "12345",
         "atspi_bus_name": ":1.target",
@@ -112,7 +113,7 @@ def desktop(module, monkeypatch):
         "pyatspi",
         SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda _: apps)),
     )
-    for name in ("DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+    for name in ("DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY"):
         monkeypatch.setenv(name, os.environ.get(name, ""))
     for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
         monkeypatch.delenv(name, raising=False)
@@ -125,7 +126,9 @@ def desktop(module, monkeypatch):
     return calls, apps
 
 
-@pytest.mark.parametrize("missing", ["window_id", "atspi_bus_name", "app_pid"])
+@pytest.mark.parametrize(
+    "missing", ["window_id", "atspi_bus_name", "app_pid", "xauthority"]
+)
 def test_incomplete_session_manifest_is_refused_before_input(
     module, tmp_path, desktop, missing
 ):
@@ -155,4 +158,5 @@ def test_verified_session_activates_only_the_recorded_window(module, tmp_path, d
     calls, _ = desktop
     module.Gui(tmp_path, session(tmp_path))
     assert ("xdotool", "windowactivate", "--sync", "12345") in calls
+    assert module.os.environ["XAUTHORITY"] == "/synthetic/xauthority"
     assert not any("search" in call for call in calls)

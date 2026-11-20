@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import signal
+import struct
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -25,10 +27,44 @@ def validate_profile(profile):
             )
 
 
-def prepare_environment(environ, display, profile):
+def write_xauthority(path, display):
+    """Create a private MIT-MAGIC-COOKIE-1 entry for one local display; never overwrite."""
+
+    def field(value):
+        return struct.pack(">H", len(value)) + value
+
+    entry = (
+        struct.pack(">H", 0xFFFF)  # FamilyWild: any local host name
+        + field(b"")
+        + field(display[1:].encode())
+        + field(b"MIT-MAGIC-COOKIE-1")
+        + field(secrets.token_bytes(16))
+    )
+    with os.fdopen(
+        os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+    ) as out:
+        out.write(entry)
+
+
+def xvfb_command(display, xauthority):
+    return [
+        "Xvfb",
+        display,
+        "-screen",
+        "0",
+        "1920x1080x24",
+        "-nolisten",
+        "tcp",
+        "-auth",
+        str(xauthority),
+    ]
+
+
+def prepare_environment(environ, display, profile, xauthority):
     """Bind the launched clients to the private X11 display, never a Wayland desktop."""
     environ.update(
         DISPLAY=display,
+        XAUTHORITY=str(xauthority),
         DBUS_SESSION_BUS_ADDRESS=environ.get(
             "DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus"
         ),
@@ -88,23 +124,16 @@ def main():
         config.chmod(0o600)
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
-    prepare_environment(os.environ, args.display, profile)
+    # A fresh per-session cookie authenticates every client of the private display.
+    xauthority = str(profile / f".xauthority-{secrets.token_hex(8)}")
+    write_xauthority(xauthority, args.display)
+    prepare_environment(os.environ, args.display, profile, xauthority)
     processes = []
     try:
         log = (evidence / "desktop-launch.log").open("a")
         processes.append(
             subprocess.Popen(
-                [
-                    "Xvfb",
-                    args.display,
-                    "-screen",
-                    "0",
-                    "1920x1080x24",
-                    "-nolisten",
-                    "tcp",
-                ],
-                stdout=log,
-                stderr=log,
+                xvfb_command(args.display, xauthority), stdout=log, stderr=log
             )
         )
         deadline = time.monotonic() + 15
@@ -154,6 +183,7 @@ def main():
         info = {
             "display": args.display,
             "dbus": os.environ["DBUS_SESSION_BUS_ADDRESS"],
+            "xauthority": xauthority,
             "app_pid": app.pid,
             "launcher_pid": os.getpid(),
             "profile": str(profile),
@@ -200,6 +230,7 @@ def main():
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
+        Path(xauthority).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

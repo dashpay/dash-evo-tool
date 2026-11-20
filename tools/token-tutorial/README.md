@@ -231,7 +231,12 @@ dbus-run-session -- python3 scripts/gui/launch.py --binary "$BINARY" \
 ```
 
 The launcher reserves a new local X display (default `:100`), verifies the binary,
-refuses unrelated nonempty profiles and writes a private session manifest. Verify
+refuses unrelated nonempty profiles and writes a private session manifest. The
+display accepts only clients holding a fresh per-session cookie; its private
+Xauthority path is recorded in the manifest and removed when the launcher exits.
+DET is forced onto that X11 display even when started from a Wayland desktop.
+The GUI helper acts only on the live process, window and accessibility
+registration recorded in a complete manifest. Verify
 fullscreen/capture bounds manually before filming. It terminates only processes
 it spawned. Do not recompute the expected hash after an unreviewed binary change.
 

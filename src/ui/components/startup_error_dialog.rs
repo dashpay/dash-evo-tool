@@ -17,6 +17,12 @@ pub const STARTUP_ERROR_TITLE: &str = "Dash Evo Tool could not start";
 const MIN_WIDTH: f32 = 420.0;
 const MAX_WIDTH: f32 = 640.0;
 const DETAILS_HEIGHT: f32 = 220.0;
+/// Viewport width the window frame and margins take beside the body.
+const WINDOW_SIDE_ROOM: f32 = 48.0;
+/// Viewport height the title bar, margins and action row take beside the body.
+const WINDOW_CHROME_HEIGHT: f32 = 140.0;
+/// The body never shrinks below this, even in a tiny window.
+const MIN_BODY_HEIGHT: f32 = 60.0;
 
 /// What the user asked for in the startup failure dialog this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,14 +64,22 @@ impl<'a> StartupErrorDialog<'a> {
                 inner_margin: Spacing::MD_I8,
             },
             |ui| {
-                ui.set_min_width(MIN_WIDTH);
-                ui.set_max_width(MAX_WIDTH);
+                // Fit the viewport: the body scrolls, the action row stays visible.
+                let screen = ui.ctx().content_rect();
+                let width = screen.width() - WINDOW_SIDE_ROOM;
+                ui.set_min_width(MIN_WIDTH.min(width));
+                ui.set_max_width(MAX_WIDTH.min(width));
                 let dark_mode = ui.style().visuals.dark_mode;
-                self.message(ui, dark_mode);
-                ui.add_space(Spacing::MD);
-                self.support(ui, dark_mode);
-                ui.add_space(Spacing::MD);
-                self.details(ui, dark_mode);
+                egui::ScrollArea::vertical()
+                    .id_salt("startup_error_body")
+                    .max_height((screen.height() - WINDOW_CHROME_HEIGHT).max(MIN_BODY_HEIGHT))
+                    .show(ui, |ui| {
+                        self.message(ui, dark_mode);
+                        ui.add_space(Spacing::MD);
+                        self.support(ui, dark_mode);
+                        ui.add_space(Spacing::MD);
+                        self.details(ui, dark_mode);
+                    });
                 ui.add_space(Spacing::MD);
                 action = self.actions(ui, dark_mode);
             },
@@ -90,7 +104,7 @@ impl<'a> StartupErrorDialog<'a> {
             )
             .color(DashColors::text_secondary(dark_mode)),
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(crate::SUPPORT_URL).font(Typography::monospace()));
             ui.hyperlink_to("Open in browser", crate::SUPPORT_URL);
         });

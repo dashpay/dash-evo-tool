@@ -63,8 +63,8 @@ Mainnet, so if it is not **Testnet**, select Testnet in Settings ▸ Networks
 and confirm the indicator before continuing.
 
 Resize the window (see the README's "Known UI/environment quirks") before
-judging layout. Check `det.log` in `$DATADIR` for panics
-after each run.
+judging layout. Check `det.log` (and `det-stderr.log` from older builds) in
+`$DATADIR` for panics after each run.
 
 ## Procedure
 

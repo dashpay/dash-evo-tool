@@ -170,23 +170,20 @@ def generate_take(
     take,
     *,
     speaker,
+    approved_sha256,
     voice="cedar",
     key_loader=None,
     requester=None,
-    approved_sha256=None,
 ):
     """Reserve a unique directory before credentials, then atomically publish ready/.
 
-    With `approved_sha256`, the script snapshot must match that UTF-8 SHA-256 before
-    any credential is loaded; the request is built from that same snapshot.
+    The script snapshot must match the UTF-8 `approved_sha256` before any credential
+    is loaded; the request is built from that same snapshot.
     """
     script = preflight(source, take, voice)
     if speaker not in PERSONAS:
         raise ValueError("Unknown narration speaker persona")
-    if (
-        approved_sha256 is not None
-        and hashlib.sha256(script.encode()).hexdigest() != approved_sha256
-    ):
+    if hashlib.sha256(script.encode()).hexdigest() != approved_sha256:
         raise ValueError("Narration script differs from the approved SHA-256")
 
     def fetch(payload):

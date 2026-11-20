@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import project
 import openai_voice as voice
-from test_openai_voice import response
+from test_openai_voice import approved, response
 
 
 def scenario(tmp_path):
@@ -57,6 +57,7 @@ def test_reuse_only_exact_approved_turn_and_no_paid_calls(tmp_path, monkeypatch)
         key_loader=lambda: "fake",
         requester=lambda *_: response(transcript=text),
         speaker="teacher",
+        approved_sha256=approved(old_script),
     )
     media = tmp_path / "old-media.json"
     media.write_text(
@@ -164,6 +165,7 @@ def test_declared_voice_change_rejects_the_old_take(tmp_path, monkeypatch):
         key_loader=lambda: "fake",
         requester=lambda *_: response(transcript=text),
         speaker="teacher",
+        approved_sha256=approved(old_script),
     )
     media = tmp_path / "old-media.json"
     media.write_text(
@@ -202,6 +204,7 @@ def test_reuse_accepts_a_learner_take_with_a_non_nova_voice(tmp_path, monkeypatc
         speaker="learner",
         key_loader=lambda: "fake",
         requester=lambda *_: response(transcript=turn["text"]),
+        approved_sha256=approved(old_script),
     )
     media = tmp_path / "old-media.json"
     media.write_text(

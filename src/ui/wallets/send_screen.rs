@@ -5357,7 +5357,7 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::AssetLockInputState;
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
-    use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{OutPoint, Txid};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
     use dash_sdk::dpp::secp256k1::SecretKey;
     use egui_kittest::Harness;
@@ -7282,7 +7282,6 @@ mod tests {
     #[test]
     fn core_send_max_is_requested_for_the_destination_script() {
         use crate::model::spend_limit::CoreDestinationScript;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
 
         let (mut screen, _temp_dir) = send_screen();
         screen.selected_source = Some(SourceSelection::CoreWallet);

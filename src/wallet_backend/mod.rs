@@ -194,13 +194,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use dash_async::{ShutdownReport, WorkerStatus};
 use dash_sdk::Sdk;
 use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
-use platform_wallet::manager::PlatformWalletManager;
+use platform_wallet::manager::{PlatformWalletManager, WalletWorker};
 use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
@@ -1493,7 +1494,6 @@ impl WalletBackend {
         wallet_id: &WalletId,
     ) -> Result<PersistedTransactionHydration, TaskError> {
         use crate::backend_task::error::WalletTransactionHistoryError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use platform_wallet::changeset::PlatformWalletPersistence;
         use platform_wallet_storage::WalletStorageError;
 
@@ -1782,7 +1782,9 @@ impl WalletBackend {
             .delete_wallet_skip_backup(*wallet_id)
         {
             Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
-            Err(source) => Err(TaskError::WalletStorage { source }),
+            Err(source) => Err(TaskError::WalletStorage {
+                source: source.into(),
+            }),
         }
     }
 
@@ -1941,7 +1943,9 @@ impl WalletBackend {
                         Ok(()) => Ok(()),
                         Err(source) => {
                             self.inner.start_latch.reset_if_current(&flight);
-                            Err(StartFlightError::Failed(Arc::new(source)))
+                            Err(StartFlightError::Failed(Arc::new(redact_wallet_error(
+                                source,
+                            ))))
                         }
                     }
                 })
@@ -2074,7 +2078,7 @@ impl WalletBackend {
         // teardown must proceed regardless.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
@@ -2083,13 +2087,7 @@ impl WalletBackend {
         // the wallet-event adapter task. Best-effort: a non-clean report flags a
         // still-live worker or orphan, which teardown proceeds past regardless —
         // log it rather than surface it.
-        let report = self.inner.pwm.shutdown().await;
-        if !report.all_clean() {
-            tracing::warn!(
-                ?report,
-                "Wallet manager shutdown did not complete cleanly; continuing teardown"
-            );
-        }
+        warn_if_shutdown_unclean(&self.inner.pwm.shutdown().await);
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -2133,7 +2131,7 @@ impl WalletBackend {
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during stop_in_place; continuing"
             );
         }
@@ -3382,19 +3380,32 @@ fn bip44_account0_xpub<'a>(
 /// with the fee reserve still in it, or the whole account balance when no
 /// address can keep the reserve back. Without a plan there is no trustworthy
 /// maximum, so the refusal keeps the generic envelope; with a plan that can
-/// shield nothing, there is no Max to point to. Pure — unit-testable.
+/// shield nothing, there is no Max to point to. A later plan whose maximum
+/// covers `amount` does not show which check refused it: a selected input may
+/// have held less than its cached balance, or a sync may have raised the
+/// cached maximum between the refusal and this plan. Either way no maximum is
+/// stated. Pure — unit-testable.
 fn shield_capacity_exceeded_error(
     source: platform_wallet::error::PlatformWalletError,
     preflight: Result<
         platform_wallet::ShieldedShieldPreflight,
         platform_wallet::error::PlatformWalletError,
     >,
+    amount: u64,
 ) -> TaskError {
     match preflight {
         Ok(preflight) if preflight.can_shield && preflight.max_shieldable_credits > 0 => {
-            TaskError::ShieldFromPlatformCapacityExceeded {
-                max_shieldable: preflight.max_shieldable_credits,
-                source: Box::new(source),
+            if amount > preflight.max_shieldable_credits {
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable: preflight.max_shieldable_credits,
+                    source: Box::new(source),
+                }
+            } else {
+                // The later plan covers the amount, so the refusal came from a
+                // live input shortfall or an earlier, smaller snapshot.
+                TaskError::ShieldFromPlatformBalanceChanged {
+                    source: Box::new(source),
+                }
             }
         }
         Ok(_) => TaskError::ShieldFromPlatformNothingShieldable {
@@ -3452,6 +3463,23 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     // Exhaustive match — no `_` arm.
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
+
+        other @ P::AssetLockTooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(other),
+            }
+        }
+
+        // Only coins that are not final yet could fund the lock. Nothing was
+        // built for the wire, and the same request works once they confirm.
+        other @ P::AssetLockFundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(other)),
+            }
+        }
 
         // Only shielding from Platform raises this, and
         // `WalletBackend::shield_from_balance` intercepts it first through
@@ -3515,11 +3543,27 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // A shielded funding was resumed to another recipient than the one its
+        // asset lock recorded. Upstream pays nobody, and the same request is
+        // refused every time, so the generic envelope's retry advice is wrong.
+        other @ P::AssetLockRecipientMismatch { .. } => {
+            TaskError::ShieldedFundingRecipientMismatch {
+                source: Box::new(other),
+            }
+        }
+
         // A token operation keeps its SDK cause, so it is classified like any
         // SDK error; an unclassified one still names the operation.
         P::TokenOperationFailed { operation, source } => {
             TaskError::from_token_operation_failure(operation, source)
         }
+
+        // An SDK error reaches the user the same way whichever layer returned
+        // it. Shielding from Core broadcasts through the SDK, so a result that
+        // could not be read comes back here as an SDK error; under the generic
+        // envelope it would advise a retry, and a retried shield builds a new
+        // lock and can shield the amount, and pay the fee, a second time.
+        P::Sdk(sdk_error) => map_shielded_sdk_error(sdk_error),
 
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
@@ -3552,7 +3596,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::CoreInsufficientFunds { .. }
         | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
-        | P::Sdk(_)
         | P::AddressSync(_)
         | P::AddressOperation(_)
         | P::OnlyOutputAddressesFunded { .. }
@@ -3596,12 +3639,47 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
         | P::InvitationNetworkMismatch { .. }
-        | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
+        // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
+        // an operation this map serves as a Platform rejection or a pending
+        // outcome DET can watch, so they take the generic envelope like their
+        // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
+        // `ShieldedBroadcastUnconfirmed`).
+        | P::AccountNotFound(_)
+        | P::WalletRemovedBeforeSend(_)
+        | P::ShieldedBroadcastMaybeDelivered(_)
+        | P::DocumentEraseBusy
+        | P::DecisionProposalNotFound { .. }
+        | P::PreparedPaymentAddressTaken(_)
+        | P::PrivateContactPaymentsNotRestored
+        | P::PrivateContactRecoveryUnsupported
+        | P::PrivateContactRequestNeedsPrivateReply(_)
+        | P::PrivateContactRequestPending(_)
+        | P::PrivateContactStoreNotRead(_)
+        | P::PublicContactRequestUnconfirmed(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
+    }
+}
+
+/// Classify the SDK error a shielded operation failed with through
+/// [`TaskError::from`], as the funding mappers do, so an outcome the classifier
+/// knows (a result that could not be confirmed, servers that are not ready, a
+/// consumed funding lock) reads the same here as when the SDK returns it
+/// directly. An error the classifier has no dedicated answer for keeps the
+/// generic wallet envelope it had before.
+fn map_shielded_sdk_error(sdk_error: dash_sdk::Error) -> TaskError {
+    match TaskError::from(sdk_error) {
+        TaskError::PlatformRejected { source_error } | TaskError::SdkError { source_error } => {
+            TaskError::WalletBackend {
+                source: Arc::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    *source_error,
+                )),
+            }
+        }
+        classified => classified,
     }
 }
 
@@ -3629,8 +3707,8 @@ fn classify_sdk_error_or(
 /// Classify a `PlatformWalletError` returned from
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
-/// finality failures become `AssetLockFinalityTimeout`; everything else
-/// falls through to the generic `WalletBackend` wrapper. SDK errors use the
+/// finality failures become `AssetLockFinalityTimeout`; input-limit refusals
+/// retain their counts and source; remaining failures use `WalletBackend`. SDK errors use the
 /// richer `TaskError` classifier before this coarse mapping, falling back to
 /// `IdentityCreateRejected` for an unclassified rejection (see
 /// [`classify_sdk_error_or`]) so generic broadcast failures still carry
@@ -3646,6 +3724,19 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         other => other,
     };
     match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::TooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(e),
+            }
+        }
+        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(e)),
+            }
+        }
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
         },
@@ -3687,6 +3778,19 @@ fn map_identity_top_up_error(
         other => other,
     };
     match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::TooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(e),
+            }
+        }
+        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(e)),
+            }
+        }
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
             source: Box::new(e),
@@ -3749,8 +3853,8 @@ fn platform_warm_start_seed(
 /// Map an orchestrated platform-address funding error to a typed `TaskError`.
 /// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
-/// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
-/// through to the generic [`TaskError::WalletBackend`] envelope. SDK errors use
+/// in [`TaskError::PlatformAddressFundRejected`], and input-limit refusals retain
+/// their counts and source. Remaining failures use [`TaskError::WalletBackend`]. SDK errors use
 /// the richer `TaskError` classifier before this coarse mapping, falling back
 /// to `PlatformAddressFundRejected` (see [`classify_sdk_error_or`]) for an
 /// unclassified rejection so the existing-lock recovery instructions survive.
@@ -3764,6 +3868,19 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         other => other,
     };
     match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::TooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(e),
+            }
+        }
+        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(e)),
+            }
+        }
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
@@ -3787,6 +3904,11 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
 
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
+    /// The built transaction exceeds the input cap and cannot be re-sent.
+    TooManyInputs { count: usize, max: usize },
+    /// Only coins that are not final yet could fund the asset lock; nothing
+    /// was built for the wire.
+    FundsAwaitingFinality { waiting: u64 },
     /// Network or broadcast rejected the submission (SDK error or asset-lock
     /// transaction broadcast failure).
     Rejected,
@@ -3812,6 +3934,15 @@ enum IdentityOpErrorKind {
 fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> IdentityOpErrorKind {
     use platform_wallet::error::PlatformWalletError as P;
     match e {
+        P::AssetLockTooManyInputs { count, max } => IdentityOpErrorKind::TooManyInputs {
+            count: *count,
+            max: *max,
+        },
+
+        P::AssetLockFundsAwaitingFinality { waiting } => {
+            IdentityOpErrorKind::FundsAwaitingFinality { waiting: *waiting }
+        }
+
         // Network / broadcast rejections. A failed token operation carries the
         // SDK rejection that caused it.
         P::Sdk(_) | P::TransactionBroadcast(_) | P::TokenOperationFailed { .. } => {
@@ -3932,12 +4063,88 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
         | P::InvitationNetworkMismatch { .. }
-        | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
+        // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
+        // an operation this map serves as a Platform rejection or a pending
+        // outcome DET can watch, so they take the generic envelope like their
+        // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
+        // `ShieldedBroadcastUnconfirmed`).
+        | P::AccountNotFound(_)
+        | P::WalletRemovedBeforeSend(_)
+        // Raised only when a shielded funding is resumed; no identity or
+        // address-funding flow resumes one.
+        | P::AssetLockRecipientMismatch { .. }
+        | P::ShieldedBroadcastMaybeDelivered(_)
+        | P::DocumentEraseBusy
+        | P::DecisionProposalNotFound { .. }
+        | P::PreparedPaymentAddressTaken(_)
+        | P::PrivateContactPaymentsNotRestored
+        | P::PrivateContactRecoveryUnsupported
+        | P::PrivateContactRequestNeedsPrivateReply(_)
+        | P::PrivateContactRequestPending(_)
+        | P::PrivateContactStoreNotRead(_)
+        | P::PublicContactRequestUnconfirmed(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
+    }
+}
+
+/// Withholds the text of `SpvProcessRestartRequired` before the error is
+/// logged or kept for banner details.
+///
+/// Upstream builds that text from a joined SPV task's result (`{result:?}`),
+/// so a panic there puts the runtime-formatted panic message in it. Only its
+/// length is kept, as the panic hook does; every other variant is unchanged.
+fn redact_wallet_error(error: PlatformWalletError) -> PlatformWalletError {
+    match error {
+        PlatformWalletError::SpvProcessRestartRequired(text) => {
+            PlatformWalletError::SpvProcessRestartRequired(format!(
+                "<redacted: SPV task failure, may hold a panic message, {} bytes>",
+                text.len()
+            ))
+        }
+        other => other,
+    }
+}
+
+/// Logs a non-clean `pwm.shutdown()` report with every worker's text withheld.
+///
+/// Upstream fills `Panicked` with the worker's panic message and the SPV
+/// entry's `Error` with the `SpvProcessRestartRequired` text, so only the
+/// worker, its status and the text length are logged.
+fn warn_if_shutdown_unclean(report: &ShutdownReport<WalletWorker>) {
+    if !report.all_clean() {
+        let report = ShutdownReport {
+            per_worker: report
+                .per_worker
+                .iter()
+                .map(|(worker, status)| (*worker, redact_worker_status(status)))
+                .collect(),
+            detached: report.detached,
+            orphan_status: redact_worker_status(&report.orphan_status),
+        };
+        tracing::warn!(
+            ?report,
+            "Wallet manager shutdown did not complete cleanly; continuing teardown"
+        );
+    }
+}
+
+/// A worker status with its text replaced by the text's length. Exhaustive,
+/// so a new upstream variant must be classified here before it is logged.
+fn redact_worker_status(status: &WorkerStatus) -> WorkerStatus {
+    let withheld = |text: &str| format!("<redacted: {} bytes>", text.len());
+    match status {
+        WorkerStatus::Panicked(text) => WorkerStatus::Panicked(withheld(text)),
+        WorkerStatus::Error(text) => WorkerStatus::Error(withheld(text)),
+        WorkerStatus::Stopped(Some(text)) => WorkerStatus::Stopped(Some(withheld(text))),
+        WorkerStatus::Ok
+        | WorkerStatus::Stopped(None)
+        | WorkerStatus::Timeout
+        | WorkerStatus::Detached
+        | WorkerStatus::NotRunning => status.clone(),
     }
 }
 
@@ -3945,9 +4152,151 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 mod tests {
     use super::*;
 
+    #[test]
+    fn upstream_asset_lock_input_limit_preserves_counts_source_and_restart_guidance() {
+        use platform_wallet::error::PlatformWalletError as P;
+        use std::error::Error;
+
+        let identity_id = dash_sdk::platform::Identifier::from([1; 32]);
+        let error = || P::AssetLockTooManyInputs {
+            count: 101,
+            max: 100,
+        };
+        for mapped in [
+            payments::map_asset_lock_error(error()),
+            payments::map_core_broadcast_error(None, error()),
+            map_identity_register_error(error()),
+            map_identity_top_up_error(identity_id, error()),
+            map_platform_address_fund_error(error()),
+            map_shielded_op_error(error()),
+        ] {
+            assert!(matches!(
+                &mapped,
+                TaskError::AssetLockTransferTooManyInputs {
+                    count: 101,
+                    max: 100,
+                    ..
+                }
+            ));
+            let message = mapped.to_string();
+            assert!(
+                message.contains("101") && message.contains("100"),
+                "{message}"
+            );
+            assert!(
+                message.contains("could not be sent or resumed"),
+                "{message}"
+            );
+            assert!(message.contains("start a new transfer"), "{message}");
+            assert!(
+                message.contains("check whether the transfer completed"),
+                "{message}"
+            );
+            assert!(!message.contains("Try again"), "{message}");
+            assert!(matches!(
+                mapped
+                    .source()
+                    .and_then(|source| source.downcast_ref::<Box<P>>())
+                    .map(Box::as_ref),
+                Some(P::AssetLockTooManyInputs {
+                    count: 101,
+                    max: 100
+                })
+            ));
+        }
+    }
+
+    /// Upstream refuses a lock only coins awaiting finality could fund.
+    /// Every operation that builds a lock says how much is waiting and to
+    /// wait for it, not the generic envelope's "retry in a moment".
+    #[test]
+    fn upstream_funds_awaiting_finality_says_to_wait_for_confirmation() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let identity_id = dash_sdk::platform::Identifier::from([1; 32]);
+        let error = || P::AssetLockFundsAwaitingFinality { waiting: 250_000 };
+        for mapped in [
+            payments::map_asset_lock_error(error()),
+            map_identity_register_error(error()),
+            map_identity_top_up_error(identity_id, error()),
+            map_platform_address_fund_error(error()),
+            map_shielded_op_error(error()),
+        ] {
+            let TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting: 250_000,
+                source: Some(source),
+            } = &mapped
+            else {
+                panic!("expected AssetLockFundsAwaitingConfirmation with its source: {mapped:?}");
+            };
+            assert!(
+                matches!(
+                    source.as_ref(),
+                    P::AssetLockFundsAwaitingFinality { waiting: 250_000 }
+                ),
+                "the wallet's refusal stays in the error chain: {source:?}"
+            );
+            assert_eq!(
+                mapped.to_string(),
+                "This amount would use 0.0025 DASH of your funds that are still waiting to be confirmed. Wait a few minutes for the confirmation, then try again."
+            );
+        }
+    }
+
+    #[test]
+    fn unclean_shutdown_report_is_logged_without_worker_text() {
+        let planted_marker = "planted-marker-7f3a9c0e";
+        let report = ShutdownReport {
+            per_worker: [
+                (
+                    WalletWorker::Spv,
+                    WorkerStatus::Error(format!("restart required: {planted_marker}")),
+                ),
+                (
+                    WalletWorker::IdentitySync,
+                    WorkerStatus::Panicked(format!("seed {planted_marker}")),
+                ),
+                (WalletWorker::ShieldedSync, WorkerStatus::Timeout),
+            ]
+            .into_iter()
+            .collect(),
+            detached: 1,
+            orphan_status: WorkerStatus::Stopped(Some(planted_marker.to_owned())),
+        };
+        let log = crate::test_support::CapturedLog::start();
+        warn_if_shutdown_unclean(&report);
+        let text = log.text();
+
+        assert!(!text.contains(planted_marker), "{text}");
+        for kept in ["Spv", "IdentitySync", "Panicked", "Timeout", "detached: 1"] {
+            assert!(text.contains(kept), "the report must keep {kept}:\n{text}");
+        }
+        let panicked_field = format!("<redacted: {} bytes>", "seed ".len() + planted_marker.len());
+        assert!(text.contains(&panicked_field), "{text}");
+    }
+
+    #[test]
+    fn redact_wallet_error_withholds_a_joined_spv_task_panic_message() {
+        let planted_marker = "planted-marker-7f3a9c0e";
+        let text = format!(
+            "SPV teardown task failed: Err(JoinError::Panic(Id(7), \"seed {planted_marker}\", ..))"
+        );
+        let redacted =
+            redact_wallet_error(PlatformWalletError::SpvProcessRestartRequired(text.clone()));
+        let shown = format!("{redacted:?} {redacted}");
+        assert!(!shown.contains(planted_marker), "{shown}");
+        assert!(
+            matches!(redacted, PlatformWalletError::SpvProcessRestartRequired(_)),
+            "the variant must survive: {shown}"
+        );
+        assert!(shown.contains(&format!("{} bytes", text.len())), "{shown}");
+
+        let other = redact_wallet_error(PlatformWalletError::SpvError("peer lost".to_owned()));
+        assert!(format!("{other:?}").contains("peer lost"));
+    }
+
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let consensus = dash_sdk::dpp::consensus::ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
@@ -4291,7 +4640,6 @@ mod tests {
     /// sub-variant fired upstream.
     #[test]
     fn map_identity_register_error_classifies_finality_timeout() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
             dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
             0,
@@ -4546,7 +4894,6 @@ mod tests {
     /// funding reuses the shared `AssetLockFinalityTimeout` envelope.
     #[test]
     fn map_platform_address_fund_error_classifies_finality_timeout() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
             dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
             0,
@@ -4818,6 +5165,7 @@ mod tests {
                 required: USABLE + RESERVE,
             },
             Ok(shield_preflight(USABLE, RESERVE)),
+            USABLE,
         );
 
         assert!(
@@ -4845,6 +5193,39 @@ mod tests {
         );
     }
 
+    /// A selected input can hold less than the cached balance the planner
+    /// read, so upstream refuses an amount within the planner's maximum. That
+    /// maximum would say the amount fits, so the message states none.
+    #[test]
+    fn a_live_shortfall_within_the_planner_maximum_states_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const USABLE: u64 = 300_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+        const MAX: u64 = USABLE - RESERVE;
+
+        for amount in [MAX, MAX - 1] {
+            let mapped = shield_capacity_exceeded_error(
+                P::PlatformShieldCapacityExceeded {
+                    available: 50_000_000_000,
+                    required: amount + RESERVE,
+                },
+                Ok(shield_preflight(USABLE, RESERVE)),
+                amount,
+            );
+
+            assert!(
+                matches!(mapped, TaskError::ShieldFromPlatformBalanceChanged { .. }),
+                "{mapped:?}"
+            );
+            let message = mapped.to_string();
+            assert!(
+                !message.contains(&crate::model::fee_estimation::format_credits_as_dash(MAX)),
+                "{message}"
+            );
+            assert!(message.contains("try again"), "{message}");
+        }
+    }
+
     /// When no address can keep the fee reserve back, upstream reports the
     /// whole account balance, but nothing at all can be shielded — so the
     /// message says so instead of pointing at a Max of zero.
@@ -4862,6 +5243,7 @@ mod tests {
                 required: 1 + RESERVE,
             },
             Ok(preflight),
+            1,
         );
 
         assert!(
@@ -4888,6 +5270,7 @@ mod tests {
                 required: 9,
             },
             Err(P::ShieldedNotBound),
+            9,
         );
 
         assert!(
@@ -4989,6 +5372,32 @@ mod tests {
         }
     }
 
+    /// A resume to another shielded recipient than the recorded one is refused
+    /// the same way every time, so it must not take the generic envelope,
+    /// whose message tells the user to retry.
+    #[test]
+    fn map_shielded_op_error_routes_recipient_mismatch_away_from_retry_advice() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let mapped = map_shielded_op_error(P::AssetLockRecipientMismatch {
+            out_point: dash_sdk::dpp::dashcore::OutPoint::null(),
+            recorded: [0x11; 43],
+            requested: [0x22; 43],
+        });
+        assert!(
+            matches!(mapped, TaskError::ShieldedFundingRecipientMismatch { .. }),
+            "Expected ShieldedFundingRecipientMismatch, got: {mapped:?}"
+        );
+        let generic = TaskError::WalletBackend {
+            source: Arc::new(P::ShieldedNotBound),
+        };
+        assert_ne!(
+            mapped.to_string(),
+            generic.to_string(),
+            "a refused resume must not reuse the retry advice"
+        );
+    }
+
     /// No identity register / top-up / address-funding flow runs a shielded
     /// op, so these outcomes land in the generic `Other` bucket there.
     #[test]
@@ -5060,12 +5469,83 @@ mod tests {
             map_shielded_op_error(broadcast_unconfirmed()),
             // The payment and asset-lock-creation façades share this one.
             super::payments::map_core_broadcast_error(None, broadcast_unconfirmed()),
+            // Resuming a tracked lock: its transaction may already be out.
+            super::payments::map_asset_lock_error(broadcast_unconfirmed()),
         ];
         for error in mapped {
             assert!(
                 matches!(error, TaskError::TransactionConfirmationUnknown { .. }),
                 "Expected TransactionConfirmationUnknown, got: {error:?}"
             );
+        }
+    }
+
+    /// The two shapes the SDK reports a broadcast in whose result could not be
+    /// read: directly, and wrapped once every server has been tried.
+    fn unconfirmed_platform_results() -> [platform_wallet::error::PlatformWalletError; 2] {
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dapi_client::transport::TransportError;
+        let unreachable = || {
+            dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::unavailable("connection refused"),
+            )))
+        };
+        [
+            dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(
+                dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            )),
+        ]
+        .map(platform_wallet::error::PlatformWalletError::Sdk)
+    }
+
+    /// A request that went out and whose result could not be read may have
+    /// completed. Whichever wallet operation it comes back through, the user is
+    /// told to check before trying again: shielding from Core, registering,
+    /// topping up and funding an address each build a new funding lock on a
+    /// retry, so "please retry" can move the amount and pay the fee twice.
+    #[test]
+    fn an_unconfirmed_platform_result_never_maps_to_retry_advice() {
+        type Mapper = fn(platform_wallet::error::PlatformWalletError) -> TaskError;
+        let mappers: [(&str, Mapper); 4] = [
+            ("shield", map_shielded_op_error),
+            ("register", map_identity_register_error),
+            ("top up", |e| {
+                map_identity_top_up_error(dash_sdk::platform::Identifier::random(), e)
+            }),
+            ("fund address", map_platform_address_fund_error),
+        ];
+        for (operation, mapper) in mappers {
+            for wallet_error in unconfirmed_platform_results() {
+                let error = mapper(wallet_error);
+                let TaskError::PlatformResultUnconfirmed { source_error } = &error else {
+                    panic!("{operation}: expected PlatformResultUnconfirmed, got {error:?}");
+                };
+                assert!(source_error.is_state_transition_result_unconfirmed());
+                assert_eq!(
+                    error.to_string(),
+                    "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again.",
+                    "{operation}"
+                );
+            }
+        }
+    }
+
+    /// An SDK error the classifier has no dedicated answer for keeps the
+    /// generic wallet envelope and its SDK cause, as before; only outcomes the
+    /// classifier knows leave it.
+    #[test]
+    fn map_shielded_op_error_keeps_the_envelope_for_an_unclassified_sdk_error() {
+        use platform_wallet::error::PlatformWalletError as P;
+        for wallet_error in [
+            P::Sdk(dash_sdk::Error::Generic("boom".to_string())),
+            unmapped_broadcast_rejection_wallet_error(),
+        ] {
+            let mapped = map_shielded_op_error(wallet_error);
+            let TaskError::WalletBackend { source } = &mapped else {
+                panic!("expected WalletBackend, got {mapped:?}");
+            };
+            assert!(matches!(source.as_ref(), P::Sdk(_)), "{source:?}");
         }
     }
 
@@ -5103,7 +5583,6 @@ fn membership_from_summaries(
 mod masternode_membership_tests {
     use super::*;
     use dash_sdk::dpp::dashcore::ProTxHash;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use std::str::FromStr;
 
     const DISPLAY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";

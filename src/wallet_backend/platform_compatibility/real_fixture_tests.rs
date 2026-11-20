@@ -41,6 +41,11 @@ const VERSION_TABLES: [&str; 2] = ["refinery_schema_history", "meta_data_version
 /// Marker in the name of the backup the bridge retains next to an upgraded
 /// database.
 const BACKUP_MARKER: &str = ".platform-67d4ef3-backup-";
+/// Rows the upgrade derives from the fixture wallet's history: Platform's
+/// V021 indexes the inputs of every stored transaction, and the captured
+/// faucet payment spends one. Its record needs no repair, so V021's table of
+/// original records stays empty.
+const NETWORK_DB_DERIVED_ROWS: [(&str, i64); 1] = [("core_transaction_inputs", 1)];
 
 #[test]
 fn platform_compatibility_upgrades_the_real_weekly_20260908_profile() {
@@ -49,11 +54,11 @@ fn platform_compatibility_upgrades_the_real_weekly_20260908_profile() {
     };
 
     assert_eq!(
-        assert_upgrade(&staged, NETWORK_DB),
+        assert_upgrade(&staged, NETWORK_DB, &NETWORK_DB_DERIVED_ROWS),
         [CAPTURED_BALANCE_DUFFS],
         "{NETWORK_DB} must still load its one captured wallet, with the captured balance"
     );
-    assert_upgrade(&staged, APP_DB);
+    assert_upgrade(&staged, APP_DB, &[]);
 }
 
 /// The fixture unpacked into an owner-only temporary data directory.
@@ -152,9 +157,10 @@ fn stage() -> Option<Staged> {
 ///
 /// The contract: the captured file really is the divergent 67d4ef3 schema (it
 /// does not open without the bridge); the bridge opens it and the typed loads
-/// succeed; no row is lost (see [`assert_rows_kept`]); one backup of the
-/// original is retained with the same rows; and a second open changes nothing.
-fn assert_upgrade(staged: &Staged, db_name: &str) -> Vec<u64> {
+/// succeed; no row is lost and the tables the upgrade adds hold exactly
+/// `derived_rows` (see [`assert_rows_kept`]); one backup of the original is
+/// retained with the same rows; and a second open changes nothing.
+fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) -> Vec<u64> {
     let path = staged.data_dir.join(db_name);
     let before = table_counts(&path, &staged.scratch(&format!("{db_name}-before")));
     assert!(
@@ -179,7 +185,7 @@ fn assert_upgrade(staged: &Staged, db_name: &str) -> Vec<u64> {
     drop(persister);
 
     let after = table_counts(&path, &staged.scratch(&format!("{db_name}-after")));
-    assert_rows_kept(db_name, &before, &after);
+    assert_rows_kept(db_name, &before, &after, derived_rows);
 
     let backups = backup_files(&path);
     let [backup] = &backups.iter().collect::<Vec<_>>()[..] else {
@@ -252,9 +258,15 @@ fn table_counts(path: &Path, scratch: &Path) -> BTreeMap<String, i64> {
 }
 
 /// The upgrade loses no row: every data table keeps its row count (a table
-/// the target schema drops may disappear only if it was empty), and every
-/// table the target schema adds starts empty.
-fn assert_rows_kept(db_name: &str, before: &BTreeMap<String, i64>, after: &BTreeMap<String, i64>) {
+/// the target schema drops may disappear only if it was empty). A table the
+/// target schema adds holds only rows the upgrade derives from that data:
+/// exactly `derived_rows`, and nothing in any other new table.
+fn assert_rows_kept(
+    db_name: &str,
+    before: &BTreeMap<String, i64>,
+    after: &BTreeMap<String, i64>,
+    derived_rows: &[(&str, i64)],
+) {
     for (table, rows) in data_tables(before) {
         assert_eq!(
             after.get(table).copied().unwrap_or(0),
@@ -266,9 +278,10 @@ fn assert_rows_kept(db_name: &str, before: &BTreeMap<String, i64>, after: &BTree
         .into_iter()
         .filter(|(table, rows)| !before.contains_key(*table) && *rows != 0)
         .collect();
-    assert!(
-        filled_new_tables.is_empty(),
-        "{db_name}: tables the upgrade created must start empty, found {filled_new_tables:?}"
+    assert_eq!(
+        filled_new_tables,
+        derived_rows.iter().copied().collect::<BTreeMap<_, _>>(),
+        "{db_name}: tables the upgrade created must hold only the rows it derives from the profile's history"
     );
 }
 

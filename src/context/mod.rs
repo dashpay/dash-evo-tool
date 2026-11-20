@@ -1290,10 +1290,9 @@ impl AppContext {
         drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK. The
+        // Rebind the provider to hold the new AppContext reference. The
         // clone shares the provider's state, so binding it binds the one the
-        // context holds.
+        // context and the new SDK hold.
         provider.bind_app_context(self.clone());
 
         Ok(())

@@ -301,6 +301,7 @@ fn token_balance_sync_task_error(error: TokenBalanceSyncError) -> TaskError {
         TokenBalanceSyncError::OtherPassStillRunning => TaskError::TokenBalanceSyncStillRunning,
         TokenBalanceSyncError::TimedOut(source) => TaskError::TokenBalanceRefreshTimeout { source },
         TokenBalanceSyncError::Cancelled => TaskError::TaskManagerShuttingDown,
+        TokenBalanceSyncError::SyncStopped => TaskError::TokenBalanceRefreshDisconnected,
     }
 }
 
@@ -437,6 +438,7 @@ mod tests {
                 crate::wallet_backend::run_fresh_token_balance_sync(
                     || true,
                     || std::future::ready(()),
+                    &crate::wallet_backend::TokenSyncAdmission::default(),
                     std::time::Duration::from_millis(1),
                     budget,
                     &cancel,

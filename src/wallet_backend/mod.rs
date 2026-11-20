@@ -174,6 +174,30 @@ pub(crate) enum TokenBalanceSyncError {
     TimedOut(tokio::time::error::Elapsed),
     /// The app is shutting down.
     Cancelled,
+    /// Chain sync stopped, so upstream may have skipped the pass.
+    SyncStopped,
+}
+
+/// Whether DET's stops left upstream identity sync admitting passes: even
+/// means open, odd means a stop closed it. Every stop raises the value, so a
+/// refresh sees a stop that began and ended during its call.
+#[derive(Debug, Default)]
+pub(crate) struct TokenSyncAdmission(AtomicU64);
+
+impl TokenSyncAdmission {
+    fn close(&self) {
+        self.0.fetch_or(1, Ordering::SeqCst);
+        self.0.fetch_add(2, Ordering::SeqCst);
+    }
+
+    /// Call only after identity sync drained, which reopens upstream's gate.
+    fn reopen(&self) {
+        self.0.fetch_and(!1, Ordering::SeqCst);
+    }
+
+    fn current(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
 }
 
 /// Run one upstream token-balance pass that starts after this call.
@@ -184,10 +208,12 @@ pub(crate) enum TokenBalanceSyncError {
 /// fresh pass, and wait again whenever another pass takes the slot first.
 /// Waiting, retries and our own pass share ONE deadline `budget` from now, so
 /// the request never outlives the caller's refresh guard; `cancel` ends it at
-/// once on shutdown.
+/// once on shutdown. A chain-sync stop during the call fails it, since
+/// upstream may have skipped the pass.
 pub(crate) async fn run_fresh_token_balance_sync<IsSyncing, SyncNow, SyncFuture>(
     is_syncing: IsSyncing,
     mut sync_now: SyncNow,
+    admission: &TokenSyncAdmission,
     poll: std::time::Duration,
     budget: std::time::Duration,
     cancel: &CancellationToken,
@@ -198,7 +224,11 @@ where
     SyncFuture: std::future::Future<Output = ()>,
 {
     let deadline = tokio::time::Instant::now() + budget;
+    let admitted = admission.current();
     let attempt = async {
+        if admitted & 1 == 1 {
+            return Err(TokenBalanceSyncError::SyncStopped);
+        }
         loop {
             // A skipped `sync_now` returns without awaiting, so check the
             // deadline explicitly: `timeout_at` never fires on a ready future.
@@ -219,8 +249,11 @@ where
             // took the slot first started after the watch lists were
             // registered, so it is fresh too. Busy again: wait and retry.
             // TODO(upstream): `IdentitySyncManager::sync_now()` should report
-            // whether it ran; a call skipped by a shutdown quiesce looks like
-            // a finished pass here (the `cancel` token covers that case).
+            // whether it ran; a call skipped by a quiesce looks like a finished
+            // pass here, so `admission` and `cancel` cover DET's stops.
+            if admission.current() != admitted {
+                return Err(TokenBalanceSyncError::SyncStopped);
+            }
             if !is_syncing() {
                 return Ok(());
             }
@@ -235,7 +268,7 @@ where
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 use dash_sdk::Sdk;
@@ -434,6 +467,7 @@ struct Inner {
     /// frame thread via [`Self::token_balances`]. See [`token_balance`].
     token_balances: Arc<TokenBalanceStore>,
     periodic_token_sync: std::sync::Mutex<Option<PeriodicTokenBalanceSync>>,
+    token_sync_admission: TokenSyncAdmission,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
     #[cfg(test)]
@@ -742,6 +776,7 @@ impl WalletBackend {
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 periodic_token_sync: std::sync::Mutex::new(None),
+                token_sync_admission: TokenSyncAdmission::default(),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 #[cfg(test)]
                 registration_attempts: std::sync::atomic::AtomicUsize::new(0),
@@ -2125,6 +2160,7 @@ impl WalletBackend {
     pub async fn shutdown(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
         self.inner.coordinator_gate.disarm();
+        self.inner.token_sync_admission.close();
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
@@ -2188,6 +2224,7 @@ impl WalletBackend {
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
         self.inner.coordinator_gate.disarm();
+        self.inner.token_sync_admission.close();
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
@@ -2207,7 +2244,9 @@ impl WalletBackend {
                 "Platform address sync did not drain during disconnect; it stays inactive until a later stop drains it"
             );
         }
-        if !self.inner.pwm.identity_sync_arc().quiesce().await {
+        if self.inner.pwm.identity_sync_arc().quiesce().await {
+            self.inner.token_sync_admission.reopen();
+        } else {
             tracing::warn!(
                 "Identity sync did not drain during disconnect; it stays inactive until a later stop drains it"
             );
@@ -3301,6 +3340,7 @@ impl WalletBackend {
         run_fresh_token_balance_sync(
             || identity_sync.is_syncing(),
             || identity_sync.sync_now(),
+            &self.inner.token_sync_admission,
             TOKEN_BALANCE_SYNC_POLL,
             deadline.saturating_duration_since(tokio::time::Instant::now()),
             cancel,
@@ -4246,6 +4286,9 @@ mod tests {
         /// Background passes still to take the slot just before our call.
         background_takeovers_left: std::cell::Cell<u32>,
         own_passes: std::cell::Cell<u32>,
+        admission: TokenSyncAdmission,
+        /// Our call meets a disconnect that closes and reopens admission.
+        stopped_during_call: std::cell::Cell<bool>,
     }
 
     impl FakeIdentitySync {
@@ -4274,6 +4317,15 @@ mod tests {
         }
 
         fn sync_now(&self) -> std::future::Ready<()> {
+            if self.stopped_during_call.take() {
+                // Upstream's quiesce gate makes the call return without a pass.
+                self.admission.close();
+                self.admission.reopen();
+                return std::future::ready(());
+            }
+            if self.admission.current() & 1 == 1 {
+                return std::future::ready(());
+            }
             let takeovers = self.background_takeovers_left.get();
             if takeovers > 0 {
                 self.background_takeovers_left.set(takeovers - 1);
@@ -4297,6 +4349,7 @@ mod tests {
                 run_fresh_token_balance_sync(
                     || self.is_syncing(),
                     || self.sync_now(),
+                    &self.admission,
                     std::time::Duration::from_millis(1),
                     budget,
                     cancel,
@@ -4364,6 +4417,31 @@ mod tests {
             result,
             Err(TokenBalanceSyncError::OtherPassStillRunning)
         ));
+        assert_eq!(upstream.own_passes.get(), 0);
+    }
+
+    /// A disconnect that closes upstream's gate during our call skips the
+    /// pass; the refresh must fail rather than publish old balances.
+    #[tokio::test]
+    async fn token_balance_sync_fails_when_a_disconnect_skips_the_pass() {
+        let upstream = FakeIdentitySync::default();
+        upstream.stopped_during_call.set(true);
+        let result = upstream
+            .run(std::time::Duration::from_secs(5), &CancellationToken::new())
+            .await;
+        assert!(matches!(result, Err(TokenBalanceSyncError::SyncStopped)));
+        assert_eq!(upstream.own_passes.get(), 0);
+    }
+
+    /// A stop that left identity sync closed fails every later refresh.
+    #[tokio::test]
+    async fn token_balance_sync_fails_while_sync_is_stopped() {
+        let upstream = FakeIdentitySync::default();
+        upstream.admission.close();
+        let result = upstream
+            .run(std::time::Duration::from_secs(5), &CancellationToken::new())
+            .await;
+        assert!(matches!(result, Err(TokenBalanceSyncError::SyncStopped)));
         assert_eq!(upstream.own_passes.get(), 0);
     }
 

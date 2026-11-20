@@ -2037,6 +2037,13 @@ pub enum TaskError {
     #[error("A background balance check is still running. Try again in a minute.")]
     TokenBalanceSyncStillRunning,
 
+    /// The network connection stopped during a token-balance refresh, so no
+    /// fresh balances were fetched.
+    #[error(
+        "Token balances were not refreshed because the network connection stopped. Reconnect, then refresh the balances again."
+    )]
+    TokenBalanceRefreshDisconnected,
+
     /// A balance read was refused before the masternode list finished
     /// syncing: sent now, its proof could not be verified and the queried
     /// node would be banned.

@@ -318,7 +318,7 @@ fn register_dashpay_address(
 
 /// Hash an identifier to a u32 for use in derivation path representation
 fn hash_identifier_to_u32(id: &Identifier) -> u32 {
-    use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+    use dash_sdk::dpp::dashcore::hashes::sha256;
     let hash = sha256::Hash::hash(&id.to_buffer());
     let bytes = hash.to_byte_array();
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & 0x7FFFFFFF

@@ -8,13 +8,17 @@ use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
 use crate::logging::{
     capture_stderr_to_file, install_alt_signal_stack, install_fatal_signal_handler,
-    report_startup_failure_to_terminal,
+    install_panic_hook, report_startup_failure_to_terminal,
 };
 
 fn main() -> ExitCode {
+    // First, so a panic in environment setup, before the logger exists, does
+    // not reach the default hook, which prints the formatted panic message.
+    install_panic_hook();
     // Single owner of dir/env/logger setup; runs again in the boot steps
     // below, where the logger's `Once` guard makes the repeat a no-op. A
-    // failure here is shown in the startup failure window.
+    // failure here is shown in the startup failure window and named on the
+    // terminal; the I/O error carries no secrets.
     let environment = prepare_environment()
         .map_err(crate::backend_task::error::TaskError::from_prepare_environment_error);
     // Redirect stderr into det.log so native crashes (SIGSEGV, abort, OOM)
@@ -29,7 +33,7 @@ fn main() -> ExitCode {
         "Starting dash-evo-tool"
     );
     check_cpu_compatibility();
-    // Initialize the Tokio runtime
+    // Initialize the multi-threaded Tokio runtime shared by all backend tasks
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
         .thread_stack_size(SDK_THREAD_STACK_SIZE)

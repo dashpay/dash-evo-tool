@@ -477,7 +477,8 @@ impl AddressInput {
         self
     }
 
-    /// Set the label displayed above the input field.
+    /// Set the label displayed above the input field; it also names the field
+    /// for screen readers, which otherwise hear "Address".
     pub fn with_label(mut self, label: impl Into<WidgetText>) -> Self {
         self.label = Some(label.into());
         self
@@ -1064,7 +1065,7 @@ impl AddressInput {
                     let response = ui.add(text_edit);
                     match label_id {
                         Some(label_id) => response.labelled_by(label_id),
-                        None => response,
+                        None => response.accessible_name("Address"),
                     }
                 })
                 .inner;

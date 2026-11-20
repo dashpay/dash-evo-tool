@@ -324,3 +324,22 @@ fn sibling_inputs_open_only_their_own_type_filter() {
         "only the clicked input's filter may list its options"
     );
 }
+
+/// Without a label, screen readers still hear a name for the field instead of
+/// only its placeholder; with one, the label names it.
+#[test]
+fn field_has_an_accessible_name_with_or_without_a_label() {
+    let mut unlabelled = AddressInput::new(Network::Testnet);
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let _ = unlabelled.show(ui);
+    });
+    harness.run();
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Address");
+
+    let mut labelled = AddressInput::new(Network::Testnet).with_label("Recipient");
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let _ = labelled.show(ui);
+    });
+    harness.run();
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Recipient");
+}

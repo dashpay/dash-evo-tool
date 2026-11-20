@@ -5,6 +5,7 @@ pub mod avatar;
 pub mod backup_retention;
 pub mod contested_name;
 pub mod dashpay;
+pub mod dashpay_contact_qr;
 pub mod dashpay_derivation;
 pub(crate) mod data_migration;
 pub mod datetime;

@@ -421,6 +421,7 @@ impl BackendTask {
                 | DashPayTask::LoadContacts { .. }
                 | DashPayTask::LoadContactsOffline { .. }
                 | DashPayTask::LoadContactRequests { .. }
+                | DashPayTask::LoadContactDetails { .. }
                 | DashPayTask::FetchContactProfile { .. }
                 | DashPayTask::FetchAvatar { .. }
                 | DashPayTask::SearchProfiles { .. }
@@ -471,6 +472,11 @@ pub enum BackendTaskContext {
     DashPayProfileUpdate(Identifier),
     /// A direct contact-details write, including failures before its handler runs.
     DashPayContactInfoUpdate {
+        identity_id: Identifier,
+        contact_id: Identifier,
+    },
+    /// A read of the details shown for one contact.
+    DashPayContactDetailsLoad {
         identity_id: Identifier,
         contact_id: Identifier,
     },
@@ -751,6 +757,17 @@ impl BackendTaskContext {
         }
     }
 
+    /// Identify a contact-details read through dispatch wrappers.
+    pub(crate) fn dashpay_contact_details_target(&self) -> Option<(Identifier, Identifier)> {
+        match self.operation() {
+            Self::DashPayContactDetailsLoad {
+                identity_id,
+                contact_id,
+            } => Some((*identity_id, *contact_id)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
         match self.operation() {
             Self::DashPayProfileUpdate(identity_id) => Some(*identity_id),
@@ -899,6 +916,13 @@ impl From<&BackendTask> for BackendTaskContext {
                     network: identity.network,
                     identity_id: identity.identity.id(),
                     kind: crate::model::dashpay::ContactsLoadKind::Requests,
+                },
+                DashPayTask::LoadContactDetails {
+                    identity,
+                    contact_id,
+                } => Self::DashPayContactDetailsLoad {
+                    identity_id: identity.identity.id(),
+                    contact_id: *contact_id,
                 },
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())
@@ -1108,6 +1132,9 @@ pub enum BackendTaskSuccessResult {
         /// [`BackendTaskSuccessResult::DashPayContactRequests`].
         identity: Identifier,
         contacts: Vec<ContactData>,
+        /// How many contacts platform-wallet holds as established, which
+        /// decides whether a details save publishes; `None` without a wallet.
+        established_contacts: Option<usize>,
     },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),
@@ -1119,11 +1146,20 @@ pub enum BackendTaskSuccessResult {
         request_id: Identifier,
         contact_id: Identifier,
     },
+    /// The details shown for one contact; see `DashPayTask::LoadContactDetails`.
+    DashPayContactDetails {
+        identity: Identifier,
+        contact_id: Identifier,
+        details: crate::model::dashpay::ContactDetails,
+    },
     DashPayContactInfoUpdated {
         /// Identity that owns the encrypted `contactInfo` document.
         identity: Identifier,
         /// Contact whose private details were updated.
         contact_id: Identifier,
+        /// Whether the details reached Platform. `false` when they are saved on
+        /// this device only, until the identity has two contacts (DIP-0015).
+        published: bool,
     },
     DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)
     /// Result of a [`FetchAvatar`](crate::backend_task::dashpay::DashPayTask::FetchAvatar):
@@ -1145,9 +1181,10 @@ pub enum BackendTaskSuccessResult {
     /// fire; the app responds by calling
     /// [`queue_all_wallets_identity_discovery`](crate::context::AppContext::queue_all_wallets_identity_discovery).
     PlatformReadyDiscoverIdentities,
-    /// Auto-accept contact QR payload, ready to render. The proof is built
-    /// through the JIT chokepoint in the backend so the UI never touches a seed.
-    DashPayAutoAcceptQrCode(String),
+    /// Contact QR code (DIP-0015 auto-accept), ready to render. The key comes
+    /// from the wallet seed through the secret seam in the backend, so the UI
+    /// never touches a seed; `Debug` hides the code, which carries that key.
+    DashPayAutoAcceptQrCode(crate::model::dashpay_contact_qr::ContactQrUri),
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {
@@ -2884,9 +2921,9 @@ mod tests {
     /// its stored balance is read back after the task; reads name nobody.
     #[test]
     fn paid_tasks_name_the_identity_that_pays_for_them() {
-        use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
         use crate::backend_task::tokens::TokenContractParams;
-        use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+        use crate::model::dashpay::ContactInfoUpdate;
+        use crate::model::dashpay_contact_qr::ContactQrCode;
         use crate::model::qualified_contract::QualifiedContract;
         use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
         use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -2900,6 +2937,9 @@ mod tests {
         use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
         use dash_sdk::dpp::version::PlatformVersion;
         use dash_sdk::platform::IdentityPublicKey;
+        use platform_wallet::wallet::identity::crypto::auto_accept::{
+            encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+        };
 
         // Every other identity-typed field holds a different identity, so a
         // payer read from the wrong field fails the comparison.
@@ -3147,14 +3187,14 @@ mod tests {
             dashpay(DashPayTask::SendContactRequestWithProof {
                 identity: payer.clone(),
                 signing_key: key.clone(),
-                to_identity_id: other,
-                account_label: None,
-                qr_auto_accept: AutoAcceptProofData {
-                    identity_id: other,
-                    proof_key: [0; 32],
-                    account_reference: 0,
-                    expires_at: 0,
-                },
+                qr_code: ContactQrCode::parse(&encode_dashpay_contact_uri(
+                    "bob",
+                    &encode_auto_accept_key_blob(
+                        &crate::test_support::keys::secret_key(),
+                        1_900_000_000,
+                    ),
+                ))
+                .expect("contact QR code"),
             }),
             dashpay(DashPayTask::AcceptContactRequest {
                 identity: payer.clone(),
@@ -3163,12 +3203,10 @@ mod tests {
             dashpay(DashPayTask::RejectContactRequest {
                 identity: payer.clone(),
                 request_id: other,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             }),
             dashpay(DashPayTask::CancelContactRequest {
                 identity: payer.clone(),
                 request_id: other,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             }),
             dashpay(DashPayTask::UpdateContactInfo {
                 identity: payer.clone(),
@@ -3192,6 +3230,10 @@ mod tests {
             )),
             dashpay(DashPayTask::LoadProfile {
                 identity: payer.clone(),
+            }),
+            dashpay(DashPayTask::LoadContactDetails {
+                identity: payer.clone(),
+                contact_id: other,
             }),
             dashpay(DashPayTask::SendPaymentToContact {
                 identity: payer.clone(),
@@ -3427,7 +3469,6 @@ mod tests {
     #[test]
     fn dashpay_request_id_extracts_only_the_three_contact_actions() {
         use crate::backend_task::dashpay::DashPayTask;
-        use crate::model::dashpay::UnreadableContactInfoPolicy;
 
         let request_id = Identifier::from([0x11; 32]);
         let dashpay = |t: DashPayTask| BackendTask::DashPayTask(Box::new(t));
@@ -3443,7 +3484,6 @@ mod tests {
             dashpay_request_id(&dashpay(DashPayTask::RejectContactRequest {
                 identity: qualified_identity(1),
                 request_id,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             })),
             Some(request_id)
         );
@@ -3451,7 +3491,6 @@ mod tests {
             dashpay_request_id(&dashpay(DashPayTask::CancelContactRequest {
                 identity: qualified_identity(1),
                 request_id,
-                unreadable: UnreadableContactInfoPolicy::Abort,
             })),
             Some(request_id)
         );

@@ -399,6 +399,7 @@ pub(crate) mod loads {
             &BackendTaskContext::from(&task),
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity: owner,
+                established_contacts: None,
                 contacts: vec![named_contact(name)],
             },
         );
@@ -743,6 +744,7 @@ pub(crate) mod loads {
             let results = vec![
                 answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
                     identity: shown,
+                    established_contacts: None,
                     contacts: vec![contact("Bao")],
                 }),
                 answer(BackendTaskSuccessResult::DashPayContactRequests {
@@ -760,6 +762,7 @@ pub(crate) mod loads {
                 // A load some other screen ran for another identity.
                 answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
                     identity: other,
+                    established_contacts: None,
                     contacts: vec![contact("Zed")],
                 }),
             ];

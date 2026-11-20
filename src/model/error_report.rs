@@ -77,8 +77,18 @@ impl StartupFailure {
     /// A failure reported through [`ErrorReport::from_error`] with
     /// [`GENERIC_STARTUP_FAILURE`] as the fallback message.
     pub fn from_error(error: &(dyn Error + 'static), log_file: Option<PathBuf>) -> Self {
+        Self::with_fallback(error, GENERIC_STARTUP_FAILURE, log_file)
+    }
+
+    /// A failure reported through [`ErrorReport::from_error`] with `fallback`
+    /// as the message when the error carries none of its own.
+    pub fn with_fallback(
+        error: &(dyn Error + 'static),
+        fallback: &str,
+        log_file: Option<PathBuf>,
+    ) -> Self {
         Self {
-            report: ErrorReport::from_error(error, GENERIC_STARTUP_FAILURE),
+            report: ErrorReport::from_error(error, fallback),
             log_file,
         }
     }

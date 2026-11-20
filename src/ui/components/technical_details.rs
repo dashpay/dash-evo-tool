@@ -64,15 +64,16 @@ impl<'a> TechnicalDetails<'a> {
                     });
             });
         ui.add_space(Spacing::XXS);
+        // An unframed button: link styling, announced as a button.
         let copy = ui
             .add(
-                egui::Label::new(
+                egui::Button::new(
                     RichText::new("Copy details")
                         .font(Typography::body_small())
                         .color(DashColors::DASH_BLUE)
                         .underline(),
                 )
-                .sense(egui::Sense::click()),
+                .frame(false),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if copy.clicked() {

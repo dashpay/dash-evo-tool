@@ -49,8 +49,9 @@ pub fn prepare_environment() -> Result<PathBuf, std::io::Error> {
     use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
     let data_dir = app_user_data_dir_path()?;
     ensure_data_dir_exists(&data_dir)?;
-    ensure_env_file(&data_dir);
+    // Logging first, so a failure to write the settings file is logged too.
     crate::logging::initialize_logger();
+    ensure_env_file(&data_dir)?;
     Ok(data_dir)
 }
 
@@ -173,6 +174,12 @@ impl eframe::App for BootApp {
             }
             UnlockOutcome::Submit(passphrase) => self.try_unlock(passphrase),
         }
+    }
+
+    /// The failure dialog saves nothing: with no data folder, eframe's storage
+    /// is the system default folder, outside the one the user chose.
+    fn persist_egui_memory(&self) -> bool {
+        !matches!(self, BootApp::Failed(_))
     }
 
     fn on_exit(&mut self) {
@@ -350,6 +357,16 @@ mod tests {
         };
         assert_ne!(failure.report().message(), GENERIC_STARTUP_FAILURE);
         assert!(outcome.failed());
+    }
+
+    /// The failure dialog keeps no egui memory, so closing it writes nothing to
+    /// eframe's storage, which falls back to the system default folder when the
+    /// data folder could not be prepared.
+    #[test]
+    fn failed_boot_does_not_persist_egui_memory() {
+        let outcome = StartupOutcome::default();
+        let app = BootApp::failed(&std::io::Error::other("no data folder"), &outcome);
+        assert!(!eframe::App::persist_egui_memory(&app));
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.

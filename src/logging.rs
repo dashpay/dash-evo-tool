@@ -437,13 +437,16 @@ fn install_fatal_signal_handler_impl() {
     );
 }
 
-/// Builds the calm, generic notice shown on the terminal when startup fails.
+/// Builds the notice shown on the terminal when startup fails.
 ///
-/// Pure function: names what happened and lists each provided log path on its
-/// own line, with no raw error text, no jargon, and no support redirect. Side
-/// effect free so it can be unit-tested directly.
-fn startup_failure_message(log_paths: &[PathBuf]) -> String {
+/// Pure function: names what happened, the technical `causes` known to `main`
+/// (a failure before any log file or window exists leaves no other trace),
+/// and each provided log path on its own line.
+fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::fmt::Debug]) -> String {
     let mut message = String::from("Dash Evo Tool failed to start.\n");
+    for cause in causes {
+        message.push_str(&format!("Cause: {cause:?}\n"));
+    }
     if log_paths.is_empty() {
         message.push_str("Please try again, and report the problem if it keeps happening.\n");
         return message;
@@ -459,14 +462,14 @@ fn startup_failure_message(log_paths: &[PathBuf]) -> String {
     message
 }
 
-/// Writes a generic startup-failure notice to the real terminal.
+/// Writes a startup-failure notice with `causes` to the real terminal.
 ///
-/// Best-effort: resolves the log paths, builds the message, and writes it to the
-/// preserved terminal stderr (fd 2 is redirected to the log file during a normal
-/// run). Never panics; write errors are ignored.
-pub fn report_startup_failure_to_terminal() {
+/// Best-effort and independent of tracing: resolves the log paths, builds the
+/// message, and writes it to the preserved terminal stderr (fd 2 is redirected
+/// to the log file during a normal run). Never panics; write errors are ignored.
+pub fn report_startup_failure_to_terminal(causes: &[&dyn std::fmt::Debug]) {
     let log_paths: Vec<PathBuf> = log_file_path().into_iter().collect();
-    let message = startup_failure_message(&log_paths);
+    let message = startup_failure_message(&log_paths, causes);
     write_to_terminal(message.as_bytes());
 }
 
@@ -861,7 +864,7 @@ mod tests {
             PathBuf::from("/tmp/data/det.log"),
             PathBuf::from("/tmp/data/det-stderr.log"),
         ];
-        let message = startup_failure_message(&paths);
+        let message = startup_failure_message(&paths, &[]);
 
         assert!(
             message.contains("failed to start"),
@@ -880,9 +883,24 @@ mod tests {
         );
     }
 
+    /// The terminal notice names each known cause, so a failure before any log
+    /// file or window exists still leaves a diagnostic.
+    #[test]
+    fn startup_failure_message_names_each_cause() {
+        let first = std::io::Error::other("data folder unreadable");
+        let second = std::io::Error::other("no graphics adapter");
+        let message = startup_failure_message(&[], &[&first, &second]);
+        for cause in [&first, &second] {
+            assert!(
+                message.contains(&format!("{cause:?}")),
+                "message should name {cause:?}, got {message:?}"
+            );
+        }
+    }
+
     #[test]
     fn startup_failure_message_omits_path_list_when_empty() {
-        let message = startup_failure_message(&[]);
+        let message = startup_failure_message(&[], &[]);
         assert!(
             message.contains("failed to start"),
             "message should still state the failure, got {message:?}"

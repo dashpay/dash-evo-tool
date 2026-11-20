@@ -3286,7 +3286,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -3493,7 +3493,7 @@ mod tests {
         use std::sync::{Arc, RwLock};
 
         fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-            crate::app_dir::ensure_env_file(dir);
+            crate::app_dir::ensure_env_file(dir).expect("write .env");
             let db_file = dir.join("data.db");
             let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
             db.create_tables(true).expect("create tables");

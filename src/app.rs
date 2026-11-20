@@ -888,7 +888,7 @@ impl AppState {
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir)?;
 
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()

@@ -589,6 +589,20 @@ impl DPNSScreen {
             .dispatch_on(task, self.app_context.network())
     }
 
+    /// End the wait for the contest refresh `context` belongs to, if this panel
+    /// is waiting on that one. Any other refresh leaves the wait running.
+    ///
+    /// Besides a newer refresh or a network switch, the only teardown of
+    /// `refresh_banner`: an error message names no request, and a failed
+    /// sub-query of a running or older refresh must not take this refresh's
+    /// progress banner down.
+    fn finish_contest_refresh(&mut self, context: &BackendTaskContext) {
+        if context.is_dpns_contest_refresh() && self.contest_refresh.settle(context).is_some() {
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
+            self.refresh_banner.take_and_clear();
+        }
+    }
+
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     /// Starts a contest refresh as the Refresh button does, without running
@@ -2754,18 +2768,8 @@ impl ScreenLike for DPNSScreen {
         self.refresh();
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refresh_banner.take_and_clear();
-        }
-    }
-
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if context.is_dpns_contest_refresh() && self.contest_refresh.settle(context).is_some() {
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
-            self.refresh_banner.take_and_clear();
-        }
+        self.finish_contest_refresh(context);
         self.finish_scheduled_dispatch(context);
         self.release_pending_on_error = self.pending_vote_operation.is_some_and(|operation_id| {
             dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
@@ -2811,6 +2815,7 @@ impl ScreenLike for DPNSScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        self.finish_contest_refresh(context);
         self.finish_scheduled_dispatch(context);
         self.display_task_result(result);
     }
@@ -2870,12 +2875,10 @@ impl ScreenLike for DPNSScreen {
                 }
                 self.rebuild_scheduled_vote_rows();
             }
-            VotesPanelResult::ContestsRefreshed => {
-                self.refresh();
-                self.refresh_banner.take_and_clear();
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-                self.contest_refresh.clear();
-            }
+            // Sent mid-task and alike from every refresh, an older one on this
+            // network included: it reloads the data, and only the refresh's
+            // own result ends the wait.
+            VotesPanelResult::ContestsRefreshed => self.refresh(),
         }
     }
 
@@ -3276,7 +3279,12 @@ mod tests {
             .app_context
             .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Abstain)
             .unwrap();
-        screen.refreshing_status = RefreshingStatus::Refreshing;
+        let egui_ctx = screen.app_context.egui_ctx().clone();
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.start_contest_refresh(&egui_ctx)
+        else {
+            panic!("a contest refresh is dispatched with its context");
+        };
         screen.display_task_result(BackendTaskSuccessResult::RefreshedDpnsContests {
             network: screen.app_context.network(),
         });
@@ -3285,6 +3293,11 @@ mod tests {
             screen.vote_state.state(voter, poll),
             DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain))
         );
+        assert!(
+            screen.refreshing_status == RefreshingStatus::Refreshing,
+            "the mid-task result reloads the data and ends nothing"
+        );
+        screen.display_backend_task_result(&context, BackendTaskSuccessResult::None);
         assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
     }
 

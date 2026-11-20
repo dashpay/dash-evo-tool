@@ -76,8 +76,9 @@ impl AddTokenByIdScreen {
         let mut action = AppAction::None;
 
         ui.horizontal(|ui| {
-            ui.label("Contract or Token ID:");
-            ui.text_edit_singleline(&mut self.contract_or_token_id_input);
+            let id_label = ui.label("Contract or Token ID:");
+            ui.text_edit_singleline(&mut self.contract_or_token_id_input)
+                .labelled_by(id_label.id);
         });
 
         ui.add_space(10.0);

@@ -8,7 +8,9 @@
 
 use super::contact_detail_view::{ContactDetailState, PendingWrite};
 use crate::backend_task::dashpay::ContactData;
-use crate::model::dashpay::{ContactsLoadKind, contact_request_recipient};
+use crate::model::dashpay::{
+    ContactsLoadKind, contact_details_save_publishes, contact_request_recipient,
+};
 use crate::model::identity_name::display_label as profile_display_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Network;
@@ -371,6 +373,12 @@ impl ContactsState {
     /// `Active contacts · {count}` heading.
     pub fn contacts_len(&self) -> usize {
         self.contacts.len()
+    }
+
+    /// Whether saving a contact's details publishes them and pays a fee,
+    /// which depends on every established contact, hidden ones included.
+    pub fn details_save_publishes(&self) -> bool {
+        contact_details_save_publishes(self.contacts.len() + self.hidden.len())
     }
 
     /// Contacts matching the current search query, in list order. An empty or
@@ -1417,5 +1425,24 @@ mod tests {
                 "no contact-list answer has arrived"
             );
         }
+    }
+
+    #[test]
+    fn hidden_contacts_count_towards_publishing_details() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![
+            contact(Some("Bao"), None, None),
+            ContactData {
+                identity_id: id(8),
+                is_hidden: true,
+                ..contact(Some("Cai"), None, None)
+            },
+        ]);
+
+        assert_eq!(state.contacts_len(), 1);
+        assert!(
+            state.details_save_publishes(),
+            "two established contacts publish, one of them hidden"
+        );
     }
 }

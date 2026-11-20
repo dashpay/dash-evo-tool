@@ -24,10 +24,7 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{
-    ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, contact_details_save_publishes,
-    validate_contact_note,
-};
+use crate::model::dashpay::{ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -744,7 +741,7 @@ fn note_editor(
 ) -> bool {
     let contact_id = contact.identity_id;
     // With fewer than two contacts the save stays on this device: no fee.
-    let publishes = contact_details_save_publishes(state.contacts_len());
+    let publishes = state.details_save_publishes();
     let saving = state
         .detail()
         .is_writing(&identity.identity.id(), &contact_id);

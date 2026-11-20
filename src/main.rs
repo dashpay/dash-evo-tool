@@ -59,6 +59,9 @@ fn main() -> ExitCode {
     let result = runtime.block_on(start(&mut startup, outcome.clone()));
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        // Free the vault and database first: the dialog blocks, and a restart
+        // while it is up must not find them held.
+        startup.release();
         crate::boot::show_window_failure_dialog();
     }
     if result.is_err() || outcome.failed() {

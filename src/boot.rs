@@ -425,6 +425,14 @@ impl Startup {
         }
     }
 
+    /// Drop successful boot steps without building the app, releasing the
+    /// vault and the database; a failure stays for the terminal notice.
+    pub fn release(&mut self) {
+        if self.error().is_none() {
+            *self = Self::Spent;
+        }
+    }
+
     /// Build the boot app. Successful steps are handed over and the startup
     /// becomes [`Self::Spent`]; a failure stays here for the terminal notice.
     pub fn boot(&mut self, ctx: egui::Context, outcome: &StartupOutcome) -> BootApp {
@@ -785,6 +793,23 @@ mod tests {
         });
         assert!(startup.error().is_none());
         assert!(!startup.persist_window());
+    }
+
+    /// Releasing a successful preparation frees the vault for another launch,
+    /// so a restart while the window failure dialog is up is not refused.
+    #[test]
+    fn release_frees_the_vault() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        AppContext::open_secret_store(tmp.path()).expect("create keyless vault");
+        let mut startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        assert!(startup.persist_window(), "the vault opened and is held");
+
+        startup.release();
+
+        assert!(startup.error().is_none());
+        AppContext::open_secret_store(tmp.path()).expect("the vault is free after release");
     }
 
     /// Booting the prepared steps a second time never runs them again: it

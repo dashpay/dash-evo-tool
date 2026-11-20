@@ -75,13 +75,13 @@ impl CapturedLog {
         // tracing-core recomputes its callsite and max-level caches whenever a
         // thread's subscriber comes or goes, from whichever dispatchers are
         // alive then; a concurrent test dropping its subscriber can store
-        // "disabled" after this capture registered. A global subscriber that
-        // never rules a callsite or level out keeps those caches open, and the
-        // thread's own subscriber decides per event.
-        static KEEP_CALLSITES_OPEN: std::sync::Once = std::sync::Once::new();
-        KEEP_CALLSITES_OPEN.call_once(|| {
-            let _ = tracing::subscriber::set_global_default(KeepCallsitesOpen);
-        });
+        // "disabled" after this capture registered. A dispatcher that never
+        // rules a callsite or level out, kept alive here, is counted in every
+        // recompute (`Dispatch::new` registers it) without becoming anyone's
+        // default; the thread's own subscriber decides per event.
+        static KEEP_CALLSITES_OPEN: std::sync::OnceLock<tracing::Dispatch> =
+            std::sync::OnceLock::new();
+        KEEP_CALLSITES_OPEN.get_or_init(|| tracing::Dispatch::new(KeepCallsitesOpen));
         let text = std::sync::Arc::new(Mutex::new(Vec::new()));
         let writer = std::sync::Arc::clone(&text);
         let subscriber = tracing_subscriber::fmt()
@@ -149,5 +149,23 @@ impl std::io::Write for CapturedLogSink {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture stays on its own thread: it never installs a process-wide
+    /// default, which would keep the app's own logger from installing.
+    #[test]
+    fn captured_log_installs_no_process_wide_subscriber() {
+        let _log = CapturedLog::start();
+        let elsewhere = std::thread::spawn(|| {
+            tracing::dispatcher::get_default(|dispatch| dispatch.is::<KeepCallsitesOpen>())
+        })
+        .join()
+        .expect("probe thread");
+        assert!(!elsewhere, "the capture's keeper became the global default");
     }
 }

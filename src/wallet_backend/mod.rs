@@ -4018,34 +4018,15 @@ mod tests {
             detached: 1,
             orphan_status: WorkerStatus::Stopped(Some(synthetic_secret.to_owned())),
         };
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let writer = std::sync::Arc::clone(&log);
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || LogSink(std::sync::Arc::clone(&writer)))
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, || warn_if_shutdown_unclean(&report));
-        let text = String::from_utf8(log.lock().expect("log").clone()).expect("UTF-8 log");
+        let log = crate::test_support::CapturedLog::start();
+        warn_if_shutdown_unclean(&report);
+        let text = log.text();
 
         assert!(!text.contains(synthetic_secret), "{text}");
         for kept in ["Spv", "IdentitySync", "Panicked", "Timeout", "detached: 1"] {
             assert!(text.contains(kept), "the report must keep {kept}:\n{text}");
         }
         assert!(text.contains("<redacted: 30 bytes>"), "{text}");
-    }
-
-    /// Collects a test subscriber's output.
-    struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for LogSink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("log").extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 
     #[test]

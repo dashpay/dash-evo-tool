@@ -271,6 +271,31 @@ impl WalletBackend {
         Ok((new_balance, proof_height, entries))
     }
 
+    /// Make the DET-owned inputs of a spend submitted outside platform-wallet
+    /// (address-funded identity registration) reconcilable upstream before
+    /// it is broadcast, as the spends above do. A wallet platform-wallet does
+    /// not hold has nothing to prepare; its proof updates DET's view alone.
+    pub(crate) async fn prepare_platform_address_slots(
+        &self,
+        seed_hash: &WalletSeedHash,
+        path_index: &PlatformPathIndex,
+        addresses: impl IntoIterator<Item = PlatformAddress>,
+    ) -> Result<(), TaskError> {
+        match self.resolve_wallet(seed_hash).await {
+            Ok(wallet) => {
+                self.ensure_platform_address_slots(&wallet, path_index, addresses)
+                    .await
+            }
+            Err(error) => {
+                tracing::debug!(
+                    ?error,
+                    "platform-wallet does not hold the paying wallet; no slots to prepare"
+                );
+                Ok(())
+            }
+        }
+    }
+
     /// Record a spend submitted outside platform-wallet (address-funded
     /// identity registration) from its proof-attested `address_infos`, pinned
     /// at `proof_height`, and return what platform-wallet committed.

@@ -1951,7 +1951,7 @@ impl AppContext {
 
     /// How many coins a pooled Core send of the whole balance spends, from
     /// the wallet's snapshot.
-    fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+    pub fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
             .map(|wb| wb.core_send_input_count(seed_hash))
             .unwrap_or(0)

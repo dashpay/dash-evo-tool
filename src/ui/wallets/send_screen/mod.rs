@@ -13,9 +13,10 @@ use crate::model::fee_estimation::{
     AddressAllocationResult, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, core_send_fee_at_max_duffs,
     core_several_outputs_max_duffs, estimate_address_funding_fee_from_transition,
-    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
-    max_spendable_credits, shield_from_balance_fee_headroom,
+    estimate_asset_lock_core_fee_duffs, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    identity_topup_min_funding_duffs, max_platform_inputs, max_spendable_credits,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -245,6 +246,22 @@ impl FeePreview {
             fee_credits,
             total_debit_credits: amount_credits,
             recipient_receives_credits: Some(amount_credits.saturating_sub(fee_credits)),
+        }
+    }
+
+    /// Funding Platform from Core: the Platform fee is deducted from the
+    /// amount and the Core transaction fee is paid on top, so the balance is
+    /// debited amount + Core fee and the recipient receives amount − Platform
+    /// fee.
+    fn deducted_with_core_fee_on_top(
+        amount_credits: u64,
+        platform_fee_credits: u64,
+        core_fee_credits: u64,
+    ) -> Self {
+        Self {
+            fee_credits: platform_fee_credits.saturating_add(core_fee_credits),
+            total_debit_credits: amount_credits.saturating_add(core_fee_credits),
+            ..Self::deducted_from_amount(amount_credits, platform_fee_credits)
         }
     }
 }
@@ -2628,7 +2645,8 @@ impl WalletSendScreen {
                 let fee_credits = fee_duffs.saturating_mul(CREDITS_PER_DUFF);
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
-            // Core → Platform: address-funding fee, deducted from the amount.
+            // Core → Platform: address-funding fee, deducted from the amount;
+            // the asset lock's Core fee, paid on top.
             (SourceSelection::CoreWallet, AddressKind::Platform) => {
                 let destination = self
                     .validated_destination
@@ -2638,9 +2656,15 @@ impl WalletSendScreen {
                     self.app_context.platform_version(),
                     &destination,
                 );
-                Some(FeePreview::deducted_from_amount(
+                let input_count = self.selected_wallet_seed_hash.map_or(0, |seed_hash| {
+                    self.app_context.snapshot_core_send_input_count(&seed_hash)
+                });
+                let core_fee_credits = estimate_asset_lock_core_fee_duffs(input_count)
+                    .saturating_mul(CREDITS_PER_DUFF);
+                Some(FeePreview::deducted_with_core_fee_on_top(
                     amount_credits,
                     fee_credits,
+                    core_fee_credits,
                 ))
             }
             // Core → Shielded: platform + L1 shield fees, paid on top.
@@ -2850,9 +2874,15 @@ impl WalletSendScreen {
                 ));
                 if let Some(receives) = preview.recipient_receives_credits {
                     let recipient_amount = format_credits_as_dash(receives);
-                    lines.push(format!(
-                        "The network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}."
-                    ));
+                    lines.push(if preview.total_debit_credits > amount_credits {
+                        format!(
+                            "The Platform fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. The Core transaction fee is paid on top of the amount."
+                        )
+                    } else {
+                        format!(
+                            "The network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}."
+                        )
+                    });
                 }
             }
             None => lines.push("Fee: calculated when you send".to_string()),
@@ -6849,9 +6879,40 @@ mod tests {
         assert_eq!(
             screen.simple_send_confirmation_message(),
             format!(
-                "From: Unnamed wallet · Core\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nThe network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}.\nYour Dash is moved to Platform first, so this takes a little longer than a regular payment.\nCheck the recipient. Payments can't be undone.",
+                "From: Unnamed wallet · Core\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nThe Platform fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. The Core transaction fee is paid on top of the amount.\nYour Dash is moved to Platform first, so this takes a little longer than a regular payment.\nCheck the recipient. Payments can't be undone.",
                 short = destination
             )
+        );
+    }
+
+    /// Funding a Platform address from Core takes the Platform fee from the
+    /// amount and charges the asset lock's Core fee on top: the total is what
+    /// leaves the Core balance.
+    #[test]
+    fn core_to_platform_total_includes_the_core_fee_paid_on_top() {
+        let (mut screen, _temp_dir) = send_screen();
+        let destination =
+            PlatformAddress::try_from(testnet_core_address(8)).expect("platform destination");
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination,
+            bech32m: destination.to_bech32m_string(Network::Testnet),
+        });
+        let amount = Amount::new_dash(1.0).value();
+        screen.amount = Some(Amount::new_dash(1.0));
+
+        let preview = screen.current_fee_preview().expect("fee preview");
+
+        let platform_fee = estimate_address_funding_fee_from_transition(
+            screen.app_context.platform_version(),
+            &destination,
+        );
+        let core_fee = estimate_asset_lock_core_fee_duffs(0) * CREDITS_PER_DUFF;
+        assert_eq!(preview.total_debit_credits, amount + core_fee);
+        assert_eq!(preview.fee_credits, platform_fee + core_fee);
+        assert_eq!(
+            preview.recipient_receives_credits,
+            Some(amount - platform_fee)
         );
     }
 
@@ -7140,6 +7201,14 @@ mod tests {
         let preview = FeePreview::deducted_from_amount(1_000, 30);
         assert_eq!(preview.fee_credits, 30);
         assert_eq!(preview.total_debit_credits, 1_000);
+        assert_eq!(preview.recipient_receives_credits, Some(970));
+    }
+
+    #[test]
+    fn fee_preview_with_core_fee_on_top_debits_the_amount_and_the_core_fee() {
+        let preview = FeePreview::deducted_with_core_fee_on_top(1_000, 30, 5);
+        assert_eq!(preview.fee_credits, 35);
+        assert_eq!(preview.total_debit_credits, 1_005);
         assert_eq!(preview.recipient_receives_credits, Some(970));
     }
 

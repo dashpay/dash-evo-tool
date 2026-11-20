@@ -464,7 +464,7 @@ impl AddKeyScreen {
 
     fn show_derivation_index(&mut self, ui: &mut Ui) {
         self.derivation_visible = true;
-        ui.label("Wallet key slot:");
+        let slot_label = ui.label("Wallet key slot:");
         ui.vertical(|ui| {
             match self.derivation.status() {
                 // Unreachable while "Create from wallet" is on; kept for totality.
@@ -506,7 +506,7 @@ impl AddKeyScreen {
                         "All wallet key slots available to this identity are in use. Turn off Create from wallet to enter a private key instead.",
                     );
                 }
-                ChooserStatus::Ready => self.show_slot_list(ui),
+                ChooserStatus::Ready => self.show_slot_list(ui, slot_label.id),
             }
             if self.derivation.identity_protected() {
                 ui.label(
@@ -517,7 +517,7 @@ impl AddKeyScreen {
         ui.end_row();
     }
 
-    fn show_slot_list(&mut self, ui: &mut Ui) {
+    fn show_slot_list(&mut self, ui: &mut Ui, label_id: egui::Id) {
         let limit = self.derivation.limit();
         let selected = self.derivation.selected_index();
         egui::ComboBox::from_id_salt("derived_key_index")
@@ -537,7 +537,9 @@ impl AddKeyScreen {
                         .inner
                         .disabled_tooltip("This slot is already used by a key on this identity.");
                 }
-            });
+            })
+            .response
+            .labelled_by(label_id);
         if let Some(suggested) = self.derivation.suggested_index() {
             ui.label(format!(
                 "Other wallet apps restore this key most reliably from slot {suggested}. Choose slot {suggested} unless you need a different one."
@@ -1273,16 +1275,14 @@ mod derived_key_tests {
     }
 
     fn source_harness(screen: AddKeyScreen) -> Harness<'static, AddKeyScreen> {
-        crate::test_support::allowing_unnamed_widgets(Harness::builder())
-            .with_max_steps(30)
-            .build_ui_state(
-                |ui, screen: &mut AddKeyScreen| {
-                    egui::Grid::new("source").show(ui, |ui| {
-                        screen.show_key_source(ui);
-                    });
-                },
-                screen,
-            )
+        Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                egui::Grid::new("source").show(ui, |ui| {
+                    screen.show_key_source(ui);
+                });
+            },
+            screen,
+        )
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1791,14 +1791,12 @@ mod derived_key_tests {
         screen.display_message("not saved", MessageType::Error);
         assert!(screen.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved);
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
-            .with_max_steps(30)
-            .build_ui_state(
-                |ui, screen: &mut AddKeyScreen| {
-                    screen.show_key_not_saved(ui);
-                },
-                screen,
-            );
+        let mut harness = Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                screen.show_key_not_saved(ui);
+            },
+            screen,
+        );
         harness.run();
         harness.get_by_label("Copy private key").click();
         // One frame: the copy command is in that frame's output only.

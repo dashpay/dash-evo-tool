@@ -1006,6 +1006,7 @@ impl AppState {
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
 
         // Force-enable AccessKit so the accessibility tree is populated every
         // frame, even without VoiceOver or other assistive technology running.

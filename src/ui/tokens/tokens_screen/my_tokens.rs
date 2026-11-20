@@ -578,7 +578,7 @@ impl TokensScreen {
                 let screen_rect = ui.ctx().content_rect();
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Background,
-                    egui::Id::new("reward_explanation_overlay"),
+                    egui::Id::unique("reward_explanation_overlay"),
                 ));
                 painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 

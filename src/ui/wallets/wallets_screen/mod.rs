@@ -3100,9 +3100,20 @@ impl ScreenLike for WalletsBalancesScreen {
     fn refresh(&mut self) {
         self.refreshing = false;
         // Re-scan for protected single-key rows still awaiting restore so a
-        // post-migration refresh surfaces (or clears) the restore banner.
+        // user's Refresh surfaces (or clears) the restore banner.
         self.pending_restores_scanned = false;
         self.refresh_on_arrival();
+    }
+
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        // A finished storage update (or a devnet wipe) reports every domain:
+        // the storage it made readable can hold keys awaiting their old
+        // password, so the restore banner re-scans on its next paint.
+        if update.network == self.app_context.network
+            && update.domain == crate::backend_task::CacheDomain::All
+        {
+            self.pending_restores_scanned = false;
+        }
     }
 }
 
@@ -3422,6 +3433,54 @@ mod tests {
         screen.refresh_on_arrival();
 
         assert_eq!(screen.selected_wallet_seed_hash(), Some(target));
+    }
+
+    /// A storage update finished by a retry makes this network's storage
+    /// readable: the restore banner must offer the imported keys awaiting
+    /// their old password without a manual refresh. A change on another
+    /// network leaves the page's earlier scan alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_storage_update_offers_keys_awaiting_their_old_password() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        let egui_ctx = ctx.egui_ctx().clone();
+        let render = |screen: &mut WalletsBalancesScreen| {
+            egui_ctx
+                .run_ui(Default::default(), |ui| {
+                    screen.render_protected_restore_banner(ui);
+                })
+                .drop_without_applying_deltas();
+        };
+        // While the storage update has not finished, its storage is unreadable.
+        render(&mut screen);
+        assert!(screen.pending_protected_restores.is_empty());
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            egui_ctx.clone(),
+        ))
+        .await
+        .expect("wire wallet backend");
+        crate::database::seed_legacy_protected_key(&ctx.db);
+
+        screen.cached_data_changed(CacheUpdate {
+            network: Network::Mainnet,
+            domain: CacheDomain::All,
+        });
+        render(&mut screen);
+        assert!(screen.pending_protected_restores.is_empty());
+
+        screen.cached_data_changed(CacheUpdate {
+            network: ctx.network,
+            domain: CacheDomain::All,
+        });
+        render(&mut screen);
+        assert_eq!(screen.pending_protected_restores.len(), 1);
     }
 
     mod wallet_selection_linking {

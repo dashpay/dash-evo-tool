@@ -501,14 +501,11 @@ mod tests {
     #[test]
     fn advanced_menu_opens_dispatches_and_closes_in_both_themes() {
         use crate::app::ToolbarMenuItem;
-        use egui_kittest::{
-            Harness,
-            kittest::{NodeT, Queryable},
-        };
+        use egui_kittest::kittest::{NodeT, Queryable};
         for dark in [false, true] {
             let tmp = tempfile::tempdir().expect("temp dir");
             let ctx = crate::context::test_support::test_app_context(tmp.path());
-            let mut harness = Harness::builder()
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
                 .with_size(egui::vec2(1200.0, 400.0))
                 .build_ui_state(
                     |ui, last_action| {

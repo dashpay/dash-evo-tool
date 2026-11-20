@@ -687,19 +687,31 @@ impl TokenFixture {
 }
 
 /// Fails when the central panel shows a blank band (content pushed down, as
-/// in the Mint bug) or when two controls overlap.
+/// in the Mint bug) or when two controls overlap. `navigation_button` names a
+/// button of the navigation panel next to the content.
 fn assert_intact_layout(
     harness: &Harness<'static, dash_evo_tool::app::AppState>,
     screen: &str,
-    navigation_panel: &str,
+    navigation_button: &str,
 ) {
     use egui::accesskit::Role;
     const MAX_GAP: f32 = 120.0;
-    let content_left =
-        egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new(navigation_panel))
-            .expect("navigation panel has rendered")
-            .outer_rect
-            .right();
+    // egui keys a panel's state by its parent's scope id, which the test cannot
+    // name, so the panel is the one holding the navigation button.
+    let button = harness
+        .query_all_by_role_and_label(Role::Button, navigation_button)
+        .next()
+        .unwrap_or_else(|| panic!("{screen}: no {navigation_button:?} navigation button"))
+        .rect();
+    let panels: Vec<f32> = harness.ctx.data(|data| {
+        data.iter_temp_by_type::<egui::containers::panel::PanelState>()
+            .filter(|panel| panel.outer_rect.contains_rect(button))
+            .map(|panel| panel.outer_rect.right())
+            .collect()
+    });
+    let [content_left] = panels[..] else {
+        panic!("{screen}: expected one navigation panel: {panels:?}");
+    };
     let height = harness.ctx.content_rect().height();
     let mut nodes: Vec<(egui::Rect, Role)> = harness
         .query_all_by_label_contains("")
@@ -778,79 +790,79 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
                 "Import Token",
                 ScreenType::AddTokenById,
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Transfer",
                 ScreenType::TransferTokensScreen(balance),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Mint",
                 ScreenType::MintTokensScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Burn",
                 ScreenType::BurnTokensScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Freeze",
                 ScreenType::FreezeTokensScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Unfreeze",
                 ScreenType::UnfreezeTokensScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Destroy",
                 ScreenType::DestroyFrozenFundsScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Pause",
                 ScreenType::PauseTokensScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Resume",
                 ScreenType::ResumeTokensScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Update config",
                 ScreenType::UpdateTokenConfigScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Purchase",
                 ScreenType::PurchaseTokenScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Set price",
                 ScreenType::SetTokenPriceScreen(info.clone()),
                 "Tokens",
-                "tokens_subscreen_chooser_panel",
+                "My Tokens",
             ),
             (
                 "Group actions",
                 ScreenType::GroupActions,
                 "Contracts",
-                "left_panel",
+                "Wallets",
             ),
         ];
         for (name, screen_type, back, navigation_panel) in pushed {
@@ -908,7 +920,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         ];
         for (name, screen) in claim_screens {
             f.show(screen);
-            assert_intact_layout(&f.harness, name, "tokens_subscreen_chooser_panel");
+            assert_intact_layout(&f.harness, name, "My Tokens");
             f.click_breadcrumb("Tokens");
             assert!(
                 f.harness.state().screen_stack.is_empty(),
@@ -920,7 +932,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         // popup, Search and the Token Creator.
         f.harness.state_mut().screen_stack.clear();
         f.harness.run_steps(5);
-        assert_intact_layout(&f.harness, "My Tokens", "tokens_subscreen_chooser_panel");
+        assert_intact_layout(&f.harness, "My Tokens", "My Tokens");
         // Known limitation: in Power and Developer modes the details row adds a
         // rewards column and stays wider than a 1050px window (it scrolls
         // sideways), so the fit is checked in the default mode.
@@ -932,11 +944,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         f.harness.run_steps(5);
         f.harness.get_by_label(SMOKE_TOKEN).click();
         f.harness.run_steps(5);
-        assert_intact_layout(
-            &f.harness,
-            "Token details",
-            "tokens_subscreen_chooser_panel",
-        );
+        assert_intact_layout(&f.harness, "Token details", "My Tokens");
         f.harness.get_by_label("...").click();
         f.harness.run_steps(3);
         f.harness.get_by_label("Remove from DET");
@@ -957,7 +965,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
             f.harness.get_by_label(name).click();
             f.harness.run_steps(5);
             assert_eq!(f.harness.state().selected_main_screen, root, "{name}");
-            assert_intact_layout(&f.harness, name, "tokens_subscreen_chooser_panel");
+            assert_intact_layout(&f.harness, name, "My Tokens");
         }
         assert!(
             f.harness.query_by_label("No Identities Loaded").is_none(),
@@ -1308,5 +1316,94 @@ fn creator_workspace_review_keeps_drafting_separate_from_readiness() {
         h.get_by_label("← Back").click();
         h.run_steps(3);
         h.get_by_label("Document types · JSON");
+    });
+}
+
+/// The token sub-navigation shows each label on one line at the window sizes
+/// users run, and keeps one width across the token screens, also after the
+/// window was briefly narrower: the panel takes its width from the previous
+/// frame, so labels that wrapped once kept it narrow for good.
+#[test]
+fn token_subnav_labels_stay_on_one_line() {
+    use dash_evo_tool::ui::theme::Typography;
+    use egui::accesskit::Role;
+
+    const LABELS: [&str; 3] = ["My Tokens", "Search Tokens", "Token Creator"];
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenTokenSearch);
+        let button_padding = harness.ctx.global_style().spacing.button_padding;
+        let nav_button = |harness: &Harness<'static, dash_evo_tool::app::AppState>, label: &str| {
+            harness
+                .query_all_by_label(label)
+                .find(|node| node.accesskit_node().role() == Role::Button)
+                .unwrap_or_else(|| panic!("no {label:?} navigation button"))
+                .rect()
+        };
+
+        for window in [egui::vec2(1050.0, 700.0), egui::vec2(1260.0, 780.0)] {
+            harness.set_size(egui::vec2(300.0, window.y));
+            harness.run_steps(3);
+            harness.set_size(window);
+            harness.run_steps(5);
+
+            let mut panel_widths = Vec::new();
+            for (screen, root) in [
+                ("Search Tokens", RootScreenType::RootScreenTokenSearch),
+                ("My Tokens", RootScreenType::RootScreenMyTokenBalances),
+                ("Token Creator", RootScreenType::RootScreenTokenCreator),
+            ] {
+                harness
+                    .query_all_by_label(screen)
+                    .find(|node| node.accesskit_node().role() == Role::Button)
+                    .expect("navigation button")
+                    .click();
+                harness.run_steps(5);
+                assert_eq!(harness.state().selected_main_screen, root, "{screen}");
+                for label in LABELS {
+                    // A wrapped label adds a line; half a line of slack absorbs
+                    // rounding without letting a second line through.
+                    let line_height = harness.ctx.fonts_mut(|fonts| {
+                        fonts
+                            .layout_no_wrap(
+                                label.to_owned(),
+                                egui::FontId::proportional(Typography::SCALE_SM),
+                                egui::Color32::WHITE,
+                            )
+                            .size()
+                            .y
+                    });
+                    let one_line = line_height * 1.5 + 2.0 * button_padding.y;
+                    let button = nav_button(&harness, label);
+                    assert!(
+                        button.height() < one_line,
+                        "{window:?} {screen}: the {label:?} button ({button:?}) wraps its \
+                         label onto more than one line"
+                    );
+                }
+                // egui keys a panel's state by its parent's scope id, which the
+                // test cannot name, so the panel is the one holding a nav button.
+                let my_tokens = nav_button(&harness, "My Tokens");
+                let panels: Vec<f32> = harness.ctx.data(|data| {
+                    data.iter_temp_by_type::<egui::containers::panel::PanelState>()
+                        .filter(|panel| panel.outer_rect.contains_rect(my_tokens))
+                        .map(|panel| panel.size().x)
+                        .collect()
+                });
+                let [panel_width] = panels[..] else {
+                    panic!("{screen}: expected one tokens sub-navigation panel: {panels:?}");
+                };
+                panel_widths.push(panel_width);
+            }
+            let narrowest = panel_widths.iter().copied().fold(f32::INFINITY, f32::min);
+            let widest = panel_widths.iter().copied().fold(0.0, f32::max);
+            assert!(
+                widest - narrowest < 1.0,
+                "{window:?}: the sub-navigation width changes between token screens: \
+                 {panel_widths:?}"
+            );
+        }
     });
 }

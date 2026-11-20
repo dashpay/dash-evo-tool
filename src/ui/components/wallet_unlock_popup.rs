@@ -174,7 +174,7 @@ impl WalletUnlockPopup {
                 wallet.seed_hash(),
             )
         };
-        let modal_state_id = egui::Id::new("wallet_unlock_passphrase").with(seed_hash);
+        let modal_state_id = egui::Id::unique("wallet_unlock_passphrase").with(seed_hash);
         self.activate_modal(ctx, modal_state_id);
 
         let (window_title, body, submit_label, secondary_action_label, cancellable) = match mode {
@@ -466,8 +466,8 @@ mod tests {
         use crate::ui::components::passphrase_modal::passphrase_modal_state_exists;
 
         let ctx = egui::Context::default();
-        let wallet_a = egui::Id::new("wallet_unlock_passphrase").with([0xA1u8; 32]);
-        let wallet_b = egui::Id::new("wallet_unlock_passphrase").with([0xB2u8; 32]);
+        let wallet_a = egui::Id::unique("wallet_unlock_passphrase").with([0xA1u8; 32]);
+        let wallet_b = egui::Id::unique("wallet_unlock_passphrase").with([0xB2u8; 32]);
         let config = PassphraseModalConfig {
             state_id: wallet_a,
             window_title: "Continue the storage update",

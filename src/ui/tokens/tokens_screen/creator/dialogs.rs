@@ -23,7 +23,7 @@ pub(super) fn topic_title(key: &str) -> &str {
 pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
     if let Some(key) = state.help.clone() {
         let mut close = false;
-        let response = egui::Modal::new(egui::Id::new("creator_help")).show(context, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("creator_help")).show(context, |ui| {
             ui.set_width(540.0_f32.min(context.content_rect().width() - 60.0));
             if let Some(topic) = TOPICS.get(&key) {
                 ui.heading(&topic.title);
@@ -59,7 +59,7 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
         if close || response.should_close() {
             state.help = None;
             context.data_mut(|data| {
-                data.insert_temp(egui::Id::new("creator_restore_help_focus"), true)
+                data.insert_temp(egui::Id::unique("creator_restore_help_focus"), true)
             });
             context.request_repaint();
         }
@@ -68,7 +68,7 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
     if let Some(proposal) = &state.proposal {
         let mut apply = false;
         let mut cancel = false;
-        let response = egui::Modal::new(egui::Id::new("creator_compare")).show(context, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("creator_compare")).show(context, |ui| {
             ui.set_width(800.0_f32.min(context.content_rect().width() - 60.0));
             ui.heading(format!("Compare {}",proposal.title));
             ui.label("Your names, description, document types, keywords, and groups are kept. Inactive allocation parameters and scheduled rows are retained.");
@@ -111,7 +111,7 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
     if let Some(kind) = state.rule_editor {
         let mut close = false;
         let mut groups = false;
-        let response = egui::Modal::new(egui::Id::new("creator_rule")).show(context, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("creator_rule")).show(context, |ui| {
             ui.set_width(600.0_f32.min(context.content_rect().width() - 60.0));
             heading(ui,kind.label(),kind.help_key(),&mut state.help);
             if let Some(topic) = TOPICS.get(kind.help_key()) {

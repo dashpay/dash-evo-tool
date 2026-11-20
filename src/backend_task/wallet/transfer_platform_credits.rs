@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
-use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategy, PlatformAddress};
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -13,18 +13,24 @@ impl AppContext {
         seed_hash: WalletSeedHash,
         inputs: BTreeMap<PlatformAddress, Credits>,
         outputs: BTreeMap<PlatformAddress, Credits>,
-        fee_strategy: AddressFundsFeeStrategy,
+        fee_payer_index: u16,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         use crate::wallet_backend::PlatformPathIndex;
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 
         let backend = self.wallet_backend()?;
+
+        // Deduct fee from the specified input address (should be the one with highest balance).
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(
+            fee_payer_index,
+        )];
 
         // Per-input address/amount detail is intentionally not logged: the
         // summary line carries the aggregate counts, and per-input financial
         // detail does not belong in plaintext logs at the default level.
         tracing::info!(
-            "transfer_platform_credits: fee_strategy={:?}, inputs={}, outputs={}",
-            fee_strategy,
+            "transfer_platform_credits: fee_payer_index={}, inputs={}, outputs={}",
+            fee_payer_index,
             inputs.len(),
             outputs.len()
         );

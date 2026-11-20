@@ -946,6 +946,18 @@ impl WalletSendScreen {
         }
     }
 
+    /// How many coins a pooled Core send of the whole balance spends, from the
+    /// wallet's snapshot; with test balances, one per Core address.
+    fn core_send_input_count(&self) -> usize {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(balances) = &self.balances_override {
+            return balances.core_addresses.len();
+        }
+        self.selected_wallet_seed_hash.map_or(0, |seed_hash| {
+            self.app_context.snapshot_core_send_input_count(&seed_hash)
+        })
+    }
+
     /// Get the Core wallet's display-only balance for labels and ordinary sends.
     ///
     /// Asset-lock Max and validation use [`Self::asset_lock_max_amount`]
@@ -2654,7 +2666,9 @@ impl WalletSendScreen {
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
             // Core → Platform: address-funding fee, deducted from the amount;
-            // the asset lock's Core fee, paid on top.
+            // the asset lock's Core fee, paid on top. That fee is estimated
+            // for every coin a whole-balance send spends, not the coins the
+            // build will pick, so the total is approximate.
             (SourceSelection::CoreWallet, AddressKind::Platform) => {
                 let destination = self
                     .validated_destination
@@ -2664,11 +2678,9 @@ impl WalletSendScreen {
                     self.app_context.platform_version(),
                     &destination,
                 );
-                let input_count = self.selected_wallet_seed_hash.map_or(0, |seed_hash| {
-                    self.app_context.snapshot_core_send_input_count(&seed_hash)
-                });
-                let core_fee_credits = estimate_asset_lock_core_fee_duffs(input_count)
-                    .saturating_mul(CREDITS_PER_DUFF);
+                let core_fee_credits =
+                    estimate_asset_lock_core_fee_duffs(self.core_send_input_count())
+                        .saturating_mul(CREDITS_PER_DUFF);
                 Some(FeePreview::deducted_with_core_fee_on_top(
                     amount_credits,
                     fee_credits,
@@ -2882,7 +2894,14 @@ impl WalletSendScreen {
                 ));
                 if let Some(receives) = preview.recipient_receives_credits {
                     let recipient_amount = format_credits_as_dash(receives);
-                    lines.push(if preview.total_debit_credits > amount_credits {
+                    let core_fee_on_top = matches!(
+                        (&self.selected_source, self.destination_kind()),
+                        (
+                            Some(SourceSelection::CoreWallet),
+                            Some(AddressKind::Platform)
+                        )
+                    );
+                    lines.push(if core_fee_on_top {
                         format!(
                             "The Platform fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. The Core transaction fee is paid on top of the amount."
                         )
@@ -6952,6 +6971,15 @@ mod tests {
     #[test]
     fn core_to_platform_total_includes_the_core_fee_paid_on_top() {
         let (mut screen, _temp_dir) = send_screen();
+        // Three coins, so a fee sized for any other count is caught.
+        let coins: Vec<_> = (31..34)
+            .map(|seed| (testnet_core_address(seed), 100_000_000))
+            .collect();
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 300_000_000,
+            core_addresses: coins,
+            ..SendBalances::default()
+        });
         let destination =
             PlatformAddress::try_from(testnet_core_address(8)).expect("platform destination");
         screen.selected_source = Some(SourceSelection::CoreWallet);
@@ -6968,7 +6996,11 @@ mod tests {
             screen.app_context.platform_version(),
             &destination,
         );
-        let core_fee = estimate_asset_lock_core_fee_duffs(0) * CREDITS_PER_DUFF;
+        let core_fee = estimate_asset_lock_core_fee_duffs(3) * CREDITS_PER_DUFF;
+        assert_ne!(
+            core_fee,
+            estimate_asset_lock_core_fee_duffs(1) * CREDITS_PER_DUFF
+        );
         assert_eq!(preview.total_debit_credits, amount + core_fee);
         assert_eq!(preview.fee_credits, platform_fee + core_fee);
         assert_eq!(
@@ -8476,7 +8508,6 @@ mod tests {
             amount: "0".to_string(),
         };
         screen.sync_route();
-        assert!(!screen.recipient_rows_complete(), "a zero amount");
         assert_eq!(
             screen.prepare_send().err().as_deref(),
             Some(RECIPIENT_ROWS_INCOMPLETE)
@@ -8487,14 +8518,17 @@ mod tests {
             amount: "0.2".to_string(),
         };
         screen.sync_route();
-        assert!(!screen.recipient_rows_complete(), "no address");
         assert_eq!(
             screen.prepare_send().err().as_deref(),
             Some(RECIPIENT_ROWS_INCOMPLETE)
         );
 
         screen.form.recipients_mut()[1].address = testnet_core_address(22).to_string();
-        assert!(screen.recipient_rows_complete());
+        screen.sync_route();
+        assert_ne!(
+            screen.recipient_rows_refusal(),
+            Some(RECIPIENT_ROWS_INCOMPLETE)
+        );
     }
 
     /// An explicit source that cannot carry several recipients keeps Send

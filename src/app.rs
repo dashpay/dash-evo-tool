@@ -872,7 +872,7 @@ impl AppState {
         let db_file_path =
             data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)
                 .map_err(TaskError::from_data_folder_error)?;
-        let database_error = |source| TaskError::Database { source };
+        let database_error = TaskError::from_database_open_error;
         let db = if db_file_path.exists() {
             Arc::new(Database::open_legacy_read_only(&db_file_path).map_err(database_error)?)
         } else {

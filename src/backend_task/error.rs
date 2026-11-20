@@ -1642,12 +1642,18 @@ pub enum TaskError {
     /// The app may not write to its data folder: missing permissions or a
     /// read-only disk. Distinct from [`Self::FileSystem`] because freeing disk
     /// space or restarting never fixes it.
-    #[error(
-        "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application."
-    )]
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
     DataFolderAccessDenied {
         #[source]
         source: std::io::Error,
+    },
+
+    /// The app may not open or write its database in the data folder: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`], seen by SQLite.
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    DatabaseAccessDenied {
+        #[source]
+        source: rusqlite::Error,
     },
 
     /// A local filesystem operation failed (e.g. creating a data directory).
@@ -3727,7 +3733,26 @@ pub enum TaskError {
     SecretPromptUnavailable,
 }
 
+/// Message for a data folder or database the app is not allowed to change.
+const DATA_FOLDER_ACCESS_DENIED: &str = "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application.";
+
 impl TaskError {
+    /// A failure to open or prepare the app database: read-only, permission
+    /// and access-refused codes get [`Self::DatabaseAccessDenied`], the rest
+    /// [`Self::Database`].
+    pub fn from_database_open_error(source: rusqlite::Error) -> Self {
+        use rusqlite::ErrorCode;
+        match source.sqlite_error_code() {
+            Some(
+                ErrorCode::ReadOnly
+                | ErrorCode::CannotOpen
+                | ErrorCode::PermissionDenied
+                | ErrorCode::AuthorizationForStatementDenied,
+            ) => Self::DatabaseAccessDenied { source },
+            _ => Self::Database { source },
+        }
+    }
+
     /// A failure to prepare or use the app data folder: permission and
     /// read-only problems get [`Self::DataFolderAccessDenied`], the rest
     /// [`Self::FileSystem`].
@@ -5004,6 +5029,38 @@ mod tests {
             TaskError::from_data_folder_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
             TaskError::FileSystem { .. }
         ));
+    }
+
+    /// A database the app may not open or write (read-only, no permission,
+    /// access refused) gets the same advice as an unwritable data folder; any
+    /// other database failure keeps the general one.
+    #[test]
+    fn database_open_errors_name_permission_problems() {
+        use rusqlite::ffi;
+        let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+        let folder_message = TaskError::DataFolderAccessDenied {
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        }
+        .to_string();
+        for code in [
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_PERM,
+            ffi::SQLITE_AUTH,
+        ] {
+            let error = TaskError::from_database_open_error(sqlite(code));
+            assert!(
+                matches!(error, TaskError::DatabaseAccessDenied { .. }),
+                "{code}: {error:?}"
+            );
+            assert_eq!(error.to_string(), folder_message);
+        }
+        for source in [sqlite(ffi::SQLITE_FULL), rusqlite::Error::InvalidQuery] {
+            assert!(matches!(
+                TaskError::from_database_open_error(source),
+                TaskError::Database { .. }
+            ));
+        }
     }
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;

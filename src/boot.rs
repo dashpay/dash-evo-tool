@@ -37,6 +37,31 @@ use crate::ui::components::startup_error_dialog::{StartupErrorDialog, StartupErr
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
+/// A panic caught while the app was being built. Never shown as the message:
+/// the dialog falls back to the generic one and shows this in the details.
+#[derive(Debug, thiserror::Error)]
+#[error("startup panicked: {payload}")]
+pub struct BootPanic {
+    payload: String,
+}
+
+impl BootPanic {
+    fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
+        let payload = payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-text panic payload".to_owned());
+        Self { payload }
+    }
+}
+
+/// `build()`, with a panic turned into a [`BootPanic`] error.
+fn catch_boot_panic<T>(build: impl FnOnce() -> Result<T, BootError>) -> Result<T, BootError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+        .unwrap_or_else(|payload| Err(Box::new(BootPanic::from_payload(&*payload))))
+}
+
 /// Sole owner of the production boot environment: resolve the app data
 /// directory (creating it if needed), ensure the `.env` file exists, and
 /// initialize logging. Returns the resolved data directory.
@@ -74,9 +99,15 @@ impl BootApp {
     /// [`BootApp::Unlocking`] so the frame loop can prompt for it. Any other
     /// failure (including app assembly) returns [`BootApp::Failed`].
     pub fn new(ctx: egui::Context, outcome: StartupOutcome) -> Self {
-        match Self::open(ctx, &outcome) {
+        Self::guarded(&outcome, || Self::open(ctx, &outcome))
+    }
+
+    /// `build()`, or the failure state when it fails or panics. A panic leaves
+    /// the half-built app behind; only the failure dialog is shown afterwards.
+    fn guarded(outcome: &StartupOutcome, build: impl FnOnce() -> Result<Self, BootError>) -> Self {
+        match catch_boot_panic(build) {
             Ok(app) => app,
-            Err(error) => Self::failed(&*error, &outcome),
+            Err(error) => Self::failed(&*error, outcome),
         }
     }
 
@@ -122,12 +153,14 @@ impl BootApp {
         };
         match AppContext::open_secret_store_with_passphrase(&state.data_dir, passphrase) {
             Ok(store) => {
-                *self = match AppState::new_inner(
-                    state.ctx.clone(),
-                    Arc::clone(&state.db),
-                    state.data_dir.clone(),
-                    store,
-                ) {
+                *self = match catch_boot_panic(|| {
+                    AppState::new_inner(
+                        state.ctx.clone(),
+                        Arc::clone(&state.db),
+                        state.data_dir.clone(),
+                        store,
+                    )
+                }) {
                     Ok(app) => BootApp::Running(Box::new(app)),
                     Err(error) => Self::failed(&*error, &state.outcome),
                 };
@@ -179,6 +212,26 @@ impl eframe::App for BootApp {
         if let BootApp::Running(app) = self {
             app.on_exit();
         }
+    }
+}
+
+/// Tell the user in a system dialog that the app window could not be opened,
+/// so a launch without a terminal does not end silently. Best effort: without
+/// a dialog service (e.g. no zenity or kdialog on Linux) only the log remains.
+pub fn show_window_failure_dialog() {
+    let text =
+        crate::model::error_report::window_failure_text(crate::logging::log_file_path().as_deref());
+    if let Err(error) = native_dialog::DialogBuilder::message()
+        .set_level(native_dialog::MessageLevel::Error)
+        .set_title(crate::ui::components::startup_error_dialog::STARTUP_ERROR_TITLE)
+        .set_text(text)
+        .alert()
+        .show()
+    {
+        tracing::warn!(
+            ?error,
+            "Could not show the system dialog about the window failure"
+        );
     }
 }
 
@@ -349,6 +402,26 @@ mod tests {
             panic!("a broken vault must be fatal");
         };
         assert_ne!(failure.report().message(), GENERIC_STARTUP_FAILURE);
+        assert!(outcome.failed());
+    }
+
+    /// A panic while the app is being built shows the dialog with the generic
+    /// message and the panic text in the details, instead of closing silently.
+    #[test]
+    fn panic_during_boot_enters_failed_state() {
+        let outcome = StartupOutcome::default();
+
+        let app = BootApp::guarded(&outcome, || panic!("boot exploded"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a boot panic must be fatal");
+        };
+        assert_eq!(failure.report().message(), GENERIC_STARTUP_FAILURE);
+        assert!(
+            failure.report().details().contains("boot exploded"),
+            "{}",
+            failure.report().details()
+        );
         assert!(outcome.failed());
     }
 

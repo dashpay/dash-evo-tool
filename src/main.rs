@@ -43,6 +43,7 @@ fn main() -> ExitCode {
     let result = runtime.block_on(start(environment, outcome.clone()));
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        crate::boot::show_window_failure_dialog();
     }
     if result.is_err() || outcome.failed() {
         // Generic, actionable notice to the real terminal (fd 2 is redirected

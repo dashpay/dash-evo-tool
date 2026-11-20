@@ -9,6 +9,26 @@ use crate::backend_task::error::TaskError;
 /// Message shown when a startup error carries no user-facing message of its own.
 pub const GENERIC_STARTUP_FAILURE: &str = "Dash Evo Tool could not start because of an unexpected problem. Restart the application to try again.";
 
+/// Message shown when the app window itself could not be opened.
+pub const WINDOW_FAILURE: &str = "Dash Evo Tool could not open its window, which usually means a problem with the graphics driver. Update your graphics drivers, then restart the application.";
+
+/// The system dialog text for a window failure: [`WINDOW_FAILURE`], the log
+/// file location when known, and where to report the problem.
+pub fn window_failure_text(log_file: Option<&Path>) -> String {
+    let mut text = WINDOW_FAILURE.to_owned();
+    if let Some(log_file) = log_file {
+        text.push_str(&format!(
+            "\n\nThe log file is at {path}.",
+            path = log_file.display()
+        ));
+    }
+    text.push_str(&format!(
+        "\n\nIf you cannot solve this yourself, report the problem at {url} and include the log file.",
+        url = crate::SUPPORT_URL
+    ));
+    text
+}
+
 /// A user-facing message and the technical details behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorReport {
@@ -107,6 +127,19 @@ mod tests {
         let report = ErrorReport::from_error(&error, "fallback");
         assert_eq!(report.message(), "fallback");
         assert!(report.details().contains("disk exploded"));
+    }
+
+    /// The window failure text says what happened, what to do, where the log
+    /// is and where to report the problem.
+    #[test]
+    fn window_failure_text_names_the_log_and_support() {
+        let text = window_failure_text(Some(Path::new("/logs/det.log")));
+        assert!(text.starts_with(WINDOW_FAILURE), "{text}");
+        assert!(text.contains("The log file is at /logs/det.log."), "{text}");
+        assert!(text.contains(crate::SUPPORT_URL), "{text}");
+
+        let text = window_failure_text(None);
+        assert!(!text.contains("log file is at"), "{text}");
     }
 
     /// Startup failures fall back to the generic startup message.

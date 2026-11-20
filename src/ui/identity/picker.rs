@@ -156,7 +156,7 @@ fn show_add_menu(
         ui,
         app_context,
         egui::Popup::new(
-            egui::Id::new("identity_picker_add_menu"),
+            egui::Id::unique("identity_picker_add_menu"),
             ui.ctx().clone(),
             card.rect,
             ui.layer_id(),

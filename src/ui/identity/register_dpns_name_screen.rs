@@ -1118,14 +1118,16 @@ mod tests {
         ctx.set_selected_identity(Some(identity.identity.id()));
 
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1280.0, 900.0))
-            .build_ui_state(
-                |ui, screen: &mut RegisterDpnsNameScreen| {
-                    screen.ui(ui);
-                },
-                screen,
-            );
+        let mut harness = crate::test_support::allowing_unnamed_widgets(
+            crate::test_support::harness_builder_with_app_fonts(),
+        )
+        .with_size(egui::vec2(1280.0, 900.0))
+        .build_ui_state(
+            |ui, screen: &mut RegisterDpnsNameScreen| {
+                screen.ui(ui);
+            },
+            screen,
+        );
         harness.run();
         assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
         assert!(harness.query_by_label("Open wallets").is_some());
@@ -1170,14 +1172,16 @@ mod tests {
         ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(storage.clone()));
 
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1280.0, 900.0))
-            .build_ui_state(
-                |ui, screen: &mut RegisterDpnsNameScreen| {
-                    screen.ui(ui);
-                },
-                screen,
-            );
+        let mut harness = crate::test_support::allowing_unnamed_widgets(
+            crate::test_support::harness_builder_with_app_fonts(),
+        )
+        .with_size(egui::vec2(1280.0, 900.0))
+        .build_ui_state(
+            |ui, screen: &mut RegisterDpnsNameScreen| {
+                screen.ui(ui);
+            },
+            screen,
+        );
         harness.run();
         assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
 

@@ -305,7 +305,7 @@ fn design_system_network_toolbar_text_contrasts_in_both_themes() {
     ] {
         for (mode, dark) in [(ThemeMode::Light, false), (ThemeMode::Dark, true)] {
             let fill = DashColors::network_accent(network, dark);
-            let mut harness = egui_kittest::Harness::builder()
+            let mut harness = crate::support::builder_with_app_fonts()
                 .with_size(egui::vec2(500.0, 150.0))
                 .build_ui(|ui| {
                     ComponentStyles::add_toolbar_button(ui, "Action", fill);

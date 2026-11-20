@@ -1340,7 +1340,7 @@ fn token_subnav_labels_stay_on_one_line() {
                 }
                 let panel = egui::containers::panel::PanelState::load(
                     &harness.ctx,
-                    egui::Id::new("tokens_subscreen_chooser_panel"),
+                    egui::Id::unique("tokens_subscreen_chooser_panel"),
                 )
                 .expect("tokens sub-navigation panel");
                 panel_widths.push(panel.size().x);

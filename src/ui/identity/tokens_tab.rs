@@ -12,6 +12,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::spv_status::SpvStatus;
 use crate::model::token::IdentityTokensViewPrefs;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -245,7 +246,9 @@ pub(super) fn render_failure(
     let Some(failure) = state.refresh_failure() else {
         return AppAction::None;
     };
-    let synced = app_context.connection_status().masternodes_ready();
+    // A disconnect clears masternode readiness only after its teardown ends.
+    let status = app_context.connection_status();
+    let synced = status.masternodes_ready() && status.spv_status() != SpvStatus::Stopping;
     let refreshing = state.refreshing(app_context);
     let text = match failure {
         RefreshFailure::TooSlow => ERROR_REFRESH_SLOW,

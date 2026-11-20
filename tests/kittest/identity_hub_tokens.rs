@@ -869,6 +869,61 @@ fn a_failed_refresh_on_home_stays_quiet_without_tokens() {
     });
 }
 
+/// A disconnect marks the connection as stopping before the masternode list
+/// is cleared; the retry stays off until that teardown ends.
+#[test]
+fn a_disconnected_refresh_cannot_be_retried_while_the_connection_stops() {
+    use dash_evo_tool::model::spv_status::SpvStatus;
+
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_signing_identity(&app_context, 0xB8);
+        seed_contract(
+            &app_context,
+            0xC8,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        let arrival = balance_refreshes(&hub);
+        app_context
+            .connection_status()
+            .set_spv_status(SpvStatus::Stopping);
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival[0], &TaskError::TokenBalanceRefreshDisconnected);
+        hub.run_steps(6);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_DISCONNECTED)
+                .is_some()
+        );
+        hub.get_by_label(token_copy::TRY_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            1,
+            "no retry while the disconnect is still tearing down"
+        );
+
+        app_context
+            .connection_status()
+            .set_spv_status(SpvStatus::Running);
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::TRY_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            2,
+            "the retry works once connected"
+        );
+    });
+}
+
 #[test]
 fn home_holds_its_balance_refresh_until_the_masternode_list_is_synced() {
     with_isolated_data_dir(|| {

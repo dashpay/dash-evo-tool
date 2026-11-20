@@ -185,6 +185,7 @@ impl WalletBackend {
                         // User-facing funding: wait indefinitely for the
                         // ChainLock (the broadcast lock is pending, never failed).
                         None,
+                        None,
                     )
                     .await
                     .map_err(map_shielded_op_error)

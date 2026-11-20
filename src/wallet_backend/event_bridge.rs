@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use dash_sdk::dash_spv::network::NetworkEvent;
-use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
+use dash_sdk::dash_spv::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::{
     PlatformAddressSyncSummary, WalletSyncOutcome,
@@ -241,12 +241,9 @@ impl EventHandler for EventBridge {
     }
 
     fn on_network_event(&self, event: &NetworkEvent) {
-        if let NetworkEvent::PeersUpdated {
-            connected_count, ..
-        } = event
-        {
+        if let NetworkEvent::PeersUpdated { addresses, .. } = event {
             self.connection_status
-                .set_spv_connected_peers((*connected_count).min(u16::MAX as usize) as u16);
+                .set_spv_connected_peers(addresses.len().min(u16::MAX as usize) as u16);
             self.connection_status.refresh_state();
             self.nudge_refresh();
         }
@@ -634,8 +631,7 @@ mod tests {
     type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
     use crate::backend_task::BackendTaskContext;
     use crate::utils::egui_mpsc::EguiMpscAsync;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::{Address, PublicKey, Transaction, TxOut};
+    use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
@@ -835,7 +831,7 @@ mod tests {
         let log = crate::test_support::CapturedLog::start();
 
         bridge.on_sync_event(&SyncEvent::ManagerError {
-            manager: dash_sdk::dash_spv::sync::ManagerIdentifier::BlockHeader,
+            manager: dash_sdk::dash_spv::ManagerIdentifier::BlockHeader,
             error: format!("Manager task panicked: task 3 panicked with message \"{panic_text}\""),
         });
         let shown = cs
@@ -861,16 +857,20 @@ mod tests {
         assert!(drained_repaint(&mut rx));
     }
 
+    /// The peer count comes from the length of the event's address list. A
+    /// bridge that stopped publishing it would leave a synced wallet showing
+    /// "Connecting", so the count is checked, not only the repaint.
     #[test]
-    fn peers_updated_nudges_refresh() {
-        let (bridge, _cs, mut rx) = make_bridge();
+    fn peers_updated_publishes_the_peer_count_and_nudges_refresh() {
+        let (bridge, cs, mut rx) = make_bridge();
         bridge.on_network_event(&NetworkEvent::PeersUpdated {
-            connected_count: 3,
-            addresses: Vec::new(),
-            best_height: None,
+            addresses: vec![
+                ([127, 0, 0, 1], 19999).into(),
+                ([127, 0, 0, 2], 19999).into(),
+            ],
+            best_height: 0,
         });
-        // ConnectionStatus has no public peer-count getter; its own tests
-        // cover the internal mutation. Here we assert the frame-loop nudge.
+        assert_eq!(cs.spv_connected_peers(), 2);
         assert!(drained_repaint(&mut rx));
     }
 
@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn progress_publishes_per_phase_heights() {
-        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, ProgressPercentage};
+        use dash_sdk::dash_spv::{BlockHeadersProgress, ProgressPercentage};
 
         let (bridge, cs, mut rx) = make_bridge();
         let mut headers = BlockHeadersProgress::default();
@@ -926,7 +926,7 @@ mod tests {
     /// A `SyncProgress` whose masternode phase is in `state`, headers still
     /// mid-sync (so the overall pipeline is not yet "synced").
     fn progress_with_masternode_state(state: SyncState) -> SyncProgress {
-        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+        use dash_sdk::dash_spv::{BlockHeadersProgress, MasternodesProgress};
 
         let mut headers = BlockHeadersProgress::default();
         headers.set_state(SyncState::Syncing);

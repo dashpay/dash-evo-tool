@@ -15,7 +15,7 @@ pub(super) fn show(
     let mut action = AppAction::None;
     let mut close = false;
     let saving = state.saving.is_some();
-    let response = egui::Modal::new(egui::Id::new("token_contract_json_export")).show(context, |ui| {
+    let response = egui::Modal::new(egui::Id::unique("token_contract_json_export")).show(context, |ui| {
         ui.set_width(540.0_f32.min(context.content_rect().width() - 2.0 * Spacing::LG));
         ui.heading("Save contract JSON");
         ui.label("Save the reviewed contract exactly as shown. Enter a file path or browse for a location.");

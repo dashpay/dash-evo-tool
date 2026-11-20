@@ -3381,9 +3381,11 @@ fn bip44_account0_xpub<'a>(
 /// with the fee reserve still in it, or the whole account balance when no
 /// address can keep the reserve back. Without a plan there is no trustworthy
 /// maximum, so the refusal keeps the generic envelope; with a plan that can
-/// shield nothing, there is no Max to point to. A plan whose maximum covers
-/// `amount` means an input held less than its cached balance, so no maximum
-/// is stated. Pure — unit-testable.
+/// shield nothing, there is no Max to point to. A later plan whose maximum
+/// covers `amount` does not show which check refused it: a selected input may
+/// have held less than its cached balance, or a sync may have raised the
+/// cached maximum between the refusal and this plan. Either way no maximum is
+/// stated. Pure — unit-testable.
 fn shield_capacity_exceeded_error(
     source: platform_wallet::error::PlatformWalletError,
     preflight: Result<
@@ -3400,7 +3402,8 @@ fn shield_capacity_exceeded_error(
                     source: Box::new(source),
                 }
             } else {
-                // A live input shortfall the cached plan does not see yet.
+                // The later plan covers the amount, so the refusal came from a
+                // live input shortfall or an earlier, smaller snapshot.
                 TaskError::ShieldFromPlatformBalanceChanged {
                     source: Box::new(source),
                 }

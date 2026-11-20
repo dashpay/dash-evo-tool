@@ -484,11 +484,11 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
-    /// Shielding from Platform was refused although the planner's maximum
-    /// covers the amount: a selected address held less than its cached
-    /// balance, typically right after another spend from it. Other addresses
-    /// may still cover the amount, so the message does not claim the whole
-    /// Platform balance fell short.
+    /// Shielding from Platform was refused for capacity, but a later planner
+    /// snapshot covers the requested amount. The snapshot can miss a live
+    /// input shortfall or differ from the snapshot that rejected the request.
+    /// It does not establish which check failed, so no maximum is quoted and
+    /// the message does not claim the whole Platform balance fell short.
     #[error(
         "The wallet could not shield this amount with its current balance information. Wait for your Platform balance to refresh, then try again."
     )]

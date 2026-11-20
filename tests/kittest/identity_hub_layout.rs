@@ -550,11 +550,16 @@ fn header_identity_id_is_below_usernames_and_copies_in_both_themes() {
             let full =
                 owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
             let mut hub = mount_hub(&app_context, width);
-            hub.ctx.set_visuals(if dark {
-                egui::Visuals::dark()
-            } else {
-                egui::Visuals::light()
-            });
+            hub.ctx
+                .set_fonts(dash_evo_tool::bundled::fonts().expect("bundled fonts"));
+            dash_evo_tool::ui::theme::apply_theme(
+                &hub.ctx,
+                if dark {
+                    dash_evo_tool::ui::theme::ThemeMode::Dark
+                } else {
+                    dash_evo_tool::ui::theme::ThemeMode::Light
+                },
+            );
             hub.run();
             let short = format!("{}…{}", &full[..5], &full[full.len() - 3..]);
             let id_rect = hub.get_by_label(&short).rect();
@@ -602,27 +607,44 @@ fn header_identity_id_is_below_usernames_and_copies_in_both_themes() {
 fn header_identity_id_without_username_is_available_on_all_tabs() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
-        seed_identity_named(&app_context, &[]);
+        let owner = seed_identity_named(&app_context, &[]);
+        let full =
+            owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        let short = format!("{}…{}", &full[..5], &full[full.len() - 3..]);
         let mut hub = mount_hub(&app_context, 1280.0);
+        hub.ctx
+            .set_fonts(dash_evo_tool::bundled::fonts().expect("bundled fonts"));
+        dash_evo_tool::ui::theme::apply_theme(&hub.ctx, dash_evo_tool::ui::theme::ThemeMode::Light);
         hub.run();
         assert!(hub.query_by_label("No username yet").is_some());
-        assert!(
-            hub.query_by_role_and_label(Role::Button, "Copy full identity ID")
-                .is_some()
-        );
-        for tab in IdentityHubTab::ALL {
+        for tab in IdentityHubTab::ALL
+            .into_iter()
+            .chain([IdentityHubTab::Home])
+        {
             hub.state_mut().0.select_tab(tab);
             hub.run();
+            let copy = hub.get_by_role_and_label(Role::Button, "Copy full identity ID");
+            let copy_rect = copy.rect();
+            let id_rect = hub
+                .query_all_by_label(&short)
+                .map(|label| label.rect())
+                .find(|rect| (rect.center().y - copy_rect.center().y).abs() < 1.0)
+                .expect("shortened ID beside the copy icon, separate from the heading");
+            assert!(id_rect.top() >= hub.get_by_label("No username yet").rect().bottom());
+            assert!(copy_rect.left() >= id_rect.right());
+            assert!(copy_rect.right() <= 1280.0);
+            copy.focus();
+            hub.run();
+            hub.key_down(egui::Key::Enter);
+            hub.step();
             assert!(
-                hub.query_by_role_and_label(Role::Button, "Copy full identity ID")
-                    .is_some()
+                hub.output().platform_output.commands.iter().any(|command| {
+                    matches!(command, egui::OutputCommand::CopyText(text) if text == &full)
+                }),
+                "the full identity ID must be copied on {tab:?}",
             );
+            hub.key_up(egui::Key::Enter);
+            hub.run();
         }
-        hub.state_mut().0.select_tab(IdentityHubTab::Home);
-        hub.run();
-        assert!(
-            hub.query_by_role_and_label(Role::Button, "Copy full identity ID")
-                .is_some()
-        );
     });
 }

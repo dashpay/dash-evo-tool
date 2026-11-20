@@ -49,8 +49,9 @@ pub fn prepare_environment() -> Result<PathBuf, std::io::Error> {
     use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
     let data_dir = app_user_data_dir_path()?;
     ensure_data_dir_exists(&data_dir)?;
-    ensure_env_file(&data_dir);
+    // Logging first, so a failure to write the settings file is logged too.
     crate::logging::initialize_logger();
+    ensure_env_file(&data_dir)?;
     Ok(data_dir)
 }
 

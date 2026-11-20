@@ -309,7 +309,7 @@ impl BackendTestContext {
         tracing::info!("E2E workdir: {}", workdir.display());
 
         // Ensure .env is present in the workdir (no env var mutation needed).
-        ensure_env_file(&workdir);
+        ensure_env_file(&workdir).expect("write .env");
 
         // Create database
         let db_path = workdir.join("data.db");

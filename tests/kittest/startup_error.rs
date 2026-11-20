@@ -69,6 +69,33 @@ fn failing_boot_renders_startup_error_dialog() {
     });
 }
 
+/// A data folder that is set up but cannot take the `.env` file shows the
+/// startup failure dialog instead of panicking before any window appears. A
+/// dangling symlink stands in for a full disk: the write itself fails.
+#[cfg(unix)]
+#[test]
+fn unwritable_env_file_renders_startup_error_dialog() {
+    with_isolated_data_dir(|| {
+        let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
+        std::fs::create_dir_all(&data_dir).expect("mkdir data dir");
+        std::os::unix::fs::symlink(data_dir.join("missing").join("env"), data_dir.join(".env"))
+            .expect("dangling .env symlink");
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let outcome = StartupOutcome::default();
+        let shared = outcome.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_eframe(move |cc| BootApp::new(cc.egui_ctx.clone(), shared));
+        harness.run_steps(3);
+
+        assert!(matches!(harness.state(), BootApp::Failed(_)));
+        assert!(outcome.failed(), "main must learn that startup failed");
+        assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
+    });
+}
+
 /// A typed `TaskError` shows its own `Display`, so every typed startup error gets
 /// its own message with no dialog changes.
 #[test]

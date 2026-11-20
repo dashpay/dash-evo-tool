@@ -141,6 +141,47 @@ fn copy_details_copies_technical_details() {
     assert!(copied.contains(dash_evo_tool::VERSION), "{copied}");
 }
 
+/// In a small window the dialog stays inside it: Quit is visible without
+/// scrolling, and Copy details can be scrolled into view and clicked.
+#[test]
+fn small_window_keeps_both_actions_reachable() {
+    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let quit = Rc::new(Cell::new(false));
+    let seen = Rc::clone(&quit);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+    let mut harness = Harness::builder()
+        .with_size(screen.size())
+        .build_ui(move |ui| {
+            if StartupErrorDialog::new(&failure).show(ui) == StartupErrorDialogAction::Quit {
+                seen.set(true);
+            }
+        });
+    harness.run();
+
+    let copy = harness.get_by_label("Copy details");
+    copy.scroll_to_me();
+    harness.run();
+    let copy = harness.get_by_label("Copy details");
+    assert!(
+        screen.contains_rect(copy.rect()),
+        "Copy details at {:?}",
+        copy.rect()
+    );
+    copy.click();
+    harness.step();
+    assert!(copied_text(&harness).is_some(), "details copied");
+
+    let quit_button = harness.get_by_label("Quit");
+    assert!(
+        screen.contains_rect(quit_button.rect()),
+        "Quit at {:?}",
+        quit_button.rect()
+    );
+    quit_button.click();
+    harness.run();
+    assert!(quit.get());
+}
+
 /// "Quit" reports the request to the owner, which closes the app.
 #[test]
 fn quit_button_requests_quit() {

@@ -213,12 +213,26 @@ mod tests {
             .await
             .expect("stored contract expectation");
 
+        let signing_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: BinaryData::new(vec![2; 33]),
+            disabled_at: None,
+        });
+        // The identity holds the unlimited signing key, so the key check
+        // passes without a network read and the entry check decides.
+        let mut owner = dash_sdk::dpp::identity::Identity::create_basic_identity(
+            Identifier::from([8; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        owner.add_public_key(signing_key.clone());
         let identity = QualifiedIdentity {
-            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
-                Identifier::from([8; 32]),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity"),
+            identity: owner,
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
@@ -233,16 +247,6 @@ mod tests {
             status: IdentityStatus::Active,
             network: context.network(),
         };
-        let signing_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 1,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::CRITICAL,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(vec![2; 33]),
-            disabled_at: None,
-        });
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
 

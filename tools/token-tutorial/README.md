@@ -163,7 +163,9 @@ cost. The default zero baseline excludes earlier production sessions.
 Only after independent script approval, human listening of reusable takes, and
 explicit budget approval, set `OPENAI_API_KEY` in the process environment (never
 in Git, a command transcript or JSON). The single-take CLI additionally accepts
-an explicit `--key-file`; it parses assignments without executing the file.
+an explicit `--key-file`; it parses assignments without executing the file. Its
+`--execute` also requires `--approved-script-sha256` with the SHA-256 of the
+approved script file, checked before credentials are loaded.
 Neither tool searches implicit credential locations.
 
 ```sh

@@ -444,3 +444,47 @@ def test_only_complete_mono_16bit_pcm_is_publishable(
             requester=lambda *_: response(data=audio),
         )
     assert not (tmp_path / "take/ready").exists()
+
+
+def test_unapproved_script_hash_refused_before_credentials(voice, source, tmp_path):
+    with pytest.raises(ValueError, match="approved"):
+        voice.generate_take(source, tmp_path / "take", approved_sha256="0" * 64)
+    assert not (tmp_path / "take").exists()
+
+
+def test_request_uses_the_approved_snapshot(voice, source, tmp_path):
+    import hashlib
+
+    original = source.read_text()
+
+    def edit_after_check():
+        source.write_text("Edited after approval.\n")
+        return "fake"
+
+    def api(payload, _):
+        assert original.strip() in payload["messages"][-1]["content"]
+        assert "Edited" not in payload["messages"][-1]["content"]
+        return response()
+
+    voice.generate_take(
+        source,
+        tmp_path / "take",
+        approved_sha256=hashlib.sha256(original.encode()).hexdigest(),
+        key_loader=edit_after_check,
+        requester=api,
+    )
+
+
+@pytest.mark.parametrize("approved", [[], ["--approved-script-sha256", "0" * 64]])
+def test_cli_execute_requires_the_approved_hash(
+    voice, source, tmp_path, monkeypatch, approved
+):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["openai_voice.py", str(source), str(tmp_path / "take"), "--execute"]
+        + approved,
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        voice.main()
+    assert exit_info.value.code != 0
+    assert not (tmp_path / "take").exists()

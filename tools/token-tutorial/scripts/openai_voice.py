@@ -163,14 +163,32 @@ def validate_response(raw, script):
     return result, transcript, data, duration
 
 
-def generate_take(source, take, *, voice="cedar", key_loader=None, requester=None):
-    """Reserve a unique directory before credentials, then atomically publish ready/."""
+def generate_take(
+    source,
+    take,
+    *,
+    voice="cedar",
+    key_loader=None,
+    requester=None,
+    approved_sha256=None,
+):
+    """Reserve a unique directory before credentials, then atomically publish ready/.
+
+    With `approved_sha256`, the script snapshot must match that UTF-8 SHA-256 before
+    any credential is loaded; the request is built from that same snapshot.
+    """
+    script = preflight(source, take, voice)
+    if (
+        approved_sha256 is not None
+        and hashlib.sha256(script.encode()).hexdigest() != approved_sha256
+    ):
+        raise ValueError("Narration script differs from the approved SHA-256")
 
     def fetch(payload):
         key = (key_loader or load_key)()
         return (requester or request_audio)(payload, key)
 
-    return _write_take(source, take, voice, fetch)
+    return _write_take(source, take, voice, fetch, script=script)
 
 
 def recover_take(source, failed_take, take, *, voice="cedar"):
@@ -298,6 +316,10 @@ def main():
     parser.add_argument(
         "--key-file", type=Path, help="Optional explicit env file; never executed"
     )
+    parser.add_argument(
+        "--approved-script-sha256",
+        help="SHA-256 of the independently approved script; required with --execute",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--execute", action="store_true", help="Make exactly one paid API request"
@@ -308,6 +330,8 @@ def main():
         help="Recover a saved failed take offline; never calls API",
     )
     args = parser.parse_args()
+    if args.execute and not args.approved_script_sha256:
+        parser.error("--execute requires --approved-script-sha256")
     try:
         if args.recover_from:
             ready = recover_take(
@@ -325,6 +349,7 @@ def main():
                 args.take_directory,
                 voice=args.voice,
                 key_loader=lambda: load_key(args.key_file),
+                approved_sha256=args.approved_script_sha256,
             )
     except (OSError, ValueError, VoiceGenerationError) as error:
         parser.exit(1, f"{error}\n")

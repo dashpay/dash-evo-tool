@@ -363,6 +363,7 @@ def run_batch(
                     attempt["take_directory"],
                     voice=job["voice"],
                     requester=request,
+                    approved_sha256=job["text_sha256"],
                 )
                 return None
             except Exception as error:

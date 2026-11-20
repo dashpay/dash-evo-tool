@@ -230,7 +230,11 @@ impl WalletBackend {
                         available: preflight.usable_balance_credits,
                         required: amount.saturating_add(preflight.fee_reserve_credits),
                     };
-                return Err(shield_capacity_exceeded_error(source, Ok(preflight)));
+                return Err(shield_capacity_exceeded_error(
+                    source,
+                    Ok(preflight),
+                    amount,
+                ));
             }
         }
         let scope = Self::hd_scope(seed_hash);
@@ -263,6 +267,7 @@ impl WalletBackend {
                     ) => Err(shield_capacity_exceeded_error(
                         source,
                         wallet.shielded_shield_preflight(payment_account).await,
+                        amount,
                     )),
                     Err(source) => Err(map_shielded_op_error(source)),
                 }

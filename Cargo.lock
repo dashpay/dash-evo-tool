@@ -2198,6 +2198,7 @@ dependencies = [
  "clap_complete",
  "criterion",
  "dark-light",
+ "dash-async",
  "dash-sdk",
  "derive_more 2.1.1",
  "directories",

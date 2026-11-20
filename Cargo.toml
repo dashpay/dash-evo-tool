@@ -25,7 +25,7 @@ base64 = "0.23.1"
 # and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
 # dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
 # `not_used` was attempted but requires manual GitHub action — see coordinator note).
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "6323a430c731a14bbec1d7a18466ca28bb083316", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -35,18 +35,21 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "6323a430c731a14
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "6323a430c731a14bbec1d7a18466ca28bb083316" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "6323a430c731a14bbec1d7a18466ca28bb083316", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78", features = [
     "serde",
     "shielded",
 ] }
 # `serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
 # visitor copies a borrowed `&str` straight into guarded memory instead of
 # routing through a transient `String`. Secret schemas are included by `secrets`.
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "6323a430c731a14bbec1d7a18466ca28bb083316", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78", features = [
     "shielded",
     "serde",
 ] }
+# Names `ShutdownReport`/`WorkerStatus` (returned by `platform-wallet`) so
+# their panic text can be redacted before logging.
+dash-async = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78" }
 zip32 = "0.2.1"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.12.0"
@@ -90,7 +93,7 @@ arboard = { version = "3.7.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.38.0", features = [
+rusqlite = { version = "0.41.1", features = [
     "bundled",
     "functions",
     "fallible_uint",
@@ -108,8 +111,10 @@ rust-embed = "8.14.0"
 zeroize = "1.9.0"
 zxcvbn = "3.1.1"
 # Unicode data for alias cleaning and grapheme-safe input truncation.
-# These crates are already transitive dependencies.
-icu_properties = "2.4.0"
+# These crates are already transitive dependencies. dpp pins `icu_properties`
+# to `=2.2.0` (Unicode 17 data) for consensus. DET pins the same exact version,
+# so a lockfile refresh cannot give alias cleaning newer data than dpp uses.
+icu_properties = "=2.2.0"
 unicode-general-category = "1.1.0"
 unicode-segmentation = "1.13.3"
 argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
@@ -131,7 +136,7 @@ axum = { version = "0.8.9", default-features = false, features = [
 # Constant-time equality for `model::secret::Secret` (unconditional) and the
 # MCP API-key check. Not optional: `PartialEq for Secret` is always compiled.
 subtle = "2.6.1"
-clap = { version = "4.6.7", features = ["derive"], optional = true }
+clap = { version = "4.6.7", features = ["derive", "env"], optional = true }
 clap_complete = { version = "4.6.11", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -172,7 +177,7 @@ criterion = "0.8.2"
 # `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
 # version already in the graph via `platform-wallet-storage`; the `rusqlite`
 # feature is already enabled transitively, so this adds no new build.
-refinery = { version = "0.9.2", default-features = false, features = [
+refinery = { version = "=0.10.0", default-features = false, features = [
     "rusqlite",
 ] }
 
@@ -227,6 +232,44 @@ debug = "line-tables-only"
 opt-level = 3
 
 [profile.test.package.argon2]
+opt-level = 3
+
+# dash-spv hashes every header of a `headers2` message with X11 inline on its
+# async reader task, and X11 comes from pure-Rust dash-pow on `wide` SIMD, which
+# is very slow unoptimized. In debug and test builds those hashes held tokio
+# workers for seconds, so the request-timeout monitor starved and kicked healthy
+# peers, and SPV sync stalled. Optimizing just these two crates avoids that.
+# TODO: drop these stanzas once dash-spv moves header hashing off the async
+# workers (it ran in spawn_blocking before the network rewrite).
+[profile.dev.package.dash-pow]
+opt-level = 3
+
+[profile.test.package.dash-pow]
+opt-level = 3
+
+[profile.dev.package.wide]
+opt-level = 3
+
+[profile.test.package.wide]
+opt-level = 3
+
+# The rest of SPV sync also runs on the tokio workers and is too slow
+# unoptimized: BIP158 filter matching (SipHash, whose code is emitted in
+# `dashcore`, not `dashcore_hashes`) and, from rust-dashcore d85f15ac on, the
+# per-header Dark Gravity Wave check (U256 arithmetic in `bitcoin-internals`).
+# With both at opt-level 3 a debug testnet sync takes about 2 minutes instead of
+# about 9. Measured in dashpay/rust-dashcore#1425.
+# TODO: drop these stanzas if rust-dashcore makes this code cheap unoptimized.
+[profile.dev.package.dashcore]
+opt-level = 3
+
+[profile.test.package.dashcore]
+opt-level = 3
+
+[profile.dev.package.bitcoin-internals]
+opt-level = 3
+
+[profile.test.package.bitcoin-internals]
 opt-level = 3
 
 # Release builds are the distributed binaries (weekly/nightly CI, Flatpak), so

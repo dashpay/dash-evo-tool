@@ -18,6 +18,7 @@ use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionDirection;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
 use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, MIN_PASSPHRASE_LEN};
@@ -323,7 +324,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::platform::Identity;
 use zeroize::Zeroizing;
@@ -678,7 +678,13 @@ pub struct WalletTransaction {
     pub timestamp: u64,
     pub height: Option<u32>,
     pub block_hash: Option<BlockHash>,
+    /// Signed change of the wallet's Core balance, in duffs.
     pub net_amount: i64,
+    /// What the transaction is to the wallet, as the wallet classified it.
+    /// Not derivable from the sign of [`Self::net_amount`]: a move between
+    /// the wallet's own accounts, or into its own Platform keys, is
+    /// `Internal` with a negative net (the fee, or the locked amount).
+    pub direction: TransactionDirection,
     pub fee: Option<u64>,
     pub label: Option<String>,
     pub is_ours: bool,
@@ -2543,7 +2549,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
 
     use super::test_support::{open_wallet as test_wallet, test_seed};
 
@@ -2980,6 +2985,7 @@ mod tests {
             height: Some(100),
             block_hash: None,
             net_amount: 50_000,
+            direction: TransactionDirection::Incoming,
             fee: Some(226),
             label: None,
             is_ours: true,
@@ -3007,6 +3013,7 @@ mod tests {
             height: None,
             block_hash: None,
             net_amount: -30_000,
+            direction: TransactionDirection::Outgoing,
             fee: Some(226),
             label: None,
             is_ours: true,
@@ -3034,6 +3041,7 @@ mod tests {
             height: None,
             block_hash: None,
             net_amount: 0,
+            direction: TransactionDirection::Internal,
             fee: None,
             label: None,
             is_ours: false,

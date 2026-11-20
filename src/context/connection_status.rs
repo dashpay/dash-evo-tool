@@ -2,7 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::TaskResult;
 use crate::backend_task::core::CoreItem;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
-use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
+use dash_sdk::dash_spv::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
@@ -735,7 +735,7 @@ impl Default for ConnectionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+    use dash_sdk::dash_spv::{BlockHeadersProgress, MasternodesProgress};
     use std::sync::Arc;
     use std::time::Duration;
 

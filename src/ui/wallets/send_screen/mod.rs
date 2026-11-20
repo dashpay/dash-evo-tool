@@ -8787,7 +8787,16 @@ mod tests {
 
         screen.form.set_advanced_amount(&paying, "0.1".to_string());
         screen.sync_route();
-        assert_ne!(screen.prepare_send().err(), Some(refusal));
+        let (action, _) = screen
+            .prepare_send()
+            .expect("amounts that add up to the Amount are withdrawn");
+        let AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::WithdrawFromPlatformAddress { inputs, .. },
+        )) = action
+        else {
+            panic!("a Platform withdrawal, got {action:?}");
+        };
+        assert_eq!(inputs.values().sum::<Credits>(), 10_000_000_000);
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

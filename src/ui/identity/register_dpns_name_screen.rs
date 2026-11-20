@@ -476,11 +476,13 @@ impl RegisterDpnsNameScreen {
         );
         ui.add_space(12.0);
 
-        ui.label(RichText::new("Username").strong());
+        let username_label = ui.label(RichText::new("Username").strong());
         let edit = ui
             .horizontal(|ui| {
                 ui.label("@");
-                let response = ui.text_edit_singleline(&mut self.name_input);
+                let response = ui
+                    .text_edit_singleline(&mut self.name_input)
+                    .labelled_by(username_label.id);
                 ui.label(".dash");
                 response
             })
@@ -951,9 +953,15 @@ impl ScreenLike for RegisterDpnsNameScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
         let identity_label = self.identity_label();
+        // An empty crumb would be a blank, nameless button.
+        let identity_crumb = if identity_label.is_empty() {
+            "Identity"
+        } else {
+            identity_label.as_str()
+        };
         let breadcrumbs = vec![
             ("Identities", AppAction::OpenIdentityPicker),
-            (identity_label.as_str(), AppAction::PopScreen),
+            (identity_crumb, AppAction::PopScreen),
             ("Get a username", AppAction::None),
         ];
         let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
@@ -1118,16 +1126,14 @@ mod tests {
         ctx.set_selected_identity(Some(identity.identity.id()));
 
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        let mut harness = crate::test_support::allowing_unnamed_widgets(
-            crate::test_support::harness_builder_with_app_fonts(),
-        )
-        .with_size(egui::vec2(1280.0, 900.0))
-        .build_ui_state(
-            |ui, screen: &mut RegisterDpnsNameScreen| {
-                screen.ui(ui);
-            },
-            screen,
-        );
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
         harness.run();
         assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
         assert!(harness.query_by_label("Open wallets").is_some());
@@ -1172,16 +1178,14 @@ mod tests {
         ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(storage.clone()));
 
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        let mut harness = crate::test_support::allowing_unnamed_widgets(
-            crate::test_support::harness_builder_with_app_fonts(),
-        )
-        .with_size(egui::vec2(1280.0, 900.0))
-        .build_ui_state(
-            |ui, screen: &mut RegisterDpnsNameScreen| {
-                screen.ui(ui);
-            },
-            screen,
-        );
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
         harness.run();
         assert!(harness.query_by_label_contains(MISSING_WALLET).is_some());
 

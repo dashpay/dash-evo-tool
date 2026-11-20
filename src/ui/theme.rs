@@ -1108,6 +1108,16 @@ impl ComponentStyles {
         Stroke::new(2.0, DashColors::DASH_BLUE)
     }
 
+    /// Ring around a custom-painted clickable (card, chip) that has keyboard focus.
+    pub fn focus_stroke(dark_mode: bool) -> Stroke {
+        let color = if dark_mode {
+            DashColors::WHITE
+        } else {
+            DashColors::DEEP_BLUE
+        };
+        Stroke::new(Shape::BORDER_WIDTH_THICK, color)
+    }
+
     pub fn input_stroke_error() -> Stroke {
         Stroke::new(2.0, DashColors::ERROR)
     }

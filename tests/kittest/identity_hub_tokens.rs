@@ -600,15 +600,14 @@ fn the_send_screen_uses_send_wording() {
             .find(|balance| balance.token_alias == "DashCoffee")
             .expect("the held token");
         let screen = ScreenType::TransferTokensScreen(balance).create_screen(&app_context);
-        let mut harness =
-            crate::support::allowing_unnamed_widgets(crate::support::builder_with_app_fonts())
-                .with_size(egui::vec2(1280.0, 900.0))
-                .build_ui_state(
-                    |ui, screen: &mut Screen| {
-                        let _ = screen.ui(ui);
-                    },
-                    screen,
-                );
+        let mut harness = crate::support::builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut Screen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
         harness.run();
         assert!(harness.query_by_label("Send DashCoffee").is_some());
         assert!(
@@ -2065,15 +2064,14 @@ fn the_send_screen_confirms_sends_and_reports_in_send_wording() {
             .find(|balance| balance.token_alias == "DashCoffee")
             .expect("the held token");
         let screen = ScreenType::TransferTokensScreen(balance).create_screen(&app_context);
-        let mut harness =
-            crate::support::allowing_unnamed_widgets(crate::support::builder_with_app_fonts())
-                .with_size(egui::vec2(1280.0, 900.0))
-                .build_ui_state(
-                    |ui, screen: &mut Screen| {
-                        let _ = screen.ui(ui);
-                    },
-                    screen,
-                );
+        let mut harness = crate::support::builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut Screen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
         harness.run();
         let recipient = Identifier::from([0x55; 32]).to_string(Encoding::Base58);
         // The amount field comes first, the recipient's free-text field second.
@@ -2671,20 +2669,19 @@ fn regression_import_by_id_restores_a_dismissed_token() {
             })
             .expect("hub opens import-by-ID");
         let contract = ctx.get_contract_by_token_id(&tokens[0]).unwrap().unwrap();
-        let mut import =
-            crate::support::allowing_unnamed_widgets(crate::support::builder_with_app_fonts())
-                .with_size(egui::vec2(1280.0, 900.0))
-                .build_ui_state(
-                    |ui,
-                     state: &mut (
-                        dash_evo_tool::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen,
-                        Vec<AppAction>,
-                    )| {
-                        let action = state.0.ui(ui);
-                        state.1.push(action);
-                    },
-                    (screen, Vec::new()),
-                );
+        let mut import = crate::support::builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui,
+                 state: &mut (
+                    dash_evo_tool::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen,
+                    Vec<AppAction>,
+                )| {
+                    let action = state.0.ui(ui);
+                    state.1.push(action);
+                },
+                (screen, Vec::new()),
+            );
         import.state_mut().0.display_task_result(
             dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedContractWithTokenPosition(
                 contract.contract,

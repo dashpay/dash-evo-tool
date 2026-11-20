@@ -355,8 +355,8 @@ impl AddExistingIdentityScreen {
             .striped(false)
             .show(ui, |ui| {
                 // Identity ID input - always shown
-                ui.horizontal(|ui| {
-                    ui.label("Identity ID:");
+                let id_label = ui.horizontal(|ui| {
+                    let label = ui.label("Identity ID:");
                     if self.show_advanced_options {
                         let response = crate::ui::helpers::info_icon_button(
                             ui,
@@ -369,8 +369,11 @@ impl AddExistingIdentityScreen {
                             );
                         }
                     }
-                });
-                ui.text_edit_singleline(&mut self.identity_id_input);
+                    label
+                })
+                .inner;
+                ui.text_edit_singleline(&mut self.identity_id_input)
+                    .labelled_by(id_label.id);
                 ui.end_row();
 
                 // Advanced: Identity Type selector
@@ -380,7 +383,7 @@ impl AddExistingIdentityScreen {
                     // Masternodes tab (`ui/masternodes/load_form.rs`), so the old
                     // Masternode/Evonode options are removed here to avoid a
                     // second, competing entry point (§10.2 / TC-FR4-22, FR-6).
-                    ui.label("Identity Type:");
+                    let type_label = ui.label("Identity Type:");
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         egui::ComboBox::from_id_salt("identity_type_selector")
                             .selected_text(format!("{:?}", self.identity_type))
@@ -390,7 +393,9 @@ impl AddExistingIdentityScreen {
                                     IdentityType::User,
                                     "User",
                                 );
-                            });
+                            })
+                            .response
+                            .labelled_by(type_label.id);
                     });
                     ui.end_row();
                 }
@@ -599,8 +604,9 @@ impl AddExistingIdentityScreen {
             };
 
             ui.horizontal(|ui| {
-                ui.label(identity_index_label);
-                ui.text_edit_singleline(&mut self.identity_index_input);
+                let label = ui.label(identity_index_label);
+                ui.text_edit_singleline(&mut self.identity_index_input)
+                    .labelled_by(label.id);
             });
 
             match self.wallet_search_mode {
@@ -729,9 +735,10 @@ impl AddExistingIdentityScreen {
             .num_columns(2)
             .spacing([10.0, 10.0])
             .show(ui, |ui| {
-                ui.label("Username:");
+                let username_label = ui.label("Username:");
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.dpns_name_input);
+                    ui.text_edit_singleline(&mut self.dpns_name_input)
+                        .labelled_by(username_label.id);
                     ui.label(".dash");
                 });
                 ui.end_row();
@@ -1143,7 +1150,7 @@ mod wallet_picker_tests {
 
     /// Render the screen and return what hovering the wallet picker shows.
     fn picker_breakdown(screen: &mut AddExistingIdentityScreen, closed_text: &str) -> Vec<String> {
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

@@ -205,7 +205,7 @@ impl NetworkChooserScreen {
                 .striped(false)
                 .show(ui, |ui| {
                     // Row: Network
-                    ui.label(
+                    let network_label = ui.label(
                         egui::RichText::new("Network:").color(DashColors::text_primary(dark_mode)),
                     );
 
@@ -234,51 +234,54 @@ impl NetworkChooserScreen {
                         let response = ui.add_enabled_ui(
                             !is_spv_connected && !self.db_clear_in_progress,
                             |ui| {
-                                network_combo.show_ui(ui, |ui| {
-                                    if ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Mainnet,
-                                            "Mainnet",
-                                        )
-                                        .clicked()
-                                    {
-                                        app_action = AppAction::SwitchNetwork(Network::Mainnet);
-                                    }
-                                    // Testnet always visible; Devnet/Local only in dev mode
-                                    if ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Testnet,
-                                            "Testnet",
-                                        )
-                                        .clicked()
-                                    {
-                                        app_action = AppAction::SwitchNetwork(Network::Testnet);
-                                    }
-                                    if self.selected_role.at_least(UserRole::Power)
-                                        && ui
+                                network_combo
+                                    .show_ui(ui, |ui| {
+                                        if ui
                                             .selectable_value(
                                                 &mut self.current_network,
-                                                Network::Devnet,
-                                                "Devnet",
+                                                Network::Mainnet,
+                                                "Mainnet",
                                             )
                                             .clicked()
-                                    {
-                                        app_action = AppAction::SwitchNetwork(Network::Devnet);
-                                    }
-                                    if self.selected_role.at_least(UserRole::Power)
-                                        && ui
+                                        {
+                                            app_action = AppAction::SwitchNetwork(Network::Mainnet);
+                                        }
+                                        // Testnet always visible; Devnet/Local only in dev mode
+                                        if ui
                                             .selectable_value(
                                                 &mut self.current_network,
-                                                Network::Regtest,
-                                                "Local",
+                                                Network::Testnet,
+                                                "Testnet",
                                             )
                                             .clicked()
-                                    {
-                                        app_action = AppAction::SwitchNetwork(Network::Regtest);
-                                    }
-                                });
+                                        {
+                                            app_action = AppAction::SwitchNetwork(Network::Testnet);
+                                        }
+                                        if self.selected_role.at_least(UserRole::Power)
+                                            && ui
+                                                .selectable_value(
+                                                    &mut self.current_network,
+                                                    Network::Devnet,
+                                                    "Devnet",
+                                                )
+                                                .clicked()
+                                        {
+                                            app_action = AppAction::SwitchNetwork(Network::Devnet);
+                                        }
+                                        if self.selected_role.at_least(UserRole::Power)
+                                            && ui
+                                                .selectable_value(
+                                                    &mut self.current_network,
+                                                    Network::Regtest,
+                                                    "Local",
+                                                )
+                                                .clicked()
+                                        {
+                                            app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                        }
+                                    })
+                                    .response
+                                    .labelled_by(network_label.id)
                             },
                         );
 

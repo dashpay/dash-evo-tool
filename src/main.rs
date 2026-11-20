@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     // where the logger's `Once` guard makes the repeat a no-op. A failure here
     // is shown in the startup failure window below.
     let environment = prepare_environment();
-    // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
+    // Redirect stderr into det.log so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio
     // runtime starts.
@@ -42,13 +42,11 @@ fn main() -> ExitCode {
     let outcome = crate::boot::StartupOutcome::default();
     let result = runtime.block_on(start(environment, outcome.clone()));
     if let Err(e) = &result {
-        // Full technical detail to det.log, which stderr is redirected into.
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
-        eprintln!("Error: {e:?}");
     }
     if result.is_err() || outcome.failed() {
         // Generic, actionable notice to the real terminal (fd 2 is redirected
-        // to the sidecar log, so this writes to the preserved original stderr).
+        // into det.log, so this writes to the preserved original stderr).
         report_startup_failure_to_terminal();
         return ExitCode::FAILURE;
     }

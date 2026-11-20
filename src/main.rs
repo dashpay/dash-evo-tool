@@ -103,7 +103,10 @@ async fn start(
         Box::new(move |cc| {
             Ok(Box::new(match environment {
                 Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
-                Err(error) => crate::boot::BootApp::failed(&error, &outcome),
+                Err(error) => crate::boot::BootApp::failed(
+                    &crate::backend_task::error::TaskError::from_data_folder_error(error),
+                    &outcome,
+                ),
             }))
         }),
     )

@@ -86,17 +86,24 @@ mod tests {
     /// A typed error boxed by `?` keeps its own user-facing message.
     #[test]
     fn boxed_task_error_keeps_its_message() {
-        let error: Box<dyn Error + Send + Sync> = Box::new(TaskError::NoNetworkAvailable);
+        let error: Box<dyn Error + Send + Sync> = Box::new(TaskError::WalletStorageNotReady);
         let report = ErrorReport::from_error(&*error, "fallback");
-        assert_eq!(report.message(), TaskError::NoNetworkAvailable.to_string());
-        assert_eq!(report.details(), "NoNetworkAvailable");
+        assert_eq!(
+            report.message(),
+            TaskError::WalletStorageNotReady.to_string()
+        );
+        assert_eq!(report.details(), "WalletStorageNotReady");
     }
 
     /// A typed error deeper in the source chain is still found.
     #[test]
     fn task_error_in_source_chain_is_found() {
-        let report = ErrorReport::from_error(&Wrapped(TaskError::NoNetworkAvailable), "fallback");
-        assert_eq!(report.message(), TaskError::NoNetworkAvailable.to_string());
+        let report =
+            ErrorReport::from_error(&Wrapped(TaskError::WalletStorageNotReady), "fallback");
+        assert_eq!(
+            report.message(),
+            TaskError::WalletStorageNotReady.to_string()
+        );
         assert!(report.details().starts_with("Wrapped("));
     }
 

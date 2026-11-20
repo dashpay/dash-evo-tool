@@ -470,12 +470,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         secret_store,
         crate::model::user_role::UserRoleCell::default(),
     )
-    .ok_or_else(|| {
-        McpError::internal_error(
-            "failed to create AppContext -- check logs for details".to_string(),
-            None,
-        )
-    })?;
+    .map_err(|e| McpError::internal_error(format!("app context: {e}"), None))?;
 
     // Seed the role from AppSettings — the single source of truth, matching the
     // GUI boot path, so a role chosen in the GUI is honoured here too.

@@ -1639,6 +1639,17 @@ pub enum TaskError {
         source: std::io::Error,
     },
 
+    /// The app may not write to its data folder: missing permissions or a
+    /// read-only disk. Distinct from [`Self::FileSystem`] because freeing disk
+    /// space or restarting never fixes it.
+    #[error(
+        "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application."
+    )]
+    DataFolderAccessDenied {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
         "Could not access local files. Check available disk space and restart the application."
@@ -2928,7 +2939,10 @@ pub enum TaskError {
     #[error(
         "Could not connect to the Dash network. Please check your network settings and restart the application."
     )]
-    SdkInitializationFailed { detail: String },
+    SdkInitializationFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
 
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
@@ -3496,13 +3510,21 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network },
+    NetworkContextCreationFailed {
+        network: Network,
+        #[source]
+        source: Box<crate::context::NetworkContextError>,
+    },
 
     /// No network context could be created at startup, so the app cannot open.
+    /// `source` is why the saved network could not be set up.
     #[error(
         "Dash Evo Tool could not set up a connection to any Dash network. Check the network settings in the .env file in the app data folder, then restart the application."
     )]
-    NoNetworkAvailable,
+    NoNetworkAvailable {
+        #[source]
+        source: Box<crate::context::NetworkContextError>,
+    },
 
     /// A DAPI refresh completed after its network context was removed.
     #[error(
@@ -3706,6 +3728,16 @@ pub enum TaskError {
 }
 
 impl TaskError {
+    /// A failure to prepare or use the app data folder: permission and
+    /// read-only problems get [`Self::DataFolderAccessDenied`], the rest
+    /// [`Self::FileSystem`].
+    pub fn from_data_folder_error(source: std::io::Error) -> Self {
+        match StorageFailure::of_io(&source) {
+            Some(StorageFailure::AccessDenied) => Self::DataFolderAccessDenied { source },
+            _ => Self::FileSystem { source },
+        }
+    }
+
     /// Reclassifies SDK reachability failures when every configured DAPI address is exhausted.
     pub(crate) fn contextualize_dapi_availability(
         self,
@@ -4954,6 +4986,25 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A data folder the app may not write to gets its own advice; any other
+    /// file failure keeps the general one.
+    #[test]
+    fn data_folder_errors_name_permission_problems() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ReadOnlyFilesystem,
+        ] {
+            assert!(matches!(
+                TaskError::from_data_folder_error(std::io::Error::from(kind)),
+                TaskError::DataFolderAccessDenied { .. }
+            ));
+        }
+        assert!(matches!(
+            TaskError::from_data_folder_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            TaskError::FileSystem { .. }
+        ));
+    }
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;
     use dash_sdk::dpp::consensus::basic::data_contract::{

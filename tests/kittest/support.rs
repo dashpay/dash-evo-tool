@@ -77,7 +77,8 @@ const ROOTS_WITH_UNNAMED_WIDGETS: &[RootScreenType] = &[
 // (Import Mnemonic); the identity selector combo box; the Key Info
 // sign-message field; the DPNS username field and a button on the registration
 // outcome view; an unlabelled `WalletSelector`; the fund-platform dialog's
-// address combo box; the withdrawal destination field; the `AddressInput`
+// address combo box; the withdrawal destination field; the transfer amount,
+// destination and signing-key fields; the `AddressInput`
 // type filter combo box; and, on the root
 // screens in `ROOTS_WITH_UNNAMED_WIDGETS`, the Document Query text fields, the
 // Network Chooser's network selector combo box and the Transition Visualizer

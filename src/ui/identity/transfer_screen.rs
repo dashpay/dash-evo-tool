@@ -596,252 +596,256 @@ impl ScreenLike for TransferScreen {
         );
 
         action |= island_central_panel(ui, |ui| {
-            let mut inner_action = AppAction::None;
+            // A tall form scrolls so the Transfer action stays reachable.
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut inner_action = AppAction::None;
 
-            // Show the success screen if the transfer was successful
-            if self.transfer_credits_status == TransferCreditsStatus::Complete {
-                inner_action |= self.show_success(ui);
-                return inner_action;
-            }
+                // Show the success screen if the transfer was successful
+                if self.transfer_credits_status == TransferCreditsStatus::Complete {
+                    inner_action |= self.show_success(ui);
+                    return inner_action;
+                }
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
-            } else {
-                !self.identity.available_transfer_keys().is_empty()
-            };
+                let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
+                    !self.identity.identity.public_keys().is_empty()
+                } else {
+                    !self.identity.available_transfer_keys().is_empty()
+                };
 
-            let key_for_info = key_info_when_available(
-                has_keys,
-                self.identity.identity.get_first_public_key_matching(
-                    Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                ),
-            );
-
-            if !has_keys {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
-                    format!(
-                        "You do not have any transfer keys loaded for this {identity_type} identity.",
-                        identity_type = self.identity.identity_type
+                let key_for_info = key_info_when_available(
+                    has_keys,
+                    self.identity.identity.get_first_public_key_matching(
+                        Purpose::TRANSFER,
+                        SecurityLevel::full_range().into(),
+                        KeyType::all_key_types().into(),
+                        false,
                     ),
                 );
-                ui.add_space(10.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("Add key").clicked() {
-                        inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(
-                            AddKeyScreen::new(self.identity.clone(), &self.app_context),
-                        ));
-                    }
-                    // Entering a key by hand is not the only remedy: a key this
-                    // identity left behind in the previous version's data can be
-                    // brought across from the keys list. The gate above is
-                    // untouched — it still correctly says this identity cannot
-                    // send; the branch just stops being a dead end.
-                    if ui
-                        .button("Manage keys")
-                        .clickable_tooltip("See every key of this identity and what it is for.")
-                        .clicked()
-                    {
-                        inner_action |= AppAction::AddScreen(Screen::KeysScreen(KeysScreen::new(
-                            self.identity.clone(),
-                            &self.app_context,
-                        )));
-                    }
-                });
-            } else {
-                if let Some(key) = key_for_info {
-                    if ui.button("Manage Transfer Key").clicked() {
-                        inner_action |=
-                            AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                if !has_keys {
+                    ui.colored_label(
+                        egui::Color32::DARK_RED,
+                        format!(
+                            "You do not have any transfer keys loaded for this {identity_type} identity.",
+                            identity_type = self.identity.identity_type
+                        ),
+                    );
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Add key").clicked() {
+                            inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(
+                                AddKeyScreen::new(self.identity.clone(), &self.app_context),
+                            ));
+                        }
+                        // Entering a key by hand is not the only remedy: a key this
+                        // identity left behind in the previous version's data can be
+                        // brought across from the keys list. The gate above is
+                        // untouched — it still correctly says this identity cannot
+                        // send; the branch just stops being a dead end.
+                        if ui
+                            .button("Manage keys")
+                            .clickable_tooltip("See every key of this identity and what it is for.")
+                            .clicked()
+                        {
+                            inner_action |= AppAction::AddScreen(Screen::KeysScreen(KeysScreen::new(
                                 self.identity.clone(),
-                                key.clone(),
-                                None,
                                 &self.app_context,
                             )));
-                    }
-                    ui.add_space(5.0);
-                }
-
-                if self.selected_wallet.is_some()
-                    && let Some(wallet) = &self.selected_wallet
-                {
-                    if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                .disable_auto_dismiss();
                         }
-                        self.wallet_open_attempted = true;
-                    }
-                    if wallet_needs_unlock(wallet) {
-                        ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
-                        }
-                        return inner_action;
-                    }
-                }
-
-                // Heading with checkbox on the same line
-                ui.horizontal(|ui| {
-                    ui.heading("Transfer Funds");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.show_advanced_options, "Show Advanced Options");
                     });
-                });
-                ui.add_space(10.0);
-
-                // Input the amount to transfer
-                ui.heading("1. Input the amount to transfer");
-                ui.add_space(5.0);
-
-                // Show identity info
-                let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
-                let name = self.app_context.identity_display_label(&self.identity);
-                let identity_label = format!("From: {name} ({identity_id_string})");
-                ui.label(identity_label);
-                ui.add_space(5.0);
-
-                self.render_amount_input(ui);
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Destination type selector
-                ui.heading("2. Select transfer destination type");
-                ui.add_space(5.0);
-                self.render_destination_type_selector(ui);
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Input the destination based on type
-                match self.destination_type {
-                    TransferDestinationType::Identity => {
-                        ui.heading("3. ID of the identity to transfer to");
+                } else {
+                    if let Some(key) = key_for_info {
+                        if ui.button("Manage Transfer Key").clicked() {
+                            inner_action |=
+                                AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                    self.identity.clone(),
+                                    key.clone(),
+                                    None,
+                                    &self.app_context,
+                                )));
+                        }
                         ui.add_space(5.0);
-                        self.render_to_identity_input(ui);
                     }
-                    TransferDestinationType::PlatformAddress => {
-                        ui.heading("3. Platform address to transfer to");
-                        ui.add_space(5.0);
-                        self.render_platform_address_input(ui);
-                    }
-                }
 
-                // Select the key to sign with (only in advanced mode)
-                if self.show_advanced_options {
+                    if self.selected_wallet.is_some()
+                        && let Some(wallet) = &self.selected_wallet
+                    {
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                    .disable_auto_dismiss();
+                            }
+                            self.wallet_open_attempted = true;
+                        }
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                            return inner_action;
+                        }
+                    }
+
+                    // Heading with checkbox on the same line
+                    ui.horizontal(|ui| {
+                        ui.heading("Transfer Funds");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(&mut self.show_advanced_options, "Show Advanced Options");
+                        });
+                    });
+                    ui.add_space(10.0);
+
+                    // Input the amount to transfer
+                    ui.heading("1. Input the amount to transfer");
+                    ui.add_space(5.0);
+
+                    // Show identity info
+                    let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
+                    let name = self.app_context.identity_display_label(&self.identity);
+                    let identity_label = format!("From: {name} ({identity_id_string})");
+                    ui.label(identity_label);
+                    ui.add_space(5.0);
+
+                    self.render_amount_input(ui);
+
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("4. Select the key to sign the transaction with");
+                    // Destination type selector
+                    ui.heading("2. Select transfer destination type");
+                    ui.add_space(5.0);
+                    self.render_destination_type_selector(ui);
+
                     ui.add_space(10.0);
-                    inner_action |= self.render_key_selection(ui);
-                }
+                    ui.separator();
+                    ui.add_space(10.0);
 
-                ui.add_space(10.0);
-
-                // Fee estimation
-                let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = match self.destination_type {
-                    TransferDestinationType::Identity => fee_estimator.estimate_credit_transfer(),
-                    TransferDestinationType::PlatformAddress => {
-                        // Platform address transfer has output cost
-                        fee_estimator.estimate_credit_transfer_to_addresses(1)
+                    // Input the destination based on type
+                    match self.destination_type {
+                        TransferDestinationType::Identity => {
+                            ui.heading("3. ID of the identity to transfer to");
+                            ui.add_space(5.0);
+                            self.render_to_identity_input(ui);
+                        }
+                        TransferDestinationType::PlatformAddress => {
+                            ui.heading("3. Platform address to transfer to");
+                            ui.add_space(5.0);
+                            self.render_platform_address_input(ui);
+                        }
                     }
-                };
 
-                // Display estimated fee
-                let dark_mode = ui.style().visuals.dark_mode;
-                Frame::group(ui.style())
-                    .fill(DashColors::surface(dark_mode))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Estimated fee:")
-                                    .color(DashColors::text_secondary(dark_mode))
-                                    .size(14.0),
-                            );
-                            ui.label(
-                                RichText::new(format_credits_as_dash(estimated_fee))
-                                    .color(DashColors::text_primary(dark_mode))
-                                    .size(14.0),
-                            );
+                    // Select the key to sign with (only in advanced mode)
+                    if self.show_advanced_options {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        ui.heading("4. Select the key to sign the transaction with");
+                        ui.add_space(10.0);
+                        inner_action |= self.render_key_selection(ui);
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Fee estimation
+                    let fee_estimator = self.app_context.fee_estimator();
+                    let estimated_fee = match self.destination_type {
+                        TransferDestinationType::Identity => fee_estimator.estimate_credit_transfer(),
+                        TransferDestinationType::PlatformAddress => {
+                            // Platform address transfer has output cost
+                            fee_estimator.estimate_credit_transfer_to_addresses(1)
+                        }
+                    };
+
+                    // Display estimated fee
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    Frame::group(ui.style())
+                        .fill(DashColors::surface(dark_mode))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Estimated fee:")
+                                        .color(DashColors::text_secondary(dark_mode))
+                                        .size(14.0),
+                                );
+                                ui.label(
+                                    RichText::new(format_credits_as_dash(estimated_fee))
+                                        .color(DashColors::text_primary(dark_mode))
+                                        .size(14.0),
+                                );
+                            });
                         });
-                    });
 
-                ui.add_space(10.0);
+                    ui.add_space(10.0);
 
-                // Transfer button - check readiness based on destination type
-                let has_enough_balance = self.identity.identity.balance() > estimated_fee;
+                    // Transfer button - check readiness based on destination type
+                    let has_enough_balance = self.identity.identity.balance() > estimated_fee;
 
-                let ready = self.amount.is_some()
-                    && self.selected_key.is_some()
-                    && has_enough_balance
-                    && !matches!(
-                        self.transfer_credits_status,
-                        TransferCreditsStatus::WaitingForResult,
-                    )
-                    && match self.destination_type {
-                        TransferDestinationType::Identity => !self.receiver_identity_id.is_empty(),
-                        TransferDestinationType::PlatformAddress => {
-                            !self.platform_address_input.is_empty()
-                        }
+                    let ready = self.amount.is_some()
+                        && self.selected_key.is_some()
+                        && has_enough_balance
+                        && !matches!(
+                            self.transfer_credits_status,
+                            TransferCreditsStatus::WaitingForResult,
+                        )
+                        && match self.destination_type {
+                            TransferDestinationType::Identity => !self.receiver_identity_id.is_empty(),
+                            TransferDestinationType::PlatformAddress => {
+                                !self.platform_address_input.is_empty()
+                            }
+                        };
+                    let mut new_style = (**ui.style()).clone();
+                    new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                    ui.set_style(new_style);
+                    let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
+                        .fill(DashColors::DASH_BLUE)
+                        .frame(true)
+                        .corner_radius(3.0);
+
+                    let hover_text = if !has_enough_balance {
+                        format!(
+                            "Insufficient balance for transfer fee (need at least {fee})",
+                            fee = format_credits_as_dash(estimated_fee)
+                        )
+                    } else if ready {
+                        "Transfer credits to another identity or Platform address".to_string()
+                    } else {
+                        "Please ensure all fields are filled correctly".to_string()
                     };
-                let mut new_style = (**ui.style()).clone();
-                new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
-                ui.set_style(new_style);
-                let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
-                    .fill(DashColors::DASH_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
 
-                let hover_text = if !has_enough_balance {
-                    format!(
-                        "Insufficient balance for transfer fee (need at least {fee})",
-                        fee = format_credits_as_dash(estimated_fee)
-                    )
-                } else if ready {
-                    "Transfer credits to another identity or Platform address".to_string()
-                } else {
-                    "Please ensure all fields are filled correctly".to_string()
-                };
+                    if ui
+                        .add_enabled(ready, button)
+                        .clickable_tooltip(&hover_text)
+                        .disabled_tooltip(&hover_text)
+                        .clicked()
+                    {
+                        self.confirmation_popup = true;
+                    }
 
-                if ui
-                    .add_enabled(ready, button)
-                    .clickable_tooltip(&hover_text)
-                    .disabled_tooltip(&hover_text)
-                    .clicked()
-                {
-                    self.confirmation_popup = true;
+                    if self.confirmation_popup {
+                        inner_action |= match self.destination_type {
+                            TransferDestinationType::Identity => self.show_confirmation_popup(ui),
+                            TransferDestinationType::PlatformAddress => {
+                                self.show_platform_address_confirmation_popup(ui)
+                            }
+                        };
+                    }
+
+                    // Status display is handled by the global MessageBanner
                 }
 
-                if self.confirmation_popup {
-                    inner_action |= match self.destination_type {
-                        TransferDestinationType::Identity => self.show_confirmation_popup(ui),
-                        TransferDestinationType::PlatformAddress => {
-                            self.show_platform_address_confirmation_popup(ui)
-                        }
-                    };
-                }
-
-                // Status display is handled by the global MessageBanner
-            }
-
-            inner_action
+                inner_action
+            })
+            .inner
         });
 
         // Show wallet unlock popup if open

@@ -49,7 +49,7 @@ use std::sync::Arc;
 /// Builds an on-chain public key. Mirrors the `key()` helper in
 /// `model/qualified_identity/mod.rs::withdrawal_key_tests` so the two test
 /// suites stay in lockstep on fixture shape.
-fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+pub(crate) fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
     let mut k = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
     k.set_id(id);
     k.set_purpose(purpose);
@@ -71,7 +71,7 @@ fn payout_key(id: KeyID, hash: [u8; 20]) -> IdentityPublicKey {
 /// `with_private` additionally get local `Clear` private material. Same
 /// fixture shape as the model-layer `withdrawal_key_tests::build_identity`
 /// helper, extended with a live `AppContext`'s network so the screen renders.
-fn build_identity(
+pub(crate) fn build_identity(
     app_context: &Arc<AppContext>,
     identity_type: IdentityType,
     on_chain: Vec<IdentityPublicKey>,

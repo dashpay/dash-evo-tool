@@ -5,14 +5,14 @@ use crate::ui::components::action_menu::show_action_menu;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
 use crate::ui::state::hub_selection::HubSelection;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Typography};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use crate::ui::{RootScreenType, ScreenType};
 use egui::{Align2, FontId, Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
-    let font_id = Typography::heading_medium();
+    let font_id = egui::TextStyle::Heading.resolve(ui.style());
 
     // Wrap in a container that can be positioned vertically
     ui.allocate_ui(ui.available_size(), |ui| {

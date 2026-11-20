@@ -100,7 +100,7 @@ impl<'a> StartupErrorDialog<'a> {
     fn support(&self, ui: &mut Ui, dark_mode: bool) {
         ui.label(
             RichText::new(
-                "If you cannot solve this yourself, report the problem at the address below and include the technical details.",
+                "If you cannot solve this yourself, report the problem at the address below and include the technical details. The issue page is public, and the details can include folder names from your computer, so read them before posting and remove anything you do not want to share.",
             )
             .color(DashColors::text_secondary(dark_mode)),
         );

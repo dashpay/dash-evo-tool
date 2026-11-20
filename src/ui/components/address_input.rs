@@ -13,7 +13,11 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{Color32, InnerResponse, Response, Ui, WidgetText};
 use std::ops::Bound;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+
+/// Source of each [`AddressInput`]'s instance id.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 /// Internal detection result including the `Unknown` state for unrecognized input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,6 +362,9 @@ pub struct AddressInput {
     cached_detection: Option<(String, DetectedType)>,
     changed: bool,
     focus_requested: bool,
+    /// Scope for this input's popup ids, fixed for its lifetime. Sibling inputs
+    /// share their parent's `scope_id`, so ids derived from it would collide.
+    instance_id: egui::Id,
 }
 
 impl AddressInput {
@@ -388,6 +395,10 @@ impl AddressInput {
             changed: false,
             exclude_change: false,
             focus_requested: false,
+            instance_id: egui::Id::unique((
+                "address_input",
+                NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            )),
         }
     }
 
@@ -1026,7 +1037,7 @@ impl AddressInput {
                             .selected_type_filter
                             .map(|t| t.display_name())
                             .unwrap_or("All");
-                        egui::ComboBox::from_id_salt(ui.id().with("address_type_filter"))
+                        egui::ComboBox::from_id_salt(self.instance_id.with("address_type_filter"))
                             .selected_text(current_label)
                             .width(120.0)
                             .show_ui(ui, |ui| {
@@ -1122,7 +1133,7 @@ impl AddressInput {
 
                 if !entries_snapshot.is_empty() {
                     self.autocomplete_open = true;
-                    let popup_id = ui.id().with("address_autocomplete");
+                    let popup_id = self.instance_id.with("address_autocomplete");
 
                     let popup = egui::Area::new(popup_id)
                         .order(egui::Order::Foreground)
@@ -1167,7 +1178,7 @@ impl AddressInput {
                                             );
                                             response.widget_info(|| {
                                                 egui::WidgetInfo::labeled(
-                                                    egui::WidgetType::Button,
+                                                    egui::Role::Button,
                                                     true,
                                                     label.clone(),
                                                 )

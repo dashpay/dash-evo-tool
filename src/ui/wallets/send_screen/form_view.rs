@@ -633,6 +633,14 @@ impl WalletSendScreen {
                             .disabled_tooltip(format!(
                                 "One payment can use at most {max_inputs} Platform addresses."
                             ));
+                        checkbox.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::Role::CheckBox,
+                                !limit_reached,
+                                ticked,
+                                format!("Use address {address}"),
+                            )
+                        });
                         if checkbox.changed() {
                             self.form.set_advanced_ticked(address, ticked);
                         }

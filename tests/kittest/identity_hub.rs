@@ -81,7 +81,7 @@ pub(crate) mod loads {
         // The hub holds its proof-verifying reads until the masternode list is
         // synced; these tests start on a synced network.
         app_context.connection_status().set_masternodes_ready(true);
-        Harness::builder()
+        crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<AppAction>)| {

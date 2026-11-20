@@ -134,3 +134,44 @@ fn quit_button_requests_quit() {
 
     assert!(quit.get());
 }
+
+fn open_url(harness: &Harness<'_, impl Sized>) -> Option<String> {
+    harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+            _ => None,
+        })
+}
+
+/// Copy question puts the same redacted question on the clipboard that Ask
+/// ChatGPT sends, and Ask ChatGPT opens it prefilled in the browser.
+#[test]
+fn ask_ai_buttons_copy_and_open_the_question() {
+    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let message = failure.report().message().to_owned();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            StartupErrorDialog::new(&failure).show(ui);
+        });
+    harness.run();
+
+    harness.get_by_label("Copy question").click();
+    harness.step();
+    let question = copied_text(&harness).expect("question copied");
+    assert!(question.contains(&message), "{question}");
+    assert!(question.contains("WalletDataFolderInsecure"), "{question}");
+
+    harness.run();
+    harness.get_by_label("Ask ChatGPT").click();
+    harness.step();
+    let url = open_url(&harness).expect("assistant opened");
+    let encoded = url
+        .strip_prefix("https://chatgpt.com/?q=")
+        .expect("ChatGPT URL");
+    assert_eq!(urlencoding::decode(encoded).unwrap(), question);
+}

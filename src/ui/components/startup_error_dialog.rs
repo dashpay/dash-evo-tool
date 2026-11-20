@@ -3,7 +3,9 @@
 
 use egui::{RichText, Ui};
 
-use crate::model::error_report::StartupFailure;
+use crate::model::error_report::{
+    AiAssistant, QuestionEnvironment, STARTUP_SITUATION, StartupFailure, ai_question,
+};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::technical_details::TechnicalDetails;
 use crate::ui::theme::{ComponentStyles, DashColors, Spacing, Typography};
@@ -24,7 +26,8 @@ pub enum StartupErrorDialogAction {
     Quit,
 }
 
-/// Renders a [`StartupFailure`] with its technical details and a Quit action.
+/// Renders a [`StartupFailure`] with its technical details, actions to ask an
+/// AI assistant about it, and Quit.
 ///
 /// The only content of the app window after a fatal startup failure; nothing
 /// else is built behind it.
@@ -63,7 +66,7 @@ impl<'a> StartupErrorDialog<'a> {
                 ui.add_space(Spacing::MD);
                 self.details(ui, dark_mode);
                 ui.add_space(Spacing::MD);
-                action = self.actions(ui);
+                action = self.actions(ui, dark_mode);
             },
         );
         if chrome.closed_via_x {
@@ -114,13 +117,46 @@ impl<'a> StartupErrorDialog<'a> {
         }
     }
 
-    fn actions(&self, ui: &mut Ui) -> StartupErrorDialogAction {
+    fn actions(&self, ui: &mut Ui, dark_mode: bool) -> StartupErrorDialogAction {
         let mut action = StartupErrorDialogAction::None;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ComponentStyles::add_primary_button(ui, "Quit").clicked() {
                 action = StartupErrorDialogAction::Quit;
             }
+            if ComponentStyles::add_secondary_button(ui, "Copy question", dark_mode)
+                .on_hover_text(
+                    "Copies a question about this problem, with the technical details, to paste into any AI assistant.",
+                )
+                .clicked()
+            {
+                ui.ctx().copy_text(self.question());
+            }
+            for assistant in AiAssistant::ALL.iter().rev() {
+                let label = format!("Ask {name}", name = assistant.name());
+                let hint = format!(
+                    "Opens {name} in your browser with a question about this problem, including the technical details. The question goes to {operator}, and you can review and edit it before sending.",
+                    name = assistant.name(),
+                    operator = assistant.operator(),
+                );
+                if ComponentStyles::add_secondary_button(ui, label, dark_mode)
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                        assistant.question_url(&self.question()),
+                    ));
+                }
+            }
         });
         action
+    }
+
+    /// The redacted question about this failure for an AI assistant.
+    fn question(&self) -> String {
+        ai_question(
+            self.failure.report(),
+            STARTUP_SITUATION,
+            &QuestionEnvironment::current(),
+        )
     }
 }

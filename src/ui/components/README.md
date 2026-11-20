@@ -62,7 +62,7 @@ directory.
 | `InfoPopup` | `info_popup.rs` | N/A | Info popup with optional markdown |
 | `WalletUnlockPopup` | `wallet_unlock_popup.rs` | `WalletUnlockResult` | Password-based wallet unlock (renders via shared `passphrase_modal`) |
 | `passphrase_modal()` | `passphrase_modal.rs` | `PassphraseModalOutcome` | Shared passphrase-entry chrome: overlay, centered window, `PasswordInput`, error line, optional extra body (e.g. remember checkbox). Cancellable prompts map Cancel/Esc/X/click-outside to Cancel; blocking prompts expose only their configured actions. |
-| `StartupErrorDialog` | `startup_error_dialog.rs` | `StartupErrorDialogAction` | Fatal startup failure window for a `model::error_report::StartupFailure`: message, support address, `TechnicalDetails`, log file location, Quit |
+| `StartupErrorDialog` | `startup_error_dialog.rs` | `StartupErrorDialogAction` | Fatal startup failure window for a `model::error_report::StartupFailure`: message, support address, `TechnicalDetails`, log file location, Ask ChatGPT / Copy question (question from `model::error_report::ai_question`), Quit |
 | `EguiSecretPromptHost` | `secret_prompt_host.rs` | N/A (`SecretPrompt`) | egui host for just-in-time secret prompts; enqueues requests for `AppState` to render and answers via one-shot. `ActivePrompt` owns the live modal |
 
 ## Feedback Components

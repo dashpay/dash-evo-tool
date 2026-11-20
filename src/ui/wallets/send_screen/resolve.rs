@@ -135,6 +135,7 @@ impl WalletSendScreen {
         let fee_estimator = self.app_context.fee_estimator();
         let dest_kind = destination.map(ValidatedAddress::kind);
         let mut quote = QuoteState::Ready;
+        let mut private_fee_not_covered = false;
         let (max_credits, hint) = match source {
             SourceSelection::CoreWallet => {
                 let seed_hash = self.selected_wallet_seed_hash;
@@ -365,13 +366,25 @@ impl WalletSendScreen {
                 let max = self
                     .spend_limit_target_for(source, dest_kind)
                     .and_then(|(_, kind, _)| self.spend_limit_for(source, dest_kind, kind));
-                if max.is_none() {
-                    quote = self.spend_limit_quote_state(source, dest_kind);
+                match max {
+                    // No amount covers the fee: no Max, and no fee to reserve.
+                    Some(0) => {
+                        private_fee_not_covered = true;
+                        (None, None)
+                    }
+                    max => {
+                        if max.is_none() {
+                            quote = self.spend_limit_quote_state(source, dest_kind);
+                        }
+                        (
+                            max,
+                            Some(
+                                "The network fee is reserved from your private balance."
+                                    .to_string(),
+                            ),
+                        )
+                    }
                 }
-                (
-                    max.filter(|max| *max > 0),
-                    Some("The network fee is reserved from your private balance.".to_string()),
-                )
             }
             SourceSelection::Identity(qi) => {
                 let estimated_fee = self.identity_source_fee_reserve_for(dest_kind);
@@ -397,12 +410,13 @@ impl WalletSendScreen {
         let min_credits = self.min_output_amount(input_kind, dest_kind);
         // No amount the wallet can fund covers the network fee, so Max must
         // not propose one the network would refuse.
-        let fee_not_covered = input_kind == Some(AddressKind::Core)
-            && matches!(
-                dest_kind,
-                Some(AddressKind::Platform | AddressKind::Identity | AddressKind::Shielded)
-            )
-            && matches!((max_credits, min_credits), (Some(max), Some(min))
+        let fee_not_covered = private_fee_not_covered
+            || input_kind == Some(AddressKind::Core)
+                && matches!(
+                    dest_kind,
+                    Some(AddressKind::Platform | AddressKind::Identity | AddressKind::Shielded)
+                )
+                && matches!((max_credits, min_credits), (Some(max), Some(min))
                 if asset_lock_user_amount_range(max, 0, min).is_none());
         AmountLimits {
             max_credits,

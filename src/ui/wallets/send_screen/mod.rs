@@ -5978,6 +5978,58 @@ mod tests {
         assert_eq!(limits.quote, resolve::QuoteState::Ready);
     }
 
+    /// Without a usable private quote the balance still bounds the amount:
+    /// while the quote is pending, an amount above the balance is refused;
+    /// a zero quote says the fee is not covered and offers no Max.
+    #[test]
+    fn private_balance_without_a_usable_quote_still_bounds_the_amount() {
+        use crate::model::send_route::PayFromKind;
+        use form_view::AmountProblem;
+        const BALANCE_CREDITS: u64 = 300_000_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, BALANCE_CREDITS);
+        let destination = ValidatedAddress::Core(testnet_core_address(47));
+        screen
+            .form
+            .choose_pay_from(PayFrom::Shielded, PayFromKind::Shielded);
+        screen.selected_source = Some(source.clone());
+        screen.validated_destination = Some(destination.clone());
+        screen.amount = Some(Amount::dash_from_credits(BALANCE_CREDITS + 1));
+        assert_eq!(
+            screen.amount_problem(),
+            Some(AmountProblem::OverMax {
+                kind: PayFromKind::Shielded,
+                max: BALANCE_CREDITS
+            }),
+            "a pending quote still refuses more than the balance"
+        );
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("a private payment must ask for the wallet's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: 0,
+                core_fee: None,
+            })
+        );
+        let limits = screen.amount_limits_for(&source, Some(&destination));
+        assert!(limits.fee_not_covered, "a zero quote cannot cover the fee");
+        assert_eq!(limits.max_credits, None, "no Max is offered");
+        assert_eq!(limits.hint, None, "no fee is promised to be reserved");
+        assert_eq!(screen.amount_problem(), Some(AmountProblem::FeeNotCovered));
+    }
+
     /// The shield planner decides which Platform addresses it may spend, so
     /// Max for a shield from Platform is the planner's quote — never the
     /// balance minus a fee — and nothing is offered before the quote arrives.

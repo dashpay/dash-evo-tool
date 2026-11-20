@@ -1534,8 +1534,9 @@ pub fn shielded_spend_fee(
 /// notes worth `note_values`, in credits. Note selection spends the largest
 /// notes first and takes the fee for their actions on top of the amount, so
 /// this is the most any largest-first set of notes leaves once its fee is
-/// paid; a note worth less than the fee its action adds is left out. Zero
-/// when no set covers its own fee.
+/// paid; a note worth less than the fee its action adds is left out. A
+/// withdrawal stops at the network's per-withdrawal limit. Zero when no set
+/// covers its own fee.
 pub fn shielded_spend_max_credits(
     note_values: &[Credits],
     fee: ShieldedSpendFee,
@@ -1551,7 +1552,13 @@ pub fn shielded_spend_max_credits(
         let fee_credits = shielded_spend_fee(fee, actions, platform_version)?;
         max = max.max(total.saturating_sub(fee_credits));
     }
-    Ok(max)
+    Ok(match fee {
+        // A withdrawal pays out at most the network's per-withdrawal limit.
+        ShieldedSpendFee::Withdrawal => {
+            max.min(platform_version.system_limits.max_withdrawal_amount)
+        }
+        ShieldedSpendFee::Transfer | ShieldedSpendFee::Unshield => max,
+    })
 }
 
 /// Fee (credits) shielding from Platform is estimated to cost: the
@@ -2927,6 +2934,25 @@ mod tests {
         assert!(two_outputs > one_output);
     }
 
+    /// The fee consensus charges each private payment, read straight from
+    /// dpp, so the expectations do not reuse the function under test.
+    fn consensus_shielded_fee(
+        fee: ShieldedSpendFee,
+        actions: usize,
+        pv: &PlatformVersion,
+    ) -> Credits {
+        use dash_sdk::dpp::shielded::{
+            compute_minimum_shielded_fee, compute_shielded_unshield_fee,
+            compute_shielded_withdrawal_fee,
+        };
+        match fee {
+            ShieldedSpendFee::Transfer => compute_minimum_shielded_fee(actions, pv),
+            ShieldedSpendFee::Unshield => compute_shielded_unshield_fee(actions, pv),
+            ShieldedSpendFee::Withdrawal => compute_shielded_withdrawal_fee(actions, pv),
+        }
+        .expect("fee formula")
+    }
+
     /// A private-balance Max spends every note and pays the fee for their
     /// actions, never fewer than the minimum, on top.
     #[test]
@@ -2937,7 +2963,7 @@ mod tests {
             ShieldedSpendFee::Unshield,
             ShieldedSpendFee::Withdrawal,
         ] {
-            let fee_for = |actions| shielded_spend_fee(fee, actions, pv).expect("fee formula");
+            let fee_for = |actions| consensus_shielded_fee(fee, actions, pv);
             let notes = [2_000_000_000, 5_000_000_000, 3_000_000_000];
             assert_eq!(
                 shielded_spend_max_credits(&notes, fee, pv).ok(),
@@ -2957,7 +2983,7 @@ mod tests {
     fn shielded_spend_max_leaves_out_a_note_worth_less_than_its_action() {
         let pv = PlatformVersion::latest();
         let fee = ShieldedSpendFee::Transfer;
-        let fee_for = |actions| shielded_spend_fee(fee, actions, pv).expect("fee formula");
+        let fee_for = |actions| consensus_shielded_fee(fee, actions, pv);
         let notes = [5_000_000_000, 1, 4_000_000_000];
         assert!(
             fee_for(3) - fee_for(2) > 1,
@@ -2974,11 +3000,29 @@ mod tests {
     fn shielded_spend_max_is_zero_when_the_fee_takes_everything() {
         let pv = PlatformVersion::latest();
         let fee = ShieldedSpendFee::Unshield;
-        let minimum_fee = shielded_spend_fee(fee, SHIELDED_SPEND_MIN_ACTIONS, pv).expect("fee");
+        let minimum_fee = consensus_shielded_fee(fee, SHIELDED_SPEND_MIN_ACTIONS, pv);
         assert_eq!(
             shielded_spend_max_credits(&[minimum_fee], fee, pv).ok(),
             Some(0)
         );
         assert_eq!(shielded_spend_max_credits(&[], fee, pv).ok(), Some(0));
+    }
+
+    /// A withdrawal pays out at most the network's per-withdrawal limit, so
+    /// its Max stops there; other private payments have no such limit.
+    #[test]
+    fn shielded_withdrawal_max_stops_at_the_withdrawal_limit() {
+        let pv = PlatformVersion::latest();
+        let limit = pv.system_limits.max_withdrawal_amount;
+        let notes = [limit.saturating_mul(2)];
+        assert_eq!(
+            shielded_spend_max_credits(&notes, ShieldedSpendFee::Withdrawal, pv).ok(),
+            Some(limit)
+        );
+        let fee = ShieldedSpendFee::Transfer;
+        assert_eq!(
+            shielded_spend_max_credits(&notes, fee, pv).ok(),
+            Some(limit * 2 - consensus_shielded_fee(fee, SHIELDED_SPEND_MIN_ACTIONS, pv))
+        );
     }
 }

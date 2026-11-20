@@ -199,4 +199,19 @@ mod tests {
         );
         assert_eq!(SpendLimitKind::ShieldFromPlatform.min_amount_credits(), 1);
     }
+
+    /// Each destination a private payment can reach pays its own fee; an
+    /// identity cannot be paid from the private balance directly.
+    #[test]
+    fn a_private_payment_pays_the_fee_of_its_destination() {
+        use crate::model::address::AddressKind;
+        for (destination, fee) in [
+            (AddressKind::Shielded, Some(ShieldedSpendFee::Transfer)),
+            (AddressKind::Platform, Some(ShieldedSpendFee::Unshield)),
+            (AddressKind::Core, Some(ShieldedSpendFee::Withdrawal)),
+            (AddressKind::Identity, None),
+        ] {
+            assert_eq!(ShieldedSpendFee::for_destination(destination), fee);
+        }
+    }
 }

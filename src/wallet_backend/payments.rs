@@ -2198,20 +2198,10 @@ mod tests {
     fn shielded_spend_max_is_the_largest_amount_note_selection_funds() {
         use crate::model::fee_estimation::SHIELDED_SPEND_MIN_ACTIONS;
         use crate::model::spend_limit::ShieldedSpendFee;
-        use platform_wallet::wallet::shielded::ShieldedNote;
         use platform_wallet::wallet::shielded::note_selection::{
             ShieldedFeeKind, select_notes_with_fee,
         };
         let pv = dash_sdk::dpp::version::PlatformVersion::latest();
-        let note = |value| ShieldedNote {
-            position: 0,
-            cmx: [0; 32],
-            nullifier: rand::random(),
-            block_height: 0,
-            is_spent: false,
-            value,
-            note_data: Vec::new(),
-        };
         let note_sets: [&[u64]; 4] = [
             &[5_000_000_000],
             &[2_000_000_000, 5_000_000_000, 3_000_000_000],
@@ -2219,7 +2209,7 @@ mod tests {
             &[1_000],
         ];
         for values in note_sets {
-            let notes: Vec<_> = values.iter().map(|value| note(*value)).collect();
+            let notes: Vec<_> = values.iter().copied().map(shielded_note).collect();
             for (fee, kind) in [
                 (ShieldedSpendFee::Transfer, ShieldedFeeKind::Base),
                 (ShieldedSpendFee::Unshield, ShieldedFeeKind::Unshield),
@@ -2234,6 +2224,68 @@ mod tests {
                 assert!(!funds(max + 1), "{values:?} {fee:?}: Max {max} + 1");
             }
         }
+    }
+
+    /// An unspent private note worth `value` credits; selection reads only
+    /// its value.
+    fn shielded_note(value: u64) -> platform_wallet::wallet::shielded::ShieldedNote {
+        platform_wallet::wallet::shielded::ShieldedNote {
+            position: 0,
+            cmx: [0; 32],
+            nullifier: rand::random(),
+            block_height: 0,
+            is_spent: false,
+            value,
+            note_data: Vec::new(),
+        }
+    }
+
+    /// Upstream note selection gives up after a few re-selections, so with
+    /// many notes each worth a little more than the fee its action adds it
+    /// cannot reach the model's Max; the quote then falls back to an amount
+    /// the selection funds, at least what the large note alone pays.
+    #[test]
+    fn shielded_spend_max_falls_back_to_what_note_selection_funds() {
+        use crate::model::fee_estimation::{
+            SHIELDED_SPEND_MIN_ACTIONS, shielded_spend_max_credits,
+        };
+        use crate::model::spend_limit::ShieldedSpendFee;
+        use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
+        use platform_wallet::wallet::shielded::note_selection::{
+            ShieldedFeeKind, select_notes_with_fee,
+        };
+        let pv = dash_sdk::dpp::version::PlatformVersion::latest();
+        let fee_of = |actions| compute_minimum_shielded_fee(actions, pv).expect("fee formula");
+        let per_action = fee_of(3) - fee_of(2);
+        const LARGE_NOTE: u64 = 100_000_000_000;
+        let mut values = vec![per_action + per_action / 20; 200];
+        values.push(LARGE_NOTE);
+        let notes: Vec<_> = values.iter().copied().map(shielded_note).collect();
+        let funds = |amount| {
+            select_notes_with_fee(
+                &notes,
+                amount,
+                SHIELDED_SPEND_MIN_ACTIONS,
+                ShieldedFeeKind::Base,
+                pv,
+            )
+            .is_ok()
+        };
+        let model_max = shielded_spend_max_credits(&values, ShieldedSpendFee::Transfer, pv)
+            .expect("fee formula");
+        assert!(
+            !funds(model_max),
+            "precondition: selection gives up before the model's Max {model_max}"
+        );
+
+        let max =
+            super::shielded_spend_max(&notes, ShieldedSpendFee::Transfer, pv).expect("fee formula");
+        assert!(max < model_max, "fallback Max {max}");
+        assert!(funds(max), "the fallback Max {max} is funded");
+        assert!(
+            max >= LARGE_NOTE - fee_of(SHIELDED_SPEND_MIN_ACTIONS),
+            "the fallback Max {max} keeps what the large note alone funds"
+        );
     }
 
     /// Build a payment of `amount` to `recipient` the way the pooled send

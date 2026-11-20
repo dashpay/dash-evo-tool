@@ -1982,6 +1982,14 @@ mod tests {
                 "{error:?}"
             );
             assert!(error.to_string().contains("other accounts"), "{error}");
+            // Also right for a folder owned by another account, not only for
+            // one others may write to.
+            assert!(
+                error
+                    .to_string()
+                    .contains("belong to your account and that only your account can change them"),
+                "{error}"
+            );
         }
     }
 

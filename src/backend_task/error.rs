@@ -804,11 +804,12 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
-    /// The seed vault's folder, or a folder above it, can be changed by other
-    /// accounts, so the vault is refused. Only tightening those folders fixes
-    /// it; the folder and reason travel in `source`.
+    /// The seed vault's folder, or a folder above it, is writable by other
+    /// accounts or owned by one, so the vault is refused. Only fixing those
+    /// folders' permissions or owner helps; the folder and reason travel in
+    /// `source`.
     #[error(
-        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make these folders writable only by your own account, then restart the application."
+        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make sure these folders belong to your account and that only your account can change them, then restart the application."
     )]
     SecretStoreFolderInsecure {
         #[source]

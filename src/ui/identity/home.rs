@@ -134,11 +134,7 @@ pub fn render_header(
                                 )
                                 .clickable_tooltip("Get another username.");
                             add.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    "Add username",
-                                )
+                                egui::WidgetInfo::labeled(egui::Role::Button, true, "Add username")
                             });
                             if add.clicked() {
                                 action = register_action_for(app_context, identity.identity.id());
@@ -451,7 +447,7 @@ fn render_receive(
     state: &mut HomeState,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let response = egui::Modal::new(egui::Id::new("identity_receive")).show(ui.ctx(), |ui| {
+    let response = egui::Modal::new(egui::Id::unique("identity_receive")).show(ui.ctx(), |ui| {
         ui.set_max_width(400.0);
         ui.heading("Receive Dash");
         let name = app_context.main_username(identity);

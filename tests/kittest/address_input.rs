@@ -405,3 +405,36 @@ fn suggestions_stay_closed_after_a_blocking_dialog_closes() {
         "the dialog closed the suggestions"
     );
 }
+
+/// Two inputs in one parent keep their popups apart: opening one input's
+/// address-type filter must not open the other's.
+#[test]
+fn sibling_inputs_open_only_their_own_type_filter() {
+    let filter_input = || {
+        AddressInput::new(Network::Testnet)
+            .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
+            .with_type_filter_dropdown(true)
+    };
+    let inputs = Rc::new(RefCell::new((filter_input(), filter_input())));
+    let ui_inputs = Rc::clone(&inputs);
+    let mut harness =
+        crate::support::allowing_unnamed_widgets(Harness::builder()).build_ui(move |ui| {
+            let mut inputs = ui_inputs.borrow_mut();
+            inputs.0.show(ui);
+            inputs.1.show(ui);
+        });
+    harness.run();
+
+    let first_filter = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the first input's type filter");
+    first_filter.click();
+    harness.run();
+
+    assert_eq!(
+        harness.query_all_by_label("Platform address").count(),
+        1,
+        "only the clicked input's filter may list its options"
+    );
+}

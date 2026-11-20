@@ -12,9 +12,9 @@ use crate::logging::{
 };
 
 fn main() -> ExitCode {
-    // Single owner of dir/env/logger setup; runs again inside `BootApp` boot,
-    // where the logger's `Once` guard makes the repeat a no-op. A failure here
-    // is shown in the startup failure window below.
+    // Single owner of dir/env/logger setup; runs again in the boot steps
+    // below, where the logger's `Once` guard makes the repeat a no-op. A
+    // failure here is shown in the startup failure window.
     let environment = prepare_environment();
     // Redirect stderr into det.log so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
@@ -48,16 +48,15 @@ fn main() -> ExitCode {
     // Boot steps that need no window run first: the window saves its state
     // into the profile only when they succeed, never for a failed launch
     // (e.g. a second instance) that would overwrite another's `app.ron`.
-    let mut preparation = environment.as_ref().ok().map(|_| {
+    let mut startup = {
         let _runtime = runtime.enter();
-        crate::boot::BootPreparation::run()
-    });
+        crate::boot::Startup::prepare(environment)
+    };
 
-    // Run the native application. `environment` and an unused `preparation`
-    // stay here so their errors are still reported if eframe fails before the
-    // app is created.
+    // Run the native application. `startup` stays here so its failure is
+    // still reported if eframe fails before the app is created.
     let outcome = crate::boot::StartupOutcome::default();
-    let result = runtime.block_on(start(&environment, &mut preparation, outcome.clone()));
+    let result = runtime.block_on(start(&mut startup, outcome.clone()));
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
         crate::boot::show_window_failure_dialog();
@@ -66,10 +65,7 @@ fn main() -> ExitCode {
         // Notice to the real terminal, independent of tracing (fd 2 is
         // redirected into det.log, so this writes to the preserved stderr).
         let mut causes: Vec<&dyn std::error::Error> = Vec::new();
-        if let Err(error) = &environment {
-            causes.push(error);
-        }
-        if let Some(error) = preparation.as_ref().and_then(|p| p.error()) {
+        if let Some(error) = startup.error() {
             causes.push(error);
         }
         if let Err(error) = &result {
@@ -97,23 +93,20 @@ fn load_icon() -> egui::IconData {
 }
 
 async fn start(
-    environment: &Result<std::path::PathBuf, crate::boot::PrepareEnvironmentError>,
-    preparation: &mut Option<crate::boot::BootPreparation>,
+    startup: &mut crate::boot::Startup,
     outcome: crate::boot::StartupOutcome,
 ) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
     let native_options = eframe::NativeOptions {
         // Persist window size and position
-        persist_window: preparation
-            .as_ref()
-            .is_some_and(crate::boot::BootPreparation::may_persist),
+        persist_window: startup.persist_window(),
         centered: true, // Center window on startup if not maximized
         // Without a data folder this is None, and eframe 0.37 falls back to its
         // default storage folder: it creates that folder (empty) at start-up.
         // Nothing is written there, because the failure dialog persists no
         // egui memory and window geometry is off (`BootApp::persist_egui_memory`).
-        persistence_path: environment.as_ref().ok().map(|dir| dir.join("app.ron")),
+        persistence_path: startup.persistence_path(),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
             .with_app_id("org.dash.DashEvoTool")
@@ -132,14 +125,6 @@ async fn start(
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
-        Box::new(move |cc| {
-            Ok(Box::new(match (preparation.take(), environment) {
-                (Some(preparation), _) => {
-                    crate::boot::BootApp::start(cc.egui_ctx.clone(), preparation, &outcome)
-                }
-                (None, Err(error)) => crate::boot::BootApp::failed(error, &outcome),
-                (None, Ok(_)) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
-            }))
-        }),
+        Box::new(move |cc| Ok(Box::new(startup.boot(cc.egui_ctx.clone(), &outcome)))),
     )
 }

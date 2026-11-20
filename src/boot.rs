@@ -67,9 +67,10 @@ fn catch_boot_panic<T>(build: impl FnOnce() -> Result<T, BootError>) -> Result<T
 /// initialize logging. Returns the resolved data directory.
 ///
 /// Called from `main` before the tokio runtime starts and again from
-/// [`AppState::boot_inputs`](crate::app::AppState::boot_inputs) inside the
-/// eframe boot; the logger's `Once` guard makes the second call a no-op, so
-/// this stays the single place the sequence is written.
+/// [`AppState::boot_inputs`](crate::app::AppState::boot_inputs) when
+/// [`BootPreparation::run`] runs, still before the window opens; the logger's
+/// `Once` guard makes the second call a no-op, so this stays the single place
+/// the sequence is written.
 pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
     use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
     let data_dir =
@@ -148,7 +149,8 @@ pub enum BootApp {
 }
 
 impl BootApp {
-    /// Build the boot app, opening the seed vault keyless first.
+    /// Run [`BootPreparation`] and build the boot app from it, as tests do;
+    /// `main` prepares before the window opens and uses [`Startup::boot`].
     ///
     /// On success the full [`AppState`] is built immediately. If the keyless
     /// open fails *specifically* with a wrong vault passphrase, this returns
@@ -164,6 +166,9 @@ impl BootApp {
         preparation: BootPreparation,
         outcome: &StartupOutcome,
     ) -> Self {
+        // Every boot outcome, the failure dialog included, keeps selections
+        // out of PRIMARY.
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         Self::guarded(outcome, || {
             preparation
                 .0
@@ -189,7 +194,6 @@ impl BootApp {
         }: Prepared,
         outcome: &StartupOutcome,
     ) -> Result<Self, BootError> {
-        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match decision {
             BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
                 ctx, db, data_dir, store,
@@ -344,14 +348,101 @@ impl BootPreparation {
     }
 
     /// Whether the window may save its state into the profile: only when
-    /// these steps succeeded and this instance holds the vault.
+    /// these steps succeeded and this instance holds the vault. A legacy vault
+    /// waiting for its passphrase is not held, so another launch can reach the
+    /// same prompt.
     pub fn may_persist(&self) -> bool {
-        self.0.is_ok()
+        matches!(
+            self.0,
+            Ok(Prepared {
+                decision: BootDecision::Ready(_),
+                ..
+            })
+        )
     }
 
     /// Why these steps failed, if they did.
     pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.0.as_ref().err().map(|error| &**error as _)
+    }
+}
+
+/// What `main` hands the window: the data folder preparation result and, when
+/// it succeeded, the boot steps that need no window. Decides whether the
+/// window may save into the profile, and keeps any failure reportable on the
+/// terminal if eframe never creates the app.
+pub enum Startup {
+    /// The data folder could not be prepared; nothing else ran.
+    EnvironmentFailed(BootError),
+    /// The data folder at `data_dir` is ready and the boot steps ran.
+    Prepared {
+        data_dir: PathBuf,
+        preparation: BootPreparation,
+    },
+    /// The prepared boot steps were handed to the app.
+    Spent,
+}
+
+/// [`Startup::boot`] called again after the prepared steps were used.
+#[derive(Debug, thiserror::Error)]
+#[error("the startup steps were already used")]
+struct StartupSpent;
+
+impl Startup {
+    /// Run the boot steps when `environment` holds the data folder.
+    pub fn prepare<E>(environment: Result<PathBuf, E>) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        match environment {
+            Ok(data_dir) => Self::Prepared {
+                data_dir,
+                preparation: BootPreparation::run(),
+            },
+            Err(error) => Self::EnvironmentFailed(Box::new(error)),
+        }
+    }
+
+    /// Whether the window may save its geometry and state into the profile.
+    pub fn persist_window(&self) -> bool {
+        matches!(self, Self::Prepared { preparation, .. } if preparation.may_persist())
+    }
+
+    /// The profile file in the data folder, when there is one.
+    pub fn persistence_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Prepared { data_dir, .. } => Some(data_dir.join("app.ron")),
+            Self::EnvironmentFailed(_) | Self::Spent => None,
+        }
+    }
+
+    /// Why startup failed before the app was built, if it did.
+    pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::EnvironmentFailed(error) => Some(&**error as _),
+            Self::Prepared { preparation, .. } => preparation.error(),
+            Self::Spent => None,
+        }
+    }
+
+    /// Build the boot app. Successful steps are handed over and the startup
+    /// becomes [`Self::Spent`]; a failure stays here for the terminal notice.
+    pub fn boot(&mut self, ctx: egui::Context, outcome: &StartupOutcome) -> BootApp {
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
+        match std::mem::replace(self, Self::Spent) {
+            Self::Prepared {
+                preparation: preparation @ BootPreparation(Ok(_)),
+                ..
+            } => BootApp::start(ctx, preparation, outcome),
+            Self::Spent => BootApp::failed(&StartupSpent, outcome),
+            failed => {
+                *self = failed;
+                match self.error() {
+                    Some(error) => BootApp::failed(error, outcome),
+                    None => BootApp::failed(&StartupSpent, outcome),
+                }
+            }
+        }
     }
 }
 
@@ -597,27 +688,16 @@ mod tests {
         assert!(status.success(), "child failed: {status}");
     }
 
-    /// A second launch whose vault another instance holds fails before the
-    /// window opens, so the window gets no permission to save into the shared
-    /// profile, and the boot shows the failure dialog.
-    #[test]
-    fn locked_vault_fails_preparation_without_profile_writes() {
+    /// Runs `f` with `DASH_EVO_DATA_DIR` set to `dir`, serialized with every
+    /// other test that changes it.
+    fn with_data_dir<R>(dir: &std::path::Path, f: impl FnOnce() -> R) -> R {
         let _lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let tmp = tempfile::tempdir().expect("tempdir");
         let prior = std::env::var_os("DASH_EVO_DATA_DIR");
         // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK; restored below.
-        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", tmp.path()) };
-        let first_instance = AppContext::open_secret_store(tmp.path()).expect("first instance");
-
-        let preparation = BootPreparation::run();
-        let may_persist = preparation.may_persist();
-        let reported = preparation.error().is_some();
-        let outcome = StartupOutcome::default();
-        let app = BootApp::start(egui::Context::default(), preparation, &outcome);
-
-        drop(first_instance);
+        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", dir) };
+        let result = f();
         // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK.
         unsafe {
             match prior {
@@ -625,15 +705,97 @@ mod tests {
                 None => std::env::remove_var("DASH_EVO_DATA_DIR"),
             }
         }
+        result
+    }
+
+    /// A healthy launch lets the window save into the profile in the data
+    /// folder.
+    #[test]
+    fn healthy_startup_persists_into_the_data_folder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        AppContext::open_secret_store(tmp.path()).expect("create keyless vault");
+        let startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        assert!(startup.persist_window());
+        assert_eq!(startup.persistence_path(), Some(tmp.path().join("app.ron")));
+        assert!(startup.error().is_none());
+    }
+
+    /// A second launch whose vault another instance holds fails before the
+    /// window opens: no profile writes, the failure stays reportable without a
+    /// window, and the boot shows the failure dialog with the selection guard.
+    #[test]
+    fn locked_vault_fails_preparation_without_profile_writes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first_instance = AppContext::open_secret_store(tmp.path()).expect("first instance");
+        let mut startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        drop(first_instance);
+
         assert!(
-            !may_persist,
+            !startup.persist_window(),
             "a failed preparation must not let the window save"
         );
         assert!(
-            reported,
-            "main must be able to report the failure without a window"
+            startup.error().is_some(),
+            "main must be able to report it without a window"
         );
+        let ctx = egui::Context::default();
+        let outcome = StartupOutcome::default();
+        let app = startup.boot(ctx.clone(), &outcome);
         assert!(matches!(app, BootApp::Failed(_)));
+        assert!(outcome.failed());
+        assert!(
+            ctx.plugin_opt::<crate::ui::primary_selection_guard::PrimarySelectionGuard>()
+                .is_some(),
+            "the failure dialog must not leak selections to PRIMARY"
+        );
+        assert!(
+            startup.error().is_some(),
+            "the error stays for the terminal notice"
+        );
+    }
+
+    /// A data folder that could not be prepared shows the failure dialog and
+    /// stays reportable; nothing is saved.
+    #[test]
+    fn environment_failure_shows_the_dialog_without_profile_writes() {
+        let mut startup = Startup::prepare(Err::<PathBuf, _>(std::io::Error::other("no folder")));
+        assert!(!startup.persist_window());
+        assert_eq!(startup.persistence_path(), None);
+        let outcome = StartupOutcome::default();
+        assert!(matches!(
+            startup.boot(egui::Context::default(), &outcome),
+            BootApp::Failed(_)
+        ));
+        assert!(startup.error().is_some());
+    }
+
+    /// A legacy passphrase vault holds no lock at the unlock prompt, so two
+    /// launches could both reach it: the window must not save in that state.
+    #[test]
+    fn legacy_vault_prompt_does_not_persist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+            .expect("create passphrase vault");
+        let startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        assert!(startup.error().is_none());
+        assert!(!startup.persist_window());
+    }
+
+    /// Booting the prepared steps a second time never runs them again: it
+    /// shows the failure dialog instead.
+    #[test]
+    fn spent_startup_does_not_prepare_again() {
+        let outcome = StartupOutcome::default();
+        assert!(matches!(
+            Startup::Spent.boot(egui::Context::default(), &outcome),
+            BootApp::Failed(_)
+        ));
         assert!(outcome.failed());
     }
 

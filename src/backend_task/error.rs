@@ -1660,12 +1660,44 @@ pub enum TaskError {
         source: crate::boot::PrepareEnvironmentError,
     },
 
-    /// The app data folder or its settings file could not be prepared for
-    /// another reason; `source` names the step and the path.
+    /// The app data folder's location could not be determined: the account
+    /// has no home folder.
     #[error(
-        "Could not access local files. Check available disk space and restart the application."
+        "Dash Evo Tool could not find a place for its data because your user account has no home folder. Sign in with an account that has one, or set DASH_EVO_DATA_DIR to a folder you can change, then start the application again."
+    )]
+    DataFolderNotFound {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// A file or link occupies the app data folder's place.
+    #[error(
+        "The app data location {path} is a file or a link, not a folder. Move or rename it, then start the application again.",
+        path = .path.display()
+    )]
+    DataFolderNotADirectory {
+        path: std::path::PathBuf,
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The disk holding the app data folder is full.
+    #[error(
+        "There is not enough free disk space for the app data. Free up some space, then start the application again."
+    )]
+    DataFolderDiskFull {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app data folder or its settings file at `path` could not be
+    /// prepared for another reason; `source` names the step.
+    #[error(
+        "Dash Evo Tool could not prepare its data at {path}. Check that this location exists and that you can change it, then start the application again.",
+        path = .path.display()
     )]
     DataFolderSetupFailed {
+        path: std::path::PathBuf,
         #[source]
         source: crate::boot::PrepareEnvironmentError,
     },
@@ -3775,13 +3807,37 @@ impl TaskError {
         }
     }
 
-    /// A failure to prepare the app data folder: permission and read-only
-    /// problems get [`Self::DataFolderAccessDenied`], the rest
-    /// [`Self::DataFolderSetupFailed`]. Both keep the failed step as source.
+    /// A failure to prepare the app data folder, with advice for its step and
+    /// kind: access problems, a full disk, no home folder, a file in the
+    /// folder's place, or [`Self::DataFolderSetupFailed`] for anything else.
+    /// Every variant keeps the failed step as source.
     pub fn from_prepare_environment_error(source: crate::boot::PrepareEnvironmentError) -> Self {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::ErrorKind;
         match StorageFailure::of_io(source.io_error()) {
-            Some(StorageFailure::AccessDenied) => Self::DataFolderAccessDenied { source },
-            _ => Self::DataFolderSetupFailed { source },
+            Some(StorageFailure::AccessDenied) => return Self::DataFolderAccessDenied { source },
+            Some(StorageFailure::Full) => return Self::DataFolderDiskFull { source },
+            _ => {}
+        }
+        match &source {
+            Step::Locate { .. } => Self::DataFolderNotFound { source },
+            Step::CreateDataFolder { path, source: io }
+                if matches!(
+                    io.kind(),
+                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
+                ) =>
+            {
+                Self::DataFolderNotADirectory {
+                    path: path.clone(),
+                    source,
+                }
+            }
+            Step::CreateDataFolder { path, .. } | Step::WriteSettingsFile { path, .. } => {
+                Self::DataFolderSetupFailed {
+                    path: path.clone(),
+                    source,
+                }
+            }
         }
     }
 
@@ -5041,29 +5097,72 @@ mod tests {
     /// file failure keeps the general one.
     #[test]
     fn data_folder_errors_name_permission_problems() {
-        let settings_file = |kind| crate::boot::PrepareEnvironmentError::WriteSettingsFile {
-            path: std::path::PathBuf::from("/data/.env"),
-            source: std::io::Error::from(kind),
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        use std::path::PathBuf;
+        let settings_file = |kind| Step::WriteSettingsFile {
+            path: PathBuf::from("/data/.env"),
+            source: Error::from(kind),
         };
-        for kind in [
-            std::io::ErrorKind::PermissionDenied,
-            std::io::ErrorKind::ReadOnlyFilesystem,
-        ] {
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
             assert!(matches!(
                 TaskError::from_prepare_environment_error(settings_file(kind)),
                 TaskError::DataFolderAccessDenied { .. }
             ));
         }
-        let other =
-            TaskError::from_prepare_environment_error(settings_file(std::io::ErrorKind::NotFound));
+        let other = TaskError::from_prepare_environment_error(settings_file(ErrorKind::NotFound));
         assert!(
             matches!(other, TaskError::DataFolderSetupFailed { .. }),
             "{other:?}"
         );
+        assert!(other.to_string().contains("/data/.env"), "{other}");
+        assert!(!other.to_string().contains("disk space"), "{other}");
         assert!(
             format!("{other:?}").contains("WriteSettingsFile"),
             "{other:?}"
         );
+    }
+
+    /// Each data folder step and failure kind gets advice that can fix it:
+    /// no home folder, a file in the folder's place, a full disk.
+    #[test]
+    fn data_folder_errors_give_step_specific_advice() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        use std::path::PathBuf;
+
+        let locate = TaskError::from_prepare_environment_error(Step::Locate {
+            source: Error::from(ErrorKind::NotFound),
+        });
+        assert!(
+            matches!(locate, TaskError::DataFolderNotFound { .. }),
+            "{locate:?}"
+        );
+        assert!(locate.to_string().contains("home folder"), "{locate}");
+
+        let occupied = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+            path: PathBuf::from("/data/det"),
+            source: Error::from(ErrorKind::InvalidInput),
+        });
+        assert!(
+            matches!(occupied, TaskError::DataFolderNotADirectory { .. }),
+            "{occupied:?}"
+        );
+        assert!(occupied.to_string().contains("/data/det"), "{occupied}");
+        assert!(
+            occupied.to_string().contains("Move or rename"),
+            "{occupied}"
+        );
+
+        let full = TaskError::from_prepare_environment_error(Step::WriteSettingsFile {
+            path: PathBuf::from("/data/.env"),
+            source: Error::from(ErrorKind::StorageFull),
+        });
+        assert!(
+            matches!(full, TaskError::DataFolderDiskFull { .. }),
+            "{full:?}"
+        );
+        assert!(full.to_string().contains("disk space"), "{full}");
     }
 
     /// A database the app may not open or write (read-only, no permission,

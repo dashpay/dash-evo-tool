@@ -838,6 +838,9 @@ impl WalletBackend {
             }
             SpendLimitKind::ShieldedSpend { fee } => {
                 use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+                // As for a shield from Platform: the UI keys this quote on the
+                // revision it read before dispatch.
+                self.private_spend_quote_key(seed_hash)?;
                 let coordinator = self.shielded_coordinator_arc().await?;
                 // The account every private payment spends from.
                 let id = SubwalletId {
@@ -3448,6 +3451,34 @@ mod tests {
         assert!(
             !matches!(settled, Err(TaskError::SpendInProgress)),
             "{settled:?}"
+        );
+    }
+
+    /// A payment from the private balance reserves notes the displayed
+    /// balance keeps showing, so while one is in flight no private Max is
+    /// quoted, and its key moves when the payment opens and when it settles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_private_max_is_quoted_while_a_private_payment_is_in_flight() {
+        let (_dir, _ctx, backend, seed_hash, _platform_wallet) =
+            backend_with_registered_wallet().await;
+        let kind = crate::model::spend_limit::SpendLimitKind::ShieldedSpend {
+            fee: crate::model::spend_limit::ShieldedSpendFee::Transfer,
+        };
+        let idle_key = backend.private_spend_quote_revision(&seed_hash);
+        let idle = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(!matches!(idle, Err(TaskError::SpendInProgress)), "{idle:?}");
+
+        let paying = backend.begin_private_spend(&seed_hash);
+        let busy = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(matches!(busy, Err(TaskError::SpendInProgress)), "{busy:?}");
+        let in_flight_key = backend.private_spend_quote_revision(&seed_hash);
+        assert_ne!(in_flight_key, idle_key, "opening a payment moves the key");
+        drop(paying);
+
+        assert_ne!(
+            backend.private_spend_quote_revision(&seed_hash),
+            in_flight_key,
+            "settling a payment moves the key"
         );
     }
 

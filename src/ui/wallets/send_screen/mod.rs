@@ -1072,13 +1072,18 @@ impl WalletSendScreen {
                 self.core_send_limit_kind(),
                 self.app_context.core_send_quote_revision(&seed_hash),
             )),
-            // A payment changes the private balance, so it re-keys the quote.
+            // A payment in flight reserves notes the balance keeps showing, so
+            // its opening and settling re-key the quote, as balance changes do.
             (SourceSelection::Shielded(_, balance), Some(destination)) => Some((
                 seed_hash,
                 SpendLimitKind::ShieldedSpend {
                     fee: ShieldedSpendFee::for_destination(destination)?,
                 },
-                *balance,
+                *balance
+                    ^ self
+                        .app_context
+                        .private_spend_quote_revision(&seed_hash)
+                        .rotate_left(32),
             )),
             _ => None,
         }
@@ -6806,6 +6811,68 @@ mod tests {
         assert_ne!(
             after, before,
             "at the same balances, a quote from before the shield stays stale"
+        );
+    }
+
+    /// A payment from the private balance by another screen or tool reserves
+    /// notes while the displayed balance stays put, so a private Max quoted
+    /// before it is not offered while it runs, nor after it settles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_private_payment_in_flight_makes_the_cached_private_max_stale() {
+        const BALANCE_CREDITS: u64 = 300_000_000_000;
+        const QUOTE_CREDITS: u64 = 299_000_000_000;
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, BALANCE_CREDITS);
+        let destination = ValidatedAddress::Core(testnet_core_address(47));
+        screen.selected_source = Some(source.clone());
+        screen.validated_destination = Some(destination.clone());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(16);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                egui::Context::default(),
+            ))
+            .await
+            .expect("wallet backend");
+        let backend = screen.app_context.wallet_backend().expect("wallet backend");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("a private payment must ask for the wallet's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+        let max = |screen: &WalletSendScreen| {
+            screen
+                .amount_limits_for(&source, Some(&destination))
+                .max_credits
+        };
+        assert_eq!(max(&screen), Some(QUOTE_CREDITS), "precondition: quoted");
+
+        let paying = backend.begin_private_spend(&seed_hash);
+        assert_eq!(
+            max(&screen),
+            None,
+            "a quote from before the payment is stale"
+        );
+        drop(paying);
+        assert_eq!(
+            max(&screen),
+            None,
+            "at the same balance, a quote from before the payment stays stale"
         );
     }
 

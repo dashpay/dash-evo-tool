@@ -16,6 +16,8 @@ fn request_settings() -> RequestSettings {
         timeout: Some(Duration::from_secs(10)),
         retries: Some(6),
         ban_failed_address: Some(true),
+        // Upstream default (ban); requests to tightly limited methods opt out.
+        ban_busy_address: None,
         max_decoding_message_size: None,
     }
 }
@@ -59,17 +61,22 @@ mod tests {
     };
     use dash_sdk::error::ContextProviderError;
 
-    /// Pins the pinned SDK's behaviour that makes pre-sync proof reads harmful:
-    /// the context provider's "masternode list not ready" answer surfaces as a
-    /// retryable proof error, and DET's settings ban the node it came from.
-    /// Screens must therefore not send proof-verifying reads before readiness.
-    /// If an SDK upgrade stops this ban, the read gates can be relaxed.
+    /// A proof-verifying read sent before the masternode list has synced.
+    /// The provider answers "not ready", the proof verifier reports that the
+    /// quorum key is unavailable, and the SDK's conversion turns that into a
+    /// provider configuration error: DET reports it as the readiness wait
+    /// that clears when sync catches up, and the SDK bans no node for a
+    /// failure that is local. The error is built through that conversion, so
+    /// a change in what the SDK returns shows up here.
     #[test]
-    fn a_proof_read_before_masternodes_are_ready_bans_the_node() {
+    fn a_proof_read_before_masternodes_are_ready_is_a_readiness_wait_and_bans_no_node() {
         let not_ready = || {
-            dash_sdk::Error::Proof(ProofVerifierError::ContextProviderError(
-                ContextProviderError::Config(MASTERNODE_LIST_NOT_READY_DETAIL.to_string()),
-            ))
+            dash_sdk::Error::from(ProofVerifierError::QuorumKeyUnavailable {
+                quorum_type: 6,
+                quorum_hash: [0x51; 32],
+                core_chain_locked_height: 1_000,
+                error: ContextProviderError::Config(MASTERNODE_LIST_NOT_READY_DETAIL.to_string()),
+            })
         };
         assert!(
             matches!(
@@ -84,14 +91,15 @@ mod tests {
         addresses.add(address.clone());
         assert!(!addresses.is_banned(&address));
         let result: ExecutionResult<(), dash_sdk::Error> = Err(ExecutionError {
+            possibly_accepted: false,
             inner: not_ready(),
             retries: 0,
             address: Some(address.clone()),
         });
         update_address_ban_status(&addresses, &result, &request_settings().finalize());
         assert!(
-            addresses.is_banned(&address),
-            "the SDK bans a healthy node for a local readiness failure"
+            !addresses.is_banned(&address),
+            "a local readiness failure must not ban the node that answered"
         );
     }
 }

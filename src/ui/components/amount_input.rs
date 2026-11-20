@@ -159,7 +159,8 @@ impl AmountInput {
         self.unit_name.as_deref()
     }
 
-    /// Sets the label for the input field.
+    /// Sets the label shown before the field; it also names the field for screen
+    /// readers, which otherwise hear "Amount".
     pub fn with_label<T: Into<WidgetText>>(mut self, label: T) -> Self {
         self.label = Some(label.into());
         self
@@ -337,9 +338,7 @@ impl AmountInput {
                     ui.set_min_height(30.0);
                 }
                 // Show label if provided
-                if let Some(label) = &self.label {
-                    ui.label(label.clone());
-                }
+                let label_id = self.label.as_ref().map(|label| ui.label(label.clone()).id);
                 // Create the text edit widget
                 let mut text_edit = TextEdit::singleline(&mut self.amount_str);
 
@@ -354,6 +353,10 @@ impl AmountInput {
                 }
 
                 let text_response = ui.add(text_edit);
+                let text_response = match label_id {
+                    Some(label_id) => text_response.labelled_by(label_id),
+                    None => text_response.accessible_name("Amount"),
+                };
 
                 let mut changed = text_response.changed() && ui.is_enabled();
 

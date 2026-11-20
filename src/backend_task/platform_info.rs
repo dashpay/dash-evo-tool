@@ -11,7 +11,6 @@ use dash_sdk::dpp::block::extended_epoch_info::{
     ExtendedEpochInfo, v0::ExtendedEpochInfoV0Getters,
 };
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::{

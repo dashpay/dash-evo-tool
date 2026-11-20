@@ -53,17 +53,17 @@ pub const PROFILE_SAVED: &str = "Your social profile is saved.";
 const PROFILE_SAVING_OWNER_ID: &str = "__profile_saving_owner";
 
 pub(crate) fn show_profile_saving_banner(ctx: &egui::Context, identity_id: Identifier) {
-    ctx.data_mut(|data| data.insert_temp(Id::new(PROFILE_SAVING_OWNER_ID), identity_id));
+    ctx.data_mut(|data| data.insert_temp(Id::unique(PROFILE_SAVING_OWNER_ID), identity_id));
     MessageBanner::set_global(ctx, PROFILE_SAVING, MessageType::Info).disable_auto_dismiss();
 }
 
 pub(crate) fn clear_profile_saving_banner(ctx: &egui::Context, identity_id: &Identifier) {
-    let owner = ctx.data(|data| data.get_temp::<Identifier>(Id::new(PROFILE_SAVING_OWNER_ID)));
+    let owner = ctx.data(|data| data.get_temp::<Identifier>(Id::unique(PROFILE_SAVING_OWNER_ID)));
     if owner.as_ref() != Some(identity_id) {
         return;
     }
     MessageBanner::clear_global_message(ctx, PROFILE_SAVING);
-    ctx.data_mut(|data| data.remove::<Identifier>(Id::new(PROFILE_SAVING_OWNER_ID)));
+    ctx.data_mut(|data| data.remove::<Identifier>(Id::unique(PROFILE_SAVING_OWNER_ID)));
 }
 /// Guidance for updating the profile photo by URL.
 const AVATAR_URL_HINT: &str = "Paste a direct link to a public image, then choose \"Save social profile\" to update your photo. A square JPEG or PNG of at least 256×256 pixels is recommended.";
@@ -292,7 +292,7 @@ impl SettingsTab {
                 // Remember open state across frames via a stable id so a test
                 // that clicks the header keeps it open for the next step.
                 let resp = egui::CollapsingHeader::new(header)
-                    .id_salt(Id::new("identity_hub_settings_advanced"))
+                    .id_salt("identity_hub_settings_advanced")
                     .default_open(self.advanced_open)
                     .open(self.focus_advanced.then_some(true))
                     .show(ui, |ui| {

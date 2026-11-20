@@ -281,7 +281,8 @@ pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
         .read()
         .expect("context provider lock")
         .clone();
-    sdk.set_context_provider(provider);
+    sdk.set_context_provider(provider)
+        .expect("a provider that declares no network pairs with any SDK");
     sdk
 }
 
@@ -299,7 +300,8 @@ pub(crate) fn mock_sdk_at_for(ctx: &AppContext, protocol_version: u32) -> Sdk {
         .read()
         .expect("context provider lock")
         .clone();
-    sdk.set_context_provider(provider);
+    sdk.set_context_provider(provider)
+        .expect("a provider that declares no network pairs with any SDK");
     sdk
 }
 

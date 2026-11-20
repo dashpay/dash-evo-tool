@@ -700,7 +700,8 @@ mod tests {
                         ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
                     allow_include_locked_and_abstaining_vote_tally: true,
                     start_at: None,
-                    limit: None,
+                    // The SDK reads the vote state in pages of this size.
+                    limit: Some(dash_sdk::drive::config::DEFAULT_QUERY_LIMIT),
                     offset: None,
                 },
                 Some(Contenders {
@@ -894,7 +895,8 @@ mod tests {
                         ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
                     allow_include_locked_and_abstaining_vote_tally: true,
                     start_at: None,
-                    limit: None,
+                    // The SDK reads the vote state in pages of this size.
+                    limit: Some(dash_sdk::drive::config::DEFAULT_QUERY_LIMIT),
                     offset: None,
                 },
                 Some(Contenders {

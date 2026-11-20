@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     // where the logger's `Once` guard makes the repeat a no-op. A failure here
     // is shown in the startup failure window below.
     let environment = prepare_environment()
-        .map_err(crate::backend_task::error::TaskError::from_data_folder_error);
+        .map_err(crate::backend_task::error::TaskError::from_prepare_environment_error);
     // Redirect stderr into det.log so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio
@@ -46,10 +46,19 @@ fn main() -> ExitCode {
         }
     };
 
-    // Run the native application. `environment` stays here so its error is
-    // still reported if eframe fails before the app is created.
+    // Boot steps that need no window run first: the window saves its state
+    // into the profile only when they succeed, never for a failed launch
+    // (e.g. a second instance) that would overwrite another's `app.ron`.
+    let mut preparation = environment.as_ref().ok().map(|_| {
+        let _runtime = runtime.enter();
+        crate::boot::BootPreparation::run()
+    });
+
+    // Run the native application. `environment` and an unused `preparation`
+    // stay here so their errors are still reported if eframe fails before the
+    // app is created.
     let outcome = crate::boot::StartupOutcome::default();
-    let result = runtime.block_on(start(&environment, outcome.clone()));
+    let result = runtime.block_on(start(&environment, &mut preparation, outcome.clone()));
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
     }
@@ -58,6 +67,9 @@ fn main() -> ExitCode {
         // redirected into det.log, so this writes to the preserved stderr).
         let mut causes: Vec<&dyn std::error::Error> = Vec::new();
         if let Err(error) = &environment {
+            causes.push(error);
+        }
+        if let Some(error) = preparation.as_ref().and_then(|p| p.error()) {
             causes.push(error);
         }
         if let Err(error) = &result {
@@ -86,14 +98,16 @@ fn load_icon() -> egui::IconData {
 
 async fn start(
     environment: &Result<std::path::PathBuf, crate::backend_task::error::TaskError>,
+    preparation: &mut Option<crate::boot::BootPreparation>,
     outcome: crate::boot::StartupOutcome,
 ) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
-
     let native_options = eframe::NativeOptions {
         // Persist window size and position
-        persist_window: environment.is_ok(),
+        persist_window: preparation
+            .as_ref()
+            .is_some_and(crate::boot::BootPreparation::may_persist),
         centered: true, // Center window on startup if not maximized
         // Without a data folder this is None, and eframe 0.37 falls back to its
         // default storage folder: it creates that folder (empty) at start-up.
@@ -119,9 +133,12 @@ async fn start(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(match environment {
-                Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
-                Err(error) => crate::boot::BootApp::failed(error, &outcome),
+            Ok(Box::new(match (preparation.take(), environment) {
+                (Some(preparation), _) => {
+                    crate::boot::BootApp::start(cc.egui_ctx.clone(), preparation, &outcome)
+                }
+                (None, Err(error)) => crate::boot::BootApp::failed(error, &outcome),
+                (None, Ok(_)) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
             }))
         }),
     )

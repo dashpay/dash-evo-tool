@@ -30,7 +30,7 @@ use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
 #[cfg(feature = "testing")]
-use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
+use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -867,11 +867,11 @@ impl AppState {
     #[cfg(not(feature = "testing"))]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir =
-            crate::boot::prepare_environment().map_err(TaskError::from_data_folder_error)?;
+        let data_dir = crate::boot::prepare_environment()
+            .map_err(TaskError::from_prepare_environment_error)?;
         let db_file_path =
             data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)
-                .map_err(TaskError::from_data_folder_error)?;
+                .map_err(|source| TaskError::FileSystem { source })?;
         let database_error = TaskError::from_database_open_error;
         let db = if db_file_path.exists() {
             Arc::new(Database::open_legacy_read_only(&db_file_path).map_err(database_error)?)
@@ -888,7 +888,7 @@ impl AppState {
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
-        ensure_env_file(&data_dir)?;
+        crate::boot::ensure_settings_file(&data_dir)?;
 
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()

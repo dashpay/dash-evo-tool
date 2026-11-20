@@ -1657,7 +1657,17 @@ pub enum TaskError {
     #[error("{DATA_FOLDER_ACCESS_DENIED}")]
     DataFolderAccessDenied {
         #[source]
-        source: std::io::Error,
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app data folder or its settings file could not be prepared for
+    /// another reason; `source` names the step and the path.
+    #[error(
+        "Could not access local files. Check available disk space and restart the application."
+    )]
+    DataFolderSetupFailed {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
     },
 
     /// The app may not open or write its database in the data folder: same
@@ -3765,13 +3775,13 @@ impl TaskError {
         }
     }
 
-    /// A failure to prepare or use the app data folder: permission and
-    /// read-only problems get [`Self::DataFolderAccessDenied`], the rest
-    /// [`Self::FileSystem`].
-    pub fn from_data_folder_error(source: std::io::Error) -> Self {
-        match StorageFailure::of_io(&source) {
+    /// A failure to prepare the app data folder: permission and read-only
+    /// problems get [`Self::DataFolderAccessDenied`], the rest
+    /// [`Self::DataFolderSetupFailed`]. Both keep the failed step as source.
+    pub fn from_prepare_environment_error(source: crate::boot::PrepareEnvironmentError) -> Self {
+        match StorageFailure::of_io(source.io_error()) {
             Some(StorageFailure::AccessDenied) => Self::DataFolderAccessDenied { source },
-            _ => Self::FileSystem { source },
+            _ => Self::DataFolderSetupFailed { source },
         }
     }
 
@@ -5031,19 +5041,29 @@ mod tests {
     /// file failure keeps the general one.
     #[test]
     fn data_folder_errors_name_permission_problems() {
+        let settings_file = |kind| crate::boot::PrepareEnvironmentError::WriteSettingsFile {
+            path: std::path::PathBuf::from("/data/.env"),
+            source: std::io::Error::from(kind),
+        };
         for kind in [
             std::io::ErrorKind::PermissionDenied,
             std::io::ErrorKind::ReadOnlyFilesystem,
         ] {
             assert!(matches!(
-                TaskError::from_data_folder_error(std::io::Error::from(kind)),
+                TaskError::from_prepare_environment_error(settings_file(kind)),
                 TaskError::DataFolderAccessDenied { .. }
             ));
         }
-        assert!(matches!(
-            TaskError::from_data_folder_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
-            TaskError::FileSystem { .. }
-        ));
+        let other =
+            TaskError::from_prepare_environment_error(settings_file(std::io::ErrorKind::NotFound));
+        assert!(
+            matches!(other, TaskError::DataFolderSetupFailed { .. }),
+            "{other:?}"
+        );
+        assert!(
+            format!("{other:?}").contains("WriteSettingsFile"),
+            "{other:?}"
+        );
     }
 
     /// A database the app may not open or write (read-only, no permission,
@@ -5054,7 +5074,9 @@ mod tests {
         use rusqlite::ffi;
         let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
         let folder_message = TaskError::DataFolderAccessDenied {
-            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            source: crate::boot::PrepareEnvironmentError::Locate {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            },
         }
         .to_string();
         for code in [

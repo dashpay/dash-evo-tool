@@ -7,7 +7,9 @@ validated narration, fonts, private profiles and rendered deliveries stay outsid
 Git. A fresh checkout can plan narration, generate branded slides and assemble
 newly supplied footage; it cannot recreate live blockchain outcomes from source.
 
-Chad G. P. Taylor uses **Cedar**; Ewa Dashwood uses **Nova**. Narration uses the
+Chad G. P. Taylor uses **Cedar**; Ewa Dashwood uses **Nova**. These voices are
+declared under `speakers` in `dialogue.json`; narration planning, reuse and media
+validation all use those declarations. Narration uses the
 remote `gpt-audio-1.5` service; there are no local model weights. The default mode
 of each narration CLI is offline. `--execute` is an explicit paid operation.
 Do not execute narration merely to check this toolkit.

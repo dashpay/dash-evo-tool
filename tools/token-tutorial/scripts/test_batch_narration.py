@@ -20,6 +20,10 @@ def script(tmp_path):
     source.write_text(
         json.dumps(
             {
+                "speakers": {
+                    "teacher": {"name": "Teacher", "voice": "cedar"},
+                    "learner": {"name": "Learner", "voice": "nova"},
+                },
                 "scenes": [
                     {
                         "id": "00",
@@ -327,3 +331,21 @@ def test_plain_flag_does_not_retry_failed_until_explicit_selection(
     assert Path(old_attempt["request_path"]).read_bytes() == old_request
     assert Path(old_attempt["response_path"]).read_bytes() == old_response
     assert result["jobs"][0]["attempts"][-1]["id"] != old_attempt["id"]
+
+
+def test_jobs_use_the_declared_speaker_voices(script, tmp_path):
+    doc = json.loads(script.read_text())
+    doc["speakers"]["teacher"]["voice"] = "ash"
+    jobs = batch.expand(doc, tmp_path)
+    assert {(job["speaker"], job["voice"]) for job in jobs} == {
+        ("teacher", "ash"),
+        ("learner", "nova"),
+    }
+
+
+@pytest.mark.parametrize("declared", [None, "unknown-voice"])
+def test_missing_or_unsupported_declared_voice_is_refused(script, tmp_path, declared):
+    doc = json.loads(script.read_text())
+    doc["speakers"]["learner"]["voice"] = declared
+    with pytest.raises(ValueError, match="voice"):
+        batch.expand(doc, tmp_path)

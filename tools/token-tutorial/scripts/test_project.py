@@ -148,3 +148,37 @@ def test_historical_media_remains_archival_and_rejects_current_source(tmp_path):
         project.reuse(source, tmp_path / "must-not-reuse", archive)
     assert not (tmp_path / "must-not-reuse").exists()
     assert "00:00:03,000 -->" in subtitles.read_text()
+
+
+def test_declared_voice_change_rejects_the_old_take(tmp_path, monkeypatch):
+    source = scenario(tmp_path)
+    original = json.loads(source.read_text())
+    text = original["scenes"][0]["turns"][0]["text"]
+    old_script = tmp_path / "old.txt"
+    old_script.write_text(text + "\n")
+    ready = voice.generate_take(
+        old_script,
+        tmp_path / "take",
+        voice="cedar",
+        key_loader=lambda: "fake",
+        requester=lambda *_: response(transcript=text),
+    )
+    media = tmp_path / "old-media.json"
+    media.write_text(
+        json.dumps(
+            {
+                "scenario": str(source),
+                "scenario_sha256": project.batch.digest(source.read_bytes()),
+                "segments": {"00": {"audio": [str(ready / "audio.wav")]}},
+            }
+        )
+    )
+    original["speakers"]["teacher"]["voice"] = "ash"
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps(original))
+    monkeypatch.setattr(
+        voice, "request_audio", lambda *_: pytest.fail("Paid API access")
+    )
+    result = project.reuse(changed, tmp_path / "reused", media)
+    assert result["reused"] == []
+    assert result["rejected"]["scene-00-turn-00"]

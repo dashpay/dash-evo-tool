@@ -28,8 +28,6 @@ def run():
     media.init_manifest(scenario_path, manifest_path)
     manifest = media.read_json(manifest_path)
     manifest.update(
-        teacher_voice="cedar",
-        learner_voice="nova",
         synthetic_test=True,
         turn_gap_seconds=0.03,
         credits=str(root / "assets/ATTRIBUTION.txt"),
@@ -95,7 +93,7 @@ def run():
             (ready / "metadata.json").write_text(
                 json.dumps(
                     {
-                        "voice": "cedar" if turn["speaker"] == "teacher" else "nova",
+                        "voice": scenario["speakers"][turn["speaker"]]["voice"],
                         "validation": "passed",
                         "synthetic_test": True,
                         "audio_sha256": hashlib.sha256(tone.read_bytes()).hexdigest(),

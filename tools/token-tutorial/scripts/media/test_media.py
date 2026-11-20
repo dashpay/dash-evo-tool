@@ -371,3 +371,41 @@ def test_concat_listing_handles_apostrophes_and_spaces(media, tmp_path):
         check=True,
         capture_output=True,
     )
+
+
+def test_media_voice_check_follows_the_declared_speaker_voice(media, tmp_path):
+    import hashlib
+    import json
+    import shutil
+
+    scenario = tmp_path / "dialogue.json"
+    document = media.read_json(
+        Path(__file__).resolve().parents[2] / "scenario/dialogue.json"
+    )
+    document["speakers"]["teacher"]["voice"] = "ash"
+    scenario.write_text(json.dumps(document))
+    manifest_path = tmp_path / "media.json"
+    media.init_manifest(scenario, manifest_path)
+    manifest = media.read_json(manifest_path)
+    ready = tmp_path / "take/ready"
+    ready.mkdir(parents=True)
+    text = document["scenes"][0]["turns"][0]["text"]
+    (ready / "script.txt").write_text(text + "\n")
+    (ready / "transcript.txt").write_text(text)
+    shutil.copyfile(manifest["credits"], ready / "audio.wav")
+    (ready / "metadata.json").write_text(
+        json.dumps(
+            {
+                "voice": "cedar",
+                "validation": "passed",
+                "audio_sha256": hashlib.sha256(
+                    (ready / "audio.wav").read_bytes()
+                ).hexdigest(),
+                "script_sha256": hashlib.sha256((text + "\n").encode()).hexdigest(),
+            }
+        )
+    )
+    manifest["segments"]["00"]["audio"][0] = str(ready / "audio.wav")
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="voice"):
+        media.load_plan(manifest_path)

@@ -17,7 +17,6 @@ import uuid
 import openai_voice as voice
 
 ROOT = Path(__file__).resolve().parents[1]
-VOICES = {"teacher": "cedar", "learner": "nova"}
 BASELINE_USD = 0.0
 
 
@@ -59,6 +58,12 @@ def coordinator_lock(root):
 
 
 def expand(document, root):
+    voices = {
+        speaker: profile.get("voice")
+        for speaker, profile in document["speakers"].items()
+    }
+    if any(declared not in voice.VOICES for declared in voices.values()):
+        raise ValueError("Every speaker needs a supported declared voice")
     jobs = []
     for scene in document["scenes"]:
         if not re.fullmatch(r"\d{2}", scene["id"]):
@@ -67,7 +72,7 @@ def expand(document, root):
             raise ValueError("A scene has no turns")
         for index, turn in enumerate(scene["turns"]):
             speaker, text = turn["speaker"], turn["text"]
-            if speaker not in VOICES or not isinstance(text, str) or not text.strip():
+            if speaker not in voices or not isinstance(text, str) or not text.strip():
                 raise ValueError(
                     "Every turn needs a supported speaker and nonempty text"
                 )
@@ -78,7 +83,7 @@ def expand(document, root):
                     "scene_id": scene["id"],
                     "turn_index": index,
                     "speaker": speaker,
-                    "voice": VOICES[speaker],
+                    "voice": voices[speaker],
                     "text": text,
                     "text_sha256": digest((text + "\n").encode()),
                     "source_path": str(root / "sources" / f"{job_id}.txt"),

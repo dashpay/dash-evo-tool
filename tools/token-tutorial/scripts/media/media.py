@@ -15,7 +15,7 @@ import textwrap
 import wave
 
 FPS = 30
-VOICES = {"cedar", "onyx", "echo", "ash", "ballad"}
+VOICES = {"cedar", "onyx", "echo", "ash", "ballad", "nova"}
 NOTICE = "This presentation was generated entirely by AI and may contain mistakes. Dash Testnet demonstration."
 
 
@@ -145,8 +145,6 @@ def init_manifest(scenario_path, target):
         "schema_version": 1,
         "scenario": str(scenario_path),
         "scenario_sha256": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
-        "teacher_voice": "cedar",
-        "learner_voice": "nova",
         "turn_gap_seconds": 0.2,
         "title_lead_seconds": 3,
         "synthetic_test": False,
@@ -195,10 +193,6 @@ def chapter_scenes(scenario):
 def load_plan(manifest_path):
     manifest_path = Path(manifest_path).resolve()
     manifest = read_json(manifest_path)
-    if manifest.get("teacher_voice") not in VOICES:
-        raise ValueError("Set teacher_voice to the selected supported teacher voice")
-    if manifest.get("learner_voice") != "nova":
-        raise ValueError("learner_voice must be nova")
     base = manifest_path.parent
 
     def existing(value, context):
@@ -215,6 +209,12 @@ def load_plan(manifest_path):
     ):
         raise ValueError("Scenario hash changed; review and regenerate the manifest")
     scenario = read_json(scenario_path)
+    voices = {
+        speaker: profile.get("voice")
+        for speaker, profile in scenario["speakers"].items()
+    }
+    if any(declared not in VOICES for declared in voices.values()):
+        raise ValueError("Every speaker needs a supported declared voice")
     if [s["id"] for s in scenario["scenes"]] != [f"{i:02}" for i in range(54)]:
         raise ValueError("Expected exactly scenes 00 through 53 in order")
     chapters = chapter_scenes(scenario)
@@ -255,12 +255,9 @@ def load_plan(manifest_path):
                 raise ValueError(
                     f"Segment {sid}, turn {index + 1}: script/transcript mismatch"
                 )
-            expected_voice = (
-                manifest["teacher_voice"] if turn["speaker"] == "teacher" else "nova"
-            )
             if (
                 metadata.get("validation") != "passed"
-                or metadata.get("voice") != expected_voice
+                or metadata.get("voice") != voices[turn["speaker"]]
             ):
                 raise ValueError(
                     f"Segment {sid}, turn {index + 1}: voice or validation mismatch"

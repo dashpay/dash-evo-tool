@@ -49,6 +49,9 @@ const PINNED_PR_HISTORY: [(i64, &str, &str); 14] = [
     ),
 ];
 
+/// How long the history read waits for another process's write lock.
+const HISTORY_READ_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
     if needs_upgrade_release(&config.path) {
         return Err(TaskError::WalletDataNeedsUpgradeRelease {
@@ -76,7 +79,7 @@ fn needs_upgrade_release(path: &Path) -> bool {
                 )
         }),
         Err(error) => {
-            tracing::debug!(?error, database = %path.display(), "Could not read the wallet database history before opening it");
+            tracing::warn!(?error, database = %path.display(), "Could not read the wallet database history before opening it; opening it normally");
             false
         }
     }
@@ -84,7 +87,8 @@ fn needs_upgrade_release(path: &Path) -> bool {
 
 /// At most one row more than [`PINNED_PR_HISTORY`]; `None` without a history table.
 fn read_history(path: &Path) -> rusqlite::Result<Option<Vec<(i64, String, String)>>> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = open_for_history(path)?;
+    conn.busy_timeout(HISTORY_READ_BUSY_TIMEOUT)?;
     let has_history = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
@@ -106,10 +110,59 @@ fn read_history(path: &Path) -> rusqlite::Result<Option<Vec<(i64, String, String
     .map(Some)
 }
 
+/// A read-only connection to `path`. Without a `-wal` file no commit waits in
+/// one, so the file is opened immutable, which keeps SQLite from creating
+/// `-wal` and `-shm` files beside it. A writer starting in between can only
+/// make the read stale, and the normal open then handles the file.
+fn open_for_history(path: &Path) -> rusqlite::Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    if Path::new(&wal).exists() {
+        return Connection::open_with_flags(path, flags);
+    }
+    match immutable_uri(path) {
+        Some(uri) => Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI),
+        None => Connection::open_with_flags(path, flags),
+    }
+}
+
+/// `file:` URI opening `path` read-only and immutable; `None` for paths a URI
+/// cannot carry plainly (not UTF-8, or a Windows network or verbatim path).
+fn immutable_uri(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
+    let path = if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
+    if path.starts_with("//") {
+        return None;
+    }
+    let mut uri = String::from(if path.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/:".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri.push_str("?mode=ro&immutable=1");
+    Some(uri)
+}
+
 /// Create a database at `path` holding only the pinned-PR migration history.
 #[cfg(any(test, feature = "testing"))]
 pub fn seed_pinned_pr_history(path: &Path) -> rusqlite::Result<()> {
-    let conn = Connection::open(path)?;
+    seed_history(&Connection::open(path)?)
+}
+
+#[cfg(any(test, feature = "testing"))]
+fn seed_history(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA application_id = 1347180372; CREATE TABLE refinery_schema_history(version int4 PRIMARY KEY, name VARCHAR(255), applied_on VARCHAR(255), checksum VARCHAR(255));",
     )?;
@@ -338,12 +391,68 @@ mod tests {
             "{error:?}"
         );
         assert!(error.to_string().contains("v1.0.0-weekly.20261117"));
+        assert!(
+            error
+                .to_string()
+                .contains("open every network where you have a wallet"),
+            "{error}"
+        );
         assert!(crate::backend_task::is_terminal_storage_open_error(&error));
         assert_eq!(
             tree(dir.path()),
             before,
             "the folder must be left unchanged"
         );
+    }
+
+    /// A WAL-mode database closed cleanly is read without creating `-wal` or
+    /// `-shm` files, also in a folder whose name needs escaping in a URI.
+    #[test]
+    fn platform_compatibility_refuses_wal_database_without_creating_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("wallet data %#");
+        crate::app_dir::ensure_data_dir_exists(&folder).unwrap();
+        let path = folder.join("det-app.sqlite");
+        seed_pinned_pr_history(&path).unwrap();
+        let mode: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        let before = tree(&folder);
+        assert_eq!(before.len(), 1, "{:?}", before.keys());
+
+        let error = match open(SqlitePersisterConfig::new(&path)) {
+            Ok(_) => panic!("a pinned-PR database must not open"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, TaskError::WalletDataNeedsUpgradeRelease { .. }),
+            "{error:?}"
+        );
+        assert_eq!(tree(&folder), before, "no file may be created");
+    }
+
+    /// A history still only in the `-wal` file of an open writer is seen.
+    #[test]
+    fn platform_compatibility_reads_history_still_in_the_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("det-app.sqlite");
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer
+            .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+            .unwrap();
+        seed_history(&writer).unwrap();
+        assert!(
+            std::fs::metadata(path.with_extension("sqlite-wal"))
+                .unwrap()
+                .len()
+                > 0
+        );
+
+        assert!(needs_upgrade_release(&path));
+        drop(writer);
     }
 
     /// Any other divergent history keeps the existing incompatible-data mapping.

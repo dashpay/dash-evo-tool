@@ -684,7 +684,7 @@ pub enum TaskError {
     /// storage layout. Only that release line's last build can still convert
     /// it, so the user must run it once; this build never changes the file.
     #[error(
-        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, start it once to upgrade your data, then return to this version."
+        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that version, open every network where you have a wallet and wait until each one finishes syncing. Then return to this version."
     )]
     WalletDataNeedsUpgradeRelease { database: std::path::PathBuf },
 

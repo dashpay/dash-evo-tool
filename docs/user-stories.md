@@ -337,7 +337,7 @@ As a user updating from any earlier version I still have installed, I want every
 - Identities loaded before the update are still present afterwards, keeping their alias, their keys, their wallet link and their registered DPNS name, without a manual reload or refresh.
 - The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
-- Exception: wallet data from the `v1.0.0-weekly.20260901` and `v1.0.0-weekly.20260908` test builds must first be opened once with `v1.0.0-weekly.20261117`. The app says so at startup, names that release with its download address, and leaves the data unchanged.
+- Exception: wallet data from the `v1.0.0-weekly.20260901` and `v1.0.0-weekly.20260908` test builds must first be opened with `v1.0.0-weekly.20261117`, on every network that has a wallet, until each finishes syncing. The app says so at startup, names that release with its download address, and leaves the data unchanged.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
 
 ### WAL-034: Control how long upgrade backups are kept [Implemented]

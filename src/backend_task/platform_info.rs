@@ -622,12 +622,18 @@ impl AppContext {
     }
 
     /// Refresh verified metadata without turning connection failures into task errors.
-    pub(crate) async fn refresh_platform_protocol(&self, sdk: &Sdk) -> bool {
-        if let Err(error) = self.refresh_current_epoch(sdk).await {
+    ///
+    /// `repeated` marks a retry after a failure; it logs below `warn`.
+    pub(crate) async fn refresh_platform_protocol(&self, sdk: &Sdk, repeated: bool) -> bool {
+        let Err(error) = self.refresh_current_epoch(sdk).await else {
+            return true;
+        };
+        if repeated {
+            tracing::debug!(%error, "Protocol version and fee multiplier refresh is still failing");
+        } else {
             tracing::warn!(%error, "Could not refresh the connection's protocol version and fee multiplier");
-            return false;
         }
-        true
+        false
     }
 
     pub async fn run_platform_info_task(
@@ -1145,7 +1151,7 @@ mod tests {
             prove: true,
         })
         .expect("epoch query");
-        ctx.refresh_platform_protocol(&sdk).await;
+        ctx.refresh_platform_protocol(&sdk, false).await;
         assert_eq!(sdk.mock().request_count(&request).await, 1);
     }
 

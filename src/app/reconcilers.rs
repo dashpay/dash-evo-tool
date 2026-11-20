@@ -2520,7 +2520,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut banner = ConnectionBanner::new();
         app_context
-            .refresh_platform_protocol(&app_context.sdk())
+            .refresh_platform_protocol(&app_context.sdk(), false)
             .await;
         banner.update(&ctx, &app_context, false, true);
         assert!(banner.protocol_error.is_none());

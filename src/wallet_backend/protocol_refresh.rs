@@ -5,6 +5,7 @@ use super::poison::MutexRecover;
 use crate::context::AppContext;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -45,6 +46,7 @@ impl ProtocolRefresh {
     /// Install a worker after the previous SPV session has drained.
     pub(super) fn start(&self, context: Weak<AppContext>, ready: Arc<CoordinatorGate>) {
         let health_context = context.clone();
+        let failing = Arc::new(AtomicBool::new(false));
         self.start_with(
             ready,
             move || {
@@ -71,10 +73,14 @@ impl ProtocolRefresh {
             },
             move || {
                 let context = context.clone();
+                let failing = Arc::clone(&failing);
                 async move {
                     if let Some(ctx) = context.upgrade() {
                         let sdk = ctx.sdk.load_full();
-                        ctx.refresh_platform_protocol(&sdk).await
+                        let repeated = failing.load(Ordering::Relaxed);
+                        let succeeded = ctx.refresh_platform_protocol(&sdk, repeated).await;
+                        failing.store(!succeeded, Ordering::Relaxed);
+                        succeeded
                     } else {
                         false
                     }
@@ -166,9 +172,7 @@ impl ProtocolRefresh {
                                 pending |= !last_probe_succeeded;
                             }
                         }
-                        if !healthy {
-                            retry_in = 0;
-                        } else if retry_in > 0 && current.is_none() {
+                        if healthy && retry_in > 0 && current.is_none() {
                             retry_in -= 1;
                             pending |= retry_in == 0;
                         }
@@ -230,7 +234,6 @@ impl ProtocolRefresh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     async fn next<T>(rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>) -> T {
         tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -360,37 +363,108 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn protocol_refresh_retries_a_failed_read_while_healthy() {
-        let probe = ProtocolRefresh::default();
+    /// Count health checks (`'h'`) until the next refresh call (`'c'`).
+    async fn checks_before_call(rx: &mut tokio::sync::mpsc::UnboundedReceiver<char>) -> usize {
+        let mut checks = 0;
+        while next(rx).await == 'h' {
+            checks += 1;
+        }
+        checks
+    }
+
+    fn start_scripted(
+        probe: &ProtocolRefresh,
+        healthy: Arc<AtomicBool>,
+        responses: impl IntoIterator<Item = bool>,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<char> {
         let ready = Arc::new(CoordinatorGate::default());
         ready.on_masternodes_ready();
-        let (checks, mut checks_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (calls, mut calls_rx) = tokio::sync::mpsc::unbounded_channel();
-        let responses = Mutex::new(std::collections::VecDeque::from([true, false, true]));
+        let (events, rx) = tokio::sync::mpsc::unbounded_channel();
+        let checks = events.clone();
+        let responses = Mutex::new(
+            responses
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        );
         probe.start_with(
             ready,
             move || {
-                checks.send(()).expect("health receiver");
-                std::future::ready(true)
+                let value = healthy.load(Ordering::SeqCst);
+                checks
+                    .send(if value { 'h' } else { 'u' })
+                    .expect("event receiver");
+                std::future::ready(value)
             },
             move || {
-                calls.send(()).expect("probe receiver");
-                std::future::ready(responses.lock_recover().pop_front().unwrap_or(true))
+                events.send('c').expect("event receiver");
+                std::future::ready(
+                    responses
+                        .lock_recover()
+                        .pop_front()
+                        .expect("scripted response"),
+                )
             },
             Duration::from_millis(10),
         );
+        rx
+    }
+
+    #[tokio::test]
+    async fn protocol_refresh_backs_off_a_failing_read_while_healthy() {
+        let probe = ProtocolRefresh::default();
+        let healthy = Arc::new(AtomicBool::new(true));
+        let script = [true]
+            .into_iter()
+            .chain([false; 8])
+            .chain([true, false, true]);
+        let mut rx = start_scripted(&probe, healthy, script);
         assert!(probe.queue());
-        next(&mut calls_rx).await;
-        next(&mut checks_rx).await;
+        assert_eq!(next(&mut rx).await, 'c');
+        assert_eq!(next(&mut rx).await, 'h');
         assert!(probe.queue());
-        next(&mut calls_rx).await;
-        next(&mut calls_rx).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            calls_rx.try_recv().is_err(),
-            "a successful retry ends the backoff"
+        assert_eq!(next(&mut rx).await, 'c');
+        let mut gaps = Vec::new();
+        for _ in 0..7 {
+            gaps.push(checks_before_call(&mut rx).await);
+        }
+        assert_eq!(gaps, [1, 2, 4, 8, 16, 32, 32], "doubles up to the cap");
+        assert_eq!(next(&mut rx).await, 'h');
+        assert!(probe.queue());
+        assert_eq!(next(&mut rx).await, 'c');
+        for _ in 0..40 {
+            assert_eq!(
+                next(&mut rx).await,
+                'h',
+                "success cancels the pending retry"
+            );
+        }
+        assert!(probe.queue());
+        assert_eq!(next(&mut rx).await, 'c');
+        assert_eq!(
+            checks_before_call(&mut rx).await,
+            1,
+            "success resets the backoff"
         );
+        probe.stop().await;
+    }
+
+    #[tokio::test]
+    async fn protocol_refresh_does_not_retry_while_unhealthy() {
+        let probe = ProtocolRefresh::default();
+        let healthy = Arc::new(AtomicBool::new(true));
+        let mut rx = start_scripted(&probe, Arc::clone(&healthy), [true, false, true]);
+        assert!(probe.queue());
+        assert_eq!(next(&mut rx).await, 'c');
+        assert_eq!(next(&mut rx).await, 'h');
+        healthy.store(false, Ordering::SeqCst);
+        assert!(probe.queue());
+        assert_eq!(next(&mut rx).await, 'c');
+        for _ in 0..5 {
+            assert_eq!(next(&mut rx).await, 'u', "the recovery edge owns the retry");
+        }
+        healthy.store(true, Ordering::SeqCst);
+        assert_eq!(next(&mut rx).await, 'h');
+        assert_eq!(next(&mut rx).await, 'c');
         probe.stop().await;
     }
 

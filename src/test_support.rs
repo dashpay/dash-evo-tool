@@ -72,6 +72,16 @@ pub(crate) struct CapturedLog {
 impl CapturedLog {
     /// Capture every event on this thread, any level, without ANSI colours.
     pub(crate) fn start() -> Self {
+        // tracing-core recomputes its callsite and max-level caches whenever a
+        // thread's subscriber comes or goes, from whichever dispatchers are
+        // alive then; a concurrent test dropping its subscriber can store
+        // "disabled" after this capture registered. A global subscriber that
+        // never rules a callsite or level out keeps those caches open, and the
+        // thread's own subscriber decides per event.
+        static KEEP_CALLSITES_OPEN: std::sync::Once = std::sync::Once::new();
+        KEEP_CALLSITES_OPEN.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(KeepCallsitesOpen);
+        });
         let text = std::sync::Arc::new(Mutex::new(Vec::new()));
         let writer = std::sync::Arc::clone(&text);
         let subscriber = tracing_subscriber::fmt()
@@ -89,6 +99,42 @@ impl CapturedLog {
     pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.text.lock().expect("captured log")).into_owned()
     }
+}
+
+/// Records nothing, but never lets tracing cache a callsite or level as off.
+#[cfg(test)]
+struct KeepCallsitesOpen;
+
+#[cfg(test)]
+impl tracing::Subscriber for KeepCallsitesOpen {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, _: &tracing::Event<'_>) {}
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
 }
 
 #[cfg(test)]

@@ -70,7 +70,7 @@ directory.
 | Component | File | Description |
 |-----------|------|-------------|
 | `MessageBanner` | `message_banner.rs` | Global error/warning/success/info banners. `set_global()`, `with_details()`, auto-dismiss. Extensions: `OptionBannerExt`, `OptionBannerShowExt`, `ResultBannerExt` |
-| `TechnicalDetails` | `technical_details.rs` | Selectable monospace error details in a scroll frame with a Copy details action (`TechnicalDetailsAction`); shared by `MessageBanner` and `StartupErrorDialog` |
+| `TechnicalDetails` | `technical_details.rs` | Selectable monospace error details in a scroll frame with a Copy details action (`TechnicalDetailsAction`; `copy_text()` sets a different clipboard text, e.g. redacted); shared by `MessageBanner` and `StartupErrorDialog` |
 | `ProgressOverlay` | `progress_overlay.rs` | Full-screen blocking progress overlay: spinner, optional step counter, generic buttons (`with_action(label, action_id)`, mirrors `MessageBanner::with_action`), 120s watchdog. A hard block is never keyboard-activatable except via `with_keyboard_escape(action_id)`, which designates one focus-pinned button as a keyboard-reachable escape (Enter/Space) for unbounded blocks (the SPV-sync block). Global path: `set_global()` (raise, mirrors `MessageBanner::set_global`) / `render_global()`, claims input each frame. Companions: `OverlayConfig`, `OverlayHandle`, `OptionOverlayExt` (`raise` — the banner's `replace`, renamed to dodge inherent `Option::replace`), `ProgressOverlayResponse` |
 
 ## Styled Components (`styled.rs`)

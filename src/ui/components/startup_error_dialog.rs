@@ -5,6 +5,7 @@ use egui::{RichText, Ui};
 
 use crate::model::error_report::{
     AiAssistant, QuestionEnvironment, STARTUP_SITUATION, StartupFailure, ai_question,
+    redact_identity,
 };
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::technical_details::TechnicalDetails;
@@ -102,7 +103,9 @@ impl<'a> StartupErrorDialog<'a> {
             crate::VERSION,
             self.failure.report().details()
         );
+        let copy_text = redact_identity(&details, &QuestionEnvironment::current());
         TechnicalDetails::new("startup_error_details", &details)
+            .copy_text(copy_text)
             .max_height(DETAILS_HEIGHT)
             .show(ui);
         if let Some(log_file) = self.failure.log_file() {
@@ -125,7 +128,7 @@ impl<'a> StartupErrorDialog<'a> {
             }
             if ComponentStyles::add_secondary_button(ui, "Copy question", dark_mode)
                 .on_hover_text(
-                    "Copies a question about this problem, with the technical details, to paste into any AI assistant.",
+                    "Copies the question the Ask buttons send, so you can read it first or paste it into any AI assistant.",
                 )
                 .clicked()
             {
@@ -134,7 +137,7 @@ impl<'a> StartupErrorDialog<'a> {
             for assistant in AiAssistant::ALL.iter().rev() {
                 let label = format!("Ask {name}", name = assistant.name());
                 let hint = format!(
-                    "Opens {name} in your browser with a question about this problem, including the technical details. The question goes to {operator}, and you can review and edit it before sending.",
+                    "Sends a question about this problem, with the technical details, to {name} ({operator}) as soon as {name} opens in your browser. To read the question first, use Copy question.",
                     name = assistant.name(),
                     operator = assistant.operator(),
                 );

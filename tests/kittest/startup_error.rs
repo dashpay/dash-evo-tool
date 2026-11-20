@@ -114,6 +114,31 @@ fn copy_details_copies_technical_details() {
     assert!(copied.contains(dash_evo_tool::VERSION), "{copied}");
 }
 
+/// The copied details show the home folder as `~`, so a bug report does not
+/// carry the user's folder names.
+#[test]
+fn copy_details_hides_the_home_folder() {
+    let home = directories::UserDirs::new()
+        .expect("home folder")
+        .home_dir()
+        .display()
+        .to_string();
+    let error = std::io::Error::other(format!("cannot open {home}/.config/det-test"));
+    let failure = StartupFailure::from_error(&error, None);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            StartupErrorDialog::new(&failure).show(ui);
+        });
+    harness.run();
+    harness.get_by_label("Copy details").click();
+    harness.step();
+
+    let copied = copied_text(&harness).expect("details copied");
+    assert!(copied.contains("~/.config/det-test"), "{copied}");
+    assert!(!copied.contains(&home), "{copied}");
+}
+
 /// "Quit" reports the request to the owner, which closes the app.
 #[test]
 fn quit_button_requests_quit() {

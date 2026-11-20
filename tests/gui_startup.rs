@@ -1,10 +1,10 @@
 //! Start-up of the GUI binary before any window opens.
 
-/// A failed environment setup panics before the file logger exists. The
-/// redacting panic hook must already be in place, so stderr carries the crash
-/// marker without the formatted panic message.
+/// A failed environment setup happens before the file logger exists, so the
+/// terminal is the only place the user can learn why the app did not start:
+/// stderr must name the cause instead of a panic or a redacted crash marker.
 #[test]
-fn environment_setup_panic_reaches_stderr_redacted() {
+fn environment_setup_failure_names_its_cause_on_stderr() {
     let parent = tempfile::tempdir().expect("temp dir");
     let data_dir = parent.path().join("data");
     std::fs::write(&data_dir, b"not a directory").expect("create regular file");
@@ -19,8 +19,9 @@ fn environment_setup_panic_reaches_stderr_redacted() {
 
     assert!(!output.status.success(), "start-up must fail:\n{stderr}");
     assert!(
-        stderr.contains("<redacted: formatted panic message"),
+        stderr.contains("Data directory path is not a directory"),
         "{stderr}"
     );
-    assert!(!stderr.contains("InvalidInput"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(!stderr.contains("<redacted"), "{stderr}");
 }

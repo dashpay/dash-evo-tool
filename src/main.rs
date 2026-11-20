@@ -16,7 +16,17 @@ fn main() -> eframe::Result<()> {
     install_panic_hook();
     // Single owner of dir/env/logger setup; runs again inside `BootApp` boot,
     // where the logger's `Once` guard makes the repeat a no-op.
-    let app_data_dir = prepare_environment().expect("Failed to prepare app environment");
+    // A failure here comes before the logger exists, so the terminal is the
+    // only place to name its cause; the I/O error carries no secrets.
+    let app_data_dir = match prepare_environment() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!(
+                "Dash Evo Tool could not prepare its data folder: {error}. Check that the folder exists, is a directory and is writable, then start the app again."
+            );
+            std::process::exit(1);
+        }
+    };
     // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio

@@ -181,9 +181,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
             amount: param.amount_credits,
         });
 
-        let result = dispatch_task(&ctx, task)
-            .await
-            .map_err(McpToolError::TaskFailed)?;
+        let result = dispatch_task(&ctx, task).await.map_err(shield_task_error)?;
 
         match result {
             BackendTaskSuccessResult::ShieldedCreditsShielded { .. } => {
@@ -224,6 +222,18 @@ async fn ensure_amount_shieldable(
         });
     }
     Ok(())
+}
+
+/// The shield's own refusal of an amount the wallet cannot shield is a
+/// parameter error, as the pre-flight's is.
+fn shield_task_error(error: TaskError) -> McpToolError {
+    match error {
+        TaskError::ShieldFromPlatformCapacityExceeded { .. }
+        | TaskError::ShieldFromPlatformNothingShieldable { .. } => McpToolError::InvalidParam {
+            message: error.to_string(),
+        },
+        other => McpToolError::TaskFailed(other),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +792,40 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// When the pre-flight is skipped, the shield's capacity refusals still
+    /// reach the caller as parameter errors; other failures stay task failures.
+    #[test]
+    fn shield_capacity_refusals_are_parameter_errors() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let refusal = || {
+            Box::new(P::PlatformShieldCapacityExceeded {
+                available: 300,
+                required: 400,
+            })
+        };
+
+        let exceeded = shield_task_error(TaskError::ShieldFromPlatformCapacityExceeded {
+            max_shieldable: 200,
+            source: refusal(),
+        });
+        let nothing =
+            shield_task_error(TaskError::ShieldFromPlatformNothingShieldable { source: refusal() });
+        let other = shield_task_error(TaskError::SpendInProgress);
+
+        assert!(
+            matches!(exceeded, McpToolError::InvalidParam { .. }),
+            "{exceeded:?}"
+        );
+        assert!(
+            matches!(nothing, McpToolError::InvalidParam { .. }),
+            "{nothing:?}"
+        );
+        assert!(
+            matches!(other, McpToolError::TaskFailed(TaskError::SpendInProgress)),
+            "{other:?}"
+        );
+    }
 
     /// An amount the wallet's Platform balance holds but the shield planner
     /// cannot shield (its fee reserve stays on the input) is refused as a

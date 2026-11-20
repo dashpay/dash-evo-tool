@@ -84,7 +84,7 @@ fn load_icon() -> egui::IconData {
 }
 
 async fn start(
-    environment: &Result<std::path::PathBuf, std::io::Error>,
+    environment: &Result<std::path::PathBuf, crate::boot::PrepareEnvironmentError>,
     outcome: crate::boot::StartupOutcome,
 ) -> Result<(), eframe::Error> {
     // Load icon for the window

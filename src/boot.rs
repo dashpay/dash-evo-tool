@@ -45,14 +45,69 @@ type BootError = Box<dyn std::error::Error + Send + Sync>;
 /// [`AppState::boot_inputs`](crate::app::AppState::boot_inputs) inside the
 /// eframe boot; the logger's `Once` guard makes the second call a no-op, so
 /// this stays the single place the sequence is written.
-pub fn prepare_environment() -> Result<PathBuf, std::io::Error> {
-    use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
-    let data_dir = app_user_data_dir_path()?;
-    ensure_data_dir_exists(&data_dir)?;
+pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
+    use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
+    let data_dir =
+        app_user_data_dir_path().map_err(|source| PrepareEnvironmentError::Locate { source })?;
+    ensure_data_dir_exists(&data_dir).map_err(|source| {
+        PrepareEnvironmentError::CreateDataFolder {
+            path: data_dir.clone(),
+            source,
+        }
+    })?;
     // Logging first, so a failure to write the settings file is logged too.
     crate::logging::initialize_logger();
-    ensure_env_file(&data_dir)?;
+    ensure_settings_file(&data_dir)?;
     Ok(data_dir)
+}
+
+/// Create the `.env` settings file in `data_dir` if it is missing.
+pub(crate) fn ensure_settings_file(
+    data_dir: &std::path::Path,
+) -> Result<(), PrepareEnvironmentError> {
+    crate::app_dir::ensure_env_file(data_dir).map_err(|source| {
+        PrepareEnvironmentError::WriteSettingsFile {
+            path: data_dir.join(crate::app_dir::ENV_FILE),
+            source,
+        }
+    })
+}
+
+/// The step of preparing the app data folder that failed, with the path it
+/// worked on; the I/O error is the source.
+#[derive(Debug, thiserror::Error)]
+pub enum PrepareEnvironmentError {
+    /// The app data folder's location could not be determined.
+    #[error("The app data folder could not be found.")]
+    Locate {
+        #[source]
+        source: std::io::Error,
+    },
+    /// The app data folder could not be created or secured.
+    #[error("The app data folder {path} could not be prepared.", path = .path.display())]
+    CreateDataFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The `.env` settings file could not be created.
+    #[error("The settings file {path} could not be created.", path = .path.display())]
+    WriteSettingsFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl PrepareEnvironmentError {
+    /// The underlying I/O error.
+    pub fn io_error(&self) -> &std::io::Error {
+        match self {
+            Self::Locate { source }
+            | Self::CreateDataFolder { source, .. }
+            | Self::WriteSettingsFile { source, .. } => source,
+        }
+    }
 }
 
 /// The eframe application during boot: still collecting the legacy vault
@@ -430,7 +485,20 @@ mod tests {
         const CHILD_ENV: &str = "DET_PREPARE_ENVIRONMENT_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
             let error = prepare_environment().expect_err(".env cannot be written");
-            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
+            assert!(
+                matches!(
+                    &error,
+                    PrepareEnvironmentError::WriteSettingsFile { path, source }
+                        if path.ends_with(".env") && source.kind() == std::io::ErrorKind::NotFound
+                ),
+                "{error:?}"
+            );
+            let details = StartupFailure::from_error(&error, None)
+                .report()
+                .details()
+                .to_owned();
+            assert!(details.contains("WriteSettingsFile"), "{details}");
+            assert!(details.contains(".env"), "{details}");
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");

@@ -90,7 +90,14 @@ fn unwritable_env_file_renders_startup_error_dialog() {
             .build_eframe(move |cc| BootApp::new(cc.egui_ctx.clone(), shared));
         harness.run_steps(3);
 
-        assert!(matches!(harness.state(), BootApp::Failed(_)));
+        let BootApp::Failed(failure) = harness.state() else {
+            panic!("an unwritable .env must be fatal");
+        };
+        assert!(
+            failure.report().details().contains("WriteSettingsFile"),
+            "the details must name the failed step: {}",
+            failure.report().details()
+        );
         assert!(outcome.failed(), "main must learn that startup failed");
         assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
     });

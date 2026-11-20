@@ -69,6 +69,33 @@ fn failing_boot_renders_startup_error_dialog() {
     });
 }
 
+/// A data folder that is set up but cannot take the `.env` file shows the
+/// startup failure dialog instead of panicking before any window appears. A
+/// dangling symlink stands in for a full disk: the write itself fails.
+#[cfg(unix)]
+#[test]
+fn unwritable_env_file_renders_startup_error_dialog() {
+    with_isolated_data_dir(|| {
+        let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
+        std::fs::create_dir_all(&data_dir).expect("mkdir data dir");
+        std::os::unix::fs::symlink(data_dir.join("missing").join("env"), data_dir.join(".env"))
+            .expect("dangling .env symlink");
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let outcome = StartupOutcome::default();
+        let shared = outcome.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_eframe(move |cc| BootApp::new(cc.egui_ctx.clone(), shared));
+        harness.run_steps(3);
+
+        assert!(matches!(harness.state(), BootApp::Failed(_)));
+        assert!(outcome.failed(), "main must learn that startup failed");
+        assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
+    });
+}
+
 /// A typed `TaskError` shows its own `Display`, so every typed startup error gets
 /// its own message with no dialog changes.
 #[test]
@@ -112,6 +139,47 @@ fn copy_details_copies_technical_details() {
     let copied = copied_text(&harness).expect("details copied");
     assert!(copied.contains(&details), "{copied}");
     assert!(copied.contains(dash_evo_tool::VERSION), "{copied}");
+}
+
+/// In a small window the dialog stays inside it: Quit is visible without
+/// scrolling, and Copy details can be scrolled into view and clicked.
+#[test]
+fn small_window_keeps_both_actions_reachable() {
+    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let quit = Rc::new(Cell::new(false));
+    let seen = Rc::clone(&quit);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+    let mut harness = Harness::builder()
+        .with_size(screen.size())
+        .build_ui(move |ui| {
+            if StartupErrorDialog::new(&failure).show(ui) == StartupErrorDialogAction::Quit {
+                seen.set(true);
+            }
+        });
+    harness.run();
+
+    let copy = harness.get_by_label("Copy details");
+    copy.scroll_to_me();
+    harness.run();
+    let copy = harness.get_by_label("Copy details");
+    assert!(
+        screen.contains_rect(copy.rect()),
+        "Copy details at {:?}",
+        copy.rect()
+    );
+    copy.click();
+    harness.step();
+    assert!(copied_text(&harness).is_some(), "details copied");
+
+    let quit_button = harness.get_by_label("Quit");
+    assert!(
+        screen.contains_rect(quit_button.rect()),
+        "Quit at {:?}",
+        quit_button.rect()
+    );
+    quit_button.click();
+    harness.run();
+    assert!(quit.get());
 }
 
 /// "Quit" reports the request to the owner, which closes the app.

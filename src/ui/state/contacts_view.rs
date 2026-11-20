@@ -74,6 +74,9 @@ pub struct ContactsState {
     /// offer a way back; without this list a hidden contact could only be
     /// recovered from the legacy DashPay screen.
     hidden: Vec<ContactData>,
+    /// Contacts platform-wallet holds as established, from the last list
+    /// load; `None` until a load with a wallet reported them.
+    established_contacts: Option<usize>,
     /// Whether the hidden-contacts section is expanded.
     show_hidden: bool,
     /// Live search query bound to the Contacts search box.
@@ -156,6 +159,7 @@ impl ContactsState {
         self.contacts.clear();
         self.contacts_known = false;
         self.hidden.clear();
+        self.established_contacts = None;
         self.show_hidden = false;
         self.search.clear();
         self.detail.reset();
@@ -326,7 +330,7 @@ impl ContactsState {
     /// reachable through [`ContactsState::hidden_contacts`]. The selected
     /// contact's note draft follows the reloaded note.
     pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
-        self.record_loaded_contacts(contacts, None);
+        self.record_loaded_contacts(contacts, None, None);
     }
 
     /// [`Self::record_contacts`] for the list load `dispatch_id` returned; see
@@ -335,6 +339,7 @@ impl ContactsState {
         &mut self,
         mut contacts: Vec<ContactData>,
         dispatch_id: Option<u64>,
+        established_contacts: Option<usize>,
     ) {
         if let Some((network, owner)) = self.owner {
             for contact in &mut contacts {
@@ -355,6 +360,7 @@ impl ContactsState {
         let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
         self.contacts = visible;
         self.hidden = hidden;
+        self.established_contacts = established_contacts;
         self.contacts_known = true;
         self.load_failed = false;
         if let Some(selected) = self.detail.selected()
@@ -375,10 +381,14 @@ impl ContactsState {
         self.contacts.len()
     }
 
-    /// Whether saving a contact's details publishes them and pays a fee,
-    /// which depends on every established contact, hidden ones included.
+    /// Whether saving a contact's details publishes them and pays a fee:
+    /// platform-wallet decides by its established contacts; without that
+    /// count, every listed contact, hidden ones included, stands in.
     pub fn details_save_publishes(&self) -> bool {
-        contact_details_save_publishes(self.contacts.len() + self.hidden.len())
+        contact_details_save_publishes(
+            self.established_contacts
+                .unwrap_or(self.contacts.len() + self.hidden.len()),
+        )
     }
 
     /// Contacts matching the current search query, in list order. An empty or
@@ -1443,6 +1453,31 @@ mod tests {
         assert!(
             state.details_save_publishes(),
             "two established contacts publish, one of them hidden"
+        );
+    }
+
+    /// The fee follows platform-wallet's established contacts, which decide
+    /// whether the save publishes, not the list shown.
+    #[test]
+    fn the_fee_follows_the_contacts_platform_wallet_established() {
+        let mut state = ContactsState::default();
+        state.record_loaded_contacts(vec![contact(Some("Bao"), None, None)], None, Some(2));
+        assert!(state.details_save_publishes());
+
+        state.record_loaded_contacts(
+            vec![
+                contact(Some("Bao"), None, None),
+                ContactData {
+                    identity_id: id(8),
+                    ..contact(Some("Cai"), None, None)
+                },
+            ],
+            None,
+            Some(1),
+        );
+        assert!(
+            !state.details_save_publishes(),
+            "a save that defers is free"
         );
     }
 }

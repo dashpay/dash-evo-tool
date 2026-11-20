@@ -1132,6 +1132,9 @@ pub enum BackendTaskSuccessResult {
         /// [`BackendTaskSuccessResult::DashPayContactRequests`].
         identity: Identifier,
         contacts: Vec<ContactData>,
+        /// How many contacts platform-wallet holds as established, which
+        /// decides whether a details save publishes; `None` without a wallet.
+        established_contacts: Option<usize>,
     },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),

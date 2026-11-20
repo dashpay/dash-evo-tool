@@ -54,6 +54,7 @@ fn deliver_all(hub: &mut HubHarness, owner: Identifier, contacts: Vec<ContactDat
         &BackendTaskContext::from(&task),
         BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
+            established_contacts: None,
             contacts,
         },
     );

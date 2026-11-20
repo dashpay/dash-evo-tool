@@ -738,6 +738,7 @@ impl ScreenLike for ContactDetailsScreen {
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity,
                 contacts: contacts_data,
+                ..
             } => {
                 // Contacts loaded for another identity say nothing about this
                 // screen's contact — a reload that outlived an identity switch

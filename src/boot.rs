@@ -442,6 +442,35 @@ mod tests {
         assert!(!eframe::App::persist_egui_memory(&app));
     }
 
+    /// The real preparation path returns an error, not a panic, when the
+    /// `.env` write fails after the data folder is set up (a dangling symlink
+    /// stands in for a full disk). Runs in a child process, because preparation
+    /// installs the process-wide logger.
+    #[cfg(unix)]
+    #[test]
+    fn prepare_environment_reports_a_failed_env_write() {
+        const CHILD_ENV: &str = "DET_PREPARE_ENVIRONMENT_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let error = prepare_environment().expect_err(".env cannot be written");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(
+            dir.path().join("missing").join("env"),
+            dir.path().join(".env"),
+        )
+        .expect("dangling .env symlink");
+        let test_name = std::thread::current().name().expect("test name").to_owned();
+        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .env("DASH_EVO_DATA_DIR", dir.path())
+            .status()
+            .expect("run child");
+        assert!(status.success(), "child failed: {status}");
+    }
+
     /// A normal keyless vault classifies as ready — the happy path never gates.
     #[test]
     fn classify_open_ready_for_keyless_vault() {

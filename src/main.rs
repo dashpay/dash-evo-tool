@@ -94,6 +94,10 @@ async fn start(
         // Persist window size and position
         persist_window: environment.is_ok(),
         centered: true, // Center window on startup if not maximized
+        // Without a data folder this is None, and eframe 0.37 falls back to its
+        // default storage folder: it creates that folder (empty) at start-up.
+        // Nothing is written there, because the failure dialog persists no
+        // egui memory and window geometry is off (`BootApp::persist_egui_memory`).
         persistence_path: environment.as_ref().ok().map(|dir| dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)

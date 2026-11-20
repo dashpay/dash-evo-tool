@@ -1,5 +1,5 @@
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -48,7 +48,7 @@ impl AppContext {
         self.execute_token_op(
             async {
                 let state_transition = builder
-                    .sign(sdk, &signing_key, actor_identity, self.platform_version())
+                    .sign(sdk, &signing_key, actor_identity, sdk.version())
                     .await
                     .map_err(TaskError::from)?;
                 state_transition

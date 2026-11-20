@@ -352,11 +352,14 @@ impl ImportSingleKeyDialog {
 mod tests {
     use super::*;
 
-    /// Testnet WIF pinned to the same value the wallet-backend unit test
-    /// uses (`src/wallet_backend/single_key.rs::known_wif`). Keeping the
-    /// dialog test in sync with the backend avoids a third magic string.
-    fn known_testnet_wif() -> &'static str {
-        "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
+    /// A testnet WIF, generated at runtime and stable for the whole test
+    /// process.
+    fn known_testnet_wif() -> String {
+        crate::test_support::keys::labelled_wif(
+            "ui::wallets::import_single_key::known_testnet_wif",
+            0,
+            Network::Testnet,
+        )
     }
 
     /// F92 — the hand-written `Debug` must redact `wif` and `passphrase`,
@@ -387,7 +390,10 @@ mod tests {
         let pp_decimal = format!("{:?}", passphrase.as_bytes());
 
         for dbg in &dbgs {
-            assert!(!dbg.contains(wif), "debug leaked the WIF text: {dbg}");
+            assert!(
+                !dbg.contains(wif.as_str()),
+                "debug leaked the WIF text: {dbg}"
+            );
             assert!(
                 !dbg.contains(passphrase),
                 "debug leaked the passphrase text: {dbg}"
@@ -440,7 +446,7 @@ mod tests {
     #[test]
     fn valid_wif_produces_testnet_p2pkh_preview() {
         let mut dialog = ImportSingleKeyDialog::new(Network::Testnet);
-        dialog.wif_input.set_text(known_testnet_wif().to_string());
+        dialog.wif_input.set_text(known_testnet_wif());
         dialog.recompute_preview();
         let addr = dialog.derived_address.as_deref().expect("address derived");
         assert!(dialog.error_message.is_none());
@@ -456,7 +462,7 @@ mod tests {
     #[test]
     fn network_switch_recomputes_preview() {
         let mut dialog = ImportSingleKeyDialog::new(Network::Testnet);
-        dialog.wif_input.set_text(known_testnet_wif().to_string());
+        dialog.wif_input.set_text(known_testnet_wif());
         dialog.recompute_preview();
         let testnet_addr = dialog.derived_address.clone().expect("testnet addr");
 
@@ -489,7 +495,7 @@ mod tests {
     #[test]
     fn reset_clears_every_field() {
         let mut dialog = ImportSingleKeyDialog::new(Network::Testnet);
-        dialog.wif_input.set_text(known_testnet_wif().to_string());
+        dialog.wif_input.set_text(known_testnet_wif());
         dialog.alias_input.set_text("primary");
         dialog.recompute_preview();
         assert!(dialog.derived_address.is_some());

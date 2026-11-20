@@ -43,6 +43,30 @@ pub(crate) fn bare_user_identity(id: Identifier, network: Network) -> QualifiedI
     }
 }
 
+/// An identity public key built by dpp's versioned factory: writable, enabled
+/// and not bound to a contract. Tests that need a read-only or disabled key set
+/// that on the result.
+pub(crate) fn identity_public_key(
+    id: dash_sdk::dpp::identity::KeyID,
+    purpose: dash_sdk::dpp::identity::Purpose,
+    security_level: dash_sdk::dpp::identity::SecurityLevel,
+    key_type: dash_sdk::dpp::identity::KeyType,
+    data: impl Into<dash_sdk::dpp::platform_value::BinaryData>,
+) -> dash_sdk::platform::IdentityPublicKey {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+    let mut key = dash_sdk::platform::IdentityPublicKey::default_versioned(
+        dash_sdk::dpp::version::PlatformVersion::latest(),
+    )
+    .expect("identity key structure");
+    key.set_id(id);
+    key.set_purpose(purpose);
+    key.set_security_level(security_level);
+    key.set_key_type(key_type);
+    key.set_data(data.into());
+    key
+}
+
 /// A user identity publishing one key that can register usernames (key id 1),
 /// held on this device only when `held`.
 pub(crate) fn user_identity_with_signing_key(
@@ -186,31 +210,87 @@ pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) 
     ctx.sdk.store(Arc::new(sdk));
 }
 
-/// Have `ctx`'s SDK learn `protocol_version` as it does from a response whose
-/// proof and quorum signature were verified. Only raises it, as the network
-/// does; an unknown version is recorded as proven, as upstream records it.
+/// Protocol versions tests declare proven, per SDK instance.
+///
+/// Upstream records a verified protocol version only from a response whose
+/// proof and quorum signature it checked itself, so a test cannot make an
+/// offline SDK prove one. [`AppContext::protocol_version_info`] folds this
+/// override into the SDK's answer in test builds only. It is bound to the SDK
+/// it was set for: a rebuilt connection is a new SDK and has proven nothing.
+///
+/// Reaches only reads through `AppContext`; code that asks an `Sdk` directly
+/// for `protocol_version_info()` sees the SDK's own answer.
+// TODO(upstream): replace with an SDK-level mock seam once one exists:
+// mock expectations raise only the stored version, never the verified one
+// (https://github.com/dashpay/platform/issues/5622).
+#[derive(Debug, Default)]
+pub(crate) struct ProvenProtocolVersionOverride(std::sync::Mutex<Option<(Arc<Sdk>, u32)>>);
+
+impl ProvenProtocolVersionOverride {
+    /// Record `protocol_version` as proven for `sdk`. Only raises it, as the
+    /// network does.
+    fn prove(&self, sdk: Arc<Sdk>, protocol_version: u32) {
+        let mut slot = self.0.lock().expect("override lock");
+        let proven = match slot.as_ref() {
+            Some((current, proven)) if Arc::ptr_eq(current, &sdk) => {
+                (*proven).max(protocol_version)
+            }
+            _ => protocol_version,
+        };
+        *slot = Some((sdk, proven));
+    }
+
+    /// `info` with the version proven for `sdk` folded in, as upstream
+    /// reports a version it verified itself.
+    pub(crate) fn apply(
+        &self,
+        sdk: &Arc<Sdk>,
+        mut info: dash_sdk::ProtocolVersionInfo,
+    ) -> dash_sdk::ProtocolVersionInfo {
+        let slot = self.0.lock().expect("override lock");
+        if let Some((current, proven)) = slot.as_ref()
+            && Arc::ptr_eq(current, sdk)
+        {
+            let verified = info.verified_version.unwrap_or(0).max(*proven);
+            info.verified_version = Some(verified);
+            info.newer_protocol_available = verified > info.maximum_supported_version;
+        }
+        info
+    }
+}
+
+/// Have `ctx`'s current SDK report `protocol_version` as proven by the
+/// network, as it does after a response whose proof and quorum signature were
+/// verified. Only raises it; an unknown version is recorded as proven, as
+/// upstream records it. Moves only the proven version
+/// ([`ProvenProtocolVersionOverride`]); use [`set_sdk_protocol_version`] for
+/// the version transitions are built at.
 pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_millis() as u64;
-    ctx.sdk
-        .load()
-        .verify_response_metadata(
-            "test",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                height: 1,
-                time_ms: now_ms,
-                protocol_version,
-                ..Default::default()
-            },
-        )
-        .expect("fresh proved metadata");
+    ctx.proven_protocol_version_for_tests
+        .prove(ctx.sdk.load_full(), protocol_version);
 }
 
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
     let sdk = Sdk::new_mock();
+    let provider = ctx
+        .spv_context_provider
+        .read()
+        .expect("context provider lock")
+        .clone();
+    sdk.set_context_provider(provider);
+    sdk
+}
+
+/// [`mock_sdk_for`], starting at `protocol_version` as the app's SDK starts at
+/// its network's version.
+pub(crate) fn mock_sdk_at_for(ctx: &AppContext, protocol_version: u32) -> Sdk {
+    let version = dash_sdk::dpp::version::PlatformVersion::get(protocol_version)
+        .expect("a protocol version this build knows");
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(version)
+        .build()
+        .expect("mock sdk");
     let provider = ctx
         .spv_context_provider
         .read()

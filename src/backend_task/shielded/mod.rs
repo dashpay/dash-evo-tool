@@ -60,6 +60,10 @@ pub enum ShieldedTask {
     },
 }
 
+/// How long a shield from Platform waits for the address sync pass it starts
+/// before reporting success; a slower pass finishes in the background.
+const POST_SHIELD_ADDRESS_SYNC_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(super) fn shielded_operations_unavailable_error(ctx: &AppContext) -> Option<TaskError> {
     match FeatureGate::ShieldedOperations.first_unmet_check(ctx) {
         None => None,
@@ -145,11 +149,21 @@ impl AppContext {
                 // The upstream op selects the funding platform addresses; DET
                 // only supplies the wallet's address→path index for signing.
                 let path_index = self.platform_path_index(&seed_hash)?;
-                backend
-                    .shield_from_balance(&seed_hash, &path_index, 0, 0, amount)
-                    .await?;
-
-                self.refresh_shielded_balance_snapshot(&seed_hash).await;
+                self.shield_from_platform_then_sync(
+                    backend,
+                    &seed_hash,
+                    backend.shield_from_balance(
+                        &seed_hash,
+                        &path_index,
+                        0,
+                        crate::wallet_backend::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT,
+                        amount,
+                    ),
+                    // The spent credits stay in both the planner's and DET's
+                    // Platform balances until a pass reads them back.
+                    backend.sync_platform_addresses_after_spend(POST_SHIELD_ADDRESS_SYNC_WAIT),
+                )
+                .await?;
 
                 Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
             }
@@ -225,6 +239,32 @@ impl AppContext {
     /// Keeps the UI balance current immediately after a spend, without waiting
     /// for the next `on_shielded_sync_completed` push from the 60-second sync
     /// loop. Best-effort — a failed read leaves the previous snapshot in place.
+    /// Run `shield`, a shield from `seed_hash`'s Platform balance, then
+    /// `sync`, the pass that reads its spend back, with the wallet's shield
+    /// guard held across both: until the pass lands, the live Platform
+    /// balances still show the spent credits, so no shield Max is quoted.
+    /// The guard drops on every exit, including a failed shield.
+    ///
+    /// The window narrows but does not close: `sync` gives up waiting after
+    /// [`POST_SHIELD_ADDRESS_SYNC_WAIT`] and the guard drops with it, so a
+    /// slower pass leaves the balances stale for a while longer. A shield Max
+    /// quoted then can still be refused by the shield's own planner check.
+    /// The guard is deliberately not held for the background pass, which has
+    /// no bound.
+    async fn shield_from_platform_then_sync(
+        self: &Arc<Self>,
+        backend: &crate::wallet_backend::WalletBackend,
+        seed_hash: &WalletSeedHash,
+        shield: impl std::future::Future<Output = Result<(), TaskError>>,
+        sync: impl std::future::Future<Output = ()>,
+    ) -> Result<(), TaskError> {
+        let _shielding = backend.begin_platform_shield(seed_hash);
+        shield.await?;
+        self.refresh_shielded_balance_snapshot(seed_hash).await;
+        sync.await;
+        Ok(())
+    }
+
     async fn refresh_shielded_balance_snapshot(self: &Arc<Self>, seed_hash: &WalletSeedHash) {
         let backend = match self.wallet_backend() {
             Ok(backend) => backend,
@@ -304,11 +344,13 @@ fn shielded_amount_to_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TaskResult;
     use crate::backend_task::BackendTask;
+    use crate::backend_task::TaskResult;
     use crate::context::test_support::test_app_context;
     use crate::model::user_role::UserRole;
     use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::platform::DataContract;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mcp_style_direct_dispatch_rejects_unavailable_shielded_write() {
@@ -452,6 +494,83 @@ mod tests {
         assert_eq!(shield.shielded_credits, 100_000_800);
     }
 
+    /// The shield guard is held from before the shield until the post-spend
+    /// sync pass returns: the key moves when the shield opens, stays put
+    /// through the sync, and moves again only once the sync is done.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_platform_holds_the_shield_guard_through_the_sync_pass() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash: WalletSeedHash = [0x5e; 32];
+        let before = backend.platform_shield_quote_revision(&seed_hash);
+        let during_shield = std::sync::Mutex::new(None);
+        let during_sync = std::sync::Mutex::new(None);
+
+        ctx.shield_from_platform_then_sync(
+            &backend,
+            &seed_hash,
+            async {
+                *during_shield.lock().expect("lock") =
+                    Some(backend.platform_shield_quote_revision(&seed_hash));
+                Ok(())
+            },
+            async {
+                *during_sync.lock().expect("lock") =
+                    Some(backend.platform_shield_quote_revision(&seed_hash));
+            },
+        )
+        .await
+        .expect("shield");
+        let after = backend.platform_shield_quote_revision(&seed_hash);
+
+        let during_shield = during_shield
+            .into_inner()
+            .expect("lock")
+            .expect("shield ran");
+        let during_sync = during_sync.into_inner().expect("lock").expect("sync ran");
+        assert_ne!(during_shield, before, "the guard opens before the shield");
+        assert_eq!(
+            during_sync, during_shield,
+            "the guard is still open in the sync"
+        );
+        assert_ne!(after, during_sync, "the guard closes after the sync");
+    }
+
+    /// A failed shield skips the sync and still closes the guard.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_shield_from_platform_closes_the_shield_guard() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash: WalletSeedHash = [0x5f; 32];
+        let during_shield = std::sync::Mutex::new(None);
+        let synced = std::sync::atomic::AtomicBool::new(false);
+
+        let result = ctx
+            .shield_from_platform_then_sync(
+                &backend,
+                &seed_hash,
+                async {
+                    *during_shield.lock().expect("lock") =
+                        Some(backend.platform_shield_quote_revision(&seed_hash));
+                    Err(TaskError::WalletLocked)
+                },
+                async { synced.store(true, std::sync::atomic::Ordering::SeqCst) },
+            )
+            .await;
+
+        assert!(matches!(result, Err(TaskError::WalletLocked)), "{result:?}");
+        assert!(!synced.load(std::sync::atomic::Ordering::SeqCst));
+        let during_shield = during_shield
+            .into_inner()
+            .expect("lock")
+            .expect("shield ran");
+        assert_ne!(
+            backend.platform_shield_quote_revision(&seed_hash),
+            during_shield,
+            "the guard closes when the shield fails"
+        );
+    }
+
     /// A context whose wallet backend runs on protocol 13.
     async fn ctx_with_backend(
         dir: &std::path::Path,
@@ -466,24 +585,38 @@ mod tests {
         (ctx, backend)
     }
 
-    /// Tell `sdk` the network runs protocol `version`, the way a response
-    /// from the network does.
-    fn network_reports_protocol_version(sdk: &dash_sdk::Sdk, version: u32) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_millis() as u64;
-        sdk.verify_response_metadata(
-            "test",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                height: 1,
-                time_ms: now_ms,
-                protocol_version: version,
-                ..Default::default()
-            },
-        )
-        .expect("fresh metadata");
-        assert_eq!(sdk.protocol_version_number(), version);
+    /// A context whose wallet backend runs on a mock connection at protocol 13
+    /// that answers the DPNS-contract fetch, so a test can move the backend's
+    /// version mid-transfer ([`network_raises_protocol_version`]).
+    async fn ctx_with_mock_backend(
+        dir: &std::path::Path,
+    ) -> (Arc<AppContext>, Arc<crate::wallet_backend::WalletBackend>) {
+        let ctx = test_app_context(dir);
+        let mut sdk = crate::context::test_support::mock_sdk_at_for(&ctx, 13);
+        let dpns = ctx.dpns_contract();
+        sdk.mock()
+            .expect_fetch(dpns.id(), Some(DataContract::clone(&dpns)))
+            .await
+            .expect("register DPNS contract response");
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, egui::Context::default()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        assert_eq!(backend.sdk().protocol_version_number(), 13);
+        (ctx, backend)
+    }
+
+    /// Have the network move `sdk` past protocol 13, the way a response from
+    /// the network does: a fetch answered by the mock raises the version the
+    /// SDK builds transitions at (to the newest this build defines).
+    async fn network_raises_protocol_version(ctx: &AppContext, sdk: &dash_sdk::Sdk) {
+        use dash_sdk::platform::Fetch;
+        DataContract::fetch(sdk, ctx.dpns_contract().id())
+            .await
+            .expect("mocked DPNS contract fetch");
+        assert!(sdk.protocol_version_number() > 13, "the version moved");
     }
 
     /// The version moves while the transfer is under way, and the transfer
@@ -493,13 +626,13 @@ mod tests {
     async fn shield_from_core_task_succeeds_without_an_amount_when_the_version_moves_mid_transfer()
     {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let (ctx, backend) = ctx_with_mock_backend(tmp.path()).await;
         let seed_hash = WalletSeedHash::default();
 
         let result = ctx
             .shield_from_core_with(seed_hash, 100_000, async |funding| {
                 assert_eq!(funding.lock_duffs, 100_000 + 212_852);
-                network_reports_protocol_version(backend.sdk(), 14);
+                network_raises_protocol_version(&ctx, backend.sdk()).await;
                 Ok(())
             })
             .await;

@@ -114,6 +114,9 @@ fn registered_wallet_screen_harness() -> Harness<'static, WalletsBalancesScreen>
     build_wallet_screen_harness(runtime, app_context)
 }
 
+/// Press and release `label` within one frame, then step once more: a dialog
+/// it opens spends its first frame in an invisible sizing pass, which egui keeps
+/// out of the accessibility tree.
 fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &str) {
     let pos = harness.get_by_label(label).rect().center();
     harness.input_mut().events.extend([
@@ -131,6 +134,7 @@ fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &
             modifiers: egui::Modifiers::default(),
         },
     ]);
+    harness.step();
     harness.step();
 }
 
@@ -734,7 +738,7 @@ fn fund_platform_dialog_last_popup_row_stays_open_until_fund_is_clicked() {
 
         let funding_tasks = Rc::new(Cell::new(0));
         let task_counter = funding_tasks.clone();
-        let mut harness = Harness::builder()
+        let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1280.0, 800.0))
             .build_ui_state(
                 move |ui, screen: &mut WalletsBalancesScreen| {
@@ -1178,6 +1182,7 @@ fn rename_dialog_counter_counts_cleaned_characters() {
 fn wallet_header_names_the_network_instead_of_dev() {
     use dash_evo_tool::model::user_role::UserRole;
     use dash_sdk::dashcore_rpc::dashcore::Network as CoreNetwork;
+    let seed_7 = dash_evo_tool::test_support::keys::seed();
 
     with_isolated_data_dir(|| {
         let (runtime, app_context) = fresh_app_context();
@@ -1189,7 +1194,7 @@ fn wallet_header_names_the_network_instead_of_dev() {
             CoreNetwork::Regtest => "[local]",
         };
         let wallet = Wallet::new_from_seed(
-            [7u8; 64],
+            seed_7,
             app_context.network(),
             Some("Badge wallet".to_string()),
             None,

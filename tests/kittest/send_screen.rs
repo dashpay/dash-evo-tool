@@ -1,6 +1,7 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::BackendTask;
+use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
@@ -160,17 +161,28 @@ fn assert_validation_error(
     });
 }
 
+/// The display snapshot never vetoes a Core send: an empty snapshot still
+/// reaches the backend, whose pooled build refuses a real shortfall.
 #[test]
 fn routes_core_wallet_to_core_address() {
-    let error = assert_route(
+    let destination = core_address();
+    let action = assert_route(
         SourceSelection::CoreWallet,
-        ValidatedAddress::Core(core_address()),
+        ValidatedAddress::Core(destination.clone()),
         "Send DASH",
         None,
-    )
-    .expect_err("offline Core wallet has no spendable snapshot balance");
-    assert!(error.starts_with("Insufficient balance. Need "), "{error}");
-    assert!(!error.contains("including fee"), "{error}");
+    );
+    let Ok(AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
+        request,
+        ..
+    }))) = action
+    else {
+        panic!("a Core-to-Core send must reach the backend: {action:?}");
+    };
+    assert_eq!(request.recipients.len(), 1);
+    assert_eq!(request.recipients[0].address, destination.to_string());
+    assert_eq!(request.recipients[0].amount_duffs, 100_000_000);
+    assert_eq!(request.override_fee, None);
 }
 
 #[test]
@@ -365,4 +377,124 @@ fn rejects_shielded_to_identity_route() {
         "Sending from the shielded pool to an identity is not yet supported. \
          Transfer to a Platform address first, then top up the identity.",
     );
+}
+
+/// The send button with its confirmation, as the screen renders them. The
+/// confirmed task is dropped: no funds may move in a test.
+fn send_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+    let mut harness = Harness::builder().build_ui_state(
+        |ui, screen: &mut WalletSendScreen| {
+            screen.render_simple_send_button_for_test(ui);
+            screen.render_send_confirmation_for_test(ui);
+        },
+        screen,
+    );
+    harness.run();
+    harness
+}
+
+/// Press Send and check that it opened the confirmation, with nothing in
+/// flight yet.
+fn press_send_expecting_confirmation(
+    harness: &mut Harness<'_, WalletSendScreen>,
+    button_label: &str,
+) {
+    harness.get_by_label(button_label).click();
+    harness.run();
+    assert!(
+        harness.state().has_send_confirmation_for_test(),
+        "Send opens the confirmation"
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Confirm this send.")
+            .is_some()
+    );
+    assert!(
+        harness.query_by_label("Sending...").is_none(),
+        "nothing is sent before the confirmation"
+    );
+}
+
+/// Cancelling a private-balance send at its confirmation gives the form
+/// back: Send works again, and only a confirmed send shows "Sending...".
+fn assert_cancel_leaves_send_usable(destination: ValidatedAddress, button_label: &str) {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        screen.set_simple_send_input_for_test(
+            Some(SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS)),
+            Some(destination),
+            Some(Amount::new_dash(1.0)),
+        );
+        let mut harness = send_harness(screen);
+
+        press_send_expecting_confirmation(&mut harness, button_label);
+
+        // The dialog's Cancel renders after the form's own Cancel.
+        harness
+            .get_all_by_label("Cancel")
+            .last()
+            .expect("the confirmation's Cancel")
+            .click();
+        harness.run();
+        assert!(!harness.state().has_send_confirmation_for_test());
+        assert!(harness.query_by_label("Sending...").is_none());
+
+        // Send is usable again, and a confirmed send is in flight.
+        press_send_expecting_confirmation(&mut harness, button_label);
+        harness.get_by_label("Confirm and Send").click();
+        harness.run();
+        assert!(harness.query_by_label("Sending...").is_some());
+    });
+}
+
+#[test]
+fn cancelling_a_private_send_leaves_send_usable() {
+    assert_cancel_leaves_send_usable(
+        ValidatedAddress::Shielded(shielded_address()),
+        "Private Send",
+    );
+}
+
+#[test]
+fn cancelling_an_unshield_leaves_send_usable() {
+    let address = platform_address();
+    assert_cancel_leaves_send_usable(
+        ValidatedAddress::Platform {
+            address,
+            bech32m: address.to_bech32m_string(Network::Testnet),
+        },
+        "Unshield Credits",
+    );
+}
+
+/// A send that fails to build opens no confirmation and leaves Send usable:
+/// once the recipient is fixed, Send opens the confirmation.
+#[test]
+fn a_private_send_that_fails_to_build_leaves_send_usable() {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        let source = SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS);
+        screen.set_simple_send_input_for_test(
+            Some(source.clone()),
+            Some(ValidatedAddress::Shielded(
+                "not a private address".to_string(),
+            )),
+            Some(Amount::new_dash(1.0)),
+        );
+        let mut harness = send_harness(screen);
+
+        harness.get_by_label("Private Send").click();
+        harness.run();
+        assert!(!harness.state().has_send_confirmation_for_test());
+        assert!(harness.query_by_label("Sending...").is_none());
+
+        harness.state_mut().set_simple_send_input_for_test(
+            Some(source),
+            Some(ValidatedAddress::Shielded(shielded_address())),
+            Some(Amount::new_dash(1.0)),
+        );
+        harness.run();
+        press_send_expecting_confirmation(&mut harness, "Private Send");
+    });
 }

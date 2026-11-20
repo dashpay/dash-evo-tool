@@ -92,6 +92,42 @@ pub struct NetworkChooserScreen {
 }
 
 impl NetworkChooserScreen {
+    /// Test seam: start a restore from the previous version as its button
+    /// does, without running its task. Returns the action the button returns.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_restore_for_test(&mut self) -> AppAction {
+        self.legacy_restore_in_progress = true;
+        AppAction::BackendTask(BackendTask::MigrationTask(
+            MigrationTask::RestoreFromPreviousVersion,
+        ))
+    }
+
+    /// Test seam: whether a restore from the previous version still runs.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn restore_in_progress_for_test(&self) -> bool {
+        self.legacy_restore_in_progress
+    }
+
+    /// Test seam: start a DAPI endpoint discovery as its button does, without
+    /// running its task. Returns the action the button returns.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_discovery_for_test(&mut self) -> AppAction {
+        self.discovery_in_progress = true;
+        AppAction::BackendTask(BackendTask::DiscoverDapiNodes {
+            network: self.current_network,
+        })
+    }
+
+    /// Test seam: whether a DAPI endpoint discovery still runs.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn discovery_in_progress_for_test(&self) -> bool {
+        self.discovery_in_progress
+    }
+
     pub fn new(contexts: &BTreeMap<Network, Arc<AppContext>>, current_network: Network) -> Self {
         let any_context = contexts
             .values()
@@ -1821,25 +1857,26 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        match context {
+        // The app sends this screen's tasks under a dispatch context, so match
+        // on the operation inside it.
+        match context.operation() {
             BackendTaskContext::ClearNetworkDatabase => self.db_clear_in_progress = false,
             BackendTaskContext::RestoreFromPreviousVersion => {
                 self.legacy_restore_in_progress = false;
             }
+            BackendTaskContext::DapiNodeDiscovery => self.discovery_in_progress = false,
             _ => {}
         }
-        if matches!(context, BackendTaskContext::UpdateBackupRetention) {
+        if matches!(
+            context.operation(),
+            BackendTaskContext::UpdateBackupRetention
+        ) {
             self.backup_retention.save_failed();
         }
     }
-
-    fn display_message(&mut self, _msg: &str, msg_type: MessageType) {
-        // Only reset discovery state on errors — other message types may be unrelated
-        if matches!(msg_type, MessageType::Error) && self.discovery_in_progress {
-            self.discovery_in_progress = false;
-        }
-    }
 }
+
+pub(crate) mod task_feedback;
 
 #[cfg(test)]
 mod tests {

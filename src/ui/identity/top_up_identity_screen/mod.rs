@@ -12,12 +12,8 @@ use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_amount_range, validate_asset_lock_amount,
-};
-use crate::model::fee_estimation::{
-    format_credits_as_dash, format_duffs_as_dash, identity_topup_min_funding_duffs,
-};
+use crate::model::asset_lock::asset_lock_user_amount_range;
+use crate::model::fee_estimation::{format_credits_as_dash, identity_topup_min_funding_duffs};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -36,8 +32,8 @@ use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 use crate::ui::identity::funding_common::{
-    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, default_funding_state,
-    deposit_event_outcome, max_amount_after_fee_reserve, network_fee_refusal,
+    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, asset_lock_amount_refusal,
+    default_funding_state, deposit_event_outcome, max_amount_after_fee_reserve,
     receive_deposit_ceiling_duffs, required_deposit_credits, required_wallet_credits,
     show_network_fee_minimum, step_after_task_failure,
 };
@@ -112,12 +108,12 @@ struct TopUpInFlight {
 /// screen, so a top-up stays recorded when its screen is closed or the
 /// network is switched.
 fn top_ups_in_flight(ctx: &egui::Context) -> Vec<TopUpInFlight> {
-    ctx.data(|data| data.get_temp(egui::Id::new(TOP_UPS_IN_FLIGHT_ID)))
+    ctx.data(|data| data.get_temp(egui::Id::unique(TOP_UPS_IN_FLIGHT_ID)))
         .unwrap_or_default()
 }
 
 fn store_top_ups_in_flight(ctx: &egui::Context, top_ups: Vec<TopUpInFlight>) {
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(TOP_UPS_IN_FLIGHT_ID), top_ups));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(TOP_UPS_IN_FLIGHT_ID), top_ups));
 }
 
 /// Whether a top-up of `identity_id` is in flight.
@@ -164,7 +160,7 @@ pub(crate) fn track_top_up_sent_elsewhere(app_context: &AppContext, dispatch: &B
 fn raise_top_up_background_banner(ctx: &egui::Context) {
     let banner = MessageBanner::set_global(ctx, TOP_UP_IN_BACKGROUND, MessageType::Info);
     banner.disable_auto_dismiss();
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID), banner));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID), banner));
 }
 
 /// Bring the background-progress banner back when the banner cap dropped it
@@ -172,7 +168,7 @@ fn raise_top_up_background_banner(ctx: &egui::Context) {
 /// closed. Runs every frame, as no screen may be left to do it.
 pub(crate) fn restore_top_up_background_banner(ctx: &egui::Context) {
     let banner: Option<BannerHandle> =
-        ctx.data(|data| data.get_temp(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID)));
+        ctx.data(|data| data.get_temp(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID)));
     if banner.was_evicted()
         && top_ups_in_flight(ctx)
             .iter()
@@ -234,7 +230,7 @@ pub(crate) fn finish_top_up(
         MessageBanner::clear_global_message(ctx, TOP_UP_IN_BACKGROUND);
         // The handle holds the egui context, which must not stay stored in itself.
         ctx.data_mut(|data| {
-            data.remove::<BannerHandle>(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID))
+            data.remove::<BannerHandle>(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID))
         });
     }
     store_top_ups_in_flight(ctx, top_ups);
@@ -436,6 +432,25 @@ impl TopUpIdentityScreen {
             WalletFundedScreenStep::WaitingForPlatformAcceptance,
         );
         self.top_up_context.context().cloned()
+    }
+
+    /// Test seam: wait for a deposit to `address`, as choosing Receive Deposit
+    /// does once its address is ready, without deriving one.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn await_deposit_for_test(&mut self, address: Address) {
+        if let Ok(mut method) = self.funding_method.write() {
+            *method = FundingMethod::ReceiveDeposit;
+        }
+        self.funding_address = Some(address);
+        self.set_step(WalletFundedScreenStep::WaitingOnFunds);
+    }
+
+    /// Test seam: whether the form still waits for its deposit.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn is_waiting_on_funds_for_test(&self) -> bool {
+        self.current_step() == WalletFundedScreenStep::WaitingOnFunds
     }
 
     /// Test seam: age the blocking overlay of the running top-up by `by`.
@@ -875,19 +890,21 @@ impl TopUpIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
-                let Some(max_amount) = self.current_validation_ceiling_duffs(funding_method) else {
-                    let Ok(wallet) = selected_wallet.read() else {
-                        return AppAction::None;
-                    };
+                let Ok(seed_hash) = selected_wallet.read().map(|wallet| wallet.seed_hash()) else {
+                    return AppAction::None;
+                };
+                // Busy withholds only Max; the backend decides the amount.
+                let max_amount = self.current_validation_ceiling_duffs(funding_method);
+                if max_amount.is_none() && !self.asset_lock_balance.is_busy(&seed_hash) {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         self.asset_lock_balance
-                            .validation_unavailable_message(&wallet.seed_hash()),
+                            .validation_unavailable_message(&seed_hash),
                         MessageType::Warning,
                     );
                     return AppAction::None;
-                };
-                if let Some(message) = network_fee_refusal(
+                }
+                if let Some(message) = asset_lock_amount_refusal(
                     amount,
                     max_amount,
                     self.top_up_reserve_duffs(),
@@ -896,26 +913,6 @@ impl TopUpIdentityScreen {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         message,
-                        MessageType::Warning,
-                    );
-                    return AppAction::None;
-                }
-                let identity_fee_duffs = self.top_up_reserve_duffs();
-                if let Err(error) =
-                    validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
-                {
-                    let maximum_amount_duffs = match error {
-                        AssetLockAmountError::Overflow => max_amount,
-                        AssetLockAmountError::ExceedsMaximum {
-                            maximum_amount_duffs,
-                        } => maximum_amount_duffs,
-                    };
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!(
-                            "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                            format_duffs_as_dash(maximum_amount_duffs)
-                        ),
                         MessageType::Warning,
                     );
                     return AppAction::None;
@@ -1051,6 +1048,14 @@ impl TopUpIdentityScreen {
 }
 
 impl ScreenLike for TopUpIdentityScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.reload_identity();
+        }
+    }
     fn refresh_on_arrival(&mut self) {
         self.asset_lock_balance.invalidate();
     }
@@ -1060,7 +1065,7 @@ impl ScreenLike for TopUpIdentityScreen {
         self.reload_identity();
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         // Only the top-up's own failure releases the screen; an unrelated
         // error must leave a running top-up blocked.
         if self.top_up_context.owns(context) {
@@ -1070,10 +1075,11 @@ impl ScreenLike for TopUpIdentityScreen {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
         }
         let selected_seed_hash = self
@@ -1419,7 +1425,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("identity_top_up_wallet_selection_info_popup"),
+                        egui::Id::unique("identity_top_up_wallet_selection_info_popup"),
                         "Wallet Selection Info",
                         &show_pop_up_info_text,
                     );
@@ -1515,7 +1521,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([seed_byte; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(
+                crate::test_support::keys::labelled_seed(
+                    "ui::identity::top_up_identity_screen::wallet",
+                    seed_byte.into(),
+                ),
+                Network::Testnet,
+                None,
+                None,
+            )
+            .expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -1604,6 +1619,7 @@ mod tests {
 
     #[test]
     fn receive_deposit_dispatch_rejects_amount_above_deposit_address_balance() {
+        let seed_32 = crate::test_support::keys::seed();
         const DEPOSIT_ADDRESS_DUFFS: u64 = 10_000_000;
         const REQUESTED_DUFFS: u64 = 20_000_000;
         const WALLET_CEILING_DUFFS: u64 = 100_000_000;
@@ -1611,7 +1627,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x32; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_32, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -1750,7 +1766,7 @@ mod tests {
     /// `text` is on it.
     fn screen_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
         use egui_kittest::{Harness, kittest::Queryable};
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1764,7 +1780,7 @@ mod tests {
     /// "Select", and report which of `texts` the list showed.
     fn select_only_existing_funding(screen: &mut TopUpIdentityScreen, texts: &[&str]) -> Vec<bool> {
         use egui_kittest::{Harness, kittest::Queryable};
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.render_ui_by_using_unused_asset_lock(ui, 1);
@@ -1866,7 +1882,7 @@ mod tests {
         let mut wallets = Vec::new();
         for (seed_byte, alias) in [(0x61, "Alpha"), (0x62, "Beta")] {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("top_up_identity", seed_byte),
                 Network::Testnet,
                 Some(alias.to_string()),
                 None,
@@ -1895,7 +1911,7 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
         let (mut screen, _seed_hashes, _temp_dir) = two_wallet_screen();
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1937,7 +1953,7 @@ mod tests {
             None
         );
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1988,7 +2004,7 @@ mod tests {
         let _ = screen.asset_lock_cache.ensure_requested_many([alpha, beta]);
         screen.asset_lock_cache.mark_loading_failed();
 
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -2015,7 +2031,7 @@ mod tests {
     fn funding_reads_sent(screen: &mut TopUpIdentityScreen) -> Vec<WalletSeedHash> {
         use egui_kittest::Harness;
         let mut sent = Vec::new();
-        let mut harness = Harness::builder()
+        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 let tasks = match screen.ui(ui) {
@@ -2055,6 +2071,7 @@ mod tests {
     async fn funding_transactions_are_read_only_from_wallets_ready_to_answer() {
         use crate::context::test_support::wired_test_app_context;
         use crate::model::secret::Secret;
+        let seed_73 = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = wired_test_app_context(temp_dir.path()).await;
@@ -2064,19 +2081,19 @@ mod tests {
                 .expect("wallet")
         };
 
-        let ready_seed = [0x71; 64];
+        let ready_seed = crate::test_support::keys::seed();
         let ready = add_wallet_to_registry(&app_context, open_wallet(ready_seed, "Everyday"));
         backend
             .register_wallet_from_seed(&ready, &ready_seed, None)
             .await
             .expect("register the ready wallet");
 
-        let registering_seed = [0x72; 64];
+        let registering_seed = crate::test_support::keys::seed();
         let registering =
             add_wallet_to_registry(&app_context, open_wallet(registering_seed, "Savings"));
 
         let mut locked_wallet = Wallet::new_from_seed(
-            [0x73; 64],
+            seed_73,
             Network::Testnet,
             Some("Vault".to_string()),
             Some(&Secret::new("a long enough password")),
@@ -2194,6 +2211,59 @@ mod tests {
         screen.display_backend_task_error(&context, &TaskError::NoIdentitiesFound);
         assert!(!ProgressOverlay::has_global(&ctx));
         assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
+    }
+
+    /// A top-up sent from elsewhere changes the balance this screen shows:
+    /// the identity cache notification brings it in without touching the
+    /// form. Other domains and other networks leave it alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_cache_notification_reloads_the_identity_shown() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::wired_test_app_context;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = wired_test_app_context(temp_dir.path()).await;
+        let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
+        screen.funding_amount_exact = Some(100_000);
+        let identity_id = screen.identity.identity.id();
+        let mut topped_up = screen.identity.clone();
+        topped_up.identity.set_balance(200_000_000_000);
+        screen
+            .app_context
+            .insert_local_qualified_identity(&topped_up, &None)
+            .expect("store the topped-up identity");
+        let network = screen.app_context.network;
+        let other_network = if network == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+
+        for ignored in [
+            CacheUpdate {
+                network: other_network,
+                domain: CacheDomain::Identities,
+            },
+            CacheUpdate {
+                network,
+                domain: CacheDomain::Tokens,
+            },
+        ] {
+            screen.cached_data_changed(ignored);
+            assert_eq!(screen.identity.identity.balance(), 0, "{ignored:?}");
+        }
+
+        screen.cached_data_changed(CacheUpdate {
+            network,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(screen.identity.identity.id(), identity_id);
+        assert_eq!(screen.identity.identity.balance(), 200_000_000_000);
+        assert_eq!(
+            screen.funding_amount_exact,
+            Some(100_000),
+            "the form keeps what the user entered"
+        );
     }
 
     /// Wallet Send can add funds to the same identity without blocking the
@@ -2711,7 +2781,7 @@ mod tests {
         assert!(tracked_dispatches(&ctx).is_empty());
         assert!(
             ctx.data(|data| {
-                data.get_temp::<BannerHandle>(egui::Id::new(BACKGROUND_TOP_UP_BANNER_ID))
+                data.get_temp::<BannerHandle>(egui::Id::unique(BACKGROUND_TOP_UP_BANNER_ID))
             })
             .is_none(),
             "nothing of the banner is kept once the last top-up has ended"
@@ -2813,12 +2883,13 @@ mod tests {
 
     #[test]
     fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let seed_34 = crate::test_support::keys::seed();
         let old_dir = tempfile::tempdir().expect("old context dir");
         let new_dir = tempfile::tempdir().expect("new context dir");
         let old_context = test_app_context(old_dir.path());
         let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x34; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_34, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &old_context);
@@ -3138,8 +3209,9 @@ mod tests {
             "a usable deposit must stay on the form"
         );
         {
-            let mut harness = egui_kittest::Harness::builder()
-                .build_ui(|ui| screen.top_up_funding_amount_input(ui));
+            let mut harness =
+                crate::test_support::allowing_unnamed_widgets(egui_kittest::Harness::builder())
+                    .build_ui(|ui| screen.top_up_funding_amount_input(ui));
             harness.run_steps(2);
         }
 
@@ -3266,7 +3338,7 @@ mod tests {
     fn deposit_request_says_when_the_deposit_awaits_confirmation() {
         fn request_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
             use egui_kittest::{Harness, kittest::Queryable};
-            let mut harness = Harness::builder()
+            let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
                 .with_size(egui::vec2(1200.0, 900.0))
                 .build_ui(|ui| screen.render_deposit_qr(ui));
             harness.run_steps(2);

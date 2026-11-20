@@ -5,6 +5,7 @@ use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFu
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::identity_create_min_funding_duffs;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
 use dash_sdk::dash_spv::Network;
@@ -40,9 +41,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys
-            .to_public_keys_map()
-            .map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
+        let public_keys = keys.to_public_keys_map(self.platform_version())?;
         let key_count = public_keys.len();
         let estimated_fee = self.fee_estimator().estimate_identity_create(key_count);
 
@@ -188,6 +187,9 @@ impl AppContext {
         .map_err(|e| TaskError::IdentityCreationError {
             source: Box::new(e),
         })?;
+        let private_keys = keys
+            .to_key_storage(wallet_seed_hash, self.platform_version())
+            .map_err(|source| TaskError::IdentityCreationError { source })?;
 
         let mut qualified_identity = QualifiedIdentity {
             identity: placeholder_identity,
@@ -196,7 +198,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: keys.to_key_storage(wallet_seed_hash),
+            private_keys,
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(wallet_seed_hash, wallet.clone())]),
             secret_access: self.wallet_backend().ok().map(|b| b.secret_access()),
@@ -280,9 +282,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys
-            .to_public_keys_map()
-            .map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
+        let public_keys = keys.to_public_keys_map(sdk.version())?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();
@@ -306,6 +306,9 @@ impl AppContext {
         })?;
 
         let wallet_seed_hash_actual = { wallet.read().map_err(TaskError::from)?.seed_hash() };
+        let private_keys = keys
+            .to_key_storage(wallet_seed_hash_actual, sdk.version())
+            .map_err(|source| TaskError::IdentityCreationError { source })?;
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -313,7 +316,7 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: keys.to_key_storage(wallet_seed_hash_actual),
+            private_keys,
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(wallet_seed_hash_actual, wallet.clone())]),
             secret_access: self.wallet_backend().ok().map(|b| b.secret_access()),
@@ -358,7 +361,7 @@ impl AppContext {
             .await?;
 
         match put_result {
-            Ok((updated_identity, address_infos, _height)) => {
+            Ok((updated_identity, address_infos, height)) => {
                 qualified_identity.identity = updated_identity;
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 
@@ -369,9 +372,12 @@ impl AppContext {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }
 
-                self.insert_local_qualified_identity(
-                    &qualified_identity,
+                // The creation proof's height orders this first balance, so a
+                // later fetch from a lagging node cannot replace it.
+                self.insert_local_qualified_identity_observed(
+                    &mut qualified_identity,
                     &Some((wallet_seed_hash, wallet_identity_index)),
+                    BalanceProvenance::ObservedAt(height),
                 )?;
 
                 {

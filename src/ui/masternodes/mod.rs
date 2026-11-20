@@ -335,20 +335,20 @@ mod tests {
         purpose: dash_sdk::dpp::identity::Purpose,
         disabled: bool,
     ) -> dash_sdk::platform::IdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
         use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-        use dash_sdk::dpp::platform_value::BinaryData;
-        IdentityPublicKeyV0 {
+        let mut key = crate::context::test_support::identity_public_key(
             id,
-            key_type: KeyType::ECDSA_HASH160,
             purpose,
-            security_level: SecurityLevel::CRITICAL,
-            read_only: true,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: disabled.then_some(1),
-            contract_bounds: None,
+            SecurityLevel::CRITICAL,
+            KeyType::ECDSA_HASH160,
+            vec![id as u8; 20],
+        );
+        key.set_read_only(true);
+        if disabled {
+            key.set_disabled_at(1);
         }
-        .into()
+        key
     }
 
     /// An evonode that has rotated its payout address holds two `TRANSFER`

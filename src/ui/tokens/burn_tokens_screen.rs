@@ -1,4 +1,6 @@
-use super::token_action_screen::{StepCounter, TokenAction, TokenActionCtx, TokenActionScreen};
+use super::token_action_screen::{
+    StepCounter, TokenAction, TokenActionCtx, TokenActionScreen, positive_amount,
+};
 use super::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -105,6 +107,10 @@ impl TokenAction for BurnAction {
         }
     }
 
+    fn inputs_ready(&self) -> bool {
+        positive_amount(&self.amount).is_some()
+    }
+
     fn build_action(
         &mut self,
         ctx: &TokenActionCtx,
@@ -112,16 +118,13 @@ impl TokenAction for BurnAction {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Option<AppAction> {
-        let amount = match self.amount.as_ref() {
-            Some(amount) if amount.value() > 0 => amount.value(),
-            _ => {
-                MessageBanner::set_global(
-                    ctx.app_context.egui_ctx(),
-                    "Please enter a valid amount greater than 0.",
-                    MessageType::Error,
-                );
-                return None;
-            }
+        let Some(amount) = positive_amount(&self.amount) else {
+            MessageBanner::set_global(
+                ctx.app_context.egui_ctx(),
+                "Please enter a valid amount greater than 0.",
+                MessageType::Error,
+            );
+            return None;
         };
 
         Some(AppAction::BackendTasks(

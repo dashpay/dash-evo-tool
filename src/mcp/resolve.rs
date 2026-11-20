@@ -167,8 +167,10 @@ async fn hydrate_wallets(
     ctx: &Arc<AppContext>,
     wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
 ) -> Result<(), McpToolError> {
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: this call may be the one that wires the
+    // wallet backend, which keeps the sender for good. Mirrors
+    // `ensure_spv_ready` and `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
         .map_err(McpToolError::TaskFailed)?;
@@ -288,11 +290,11 @@ async fn ensure_spv_ready(
     ctx: &Arc<AppContext>,
     protocol_refresh: ProtocolRefresh,
 ) -> Result<(), McpToolError> {
-    // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
-    // it, so the receiver is dropped. The `EventBridge` only does non-blocking
-    // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: the GUI's when the server is embedded,
+    // a sink in a headless process. The backend wired here keeps the sender
+    // for good, so it is never one made for this call. Mirrors
+    // `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     // Prepare storage, THEN start chain sync — both inside the chokepoint, in
     // that order. This call used to start SPV before the legacy drain had run;
     // the drain is now part of `prepare_storage`, which the chokepoint awaits
@@ -449,24 +451,16 @@ mod tests {
     use dash_sdk::dpp::version::LATEST_VERSION;
     use dash_sdk::platform::DataContract;
 
-    /// Mocks the DPNS-contract fetch that drives the protocol-version ratchet,
-    /// the epoch task's fallback when the current epoch cannot be read (the
-    /// mock has no epoch response). The app reads the version the SDK
-    /// verified, and a mock expectation is made up, never verified, so the
-    /// SDK accepts `LATEST_VERSION` from metadata it is told was proved, as
-    /// it does after a live network's quorum-signed response.
-    async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let sdk = mock_sdk_with_unproved_dpns_contract(ctx).await;
-        sdk.verify_response_metadata(
-            "get_data_contract",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                protocol_version: LATEST_VERSION,
-                height: 1,
-                ..Default::default()
-            },
-        )
-        .expect("proved metadata is accepted");
-        sdk
+    /// Install a mock SDK on `ctx` that answers the DPNS-contract fetch driving
+    /// the protocol-version ratchet, the epoch task's fallback when the current
+    /// epoch cannot be read (the mock has no epoch response). The app reads the
+    /// version the SDK verified, and a mock expectation is made up, never
+    /// verified, so the test declares `LATEST_VERSION` proven for that SDK, as
+    /// a live network's quorum-signed response would prove it.
+    async fn install_mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) {
+        ctx.sdk
+            .store(Arc::new(mock_sdk_with_unproved_dpns_contract(ctx).await));
+        crate::context::test_support::prove_protocol_version(ctx, LATEST_VERSION);
     }
 
     /// The DPNS-contract fetch alone: its expectation proves nothing about the
@@ -504,8 +498,7 @@ mod tests {
     async fn headless_sync_reads_the_proven_protocol_version_after_spv_is_running() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
+        install_mock_sdk_with_dpns_contract(&ctx).await;
         ctx.connection_status().set_spv_status(SpvStatus::Running);
 
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
@@ -534,8 +527,7 @@ mod tests {
             .expect("SPV readiness survives a Platform metadata failure");
         assert_eq!(ctx.protocol_version_info().verified_version, None);
 
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
+        install_mock_sdk_with_dpns_contract(&ctx).await;
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
             .await
             .expect("SPV readiness retries Platform metadata");
@@ -550,7 +542,7 @@ mod tests {
     /// — the shape legacy data takes when two wallets already share an alias.
     fn insert_wallet_with_alias(ctx: &AppContext, seed_byte: u8, alias: &str) -> WalletSeedHash {
         let wallet = crate::model::wallet::Wallet::new_from_seed(
-            [seed_byte; 64],
+            crate::test_support::keys::labelled_seed("mcp_resolve", u64::from(seed_byte)),
             ctx.network(),
             Some(alias.to_owned()),
             None,
@@ -637,5 +629,33 @@ mod tests {
             }) => assert!(Arc::ptr_eq(&actual, &source)),
             other => panic!("expected the typed migration failure, got {other:?}"),
         }
+    }
+
+    /// With the server embedded in the GUI, hydrating wallets may be the first
+    /// call to wire the wallet backend. The backend keeps its sender for good,
+    /// so it must be the GUI's frame loop, never one made for the call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydration_wires_the_backend_on_the_installed_frame_loop() {
+        use crate::backend_task::TaskResult;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut frame_loop) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+
+        ensure_wallets_hydrated(&ctx)
+            .await
+            .expect("hydrate wallets offline");
+
+        let backend = ctx.wallet_backend().expect("hydration wires the backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the installed frame loop");
+        assert!(matches!(frame_loop.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
     }
 }

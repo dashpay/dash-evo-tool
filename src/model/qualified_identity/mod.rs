@@ -1508,10 +1508,10 @@ impl QualifiedIdentity {
 #[cfg(test)]
 mod key_placement_tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::key_placement::{KeyPlacement, PROBE_ORDER};
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
@@ -1522,16 +1522,13 @@ mod key_placement_tests {
     /// A key whose `data()` is derived from `material`, so two keys sharing an
     /// id can still be told apart the way the resolver tells them apart.
     fn key(id: KeyID, purpose: Purpose, material: u8) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![material; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![material; 20]),
+        )
     }
 
     /// An identity publishing `published`, holding the private halves in `held`.
@@ -1581,7 +1578,10 @@ mod key_placement_tests {
     }
 
     fn clear(bytes: u8) -> PrivateKeyData {
-        PrivateKeyData::Clear([bytes; 32])
+        PrivateKeyData::Clear(crate::test_support::keys::labelled_secret(
+            "qualified_identity::clear",
+            bytes.into(),
+        ))
     }
 
     /// T1 — the defect. A `VOTING` key on the main identity, its private half
@@ -1645,16 +1645,14 @@ mod key_placement_tests {
     #[test]
     fn a_key_disabled_since_it_was_saved_is_still_found() {
         let active = key(1, Purpose::AUTHENTICATION, 0xBB);
-        let disabled = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 1,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xBB; 20]),
-            disabled_at: Some(1),
-        });
+        let mut disabled = identity_public_key(
+            1,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            vec![0xBB; 20],
+        );
+        disabled.set_disabled_at(1);
 
         // Stored while active; the live key is the disabled one.
         let identity = qi(
@@ -1948,8 +1946,8 @@ mod key_placement_tests {
 #[cfg(test)]
 mod key_resolution_tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
@@ -1957,16 +1955,13 @@ mod key_resolution_tests {
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
     fn voting_key(id: KeyID) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
-            purpose: Purpose::VOTING,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xAA; 20]),
-            disabled_at: None,
-        })
+            Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0xAA; 20]),
+        )
     }
 
     /// A masternode publishing `key` on its MAIN identity, with a private-half
@@ -2013,18 +2008,17 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn bls_signing_preserves_the_previous_sdk_basic_signature_bytes() {
         // Generated with the previous pin's blsful Basic signer using this synthetic key.
+        // The key is fixed because the expected signature below depends on it:
+        // a golden vector, exempt from runtime key generation.
         let secret = [0x11; 32];
         let public = bls::SecretKey::from_be_bytes(&secret).unwrap().public_key();
-        let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 3,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::BLS12_381,
-            read_only: false,
-            data: BinaryData::new(public.to_bytes().to_vec()),
-            disabled_at: None,
-        });
+        let key = identity_public_key(
+            3,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::BLS12_381,
+            BinaryData::new(public.to_bytes().to_vec()),
+        );
         let identity = masternode_with(&key, &[(MAIN, PrivateKeyData::Clear(secret))]);
         let signature = identity
             .sign(&key, b"DET BLS adapter parity")
@@ -2046,7 +2040,7 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn a_held_voting_key_on_the_main_identity_is_signable_under_either_placement() {
         let key = voting_key(3);
-        let secret = [0x11; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         for filed_under in [MAIN, VOTER] {
             let identity = masternode_with(
@@ -2081,7 +2075,7 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn a_dead_vault_placeholder_falls_through_to_a_live_placement() {
         let key = voting_key(0);
-        let secret = [0x77; 32];
+        let secret = crate::test_support::keys::secret_bytes();
         // Main is probed first and holds an InVault placeholder with no
         // chokepoint wired, so it cannot produce bytes.
         let identity = masternode_with(
@@ -2150,7 +2144,7 @@ mod key_resolution_tests {
                 .put_secret_protected(
                     &SecretWalletId::from(identity_id),
                     &SecretScope::identity_key_label(&target, key.id()),
-                    &SecretBytes::from_slice(&[0x99; 32]),
+                    &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                     &SecretString::new("the-object-password"),
                 )
                 .expect("seal the identity key");
@@ -2213,7 +2207,7 @@ mod key_resolution_tests {
             .put_secret_protected(
                 &SecretWalletId::from(identity_id),
                 &SecretScope::identity_key_label(&VOTER, key.id()),
-                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                 &SecretString::new("the-object-password"),
             )
             .expect("seal the identity key");
@@ -2262,7 +2256,7 @@ mod key_resolution_tests {
         let key = voting_key(0);
         // The id `masternode_with` builds its identity under.
         let identity_id = [1u8; 32];
-        let secret = [0x55; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
@@ -2273,7 +2267,7 @@ mod key_resolution_tests {
             .put_secret_protected(
                 &SecretWalletId::from(identity_id),
                 &SecretScope::identity_key_label(&MAIN, key.id()),
-                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                 &SecretString::new("the-object-password"),
             )
             .expect("seal the identity key");
@@ -2421,8 +2415,8 @@ mod key_resolution_tests {
 #[cfg(test)]
 mod masternode_key_presence_tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -2431,16 +2425,13 @@ mod masternode_key_presence_tests {
     /// purpose is read by [`QualifiedIdentity::masternode_key_presence`]; the
     /// key type and data are inert placeholders.
     fn key_with_purpose(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0u8; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0u8; 20]),
+        )
     }
 
     /// Assemble a masternode-shaped `QualifiedIdentity`: `voting` attaches a

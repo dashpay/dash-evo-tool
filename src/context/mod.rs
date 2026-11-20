@@ -31,6 +31,7 @@ pub use wallet_lifecycle::PrepareGateGuard;
 pub use wallet_lifecycle::WalletUnlockRetention;
 
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::ExperimentalFeature;
@@ -43,6 +44,7 @@ use crate::model::request_type::RequestType;
 use crate::model::wallet::single_key::SingleKeyHash;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::wallet_context::WalletContext;
 use crate::wallet_backend::{
@@ -76,7 +78,8 @@ use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
-pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
+/// Stack budget for SDK proof verification on worker and blocking threads.
+pub const SDK_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
 type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
@@ -176,6 +179,11 @@ pub struct AppContext {
     user_role: UserRoleCell,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
+    /// TEST SEAM (compiled only into `cargo test` builds): the protocol
+    /// version tests declare proven for the current SDK. See
+    /// [`test_support::ProvenProtocolVersionOverride`].
+    #[cfg(test)]
+    pub(crate) proven_protocol_version_for_tests: test_support::ProvenProtocolVersionOverride,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
@@ -274,6 +282,10 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: a paid task's background balance read waits here before
+    /// it starts, so a test can hold it and observe the task finishing first.
+    #[cfg(test)]
+    pub(crate) test_fee_payer_refresh_gate: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -398,6 +410,14 @@ pub struct AppContext {
     /// after `AppContext::new` but before the backend reads it; contention is
     /// nil (touched only at install and backend construction).
     secret_prompt: SecretPromptSlot,
+    /// The frame loop that takes this context's task reports: progress,
+    /// cache notifications and the backend's requests. The wallet backend
+    /// keeps the sender it is built with for the life of the context, so it
+    /// is never a per-request one: the GUI installs its sender through
+    /// [`Self::install_frame_loop`] before any request can reach the context,
+    /// and a headless process gets one sink per context from
+    /// [`Self::frame_loop_sender`].
+    frame_loop: ArcSwapOption<SenderAsync<TaskResult>>,
     /// Whether the preserved legacy `data.db` holds any identity of this
     /// network — the gate on the stranded-key recovery offer, probed at most
     /// once per context by [`Self::has_legacy_identities`]. The legacy file is
@@ -595,6 +615,8 @@ impl AppContext {
             user_role,
             db,
             sdk: ArcSwap::from_pointee(sdk),
+            #[cfg(test)]
+            proven_protocol_version_for_tests: Default::default(),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
             system_contracts,
@@ -628,6 +650,8 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             contact_info_writes: Default::default(),
             dpns_vote_operation_guard: Mutex::new(()),
@@ -658,6 +682,7 @@ impl AppContext {
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
+            frame_loop: ArcSwapOption::const_empty(),
             legacy_identities_present: std::sync::OnceLock::new(),
         };
 
@@ -1056,11 +1081,10 @@ impl AppContext {
         }
     }
 
-    /// Get a fee estimator configured with the cached fee multiplier.
-    /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
-    /// that reflect the current network fee multiplier.
+    /// A fee estimator for the protocol version the SDK speaks, at the cached
+    /// epoch fee multiplier. Use it for every fee estimate.
     pub fn fee_estimator(&self) -> PlatformFeeEstimator {
-        PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
+        PlatformFeeEstimator::new(self.platform_version(), self.fee_multiplier_permille())
     }
 
     /// A handle on the shared app-global role, for wiring a newly-created
@@ -1132,7 +1156,15 @@ impl AppContext {
     /// version transitions are built at, and whether the proven version is
     /// newer than any this build defines.
     pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
-        self.sdk.load().protocol_version_info()
+        let sdk = self.sdk.load();
+        let info = sdk.protocol_version_info();
+        // TEST SEAM: compiled only into `cargo test` builds; every other build
+        // returns the SDK's answer unchanged.
+        // TODO(upstream): drop once the SDK offers a mock seam for a verified
+        // version (https://github.com/dashpay/platform/issues/5622).
+        #[cfg(test)]
+        let info = self.proven_protocol_version_for_tests.apply(&sdk, info);
+        info
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -1180,10 +1212,14 @@ impl AppContext {
     /// nothing learned from the old endpoints except the bans of addresses
     /// that stay.
     ///
-    /// The new SDK is built over the old SDK's address list, moved in place to
-    /// the configured addresses first. Every clone of the old SDK shares that
-    /// list, the wallet backend's and the upstream wallet components'
-    /// included, so they reach the new addresses too.
+    /// The new SDK is built over the old SDK's address list, which is then
+    /// moved in place to the configured addresses. Every clone of the old SDK
+    /// shares that list, the wallet backend's and the upstream wallet
+    /// components' included, so they reach the new addresses too.
+    ///
+    /// All or nothing: every step that can fail runs before the list moves,
+    /// so a failed rebuild leaves the client, the SDK and the list as they
+    /// were.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         let _rebuild = self
             .connection_rebuild
@@ -1221,31 +1257,35 @@ impl AppContext {
 
         // One address list per context: the wallet backend, and the upstream
         // wallet components it feeds, hold clones of the SDK they were built
-        // with and are never given the new one. So the list they share with
-        // the current SDK moves to the new addresses in place, keeping the
-        // bans of addresses that stay, and the new SDK is built over it.
+        // with and are never given the new one. So the new SDK is built over
+        // the list they share with the current SDK, and that list moves to
+        // the new addresses in place, keeping the bans of addresses that stay.
         let shared_addresses = self.sdk.load().address_list().clone();
-        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
 
+        // Everything that can fail runs before the list moves, so a failed
+        // rebuild leaves every SDK on the old addresses. The SDK is built
+        // while the list still holds them; it shares the list, so it follows
+        // the move below.
         let provider = self.spv_context_provider.read()?.clone();
         // Like a cold start: the network minimum, raised by the new
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
-        let new_sdk = initialize_sdk(shared_addresses, self.network, provider)
+        let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
             .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+        let mut client_lock = self.core_client.write()?;
 
-        // 4. Swap in the new SDK and client
-        {
-            let mut client_lock = self.core_client.write()?;
-            *client_lock = new_client;
-        }
+        // 4. Nothing below can fail: move the list, swap in the new client
+        // and SDK.
+        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
+        *client_lock = new_client;
+        drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
         // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK.
-        self.spv_context_provider
-            .read()?
-            .bind_app_context(self.clone());
+        // bind_app_context also registers the provider with the SDK. The
+        // clone shares the provider's state, so binding it binds the one the
+        // context holds.
+        provider.bind_app_context(self.clone());
 
         Ok(())
     }
@@ -1323,11 +1363,11 @@ impl AppContext {
         sdk: &Sdk,
         contract_id: Identifier,
         proof_error: dash_sdk::Error,
-        sender: &crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         persist: impl FnOnce(&Self, &DataContract),
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
-        use crate::app::TaskResult;
         use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
 
         // Give the network time to propagate the block before re-fetching.
@@ -1338,7 +1378,8 @@ impl AppContext {
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::ProofErrorLogged,
             ))
             .await
@@ -1366,7 +1407,7 @@ impl AppContext {
     /// Subsequent calls are no-ops (first writer wins).
     pub async fn ensure_wallet_backend(
         self: &Arc<Self>,
-        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         // Fast path: already wired, no lock needed.
         if self.wallet_backend.load().is_some() {
@@ -1494,6 +1535,52 @@ impl AppContext {
             .lock()
             .map(|g| Arc::clone(&g))
             .unwrap_or_else(|_| Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>)
+    }
+
+    /// Install the frame loop that takes this context's task reports. The GUI
+    /// calls this on every context it holds before any request can reach it:
+    /// at boot, and in the network switch that creates a context. A later
+    /// install replaces the sender for later callers only; the wallet backend
+    /// keeps the one it was built with.
+    pub fn install_frame_loop(&self, sender: SenderAsync<TaskResult>) {
+        self.frame_loop.store(Some(Arc::new(sender)));
+    }
+
+    /// The sender to this context's frame loop. Headless callers (MCP, CLI)
+    /// pass it to work that reports to a frame loop, such as
+    /// [`Self::run_backend_task`]: a context with no frame loop installed gets
+    /// a sink that reads and drops reports until shutdown, one per context,
+    /// tracked by the task manager so a report never stalls on a full channel
+    /// and the sink ends with the process. Must run inside a Tokio runtime.
+    pub fn frame_loop_sender(&self) -> SenderAsync<TaskResult> {
+        if let Some(sender) = self.frame_loop.load_full() {
+            return (*sender).clone();
+        }
+        let (tx, mut reports) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, self.egui_ctx.clone());
+        let cancelled = self.subtasks.cancellation_token.clone();
+        let sink = async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.cancelled() => break,
+                    report = reports.recv() => if report.is_none() { break },
+                }
+            }
+        };
+        if self.subtasks.spawn_sync("frame-loop-sink", sink).is_err() {
+            tracing::debug!("No frame-loop sink after shutdown began; reports will be refused");
+        }
+        // Another caller may have installed a frame loop meanwhile: the first
+        // one wins, as it is the one a backend may already hold. A losing
+        // sink ends when its sender drops here.
+        let previous = self
+            .frame_loop
+            .compare_and_swap(&None::<Arc<_>>, Some(Arc::new(sender.clone())));
+        match previous.as_ref() {
+            Some(installed) => (**installed).clone(),
+            None => sender,
+        }
     }
 
     /// Whether this context has a host that can render a human password prompt.
@@ -1780,14 +1867,57 @@ impl AppContext {
             .unwrap_or_default()
     }
 
-    /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
-    /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
+    /// The revision a Core send Max quote is made against; see
+    /// [`crate::wallet_backend::WalletBackend::core_send_quote_revision`].
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.core_send_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// The shield-in-flight part of a shield-from-Platform Max quote key; see
+    /// [`crate::wallet_backend::WalletBackend::platform_shield_quote_revision`].
+    pub fn platform_shield_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.platform_shield_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Number of UTXOs in the wallet's display snapshot, in every account.
+    /// Sizes the Core fee a wallet deposit is asked to bring on top.
     ///
     /// DISPLAY-ONLY: like the other snapshot reads, this never drives coin
-    /// selection — it only sizes the fee reserved off the displayed balance.
+    /// selection or a Max amount — those come from the backend builder.
     pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
             .map(|wb| wb.utxo_count(seed_hash))
+            .unwrap_or(0)
+    }
+
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` to a
+    /// `destination` script, never below what the build charges. `quote` is
+    /// the quoted Max for the same destination and what it was proven
+    /// against; without it, the coins the snapshot counts stand in.
+    pub fn snapshot_core_payment_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        destination: crate::model::spend_limit::CoreDestinationScript,
+        amount_duffs: u64,
+        quote: Option<(u64, crate::model::spend_limit::CoreSendQuoteFee)>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_payment_fee_duffs(
+            destination,
+            amount_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
+        )
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, from
+    /// the wallet's snapshot.
+    fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.wallet_backend()
+            .map(|wb| wb.core_send_input_count(seed_hash))
             .unwrap_or(0)
     }
 
@@ -1885,6 +2015,47 @@ mod tests {
             ctx.sdk.load().address_list().is_banned(&banned),
             "the app's SDK and the wallet's SDK share one list"
         );
+    }
+
+    /// A rebuild that fails leaves every SDK on the old addresses: the shared
+    /// list must not move to the new addresses unless the whole rebuild is
+    /// applied, or the wallet backend would talk to endpoints the app's
+    /// connection settings were never switched to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_rebuild_leaves_the_shared_addresses_untouched() {
+        use std::collections::HashSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let addresses_of = |list: &AddressList| -> HashSet<String> {
+            list.ban_info().into_iter().map(|info| info.uri).collect()
+        };
+        let sdk_before = ctx.sdk.load_full();
+        let before = addresses_of(sdk_before.address_list());
+        assert!(!before.is_empty(), "the fixture starts with addresses");
+        assert!(!before.iter().any(|uri| uri.contains("10.0.0.7")));
+        ctx.config.write().expect("config").dapi_addresses =
+            Some("https://10.0.0.7:443".to_string());
+
+        // Fail the rebuild: a poisoned provider lock makes its read fail.
+        let poisoner = Arc::clone(&ctx);
+        std::thread::spawn(move || {
+            let _guard = poisoner.spv_context_provider.write().expect("provider");
+            panic!("poison the provider lock");
+        })
+        .join()
+        .expect_err("the poisoning thread panics");
+
+        let result = Arc::clone(&ctx).reinit_core_client_and_sdk();
+
+        assert!(result.is_err(), "the rebuild must fail");
+        assert!(
+            Arc::ptr_eq(&sdk_before, &ctx.sdk.load_full()),
+            "the old SDK stays in place"
+        );
+        let backend = ctx.wallet_backend().expect("wired backend");
+        assert_eq!(addresses_of(backend.sdk().address_list()), before);
+        assert_eq!(addresses_of(ctx.sdk.load().address_list()), before);
     }
 
     /// Without a wallet backend, a rebuild still moves the app to the new
@@ -2108,8 +2279,8 @@ mod tests {
     /// store is a real, writable DB the accessors read from. Returns the temp
     /// dir (kept alive by the caller) alongside the context.
     async fn offline_ctx() -> (tempfile::TempDir, std::sync::Arc<AppContext>) {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;
@@ -2140,6 +2311,49 @@ mod tests {
             .await
             .expect("wire wallet backend offline");
         (temp_dir, ctx)
+    }
+
+    /// A context with no frame loop installed, as in a headless process,
+    /// sinks every report it is handed through one sender for its life, and
+    /// the sink ends with the task manager's shutdown.
+    #[tokio::test]
+    async fn a_headless_context_sinks_frame_loop_reports_until_shutdown() {
+        use crate::utils::tasks::TaskShutdownOutcome;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sender = ctx.frame_loop_sender();
+        for _ in 0..100 {
+            sender
+                .send(TaskResult::Repaint)
+                .await
+                .expect("the sink reads reports past the channel's capacity");
+        }
+        ctx.frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("later callers share the sink");
+        assert_eq!(
+            ctx.subtasks
+                .shutdown_async()
+                .await
+                .expect("shutdown outcome"),
+            TaskShutdownOutcome::Complete,
+            "the sink ends on shutdown although the context still holds its sender"
+        );
+    }
+
+    /// An installed frame loop is what every later caller gets.
+    #[tokio::test]
+    async fn an_installed_frame_loop_takes_every_report() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(SenderAsync::new(tx, ctx.egui_ctx().clone()));
+        ctx.frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("send to the installed frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
     }
 
     /// Regression (mn-live-qa Bug 1): the user role is a single app-global value

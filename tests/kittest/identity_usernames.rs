@@ -102,14 +102,15 @@ pub(crate) fn seed_username_identity(
 }
 
 fn mount(screen: RegisterDpnsNameScreen) -> Harness<'static, RegisterDpnsNameScreen> {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(1280.0, 900.0))
-        .build_ui_state(
-            |ui, screen: &mut RegisterDpnsNameScreen| {
-                screen.ui(ui);
-            },
-            screen,
-        );
+    let mut harness =
+        crate::support::allowing_unnamed_widgets(crate::support::builder_with_app_fonts())
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDpnsNameScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
     harness.run();
     harness
 }
@@ -122,9 +123,16 @@ fn answered(
     let mut screen = RegisterDpnsNameScreen::new(app_context, RegisterDpnsNameSource::Identities);
     screen.type_label_for_test(label);
     let _ = screen.flush_debounce_for_test();
+    // The base fund: the vote holds fewer requests than doubles it.
+    let contest_fund = if availability.needs_vote() {
+        contest_fee_credits(app_context.sdk_platform_version())
+    } else {
+        0
+    };
     screen.display_task_result(BackendTaskSuccessResult::UsernameAvailability {
         label: label.to_owned(),
         availability,
+        contest_fund,
     });
     screen
 }
@@ -342,7 +350,7 @@ fn request(label: &str, phase: RequestPhase) -> UsernameRequest {
 type SettingsState = (SettingsTab, Option<AppAction>);
 
 fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsState> {
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::builder_with_app_fonts()
         .with_size(egui::vec2(1400.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut SettingsState| {
@@ -486,7 +494,7 @@ fn mount_request(
     label: &str,
 ) -> Harness<'static, UsernameRequestScreen> {
     let screen = UsernameRequestScreen::new(app_context, id, label.to_owned());
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::builder_with_app_fonts()
         .with_size(egui::vec2(1280.0, 1200.0))
         .build_ui_state(
             |ui, screen: &mut UsernameRequestScreen| {
@@ -633,7 +641,7 @@ type HomeHarnessState = (
 );
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::builder_with_app_fonts()
         .with_size(egui::vec2(1280.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut HomeHarnessState| {

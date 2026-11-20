@@ -834,6 +834,14 @@ impl SetTokenPriceScreen {
 }
 
 impl ScreenLike for SetTokenPriceScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
@@ -874,7 +882,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
                     ("Group Actions", AppAction::PopScreen),
-                    ("SetPrice", AppAction::None),
+                    ("Set Price", AppAction::None),
                 ],
                 vec![],
             );
@@ -885,7 +893,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
                     (&self.identity_token_info.token_alias, AppAction::PopScreen),
-                    ("SetPrice", AppAction::None),
+                    ("Set Price", AppAction::None),
                 ],
                 vec![],
             );
@@ -909,7 +917,13 @@ impl ScreenLike for SetTokenPriceScreen {
                     return;
                 }
 
-            ui.heading("Set Token Pricing Schedule");
+            // The page heading shares its row with the Advanced Options toggle.
+            ui.horizontal(|ui| {
+                ui.heading("Set Token Pricing Schedule");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                });
+            });
             ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -992,18 +1006,10 @@ impl ScreenLike for SetTokenPriceScreen {
                     }
                 }
 
-                // Header with Advanced Options checkbox
-                ui.horizontal(|ui| {
-                    ui.heading("Set Token Price");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-                    });
-                });
-                ui.add_space(10.0);
 
                 // Key selection (only in advanced mode)
                 if self.show_advanced_options {
-                    ui.heading("1. Select the key to sign the SetPrice transaction");
+                    ui.heading("1. Select the key to sign the Set Price transaction");
                     ui.add_space(10.0);
                     add_key_chooser(
                         ui,

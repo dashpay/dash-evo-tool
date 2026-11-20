@@ -1,6 +1,8 @@
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
-use crate::backend_task::{BackendTaskSuccessResult, contextualize_dapi_task_result};
+use crate::backend_task::{
+    BackendTaskSuccessResult, contextualize_dapi_task_result, in_current_request,
+};
 use crate::context::AppContext;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
@@ -115,10 +117,11 @@ where
             pace.tick().await;
         }
         let query = query(name);
-        queries.push(tokio::spawn(async move {
+        // Carried into the subtask so its failure still names the refresh.
+        queries.push(tokio::spawn(in_current_request(async move {
             let _permit = permit;
             query.await
-        }));
+        })));
     }
     queries
 }
@@ -212,10 +215,8 @@ impl AppContext {
 
             names_to_be_updated.extend(new_names_to_be_updated);
 
-            sender
-                .send(TaskResult::DpnsContestsChanged)
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                .await;
 
             if contested_resources_len < 100 {
                 break;
@@ -231,7 +232,8 @@ impl AppContext {
             let sender = sender.clone();
             let self_ref = self.clone();
 
-            tokio::spawn(async move {
+            // Carried into the subtask so its failure still names the refresh.
+            tokio::spawn(in_current_request(async move {
                 let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
                     Ok(permit) => permit,
                     Err(e) => {
@@ -245,12 +247,9 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender.send(TaskResult::DpnsContestsChanged).await {
-                            tracing::warn!(
-                                "Failed to send refresh after dpns end times query: {}",
-                                e
-                            );
-                        }
+                        self_ref
+                            .notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                            .await;
                         true
                     }
                     Err(e) if quiet => {
@@ -260,7 +259,7 @@ impl AppContext {
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
                         let result = contextualize_dapi_task_result(
-                            TaskResult::unattributed_error(e),
+                            TaskResult::interim_error(self_ref.network, e),
                             DapiAddressAvailability::from_sdk(&sdk),
                         );
                         if let Err(send_err) = sender.send(result).await {
@@ -272,7 +271,7 @@ impl AppContext {
                         false
                     }
                 }
-            })
+            }))
         };
 
         // The end times tell which contests are still open. Those are read
@@ -292,13 +291,9 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender.send(TaskResult::DpnsContestsChanged).await {
-                            tracing::warn!(
-                                "Failed to send refresh after vote contenders query for {}: {}",
-                                name,
-                                e
-                            );
-                        }
+                        self_ref
+                            .notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                            .await;
                         true
                     }
                     Err(e) if quiet => {
@@ -308,7 +303,7 @@ impl AppContext {
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
                         let result = contextualize_dapi_task_result(
-                            TaskResult::unattributed_error(e),
+                            TaskResult::interim_error(self_ref.network, e),
                             DapiAddressAvailability::from_sdk(&sdk),
                         );
                         if let Err(send_err) = sender.send(result).await {
@@ -340,10 +335,8 @@ impl AppContext {
             contests_refreshed &= every_contest_query_succeeded(std::mem::take(&mut handles)).await;
             self.prove_current_votes(sdk).await;
             self.recompute_dpns_vote_attention();
-            sender
-                .send(TaskResult::DpnsContestsChanged)
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                .await;
         }
         handles.extend(
             start_in_order(
@@ -373,7 +366,9 @@ impl AppContext {
 
         sender
             .send(TaskResult::unattributed_success(
-                BackendTaskSuccessResult::RefreshedDpnsContests,
+                BackendTaskSuccessResult::RefreshedDpnsContests {
+                    network: self.network,
+                },
             ))
             .await
             .map_err(|_| TaskError::InternalSendError)?;
@@ -699,15 +694,48 @@ mod tests {
 
         let sent: Vec<TaskResult> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(
-            !sent
-                .iter()
-                .any(|result| matches!(result, TaskResult::Refresh)),
+            !sent.iter().any(|result| matches!(
+                result,
+                TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::All,
+                    ..
+                })
+            )),
             "a pass must not ask whatever screen is visible to refresh: {sent:?}"
         );
         assert!(
-            sent.iter()
-                .any(|result| matches!(result, TaskResult::DpnsContestsChanged)),
+            sent.iter().any(|result| matches!(
+                result,
+                TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::Dpns,
+                    ..
+                })
+            )),
             "a pass must still report that contest data changed: {sent:?}"
+        );
+    }
+
+    /// A pass reports each change only after storing it. A frame loop gone
+    /// at shutdown or after a network switch loses those reports, but the
+    /// pass still reads every contest instead of stopping at the first lost
+    /// report.
+    #[tokio::test]
+    async fn a_pass_with_no_frame_loop_still_reads_every_contest() {
+        let names = contest_names(1);
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        answer_contenders(&context, &mut sdk, &names[0], None).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(rx);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        // Only the pass's own result, sent last, has nobody to take it.
+        let result = context
+            .query_dpns_contested_resources(&sdk, sender, true)
+            .await;
+
+        assert!(
+            was_read(&context, &names[0]),
+            "the contest was not read once a cache report was lost: {result:?}"
         );
     }
 

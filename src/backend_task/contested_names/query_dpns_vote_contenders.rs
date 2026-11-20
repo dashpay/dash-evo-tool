@@ -1,4 +1,4 @@
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::request_type::RequestType;

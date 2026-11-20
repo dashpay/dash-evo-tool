@@ -272,6 +272,14 @@ impl UsernameRequestScreen {
 }
 
 impl ScreenLike for UsernameRequestScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn refresh(&mut self) {
         self.identity_label = self.load_identity_label();
         self.can_vote = self.app_context.user_role().at_least(UserRole::Power)

@@ -40,7 +40,7 @@ fn mount_hub(app_context: &Arc<AppContext>, width: f32) -> HubHarness {
     // The hub holds its proof-verifying reads until the masternode list is
     // synced; these tests start on a synced network.
     app_context.connection_status().set_masternodes_ready(true);
-    Harness::builder()
+    crate::support::builder_with_app_fonts()
         .with_size(egui::vec2(width, 1100.0))
         .build_ui_state(
             |ui, state: &mut (IdentityHubScreen, Vec<AppAction>)| {
@@ -533,5 +533,118 @@ fn a_narrow_window_keeps_the_hub_on_screen_and_stacks_the_profile() {
             "at {NARROW} px, the usernames card ({usernames:?}) stacks under the form \
              (ends at {form_bottom})"
         );
+    });
+}
+
+#[test]
+fn header_identity_id_is_below_usernames_and_copies_in_both_themes() {
+    for (dark, width) in [
+        (false, 640.0),
+        (true, 640.0),
+        (false, 1280.0),
+        (true, 1280.0),
+    ] {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_with_usernames(&app_context);
+            let full =
+                owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+            let mut hub = mount_hub(&app_context, width);
+            hub.ctx
+                .set_fonts(dash_evo_tool::bundled::fonts().expect("bundled fonts"));
+            dash_evo_tool::ui::theme::apply_theme(
+                &hub.ctx,
+                if dark {
+                    dash_evo_tool::ui::theme::ThemeMode::Dark
+                } else {
+                    dash_evo_tool::ui::theme::ThemeMode::Light
+                },
+            );
+            hub.run();
+            let short = format!("{}…{}", &full[..5], &full[full.len() - 3..]);
+            let id_rect = hub.get_by_label(&short).rect();
+            assert!(id_rect.top() >= hub.get_by_label("@alex, @alexander").rect().bottom());
+            let copy = hub.get_by_role_and_label(Role::Button, "Copy full identity ID");
+            assert!(copy.rect().right() <= width);
+            assert!(copy.rect().left() >= id_rect.right());
+            assert!(copy.rect().width() <= 28.0);
+            assert!(
+                (copy.rect().center().y - id_rect.center().y).abs() < 1.0,
+                "ID {id_rect:?} and copy {:?} must share their vertical center",
+                copy.rect(),
+            );
+            assert!(hub.query_by_label("Copy").is_none());
+            copy.focus();
+            hub.run();
+            hub.key_down(egui::Key::Enter);
+            hub.step();
+            assert!(hub.output().platform_output.commands.iter().any(|command| {
+                matches!(command, egui::OutputCommand::CopyText(text) if text == &full)
+            }));
+            hub.key_up(egui::Key::Enter);
+            hub.run();
+            assert!(
+                hub.query_by_label("The identity ID was copied to the clipboard.")
+                    .is_some()
+            );
+            let confirmation =
+                dash_evo_tool::ui::components::message_banner::MessageBanner::set_global(
+                    &hub.ctx,
+                    "The identity ID was copied to the clipboard.",
+                    dash_evo_tool::ui::MessageType::Success,
+                );
+            let created_before = confirmation.created_at().expect("copy confirmation");
+            hub.get_by_role_and_label(Role::Button, "Copy full identity ID")
+                .click();
+            hub.run();
+            let created_after = confirmation.created_at().expect("copy confirmation");
+            assert!(created_after > created_before);
+        });
+    }
+}
+
+#[test]
+fn header_identity_id_without_username_is_available_on_all_tabs() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let owner = seed_identity_named(&app_context, &[]);
+        let full =
+            owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        let short = format!("{}…{}", &full[..5], &full[full.len() - 3..]);
+        let mut hub = mount_hub(&app_context, 1280.0);
+        hub.ctx
+            .set_fonts(dash_evo_tool::bundled::fonts().expect("bundled fonts"));
+        dash_evo_tool::ui::theme::apply_theme(&hub.ctx, dash_evo_tool::ui::theme::ThemeMode::Light);
+        hub.run();
+        assert!(hub.query_by_label("No username yet").is_some());
+        for tab in IdentityHubTab::ALL
+            .into_iter()
+            .chain([IdentityHubTab::Home])
+        {
+            hub.state_mut().0.select_tab(tab);
+            hub.run();
+            let copy = hub.get_by_role_and_label(Role::Button, "Copy full identity ID");
+            let copy_rect = copy.rect();
+            let id_rect = hub
+                .query_all_by_label(&short)
+                .map(|label| label.rect())
+                .find(|rect| (rect.center().y - copy_rect.center().y).abs() < 1.0)
+                .expect("shortened ID beside the copy icon, separate from the heading");
+            assert!(id_rect.top() >= hub.get_by_label("No username yet").rect().bottom());
+            assert!(copy_rect.left() >= id_rect.right());
+            assert!(copy_rect.right() <= 1280.0);
+            copy.focus();
+            hub.run();
+            hub.key_down(egui::Key::Enter);
+            hub.step();
+            assert!(
+                hub.output().platform_output.commands.iter().any(|command| {
+                    matches!(command, egui::OutputCommand::CopyText(text) if text == &full)
+                }),
+                "the full identity ID must be copied on {tab:?}",
+            );
+            hub.key_up(egui::Key::Enter);
+            hub.run();
+        }
     });
 }

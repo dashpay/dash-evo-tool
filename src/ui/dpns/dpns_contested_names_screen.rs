@@ -15,7 +15,7 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Button, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{AppAction, scheduled_vote_sweep_is_quiet};
+use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contested_names::{DpnsVotingPreference, RelativeScheduleLabels};
 use crate::backend_task::error::TaskError;
@@ -64,6 +64,7 @@ use crate::ui::dpns::copy::{
 use crate::ui::dpns::copy::{ends_soon_now_line, excluded_nodes_line};
 use crate::ui::dpns::node_set_picker;
 use crate::ui::dpns::progress_drawer;
+use crate::ui::state::PendingRequest;
 use crate::ui::state::dpns_contests::ActiveDpnsContestSnapshot;
 use crate::ui::state::dpns_vote_cards::{
     CantVoteReason, CardPlacement, NodeContestState, NodeContestStatus, SHORTCUT_HELP, Shortcut,
@@ -384,7 +385,7 @@ impl VotesPanelResult {
                 Some(Self::ScheduledVotesInProgress)
             }
             BackendTaskSuccessResult::ScheduledVotesCleared(_) => Some(Self::ScheduledVotesCleared),
-            BackendTaskSuccessResult::RefreshedDpnsContests => Some(Self::ContestsRefreshed),
+            BackendTaskSuccessResult::RefreshedDpnsContests { .. } => Some(Self::ContestsRefreshed),
             _ => None,
         }
     }
@@ -519,6 +520,10 @@ pub struct DPNSScreen {
     /// The visible Votes sub-view.
     pub view: VotesView,
     refreshing_status: RefreshingStatus,
+    /// The contest refresh this panel sent. A failure ends the panel's
+    /// refresh only when it is this one: a refresh from the previous network
+    /// ends after the switch, while the new network's may be running.
+    contest_refresh: PendingRequest,
     refresh_banner: Option<BannerHandle>,
     journal_error_banner: Option<BannerHandle>,
 
@@ -571,6 +576,61 @@ pub struct DPNSScreen {
 }
 
 impl DPNSScreen {
+    /// Start a contest refresh under a progress banner and return its
+    /// dispatch.
+    fn start_contest_refresh(&mut self, ctx: &egui::Context) -> AppAction {
+        self.refresh_banner.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, "Refreshing name contests…", MessageType::Info);
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
+        self.refreshing_status = RefreshingStatus::Refreshing;
+        let task = BackendTask::ContestedResourceTask(ContestedResourceTask::QueryDPNSContests);
+        self.contest_refresh
+            .dispatch_on(task, self.app_context.network())
+    }
+
+    /// End the wait for the contest refresh `context` belongs to, if this panel
+    /// is waiting on that one. Any other refresh leaves the wait running.
+    ///
+    /// Besides a newer refresh or a network switch, the only teardown of
+    /// `refresh_banner`: an error message names no request, and a failed
+    /// sub-query of a running or older refresh must not take this refresh's
+    /// progress banner down.
+    fn finish_contest_refresh(&mut self, context: &BackendTaskContext) {
+        if context.is_dpns_contest_refresh() && self.contest_refresh.settle(context).is_some() {
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
+            self.refresh_banner.take_and_clear();
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Starts a contest refresh as the Refresh button does, without running
+    /// it, and returns its dispatch.
+    pub fn begin_contest_refresh_for_test(&mut self) -> BackendTaskContext {
+        let ctx = self.app_context.egui_ctx().clone();
+        match self.start_contest_refresh(&ctx) {
+            AppAction::BackendTaskWithContext { context, .. } => context,
+            other => panic!("a contest refresh is dispatched with its context, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether the panel still waits for a contest refresh.
+    pub fn contest_refresh_in_progress_for_test(&self) -> bool {
+        self.refreshing_status == RefreshingStatus::Refreshing
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether the contest refresh's progress banner is still shown.
+    pub fn contest_refresh_banner_live_for_test(&self) -> bool {
+        self.refresh_banner
+            .as_ref()
+            .is_some_and(|banner| banner.is_live())
+    }
+
     /// Whether `display_task_result` acts on `result`. `AppState` delivers
     /// such results even while the panel is hidden; a missed one would strand
     /// the panel in the state that result was meant to clear.
@@ -640,6 +700,7 @@ impl DPNSScreen {
             scheduled_vote_editor: None,
             view,
             refreshing_status: RefreshingStatus::NotRefreshing,
+            contest_refresh: PendingRequest::default(),
             refresh_banner: None,
             journal_error_banner: None,
 
@@ -712,6 +773,7 @@ impl DPNSScreen {
         self.journal_error_banner.take_and_clear();
         self.submission_error_banner.take_and_clear();
         self.refreshing_status = RefreshingStatus::NotRefreshing;
+        self.contest_refresh.clear();
         self.voting_identities.clear();
         self.voting_identity_load_error = None;
         self.vote_state = DpnsVoteStateSnapshot::default();
@@ -2706,18 +2768,8 @@ impl ScreenLike for DPNSScreen {
         self.refresh();
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refresh_banner.take_and_clear();
-        }
-    }
-
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if context.is_dpns_contest_refresh() {
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
-            self.refresh_banner.take_and_clear();
-        }
+        self.finish_contest_refresh(context);
         self.finish_scheduled_dispatch(context);
         self.release_pending_on_error = self.pending_vote_operation.is_some_and(|operation_id| {
             dpns_operation_id(context, self.app_context.network()) == Some(operation_id)
@@ -2755,7 +2807,7 @@ impl ScreenLike for DPNSScreen {
         }
         self.rebuild_scheduled_vote_rows();
         self.rebuild_cards();
-        scheduled_vote_sweep_is_quiet(error)
+        super::task_feedback::is_quiet(error)
     }
 
     fn display_backend_task_result(
@@ -2763,6 +2815,7 @@ impl ScreenLike for DPNSScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        self.finish_contest_refresh(context);
         self.finish_scheduled_dispatch(context);
         self.display_task_result(result);
     }
@@ -2822,11 +2875,10 @@ impl ScreenLike for DPNSScreen {
                 }
                 self.rebuild_scheduled_vote_rows();
             }
-            VotesPanelResult::ContestsRefreshed => {
-                self.refresh();
-                self.refresh_banner.take_and_clear();
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-            }
+            // Sent mid-task and alike from every refresh, an older one on this
+            // network included: it reloads the data, and only the refresh's
+            // own result ends the wait.
+            VotesPanelResult::ContestsRefreshed => self.refresh(),
         }
     }
 
@@ -3023,12 +3075,7 @@ impl ScreenLike for DPNSScreen {
             ContestedResourceTask::QueryDPNSContests,
         )) = &action
         {
-            self.refresh_banner.take_and_clear();
-            let handle =
-                MessageBanner::set_global(ctx, "Refreshing name contests…", MessageType::Info);
-            handle.with_elapsed();
-            self.refresh_banner = Some(handle);
-            self.refreshing_status = RefreshingStatus::Refreshing;
+            action = self.start_contest_refresh(ctx);
         }
 
         if action == AppAction::None
@@ -3064,6 +3111,37 @@ mod tests {
             state: ContestState::Locked,
             last_updated: Some(1),
             my_votes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn voting_observer_interest_matches_supported_results() {
+        for handled in [
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
+            },
+            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            },
+            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+            BackendTaskSuccessResult::RefreshedDpnsContests {
+                network: Network::Testnet,
+            },
+        ] {
+            assert!(DPNSScreen::handles_result(&handled));
+        }
+        for unrelated in [
+            BackendTaskSuccessResult::None,
+            BackendTaskSuccessResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network: Network::Testnet,
+                domain: crate::backend_task::CacheDomain::Dpns,
+            }),
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
+        ] {
+            assert!(!DPNSScreen::handles_result(&unrelated));
         }
     }
 
@@ -3169,10 +3247,21 @@ mod tests {
     fn review_regression_failed_manual_contest_refresh_can_be_retried() {
         let (ctx, _dir) = kv_ctx();
         let mut screen = DPNSScreen::new(&ctx, VotesView::History);
-        screen.refreshing_status = RefreshingStatus::Refreshing;
-        let context = BackendTaskContext::from(&BackendTask::ContestedResourceTask(
-            ContestedResourceTask::QueryDPNSContests,
-        ));
+        let egui_ctx = ctx.egui_ctx().clone();
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.start_contest_refresh(&egui_ctx)
+        else {
+            panic!("a contest refresh is dispatched with its context");
+        };
+        let other_refresh = BackendTaskContext::for_dispatch_on(
+            &BackendTask::ContestedResourceTask(ContestedResourceTask::QueryDPNSContests),
+            ctx.network(),
+        );
+        screen.display_backend_task_error(&other_refresh, &TaskError::DpnsCurrentVoteUnavailable);
+        assert!(
+            screen.refreshing_status == RefreshingStatus::Refreshing,
+            "another refresh's failure leaves this one running"
+        );
         screen.display_backend_task_error(&context, &TaskError::DpnsCurrentVoteUnavailable);
         assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
     }
@@ -3190,13 +3279,25 @@ mod tests {
             .app_context
             .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Abstain)
             .unwrap();
-        screen.refreshing_status = RefreshingStatus::Refreshing;
-        screen.display_task_result(BackendTaskSuccessResult::RefreshedDpnsContests);
+        let egui_ctx = screen.app_context.egui_ctx().clone();
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.start_contest_refresh(&egui_ctx)
+        else {
+            panic!("a contest refresh is dispatched with its context");
+        };
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedDpnsContests {
+            network: screen.app_context.network(),
+        });
         assert!(!screen.active_contests.is_empty());
         assert_eq!(
             screen.vote_state.state(voter, poll),
             DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain))
         );
+        assert!(
+            screen.refreshing_status == RefreshingStatus::Refreshing,
+            "the mid-task result reloads the data and ends nothing"
+        );
+        screen.display_backend_task_result(&context, BackendTaskSuccessResult::None);
         assert!(screen.refreshing_status == RefreshingStatus::NotRefreshing);
     }
 
@@ -4666,9 +4767,12 @@ mod tests {
             .build_ui(move |ui| {
                 if matches!(
                     screen.ui(ui),
-                    AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::QueryDPNSContests
-                    ))
+                    AppAction::BackendTaskWithContext {
+                        task: BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContests
+                        ),
+                        ..
+                    }
                 ) {
                     received_refresh.store(
                         screen.refreshing_status == RefreshingStatus::Refreshing

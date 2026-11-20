@@ -8,6 +8,11 @@ trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/data" "$scratch/bin"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# Workflows run this script directly, not through bash.
+[ -x "$SCRIPT_DIR/download-fixtures.sh" ] || fail 'download-fixtures.sh is not executable'
+echo 'PASS: workflow-invoked scripts are executable'
+
 printf 'MCP_API_KEY=\nTESTNET_core_rpc_password=""\nTESTNET_core_rpc_user=\n' > "$scratch/data/.env"
 bash "$SCRIPT_DIR/pack.sh" "$scratch/data" "$scratch/clean" > "$scratch/pack.log"
 for key in MCP_API_KEY TESTNET_core_rpc_password MAINNET_core_rpc_user LOCAL_wallet_private_key; do
@@ -91,7 +96,12 @@ case "$*" in
                assets: ((.[1] // "") | split(",") | map({name: .}))}]' | emit ;;
     'api '*'/tags'*) printf '%s\n' "$TEST_RELEASES" | cut -d'|' -f1 ;;
     'api '*'/artifacts'*) jq -n '{artifacts: [{name: "stored-fixture", expired: false}]}' | emit ;;
-    'run download '*) cp "$TEST_ASSETS/stored-fixture/"* "$dir/" ;;
+    'run download '*)
+        if [ -n "${TEST_DOWNLOAD_ERROR:-}" ]; then
+            printf '%s\n' "$TEST_DOWNLOAD_ERROR" >&2
+            exit 1
+        fi
+        cp "$TEST_ASSETS/stored-fixture/"* "$dir/" ;;
     'release download '*)
         for pattern in "${patterns[@]}"; do cp "$TEST_ASSETS/$3/$pattern" "$dir/"; done ;;
     'attestation verify '*)
@@ -201,6 +211,23 @@ echo 'PASS: attached fixtures are discovered and merged; drafts are skipped'
 download 0 v1.0.0 --strict
 ! grep -q '/releases' "$GH_CALL_LOG" || fail 'releases were read without --merged-manifest'
 echo 'PASS: releases are read only on request'
+
+# A failed download stops --strict at once, naming the fixture and the HTTP
+# status but not the signed download URL, and fetches nothing further.
+rm -rf "$scratch/download" "$GH_CALL_LOG"
+sha="$(sha256sum "$TEST_ASSETS/stored-fixture/stored.tar.zst" | cut -d' ' -f1)"
+jq -n --arg sha "$sha" '{fixtures: [range(2) | {id: "fixture-\(.)", artifact: {artifact_name: "stored-fixture",
+    workflow_run_id: 1, archive_filename: "stored.tar.zst", sha256: $sha}}]}' > "$scratch/manifest.json"
+if TEST_DOWNLOAD_ERROR='error downloading stored-fixture: HTTP 503: 503 Egress is over the account limit. (https://blob.example/a.zip?sig=signed)' \
+    bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" --repo owner/repo \
+    --dest "$scratch/download" --strict > "$scratch/download.log" 2>&1; then
+    fail 'strict downloader accepted a failed download'
+fi
+grep -Fq "::error::Fixture 'fixture-0': download of 'stored-fixture' from run 1 failed: error downloading stored-fixture: HTTP 503: 503 Egress is over the account limit." \
+    "$scratch/download.log" || { cat "$scratch/download.log" >&2; fail 'the failed download was not reported with its fixture and HTTP status'; }
+! grep -q 'blob.example' "$scratch/download.log" || fail 'the signed download URL was printed'
+[ "$(grep -c '^run download ' "$GH_CALL_LOG")" -eq 1 ] || fail 'strict mode kept downloading after a failure'
+echo 'PASS: a failed download stops --strict with its fixture and HTTP status'
 
 download 0 v1.0.1 --strict --merged-manifest "$scratch/merged.json"
 [ "$(merged_ids)" = 'v1.0.1-wallet-only' ] || fail "manifest entry did not win: $(merged_ids)"

@@ -367,7 +367,12 @@ impl AppContext {
                 if recorded == 0 {
                     Ok(BackendTaskSuccessResult::None)
                 } else {
-                    Ok(BackendTaskSuccessResult::Refresh)
+                    Ok(BackendTaskSuccessResult::CacheUpdated(
+                        crate::backend_task::CacheUpdate {
+                            network: self.network,
+                            domain: crate::backend_task::CacheDomain::ContactPayments,
+                        },
+                    ))
                 }
             }
             DashPayTask::GenerateAutoAcceptQrCode {

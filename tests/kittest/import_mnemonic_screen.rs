@@ -14,7 +14,6 @@ use dash_evo_tool::model::wallet::alias::AliasSource;
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
-use dash_sdk::dpp::dashcore::PrivateKey;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::sync::{Arc, RwLock};
@@ -29,7 +28,7 @@ fn import_harness(
 ) -> Harness<'static, ImportMnemonicScreen> {
     let mut screen = ImportMnemonicScreen::new(app_context);
     setup(&mut screen);
-    let mut harness = Harness::builder()
+    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(
             move |ui, screen: &mut ImportMnemonicScreen| {
@@ -42,9 +41,13 @@ fn import_harness(
     harness
 }
 
-/// Fixed test entropy — never a literal recovery phrase.
+/// A random recovery phrase, generated once per test process so every call
+/// in a test sees the same words.
 fn test_mnemonic() -> Mnemonic {
-    Mnemonic::from_entropy(&[0u8; 16]).expect("valid entropy")
+    static PHRASE: std::sync::OnceLock<Mnemonic> = std::sync::OnceLock::new();
+    PHRASE
+        .get_or_init(|| dash_evo_tool::test_support::keys::mnemonic(12))
+        .clone()
 }
 
 fn with_test_phrase(screen: &mut ImportMnemonicScreen) {
@@ -52,9 +55,11 @@ fn with_test_phrase(screen: &mut ImportMnemonicScreen) {
 }
 
 fn test_wif(app_context: &AppContext, byte: u8) -> String {
-    PrivateKey::from_byte_array(&[byte; 32], app_context.network())
-        .expect("valid private key")
-        .to_wif()
+    dash_evo_tool::test_support::keys::labelled_wif(
+        "kittest::import_mnemonic_screen::test_wif",
+        byte.into(),
+        app_context.network(),
+    )
 }
 
 fn insert_wallet(app_context: &AppContext, alias: &str) {

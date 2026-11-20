@@ -393,6 +393,14 @@ impl ClaimTokensScreen {
 }
 
 impl ScreenLike for ClaimTokensScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
@@ -820,15 +828,15 @@ fn load_once_per_identity_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
     use dash_sdk::dpp::identity::Identity;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use dash_sdk::platform::Identifier;
 
     /// A token offering only a once-per-identity distribution of `amount`.
     fn once_per_identity_token(amount: u64) -> TokenConfiguration {
@@ -880,16 +888,13 @@ mod tests {
             status: IdentityStatus::Active,
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         });
-        screen.selected_key = Some(IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 1,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::CRITICAL,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: vec![2; 33].into(),
-            disabled_at: None,
-        }));
+        screen.selected_key = Some(identity_public_key(
+            1,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::CRITICAL,
+            KeyType::ECDSA_SECP256K1,
+            vec![2; 33],
+        ));
         (screen, dir)
     }
 

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 
 const TOKEN_BALANCE_REFRESH_MAX_LIFETIME: Duration = NETWORK_REQUEST_TIMEOUT.saturating_mul(2);
 
@@ -86,10 +86,8 @@ impl AppContext {
         .await??;
         let result = Self::token_balance_sync_result(outcome);
         if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            sender
-                .send(TaskResult::Refresh)
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+                .await;
         }
         Ok(result)
     }
@@ -123,10 +121,8 @@ impl AppContext {
         .await??;
         let result = Self::token_balance_sync_result(outcome);
         if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            sender
-                .send(TaskResult::Refresh)
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+                .await;
         }
         Ok(result)
     }
@@ -148,10 +144,8 @@ impl AppContext {
             .await;
         self.mark_token_balance_untracked(pair)?;
         self.remove_token_balance(pair)?;
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
@@ -265,7 +259,7 @@ mod tests {
     use tokio::sync::mpsc::Receiver;
 
     /// Offline, wired context — real k/v store and wallet backend, no network.
-    /// The receiver is held so the `TaskResult::Refresh` nudge does not fail.
+    /// The receiver is held so the cache notification can be delivered.
     struct Fixture {
         ctx: Arc<AppContext>,
         sender: SenderAsync<TaskResult>,

@@ -109,6 +109,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         let caption = ui.label("Document types · JSON");
         ui.add(
             styled_text_edit_multiline(&mut state.draft.documents)
+                .id_salt("creator_documents_json")
                 .code_editor()
                 .desired_rows(15)
                 .desired_width(f32::INFINITY),

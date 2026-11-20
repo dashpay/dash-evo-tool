@@ -1407,3 +1407,122 @@ fn token_subnav_labels_stay_on_one_line() {
         }
     });
 }
+
+/// Whether `shape` outlines `rect` with a visible stroke.
+fn outlines(shape: &egui::Shape, rect: egui::Rect) -> bool {
+    match shape {
+        egui::Shape::Rect(painted) => {
+            !painted.stroke.is_empty()
+                && painted.rect.center().distance(rect.center()) < 1.0
+                && (painted.rect.size() - rect.size()).length() < 2.0
+        }
+        egui::Shape::Vec(shapes) => shapes.iter().any(|shape| outlines(shape, rect)),
+        _ => false,
+    }
+}
+
+/// Keyboard focus on an unselected creator step is visible and does not select it.
+#[test]
+fn token_creator_step_keyboard_focus_is_visible_without_selecting_it() {
+    use egui::accesskit::Role;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(3);
+        let unfocused = h.get_by_label("2  Supply & permissions").rect();
+        assert!(
+            !h.output()
+                .shapes
+                .iter()
+                .any(|clipped| outlines(&clipped.shape, unfocused)),
+            "precondition: an unfocused, unselected step has no outline"
+        );
+        h.get_by_label("2  Supply & permissions").focus();
+        h.run_steps(2);
+        assert!(
+            h.query_by_role_and_label(Role::TextInput, "Token name")
+                .is_some(),
+            "focus alone must not leave Basics"
+        );
+        let supply = h.get_by_label("2  Supply & permissions").rect();
+        assert!(
+            h.output()
+                .shapes
+                .iter()
+                .any(|clipped| outlines(&clipped.shape, supply)),
+            "the focused Supply step must draw a focus outline"
+        );
+    });
+}
+
+/// A focused draft field keeps receiving typing when the window height moves
+/// the header into or out of the editor's scroll area.
+#[test]
+fn token_creator_field_keeps_focus_across_responsive_layouts() {
+    use egui::accesskit::Role;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::TextInput, "Token name")
+            .focus();
+        h.run_steps(2);
+        h.event(egui::Event::Text("Kept".into()));
+        h.run_steps(2);
+        for (height, typed) in [(640.0, "Coin"), (780.0, "s")] {
+            h.set_size(egui::vec2(1260.0, height));
+            h.run_steps(3);
+            h.event(egui::Event::Text(typed.into()));
+            h.run_steps(2);
+        }
+        assert_eq!(
+            h.get_by_role_and_label(Role::TextInput, "Token name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("KeptCoins")
+        );
+    });
+}
+
+/// A rejected unit switch explains itself beneath the amount controls, where
+/// the message can wrap, instead of past the end of the field's row.
+#[test]
+fn token_creator_unit_conversion_error_is_shown_beneath_the_amount_controls() {
+    use egui::accesskit::Role;
+    const ERROR: &str = "Enter a token amount using digits and a decimal point.";
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        // Wide enough for the units selector to sit on the field's row.
+        h.set_size(egui::vec2(1800.0, 780.0));
+        h.run_steps(3);
+        h.get_by_label_contains("Continue:").click();
+        h.run_steps(3);
+        let field = h
+            .get_by_role_and_label(Role::TextInput, "Initial supply")
+            .rect();
+        h.get_by_role_and_label(Role::ComboBox, "Initial supply units")
+            .click();
+        h.run_steps(3);
+        h.get_by_label("base units").click();
+        let mut error = None;
+        for _ in 0..6 {
+            h.step();
+            if let Some(node) = h.query_by_label(ERROR) {
+                error = Some(node.rect());
+                break;
+            }
+        }
+        let error = error.expect("the blank amount's rejected unit switch shows an error");
+        assert!(
+            error.top() >= field.bottom(),
+            "the error {error:?} must sit beneath the amount field {field:?}"
+        );
+    });
+}

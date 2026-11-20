@@ -300,7 +300,10 @@ pub(super) fn actor(
         .response
         .labelled_by(caption_response.id);
     if let ActorDraft::Identity(identity) = value {
-        text(ui, "Identity ID", "identity", identity, topic);
+        // One per actor caption, so two actors' fields keep separate IDs.
+        ui.push_id(caption, |ui| {
+            text(ui, "Identity ID", "identity", identity, topic)
+        });
         if !identity.is_empty() {
             match parse_identity(identity) {
                 Ok(_) => {

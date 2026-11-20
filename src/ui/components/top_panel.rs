@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
-    let font_id = Typography::heading_medium();
+    let font_id = egui::TextStyle::Heading.resolve(ui.style());
 
     // Wrap in a container that can be positioned vertically
     ui.allocate_ui(ui.available_size(), |ui| {

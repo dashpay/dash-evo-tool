@@ -48,8 +48,10 @@ the refreshed application. No take reuse is authorized for this refresh.
 
 ## Dependencies and private workspace
 
-Use the system `/usr/bin/python3`, not pip or a virtual environment. On Debian or
-Ubuntu the operator can install the required packages with apt:
+Use the system `/usr/bin/python3`, not pip or a virtual environment. Python 3.11
+or newer is required: the scripts use `hashlib.file_digest`, so Ubuntu 22.04's
+Python 3.10 is too old (Debian 12 and Ubuntu 24.04 qualify). On Debian or Ubuntu
+the operator can install the required packages with apt:
 
 ```sh
 sudo apt install python3 python3-pytest python3-pil python3-matplotlib \

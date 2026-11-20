@@ -30,7 +30,7 @@ use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
 #[cfg(feature = "testing")]
-use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
+use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -862,7 +862,7 @@ impl AppState {
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
-        ensure_env_file(&data_dir)?;
+        crate::boot::ensure_settings_file(&data_dir)?;
 
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()

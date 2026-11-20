@@ -851,14 +851,22 @@ impl ScreenLike for IdentityHubScreen {
         }
         // A reload re-arms without cancelling the load before it, so lists
         // can answer out of order; an older one would undo a confirmed note.
-        if let BackendTaskSuccessResult::DashPayContactsWithInfo { identity, contacts } = &result {
+        if let BackendTaskSuccessResult::DashPayContactsWithInfo {
+            identity,
+            contacts,
+            established_contacts,
+        } = &result
+        {
             if self
                 .contacts_state
                 .accepts_contacts_from(context.dispatch_id())
                 && self.result_is_for_selected_identity(identity)
             {
-                self.contacts_state
-                    .record_loaded_contacts(contacts.clone(), context.dispatch_id());
+                self.contacts_state.record_loaded_contacts(
+                    contacts.clone(),
+                    context.dispatch_id(),
+                    *established_contacts,
+                );
             }
             return;
         }
@@ -2703,6 +2711,7 @@ mod tests {
 
         let contacts_result = |note| BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
+            established_contacts: None,
             contacts: listed(note),
         };
         screen.display_backend_task_result(&load_b, contacts_result(Some("Bao")));
@@ -2845,6 +2854,7 @@ mod tests {
         let (owner, contact) = (identity.identity.id(), id(4));
         let list = |note: &str| BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
+            established_contacts: None,
             contacts: vec![ContactData {
                 identity_id: contact,
                 nickname: None,

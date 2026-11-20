@@ -1418,6 +1418,19 @@ mod tests {
         }
     }
 
+    /// A newer minor version of major 0, which the strict reader rejects,
+    /// is still read by platform-wallet's tolerant reader.
+    #[test]
+    fn a_newer_minor_version_is_read() {
+        let details = contact(Some("Bao"), Some("Met"), true, vec![2]);
+        let mut newer = upstream_plaintext(&details);
+        newer[..4].copy_from_slice(&1_u32.to_le_bytes());
+        newer.extend_from_slice(&[7, 7]);
+
+        assert!(strict_read(&newer).is_none());
+        assert_eq!(decode_contact_info_details(&newer), Some(details));
+    }
+
     /// A v0 payload both strict readings reject stays unreadable: the
     /// tolerant reader would ignore the extra byte and read other values.
     #[test]

@@ -160,6 +160,7 @@ fn deliver_contact_with(
         &BackendTaskContext::from(&task),
         BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
+            established_contacts: None,
             contacts: vec![ContactData {
                 identity_id: Identifier::from([0xD8; 32]),
                 nickname: Some(nickname.into()),

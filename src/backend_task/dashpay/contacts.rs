@@ -521,6 +521,7 @@ pub async fn load_contacts(
             Default::default()
         }
     };
+    let established_contacts = backend.is_some().then_some(synced.len());
     let StoredContactDetails { published, legacy } =
         stored_contact_details(app_context, sdk, &identity).await?;
     let mut published = published.unwrap_or_else(|error| {
@@ -669,6 +670,7 @@ pub async fn load_contacts(
     Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
         identity: identity_id,
         contacts: contact_list,
+        established_contacts,
     })
 }
 
@@ -694,6 +696,7 @@ pub async fn load_contacts_offline(
     // The details platform-wallet holds win, as in the network list; this
     // device's private-info copy only stands in where it never held any.
     let mut synced = backend.dashpay_contact_details(&owner_id).await;
+    let established_contacts = Some(synced.len());
 
     let mut contact_list = Vec::with_capacity(stored.len());
     for sc in stored {
@@ -759,6 +762,7 @@ pub async fn load_contacts_offline(
     Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
         identity: owner_id,
         contacts: contact_list,
+        established_contacts,
     })
 }
 

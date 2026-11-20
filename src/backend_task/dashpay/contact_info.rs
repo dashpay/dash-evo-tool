@@ -360,13 +360,17 @@ enum PrivateDataReading {
 /// Older versions of this client wrote single-byte lengths, which
 /// platform-wallet misreads for fields of 253 to 255 bytes. So this client's
 /// strict reader comes first, and an ambiguous payload is unreadable, never a
-/// guess. platform-wallet's tolerant reader then covers what neither reading
-/// accepts, such as a newer minor version.
+/// guess. platform-wallet's tolerant reader then covers only a newer minor
+/// version of major 0; a v0.0 payload both readings reject stays unreadable.
 pub(super) fn decode_contact_info_details(plaintext: &[u8]) -> Option<ContactInfoPrivateData> {
     match read_private_data(plaintext) {
         PrivateDataReading::Read(data) => Some(data),
         PrivateDataReading::Ambiguous => None,
         PrivateDataReading::Unreadable => {
+            let version = u32::from_le_bytes(plaintext.get(..4)?.try_into().ok()?);
+            if version >> 16 != 0 || version & 0xffff == 0 {
+                return None;
+            }
             platform_wallet::wallet::identity::crypto::decode_private_data(plaintext).ok()
         }
     }
@@ -1412,6 +1416,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A v0 payload both strict readings reject stays unreadable: the
+    /// tolerant reader would ignore the extra byte and read other values.
+    #[test]
+    fn rejected_v0_payloads_are_not_read_tolerantly() {
+        let details = contact(None, Some(&control_character_note()), false, Vec::new());
+        let mut appended = legacy_det_plaintext(&details, 0);
+        appended.push(0);
+
+        assert!(strict_read(&appended).is_none());
+        assert_eq!(decode_contact_info_details(&appended), None);
     }
 
     /// The single-byte reading only applies to a length CompactSize reserves;

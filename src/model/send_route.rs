@@ -8,7 +8,9 @@
 //! Auto never spends identity credits, never unshields private funds for a
 //! non-private recipient, and never splits one payment across two balances.
 
-use crate::model::address::AddressKind;
+use crate::model::address::{AddressKind, recipient_row_address};
+use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::dashcore::Network;
 
 /// A concrete balance a send can pay from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -358,6 +360,61 @@ pub fn ticked_source_refusal(
 ) -> Option<RouteRefusal> {
     (source == PayFromKind::Platform && destination == AddressKind::Shielded)
         .then_some(RouteRefusal::TickedPlatformToShielded)
+}
+
+/// Why several recipients cannot be paid as entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipientRowsRefusal {
+    /// A row lacks its address or a positive amount.
+    Incomplete,
+    /// A row's address is not a Core or Platform address of the network.
+    InvalidAddress,
+    /// The source cannot carry several outputs to these addresses.
+    Route,
+}
+
+/// Whether every recipient row, given as its address and its amount in
+/// credits when that parses, names an address and a positive amount. A row
+/// missing either would be left out of the payment.
+pub fn recipient_rows_complete<'a>(
+    rows: impl IntoIterator<Item = (&'a str, Option<Credits>)>,
+) -> bool {
+    rows.into_iter().all(|(address, amount)| {
+        !address.trim().is_empty() && amount.is_some_and(|credits| credits > 0)
+    })
+}
+
+/// Why `rows` (see [`recipient_rows_complete`]) cannot be paid from `source`
+/// to `destination`, the kind the rows' addresses share (`None` when they
+/// share none); `source` is `None` until one is chosen.
+pub fn recipient_rows_refusal(
+    rows: &[(&str, Option<Credits>)],
+    network: Network,
+    source: Option<PayFromKind>,
+    destination: Option<AddressKind>,
+) -> Option<RecipientRowsRefusal> {
+    if !recipient_rows_complete(rows.iter().copied()) {
+        return Some(RecipientRowsRefusal::Incomplete);
+    }
+    if rows
+        .iter()
+        .any(|(address, _)| recipient_row_address(address, network).is_none())
+    {
+        return Some(RecipientRowsRefusal::InvalidAddress);
+    }
+    match (source, destination) {
+        (_, None) => Some(RecipientRowsRefusal::Route),
+        (Some(source), Some(destination))
+            if !matches!(
+                (source, destination),
+                (PayFromKind::Core, AddressKind::Core)
+                    | (PayFromKind::Platform, AddressKind::Platform)
+            ) =>
+        {
+            Some(RecipientRowsRefusal::Route)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -825,5 +882,71 @@ mod tests {
         );
         assert_eq!(ticked_source_refusal(Platform, AddressKind::Core), None);
         assert_eq!(ticked_source_refusal(Core, AddressKind::Shielded), None);
+    }
+
+    /// A testnet P2PKH address from a public payload: no key behind it.
+    fn testnet_address(byte: u8) -> String {
+        dash_sdk::dpp::dashcore::Address::new(
+            Network::Testnet,
+            dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+                dash_sdk::dpp::dashcore::hashes::Hash::from_byte_array([byte; 20]),
+            ),
+        )
+        .to_string()
+    }
+
+    /// A row with no address, or with no positive amount, is incomplete.
+    #[test]
+    fn recipient_rows_need_an_address_and_a_positive_amount() {
+        let address = testnet_address(21);
+        assert!(recipient_rows_complete([
+            (address.as_str(), Some(1)),
+            (address.as_str(), Some(2))
+        ]));
+        assert!(!recipient_rows_complete([(address.as_str(), Some(0))]));
+        assert!(!recipient_rows_complete([(address.as_str(), None)]));
+        assert!(!recipient_rows_complete([("  ", Some(1))]));
+    }
+
+    /// Rows are refused while incomplete, then while an address is invalid,
+    /// then on a route that carries one output; Core to Core and Platform
+    /// to Platform pay them, as does a source not chosen yet.
+    #[test]
+    fn recipient_rows_refusal_checks_rows_then_addresses_then_route() {
+        use RecipientRowsRefusal::{Incomplete, InvalidAddress, Route};
+        let (first, second) = (testnet_address(21), testnet_address(22));
+        let rows = [(first.as_str(), Some(1)), (second.as_str(), Some(2))];
+        let refusal = |rows: &[(&str, Option<Credits>)], source, destination| {
+            recipient_rows_refusal(rows, Network::Testnet, source, destination)
+        };
+
+        let core = Some(AddressKind::Core);
+        assert_eq!(refusal(&rows, Some(Core), core), None);
+        assert_eq!(refusal(&rows, None, core), None);
+        assert_eq!(
+            refusal(&rows, Some(Platform), Some(AddressKind::Platform)),
+            None
+        );
+        assert_eq!(refusal(&rows, Some(Platform), core), Some(Route));
+        assert_eq!(refusal(&rows, Some(Shielded), core), Some(Route));
+        assert_eq!(refusal(&rows, Some(Core), None), Some(Route));
+
+        let invalid = [(first.as_str(), Some(1)), ("not an address", Some(2))];
+        assert_eq!(refusal(&invalid, Some(Core), None), Some(InvalidAddress));
+        let mainnet = dash_sdk::dpp::dashcore::Address::new(
+            Network::Mainnet,
+            dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+                dash_sdk::dpp::dashcore::hashes::Hash::from_byte_array([3; 20]),
+            ),
+        )
+        .to_string();
+        let other_network = [(first.as_str(), Some(1)), (mainnet.as_str(), Some(2))];
+        assert_eq!(
+            refusal(&other_network, Some(Core), core),
+            Some(InvalidAddress)
+        );
+
+        let incomplete = [("not an address", Some(1)), (second.as_str(), Some(0))];
+        assert_eq!(refusal(&incomplete, Some(Core), core), Some(Incomplete));
     }
 }

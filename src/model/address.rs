@@ -298,6 +298,30 @@ impl ValidatedAddress {
     }
 }
 
+/// A Send recipient row's address, when it is a valid Core or Platform
+/// address on `network`.
+pub fn recipient_row_address(address: &str, network: Network) -> Option<ValidatedAddress> {
+    let address = address.trim();
+    match AddressKind::detect(address)? {
+        AddressKind::Core => address
+            .parse::<Address<NetworkUnchecked>>()
+            .ok()?
+            .require_network(network)
+            .ok()
+            .map(ValidatedAddress::Core),
+        AddressKind::Platform => {
+            validate_platform_address_for_network(address, network).ok()?;
+            PlatformAddress::from_bech32m_string(address)
+                .ok()
+                .map(|platform| ValidatedAddress::Platform {
+                    address: platform,
+                    bech32m: address.to_string(),
+                })
+        }
+        _ => None,
+    }
+}
+
 impl std::fmt::Display for ValidatedAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -759,5 +783,49 @@ mod tests {
         assert!(!is_platform_address_string("日"));
         // Non-ASCII that starts "like" a HRP (ASCII bytes matching then UTF-8)
         assert!(!is_platform_address_string("dash\u{00E9}test"));
+    }
+
+    /// A P2PKH address on `network` from a public payload: no key behind it.
+    fn core_address(network: Network, byte: u8) -> Address {
+        Address::new(
+            network,
+            dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+                dash_sdk::dpp::dashcore::hashes::Hash::from_byte_array([byte; 20]),
+            ),
+        )
+    }
+
+    /// Recipient rows accept only Core and Platform addresses of the active
+    /// network.
+    #[test]
+    fn recipient_row_address_needs_a_core_or_platform_address_of_the_network() {
+        let testnet = core_address(Network::Testnet, 4);
+        let mainnet = core_address(Network::Mainnet, 3);
+        let platform = |address: &Address, network| {
+            PlatformAddress::try_from(address.clone())
+                .expect("platform address")
+                .to_bech32m_string(network)
+        };
+
+        assert_eq!(
+            recipient_row_address(&format!(" {testnet} "), Network::Testnet),
+            Some(ValidatedAddress::Core(testnet.clone()))
+        );
+        let testnet_platform = platform(&testnet, Network::Testnet);
+        assert!(matches!(
+            recipient_row_address(&testnet_platform, Network::Testnet),
+            Some(ValidatedAddress::Platform { bech32m, .. }) if bech32m == testnet_platform
+        ));
+        assert_eq!(
+            recipient_row_address(&mainnet.to_string(), Network::Testnet),
+            None
+        );
+        assert_eq!(
+            recipient_row_address(&platform(&mainnet, Network::Mainnet), Network::Testnet),
+            None
+        );
+        let shielded = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN]);
+        assert_eq!(recipient_row_address(&shielded, Network::Testnet), None);
+        assert_eq!(recipient_row_address("", Network::Testnet), None);
     }
 }

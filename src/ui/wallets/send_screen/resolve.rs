@@ -4,9 +4,10 @@
 //! exactly as before; Auto only decides which of them is used.
 
 use super::*;
-use crate::model::address::validate_platform_address_for_network;
+use crate::model::address::recipient_row_address;
 use crate::model::send_route::{
-    AutoDestination, AutoMax, AutoSource, CandidateMax, CandidateMaxima, PayFromKind, RouteRefusal,
+    AutoDestination, AutoMax, AutoSource, CandidateMax, CandidateMaxima, PayFromKind,
+    RecipientRowsRefusal, RouteRefusal, recipient_rows_complete, recipient_rows_refusal,
     resolve_auto_max, resolve_destination_auto, resolve_source_auto, route_refusal,
     ticked_source_refusal,
 };
@@ -774,25 +775,7 @@ impl WalletSendScreen {
     /// A recipient row's address, when it is a valid Core or Platform address
     /// on the active network.
     pub(super) fn row_address(&self, address: &str) -> Option<ValidatedAddress> {
-        let address = address.trim();
-        match AddressKind::detect(address)? {
-            AddressKind::Core => address
-                .parse::<Address<NetworkUnchecked>>()
-                .ok()?
-                .require_network(self.app_context.network)
-                .ok()
-                .map(ValidatedAddress::Core),
-            AddressKind::Platform => {
-                validate_platform_address_for_network(address, self.app_context.network).ok()?;
-                PlatformAddress::from_bech32m_string(address)
-                    .ok()
-                    .map(|platform| ValidatedAddress::Platform {
-                        address: platform,
-                        bech32m: address.to_string(),
-                    })
-            }
-            _ => None,
-        }
+        recipient_row_address(address, self.app_context.network)
     }
 
     /// Refusal of a My wallets payment into the balance that pays it: the
@@ -812,37 +795,34 @@ impl WalletSendScreen {
         if !self.form.has_several_recipients() {
             return None;
         }
-        if !self.recipient_rows_complete() {
-            return Some(RECIPIENT_ROWS_INCOMPLETE);
-        }
-        let rows = self.form.recipients();
-        if rows
-            .iter()
-            .any(|row| self.row_address(&row.address).is_none())
-        {
-            return Some(RECIPIENT_ROWS_INVALID);
-        }
-        match (&self.selected_source, self.destination_kind()) {
-            (_, None) => Some(SEVERAL_RECIPIENTS_ROUTE),
-            (Some(source), Some(destination))
-                if !matches!(
-                    (Self::source_kind(source), destination),
-                    (PayFromKind::Core, AddressKind::Core)
-                        | (PayFromKind::Platform, AddressKind::Platform)
-                ) =>
-            {
-                Some(SEVERAL_RECIPIENTS_ROUTE)
-            }
-            _ => None,
-        }
+        let rows: Vec<_> = self.recipient_row_inputs().collect();
+        let source = self.selected_source.as_ref().map(Self::source_kind);
+        recipient_rows_refusal(
+            &rows,
+            self.app_context.network,
+            source,
+            self.destination_kind(),
+        )
+        .map(|refusal| match refusal {
+            RecipientRowsRefusal::Incomplete => RECIPIENT_ROWS_INCOMPLETE,
+            RecipientRowsRefusal::InvalidAddress => RECIPIENT_ROWS_INVALID,
+            RecipientRowsRefusal::Route => SEVERAL_RECIPIENTS_ROUTE,
+        })
     }
 
     /// Whether every recipient row names an address and a positive amount.
     /// A row missing either would be left out of the payment.
     pub(super) fn recipient_rows_complete(&self) -> bool {
-        self.form.recipients().iter().all(|row| {
-            !row.address.trim().is_empty()
-                && Self::parse_amount_to_credits(&row.amount).is_ok_and(|credits| credits > 0)
+        recipient_rows_complete(self.recipient_row_inputs())
+    }
+
+    /// Each recipient row's address and its amount in credits, when it parses.
+    fn recipient_row_inputs(&self) -> impl Iterator<Item = (&str, Option<Credits>)> {
+        self.form.recipients().iter().map(|row| {
+            (
+                row.address.as_str(),
+                Self::parse_amount_to_credits(&row.amount).ok(),
+            )
         })
     }
 

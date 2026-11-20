@@ -4244,45 +4244,46 @@ mod tests {
 
     #[test]
     fn unclean_shutdown_report_is_logged_without_worker_text() {
-        let synthetic_secret = "synthetic-secret-7f3a9c0e";
+        let planted_marker = "planted-marker-7f3a9c0e";
         let report = ShutdownReport {
             per_worker: [
                 (
                     WalletWorker::Spv,
-                    WorkerStatus::Error(format!("restart required: {synthetic_secret}")),
+                    WorkerStatus::Error(format!("restart required: {planted_marker}")),
                 ),
                 (
                     WalletWorker::IdentitySync,
-                    WorkerStatus::Panicked(format!("seed {synthetic_secret}")),
+                    WorkerStatus::Panicked(format!("seed {planted_marker}")),
                 ),
                 (WalletWorker::ShieldedSync, WorkerStatus::Timeout),
             ]
             .into_iter()
             .collect(),
             detached: 1,
-            orphan_status: WorkerStatus::Stopped(Some(synthetic_secret.to_owned())),
+            orphan_status: WorkerStatus::Stopped(Some(planted_marker.to_owned())),
         };
         let log = crate::test_support::CapturedLog::start();
         warn_if_shutdown_unclean(&report);
         let text = log.text();
 
-        assert!(!text.contains(synthetic_secret), "{text}");
+        assert!(!text.contains(planted_marker), "{text}");
         for kept in ["Spv", "IdentitySync", "Panicked", "Timeout", "detached: 1"] {
             assert!(text.contains(kept), "the report must keep {kept}:\n{text}");
         }
-        assert!(text.contains("<redacted: 30 bytes>"), "{text}");
+        let panicked_field = format!("<redacted: {} bytes>", "seed ".len() + planted_marker.len());
+        assert!(text.contains(&panicked_field), "{text}");
     }
 
     #[test]
     fn redact_wallet_error_withholds_a_joined_spv_task_panic_message() {
-        let synthetic_secret = "synthetic-secret-7f3a9c0e";
+        let planted_marker = "planted-marker-7f3a9c0e";
         let text = format!(
-            "SPV teardown task failed: Err(JoinError::Panic(Id(7), \"seed {synthetic_secret}\", ..))"
+            "SPV teardown task failed: Err(JoinError::Panic(Id(7), \"seed {planted_marker}\", ..))"
         );
         let redacted =
             redact_wallet_error(PlatformWalletError::SpvProcessRestartRequired(text.clone()));
         let shown = format!("{redacted:?} {redacted}");
-        assert!(!shown.contains(synthetic_secret), "{shown}");
+        assert!(!shown.contains(planted_marker), "{shown}");
         assert!(
             matches!(redacted, PlatformWalletError::SpvProcessRestartRequired(_)),
             "the variant must survive: {shown}"

@@ -439,13 +439,14 @@ fn install_fatal_signal_handler_impl() {
 
 /// Builds the notice shown on the terminal when startup fails.
 ///
-/// Pure function: names what happened, the technical `causes` known to `main`
-/// (a failure before any log file or window exists leaves no other trace),
-/// and each provided log path on its own line.
-fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::fmt::Debug]) -> String {
+/// Pure function: names what happened, then each of the `causes` known to
+/// `main` (a failure before any log file or window exists leaves no other
+/// trace) as its message followed by its technical details, then each
+/// provided log path on its own line.
+fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::error::Error]) -> String {
     let mut message = String::from("Dash Evo Tool failed to start.\n");
     for cause in causes {
-        message.push_str(&format!("Cause: {cause:?}\n"));
+        message.push_str(&format!("Cause: {cause}\nDetails: {cause:?}\n"));
     }
     if log_paths.is_empty() {
         message.push_str("Please try again, and report the problem if it keeps happening.\n");
@@ -467,7 +468,7 @@ fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::fmt::Debug
 /// Best-effort and independent of tracing: resolves the log paths, builds the
 /// message, and writes it to the preserved terminal stderr (fd 2 is redirected
 /// to the log file during a normal run). Never panics; write errors are ignored.
-pub fn report_startup_failure_to_terminal(causes: &[&dyn std::fmt::Debug]) {
+pub fn report_startup_failure_to_terminal(causes: &[&dyn std::error::Error]) {
     let log_paths: Vec<PathBuf> = log_file_path().into_iter().collect();
     let message = startup_failure_message(&log_paths, causes);
     write_to_terminal(message.as_bytes());
@@ -892,8 +893,8 @@ mod tests {
         let message = startup_failure_message(&[], &[&first, &second]);
         for cause in [&first, &second] {
             assert!(
-                message.contains(&format!("{cause:?}")),
-                "message should name {cause:?}, got {message:?}"
+                message.contains(&format!("Cause: {cause}\nDetails: {cause:?}\n")),
+                "message should give the message and details of {cause:?}, got {message:?}"
             );
         }
     }

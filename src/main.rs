@@ -55,7 +55,7 @@ fn main() -> ExitCode {
     if result.is_err() || outcome.failed() {
         // Notice to the real terminal, independent of tracing (fd 2 is
         // redirected into det.log, so this writes to the preserved stderr).
-        let mut causes: Vec<&dyn std::fmt::Debug> = Vec::new();
+        let mut causes: Vec<&dyn std::error::Error> = Vec::new();
         if let Err(error) = &environment {
             causes.push(error);
         }
@@ -94,6 +94,10 @@ async fn start(
         // Persist window size and position
         persist_window: environment.is_ok(),
         centered: true, // Center window on startup if not maximized
+        // Without a data folder this is None, and eframe 0.37 falls back to its
+        // default storage folder: it creates that folder (empty) at start-up.
+        // Nothing is written there, because the failure dialog persists no
+        // egui memory and window geometry is off (`BootApp::persist_egui_memory`).
         persistence_path: environment.as_ref().ok().map(|dir| dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)

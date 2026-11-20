@@ -170,7 +170,7 @@ fn report_panic(info: &panic::PanicHookInfo<'_>) {
         thread = %report.thread,
         location = %report.location,
         message = %report.message,
-        "Panic occurred\n{backtrace}"
+        "Panic occurred\n{backtrace:#}"
     );
 
     let mut text = report.terminal_text();
@@ -894,8 +894,8 @@ mod tests {
             child.terminal
         );
         assert!(
-            child.log.contains("stack backtrace") || child.log.contains("panic_as_child"),
-            "the log must keep the backtrace:\n{}",
+            prints_full_backtrace_frames(&child.log),
+            "the log must keep the full backtrace:\n{}",
             child.log
         );
     }

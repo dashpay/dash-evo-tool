@@ -70,14 +70,69 @@ fn catch_boot_panic<T>(build: impl FnOnce() -> Result<T, BootError>) -> Result<T
 /// [`AppState::boot_inputs`](crate::app::AppState::boot_inputs) inside the
 /// eframe boot; the logger's `Once` guard makes the second call a no-op, so
 /// this stays the single place the sequence is written.
-pub fn prepare_environment() -> Result<PathBuf, std::io::Error> {
-    use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
-    let data_dir = app_user_data_dir_path()?;
-    ensure_data_dir_exists(&data_dir)?;
+pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
+    use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
+    let data_dir =
+        app_user_data_dir_path().map_err(|source| PrepareEnvironmentError::Locate { source })?;
+    ensure_data_dir_exists(&data_dir).map_err(|source| {
+        PrepareEnvironmentError::CreateDataFolder {
+            path: data_dir.clone(),
+            source,
+        }
+    })?;
     // Logging first, so a failure to write the settings file is logged too.
     crate::logging::initialize_logger();
-    ensure_env_file(&data_dir)?;
+    ensure_settings_file(&data_dir)?;
     Ok(data_dir)
+}
+
+/// Create the `.env` settings file in `data_dir` if it is missing.
+pub(crate) fn ensure_settings_file(
+    data_dir: &std::path::Path,
+) -> Result<(), PrepareEnvironmentError> {
+    crate::app_dir::ensure_env_file(data_dir).map_err(|source| {
+        PrepareEnvironmentError::WriteSettingsFile {
+            path: data_dir.join(crate::app_dir::ENV_FILE),
+            source,
+        }
+    })
+}
+
+/// The step of preparing the app data folder that failed, with the path it
+/// worked on; the I/O error is the source.
+#[derive(Debug, thiserror::Error)]
+pub enum PrepareEnvironmentError {
+    /// The app data folder's location could not be determined.
+    #[error("The app data folder could not be found.")]
+    Locate {
+        #[source]
+        source: std::io::Error,
+    },
+    /// The app data folder could not be created or secured.
+    #[error("The app data folder {path} could not be prepared.", path = .path.display())]
+    CreateDataFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The `.env` settings file could not be created.
+    #[error("The settings file {path} could not be created.", path = .path.display())]
+    WriteSettingsFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl PrepareEnvironmentError {
+    /// The underlying I/O error.
+    pub fn io_error(&self) -> &std::io::Error {
+        match self {
+            Self::Locate { source }
+            | Self::CreateDataFolder { source, .. }
+            | Self::WriteSettingsFile { source, .. } => source,
+        }
+    }
 }
 
 /// The eframe application during boot: still collecting the legacy vault
@@ -100,7 +155,20 @@ impl BootApp {
     /// [`BootApp::Unlocking`] so the frame loop can prompt for it. Any other
     /// failure (including app assembly) returns [`BootApp::Failed`].
     pub fn new(ctx: egui::Context, outcome: StartupOutcome) -> Self {
-        Self::guarded(&outcome, || Self::open(ctx, &outcome))
+        Self::start(ctx, BootPreparation::run(), &outcome)
+    }
+
+    /// Build the boot app from the steps [`BootPreparation`] already ran.
+    pub fn start(
+        ctx: egui::Context,
+        preparation: BootPreparation,
+        outcome: &StartupOutcome,
+    ) -> Self {
+        Self::guarded(outcome, || {
+            preparation
+                .0
+                .and_then(|prepared| Self::open(ctx, prepared, outcome))
+        })
     }
 
     /// `build()`, or the failure state when it fails or panics. A panic leaves
@@ -112,10 +180,17 @@ impl BootApp {
         }
     }
 
-    fn open(ctx: egui::Context, outcome: &StartupOutcome) -> Result<Self, BootError> {
+    fn open(
+        ctx: egui::Context,
+        Prepared {
+            data_dir,
+            db,
+            decision,
+        }: Prepared,
+        outcome: &StartupOutcome,
+    ) -> Result<Self, BootError> {
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
-        let (data_dir, db) = AppState::boot_inputs()?;
-        match classify_open(&data_dir)? {
+        match decision {
             BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
                 ctx, db, data_dir, store,
             )?))),
@@ -239,6 +314,44 @@ pub fn show_window_failure_dialog() {
             ?error,
             "Could not show the system dialog about the window failure"
         );
+    }
+}
+
+/// The boot steps that need no window: data folder, database and the seed
+/// vault open. `main` runs them before the window opens, so a failure here,
+/// such as the vault held by another running instance, is known in time to
+/// keep the window from saving into a profile that instance owns.
+pub struct BootPreparation(Result<Prepared, BootError>);
+
+struct Prepared {
+    data_dir: PathBuf,
+    db: Arc<Database>,
+    decision: BootDecision,
+}
+
+impl BootPreparation {
+    /// Prepare the data folder and database, and open the seed vault.
+    pub fn run() -> Self {
+        Self(catch_boot_panic(|| {
+            let (data_dir, db) = AppState::boot_inputs()?;
+            let decision = classify_open(&data_dir)?;
+            Ok(Prepared {
+                data_dir,
+                db,
+                decision,
+            })
+        }))
+    }
+
+    /// Whether the window may save its state into the profile: only when
+    /// these steps succeeded and this instance holds the vault.
+    pub fn may_persist(&self) -> bool {
+        self.0.is_ok()
+    }
+
+    /// Why these steps failed, if they did.
+    pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.as_ref().err().map(|error| &**error as _)
     }
 }
 
@@ -452,7 +565,20 @@ mod tests {
         const CHILD_ENV: &str = "DET_PREPARE_ENVIRONMENT_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
             let error = prepare_environment().expect_err(".env cannot be written");
-            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
+            assert!(
+                matches!(
+                    &error,
+                    PrepareEnvironmentError::WriteSettingsFile { path, source }
+                        if path.ends_with(".env") && source.kind() == std::io::ErrorKind::NotFound
+                ),
+                "{error:?}"
+            );
+            let details = StartupFailure::from_error(&error, None)
+                .report()
+                .details()
+                .to_owned();
+            assert!(details.contains("WriteSettingsFile"), "{details}");
+            assert!(details.contains(".env"), "{details}");
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
@@ -469,6 +595,46 @@ mod tests {
             .status()
             .expect("run child");
         assert!(status.success(), "child failed: {status}");
+    }
+
+    /// A second launch whose vault another instance holds fails before the
+    /// window opens, so the window gets no permission to save into the shared
+    /// profile, and the boot shows the failure dialog.
+    #[test]
+    fn locked_vault_fails_preparation_without_profile_writes() {
+        let _lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prior = std::env::var_os("DASH_EVO_DATA_DIR");
+        // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK; restored below.
+        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", tmp.path()) };
+        let first_instance = AppContext::open_secret_store(tmp.path()).expect("first instance");
+
+        let preparation = BootPreparation::run();
+        let may_persist = preparation.may_persist();
+        let reported = preparation.error().is_some();
+        let outcome = StartupOutcome::default();
+        let app = BootApp::start(egui::Context::default(), preparation, &outcome);
+
+        drop(first_instance);
+        // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK.
+        unsafe {
+            match prior {
+                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+        assert!(
+            !may_persist,
+            "a failed preparation must not let the window save"
+        );
+        assert!(
+            reported,
+            "main must be able to report the failure without a window"
+        );
+        assert!(matches!(app, BootApp::Failed(_)));
+        assert!(outcome.failed());
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.

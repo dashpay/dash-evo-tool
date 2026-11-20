@@ -1342,12 +1342,19 @@ fn token_subnav_labels_stay_on_one_line() {
                          label onto more than one line"
                     );
                 }
-                let panel = egui::containers::panel::PanelState::load(
-                    &harness.ctx,
-                    egui::Id::new("tokens_subscreen_chooser_panel"),
-                )
-                .expect("tokens sub-navigation panel");
-                panel_widths.push(panel.size().x);
+                // egui keys a panel's state by its parent's scope id, which the
+                // test cannot name, so the panel is the one holding a nav button.
+                let my_tokens = nav_button(&harness, "My Tokens");
+                let panels: Vec<f32> = harness.ctx.data(|data| {
+                    data.iter_temp_by_type::<egui::containers::panel::PanelState>()
+                        .filter(|panel| panel.outer_rect.contains_rect(my_tokens))
+                        .map(|panel| panel.size().x)
+                        .collect()
+                });
+                let [panel_width] = panels[..] else {
+                    panic!("{screen}: expected one tokens sub-navigation panel: {panels:?}");
+                };
+                panel_widths.push(panel_width);
             }
             let narrowest = panel_widths.iter().copied().fold(f32::INFINITY, f32::min);
             let widest = panel_widths.iter().copied().fold(0.0, f32::max);

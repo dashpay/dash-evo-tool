@@ -3500,7 +3500,7 @@ pub enum TaskError {
 
     /// No network context could be created at startup, so the app cannot open.
     #[error(
-        "Dash Evo Tool could not connect to any Dash network because no network has node addresses set up. Add node addresses for at least one network to the .env settings file in the app data folder, then restart the application."
+        "Dash Evo Tool could not set up a connection to any Dash network. Check the network settings in the .env file in the app data folder, then restart the application."
     )]
     NoNetworkAvailable,
 

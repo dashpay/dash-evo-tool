@@ -1,8 +1,10 @@
 use crate::support::with_isolated_data_dir;
+use dash_evo_tool::SUPPORT_URL;
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::boot::{BootApp, StartupFailure};
+use dash_evo_tool::boot::{BootApp, StartupOutcome};
+use dash_evo_tool::model::error_report::StartupFailure;
 use dash_evo_tool::ui::components::startup_error_dialog::{
-    STARTUP_ERROR_TITLE, SUPPORT_URL, StartupErrorDialog,
+    STARTUP_ERROR_TITLE, StartupErrorDialog, StartupErrorDialogAction,
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -46,12 +48,15 @@ fn failing_boot_renders_startup_error_dialog() {
 
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
+        let outcome = StartupOutcome::default();
+        let shared = outcome.clone();
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
-            .build_eframe(|cc| BootApp::new(cc.egui_ctx.clone()));
+            .build_eframe(move |cc| BootApp::new(cc.egui_ctx.clone(), shared));
         harness.run_steps(3);
 
         assert!(matches!(harness.state(), BootApp::Failed(_)));
+        assert!(outcome.failed(), "main must learn that startup failed");
         assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
         assert!(
             harness
@@ -70,8 +75,8 @@ fn failing_boot_renders_startup_error_dialog() {
 fn startup_error_dialog_shows_typed_error_message_and_details() {
     let error = insecure_folder_error();
     let expected = error.to_string();
-    let failure = StartupFailure::new(&error, None);
-    assert_eq!(failure.message(), expected);
+    let failure = StartupFailure::from_error(&error, None);
+    assert_eq!(failure.report().message(), expected);
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(900.0, 700.0))
@@ -93,8 +98,8 @@ fn startup_error_dialog_shows_typed_error_message_and_details() {
 /// "Copy details" puts the technical details on the clipboard.
 #[test]
 fn copy_details_copies_technical_details() {
-    let failure = StartupFailure::new(&insecure_folder_error(), None);
-    let details = failure.details().to_owned();
+    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let details = failure.report().details().to_owned();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(900.0, 700.0))
         .build_ui(move |ui| {
@@ -104,19 +109,21 @@ fn copy_details_copies_technical_details() {
     harness.get_by_label("Copy details").click();
     harness.step();
 
-    assert_eq!(copied_text(&harness).as_deref(), Some(details.as_str()));
+    let copied = copied_text(&harness).expect("details copied");
+    assert!(copied.contains(&details), "{copied}");
+    assert!(copied.contains(dash_evo_tool::VERSION), "{copied}");
 }
 
 /// "Quit" reports the request to the owner, which closes the app.
 #[test]
 fn quit_button_requests_quit() {
-    let failure = StartupFailure::new(&insecure_folder_error(), None);
+    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
     let quit = Rc::new(Cell::new(false));
     let seen = Rc::clone(&quit);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(900.0, 700.0))
         .build_ui(move |ui| {
-            if StartupErrorDialog::new(&failure).show(ui) {
+            if StartupErrorDialog::new(&failure).show(ui) == StartupErrorDialogAction::Quit {
                 seen.set(true);
             }
         });

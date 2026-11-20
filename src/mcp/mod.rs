@@ -46,10 +46,14 @@ pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync
             .serve(rmcp::transport::stdio())
             .await
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+        // Redacted: a raw `JoinError` repeats the server task's panic message,
+        // and the caller prints this error to stderr.
         server
             .waiting()
             .await
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(crate::backend_task::error::BackendTaskJoinError::from(e))
+            })
             .map(|_| ())
     }
     .await;

@@ -3287,14 +3287,13 @@ impl WalletBackend {
             }
             TokenBalanceStore::read_upstream(identity_sync).await
         };
-        let upstream_before = tokio::select! {
+        let (before, upstream_before) = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(TokenBalanceSyncError::Cancelled),
-            result = tokio::time::timeout_at(deadline, prepare) => {
+            result = tokio::time::timeout_at(deadline, store.load_with(prepare)) => {
                 result.map_err(TokenBalanceSyncError::TimedOut)?
             }
         };
-        let before = store.load();
         *pending = Some(PendingTokenBalanceRead {
             published: Arc::clone(&before),
             upstream: upstream_before,

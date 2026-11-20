@@ -134,6 +134,16 @@ impl TokenBalanceStore {
         self.snapshot.load_full()
     }
 
+    /// Load the snapshot that later publishes compare against, then run the
+    /// upstream baseline `read`, so local writes during the read are kept.
+    pub(super) async fn load_with<T>(
+        &self,
+        read: impl std::future::Future<Output = T>,
+    ) -> (Arc<TokenBalanceSnapshot>, T) {
+        let before = self.load();
+        (before, read.await)
+    }
+
     /// Replace the snapshot after explicit refresh. Keep local writes that
     /// landed after this network read started.
     pub(super) fn replace(&self, incoming: TokenBalanceSnapshot, before: &TokenBalanceSnapshot) {
@@ -325,9 +335,8 @@ impl TokenBalanceStore {
             _ = cancel.cancelled() => return false,
             guard = self.sync_lock.lock() => guard,
         };
-        let upstream_before = Self::read_upstream(sync).await;
+        let (before, upstream_before) = self.load_with(Self::read_upstream(sync)).await;
         let recovered = self.reconcile_pending(&mut pending, &upstream_before);
-        let before = self.load();
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {},
@@ -591,6 +600,32 @@ mod tests {
         assert!(store.publish_changes(&before, &old_result, &new_result));
         assert_eq!(store.load().get(&identity, &token), Some(25));
         assert!(!store.publish_changes(&store.load(), &new_result, &new_result));
+    }
+
+    /// A local write that lands while the upstream baseline is read is newer
+    /// than the pass that follows, for both foreground and periodic publishes.
+    #[tokio::test]
+    async fn a_local_write_during_the_baseline_read_survives_the_pass() {
+        let (identity, token) = (id(1), id(2));
+        let initial = [(identity, BTreeMap::from([(token, 5)]))];
+        let fetched = TokenBalanceStore::snapshot_from([(identity, BTreeMap::from([(token, 10)]))]);
+
+        let store = store_with(initial.clone());
+        let (before, _) = store
+            .load_with(async { store.apply(identity, token, 20) })
+            .await;
+        store.replace(fetched.clone(), &before);
+        assert_eq!(store.load().get(&identity, &token), Some(20));
+
+        let store = store_with(initial.clone());
+        let (before, upstream_before) = store
+            .load_with(async {
+                store.apply(identity, token, 20);
+                TokenBalanceStore::snapshot_from(initial)
+            })
+            .await;
+        store.publish_changes(&before, &upstream_before, &fetched);
+        assert_eq!(store.load().get(&identity, &token), Some(20));
     }
 
     #[test]

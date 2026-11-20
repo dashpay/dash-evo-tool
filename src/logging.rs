@@ -930,15 +930,44 @@ mod tests {
             child.terminal
         );
         assert!(
-            !child.terminal.contains(FULL_BACKTRACE_ONLY_FRAME),
+            !prints_full_backtrace_frames(&child.terminal),
             "RUST_BACKTRACE=1 asks for the short backtrace:\n{}",
             child.terminal
         );
     }
 
-    /// A frame of the backtrace capture itself, which only the full style
-    /// shows.
-    const FULL_BACKTRACE_ONLY_FRAME: &str = "force_capture";
+    /// Whether `text` holds a frame line in `Backtrace`'s full style, where
+    /// every numbered frame line prints its instruction address and ` - `,
+    /// resolved or not; the short style never does.
+    fn prints_full_backtrace_frames(text: &str) -> bool {
+        text.lines().any(|line| {
+            let Some((index, rest)) = line.trim_start().split_once(": ") else {
+                return false;
+            };
+            let Some((address, _)) = rest.trim_start().split_once(" - ") else {
+                return false;
+            };
+            !index.is_empty()
+                && index.bytes().all(|byte| byte.is_ascii_digit())
+                && address.strip_prefix("0x").is_some_and(|hex| {
+                    !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+        })
+    }
+
+    #[test]
+    fn full_backtrace_frames_are_told_apart_by_their_address() {
+        let full = "stack backtrace:\n   0:     0x57d8e1409bd5 - <unknown>\n";
+        let full_resolved = "   4:     0x57d8d9931d78 - dash_evo_tool::logging::report_panic\n";
+        let short = "stack backtrace:\n   0: std::backtrace::Backtrace::force_capture\n             \
+                     at /rustc/library/std/src/backtrace.rs:312:9\n   1: report_panic\n";
+        assert!(prints_full_backtrace_frames(full));
+        assert!(prints_full_backtrace_frames(full_resolved));
+        assert!(!prints_full_backtrace_frames(short));
+        assert!(!prints_full_backtrace_frames(
+            "panicked at src/x.rs:1:2:\n0x10 - not a frame\n"
+        ));
+    }
 
     #[test]
     fn panic_hook_prints_the_full_terminal_backtrace_when_rust_backtrace_is_full() {
@@ -950,7 +979,7 @@ mod tests {
             panic_as_child();
         };
         assert!(
-            child.terminal.contains(FULL_BACKTRACE_ONLY_FRAME),
+            prints_full_backtrace_frames(&child.terminal),
             "RUST_BACKTRACE=full asks for the full backtrace:\n{}",
             child.terminal
         );

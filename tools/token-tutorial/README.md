@@ -240,6 +240,13 @@ registration recorded in a complete manifest. Verify
 fullscreen/capture bounds manually before filming. It terminates only processes
 it spawned. Do not recompute the expected hash after an unreviewed binary change.
 
+**Select Testnet before anything else.** A fresh profile starts on Mainnet, and
+the copied `.env.example` configures endpoints without choosing the network.
+With recording stopped, open Settings, switch to Testnet and confirm DET shows
+Testnet before importing or loading an identity, funding it or recording. DET
+restores the network saved in the profile, so repeat this check every time a
+profile is resumed. Stop if DET shows any other network.
+
 In another terminal, list observed semantic labels, then author a small scene
 JSON using `scripts/gui/smoke.json` as the structural example. Its labels assume
 an empty test profile and must be replaced with the observed current labels.

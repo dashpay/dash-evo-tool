@@ -98,7 +98,8 @@ impl WalletSelector {
         }
     }
 
-    /// Show `label` above the selector and use it as its accessible name.
+    /// Show `label` above the selector and use it as its accessible name;
+    /// without one, screen readers hear "Wallet".
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -273,9 +274,10 @@ impl Component for WalletSelector {
             if let Some(row) = selected_row {
                 response = response.clickable_tooltip(row.breakdown);
             }
-            if let Some(label_id) = label_id {
-                response = response.labelled_by(label_id);
-            }
+            response = match label_id {
+                Some(label_id) => response.labelled_by(label_id),
+                None => response.accessible_name("Wallet"),
+            };
 
             let changed = clicked.is_some_and(|choice| self.pick(choice));
             WalletSelectorResponse {

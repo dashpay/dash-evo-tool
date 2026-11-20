@@ -1008,7 +1008,6 @@ mod tests {
     /// payment needs, change included: one coin, one recipient and change.
     #[test]
     fn the_fee_estimate_is_the_models_core_payment_fee() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 
         let (mut screen, _dir) = send_screen();

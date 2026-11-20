@@ -849,7 +849,9 @@ impl TopUpIdentityScreen {
                     self.funding_amount_exact = None;
                     self.funding_amount.clear();
                 }
-            });
+            })
+            .response
+            .accessible_name("Funding method");
     }
 
     fn top_up_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
@@ -1502,7 +1504,7 @@ mod tests {
     use crate::ui::components::ProgressOverlay;
     use crate::ui::components::message_banner::{MAX_BANNERS, global_banner_texts};
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid};
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -1766,7 +1768,7 @@ mod tests {
     /// `text` is on it.
     fn screen_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
         use egui_kittest::{Harness, kittest::Queryable};
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1780,7 +1782,7 @@ mod tests {
     /// "Select", and report which of `texts` the list showed.
     fn select_only_existing_funding(screen: &mut TopUpIdentityScreen, texts: &[&str]) -> Vec<bool> {
         use egui_kittest::{Harness, kittest::Queryable};
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.render_ui_by_using_unused_asset_lock(ui, 1);
@@ -1911,7 +1913,7 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
         let (mut screen, _seed_hashes, _temp_dir) = two_wallet_screen();
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -1953,7 +1955,7 @@ mod tests {
             None
         );
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -2004,7 +2006,7 @@ mod tests {
         let _ = screen.asset_lock_cache.ensure_requested_many([alpha, beta]);
         screen.asset_lock_cache.mark_loading_failed();
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);
@@ -2031,7 +2033,7 @@ mod tests {
     fn funding_reads_sent(screen: &mut TopUpIdentityScreen) -> Vec<WalletSeedHash> {
         use egui_kittest::Harness;
         let mut sent = Vec::new();
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 let tasks = match screen.ui(ui) {
@@ -3209,9 +3211,8 @@ mod tests {
             "a usable deposit must stay on the form"
         );
         {
-            let mut harness =
-                crate::test_support::allowing_unnamed_widgets(egui_kittest::Harness::builder())
-                    .build_ui(|ui| screen.top_up_funding_amount_input(ui));
+            let mut harness = egui_kittest::Harness::builder()
+                .build_ui(|ui| screen.top_up_funding_amount_input(ui));
             harness.run_steps(2);
         }
 
@@ -3338,7 +3339,7 @@ mod tests {
     fn deposit_request_says_when_the_deposit_awaits_confirmation() {
         fn request_shows(screen: &mut TopUpIdentityScreen, text: &str) -> bool {
             use egui_kittest::{Harness, kittest::Queryable};
-            let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+            let mut harness = Harness::builder()
                 .with_size(egui::vec2(1200.0, 900.0))
                 .build_ui(|ui| screen.render_deposit_qr(ui));
             harness.run_steps(2);

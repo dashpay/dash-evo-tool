@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn protected_single_key_import_and_rename_refresh_prompt_copy() {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+        use dash_sdk::dpp::dashcore::hashes::sha256;
 
         use crate::model::wallet::alias::AliasSource;
         use crate::wallet_backend::single_key::ImportPassphrase;

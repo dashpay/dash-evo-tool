@@ -118,7 +118,7 @@ fn build_identity(
 /// Mounts `WithdrawalScreen::ui()` directly (it manages its own top/left/central
 /// panels, same as when driven through `AppState`) and runs one settle pass.
 fn mount_withdrawal_screen(screen: WithdrawalScreen) -> Harness<'static, WithdrawalScreen> {
-    let mut harness = crate::support::allowing_unnamed_widgets(Harness::builder())
+    let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 850.0))
         .build_ui_state(
             |ui, screen: &mut WithdrawalScreen| {

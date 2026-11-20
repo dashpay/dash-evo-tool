@@ -5,7 +5,7 @@ use crate::ui::components::action_menu::show_action_menu;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
 use crate::ui::state::hub_selection::HubSelection;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Typography};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use crate::ui::{RootScreenType, ScreenType};
 use egui::{Align2, FontId, Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;

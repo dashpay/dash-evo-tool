@@ -293,6 +293,11 @@ impl BootPreparation {
     pub fn may_persist(&self) -> bool {
         self.0.is_ok()
     }
+
+    /// Why these steps failed, if they did.
+    pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.as_ref().err().map(|error| &**error as _)
+    }
 }
 
 /// Whether startup failed, shared with `main` so the process can exit with a
@@ -533,6 +538,7 @@ mod tests {
 
         let preparation = BootPreparation::run();
         let may_persist = preparation.may_persist();
+        let reported = preparation.error().is_some();
         let outcome = StartupOutcome::default();
         let app = BootApp::start(egui::Context::default(), preparation, &outcome);
 
@@ -547,6 +553,10 @@ mod tests {
         assert!(
             !may_persist,
             "a failed preparation must not let the window save"
+        );
+        assert!(
+            reported,
+            "main must be able to report the failure without a window"
         );
         assert!(matches!(app, BootApp::Failed(_)));
         assert!(outcome.failed());

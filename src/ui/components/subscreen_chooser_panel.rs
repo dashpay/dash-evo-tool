@@ -21,6 +21,10 @@ impl SubscreenNavItem {
 }
 
 /// Builds the standard left-panel navigation button used across every subscreen chooser.
+///
+/// The label never wraps: the chooser panel takes its width from the previous
+/// frame, so a label wrapped once (e.g. in a briefly narrow window) would keep
+/// the panel narrow, with labels broken mid-word, from then on.
 pub fn nav_button(label: &str, is_active: bool, dark_mode: bool) -> egui::Button<'static> {
     let (text_color, fill, stroke) = if is_active {
         (DashColors::WHITE, DashColors::DASH_BLUE, egui::Stroke::NONE)
@@ -36,6 +40,7 @@ pub fn nav_button(label: &str, is_active: bool, dark_mode: bool) -> egui::Button
             .color(text_color)
             .size(Typography::SCALE_SM),
     )
+    .wrap_mode(egui::TextWrapMode::Extend)
     .fill(fill)
     .stroke(stroke)
     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))

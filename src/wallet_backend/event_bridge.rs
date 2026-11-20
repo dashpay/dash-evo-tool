@@ -35,7 +35,7 @@ use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionR
 
 /// Shown for an SPV error reported by a sync manager or the error callback,
 /// whose own text is withheld.
-const SPV_ERROR_GUIDANCE: &str = "Chain sync stopped unexpectedly. Disconnect and connect again in Settings, or restart Dash Evo Tool.";
+const SPV_ERROR_GUIDANCE: &str = "Chain sync reported a problem. If it does not recover, disconnect and connect again in Settings, or restart Dash Evo Tool.";
 
 /// DET-authored handler registered with `PlatformWalletManager` at
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`

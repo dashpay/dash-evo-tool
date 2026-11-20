@@ -293,9 +293,17 @@ impl BootPreparation {
     }
 
     /// Whether the window may save its state into the profile: only when
-    /// these steps succeeded and this instance holds the vault.
+    /// these steps succeeded and this instance holds the vault. A legacy vault
+    /// waiting for its passphrase is not held, so another launch can reach the
+    /// same prompt.
     pub fn may_persist(&self) -> bool {
-        self.0.is_ok()
+        matches!(
+            self.0,
+            Ok(Prepared {
+                decision: BootDecision::Ready(_),
+                ..
+            })
+        )
     }
 
     /// Why these steps failed, if they did.
@@ -688,6 +696,20 @@ mod tests {
             BootApp::Failed(_)
         ));
         assert!(startup.error().is_some());
+    }
+
+    /// A legacy passphrase vault holds no lock at the unlock prompt, so two
+    /// launches could both reach it: the window must not save in that state.
+    #[test]
+    fn legacy_vault_prompt_does_not_persist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+            .expect("create passphrase vault");
+        let startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        assert!(startup.error().is_none());
+        assert!(!startup.persist_window());
     }
 
     /// Booting the prepared steps a second time never runs them again: it

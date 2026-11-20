@@ -1017,7 +1017,10 @@ impl WalletBackend {
             // The real build refuses this too, so say so before the unlock
             // prompt rather than after it.
             Ok(AssetLockDryRun::AwaitingFinality { waiting }) => {
-                Err(TaskError::AssetLockFundsAwaitingConfirmation { waiting })
+                Err(TaskError::AssetLockFundsAwaitingConfirmation {
+                    waiting,
+                    source: None,
+                })
             }
             // Any other build failure is the real build's to report, with the
             // error it already maps.
@@ -1619,7 +1622,19 @@ pub(super) fn map_asset_lock_error(
         // Only coins that are not final yet could fund the lock. Nothing was
         // built for the wire, and the same request works once they confirm.
         platform_wallet::error::PlatformWalletError::AssetLockFundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(source)),
+            }
+        }
+        // A tracked lock's transaction may already be on the network. The
+        // generic envelope below says to retry; this outcome says to check.
+        // No id is returned here, so there is nothing to watch.
+        platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(_) => {
+            TaskError::TransactionConfirmationUnknown {
+                txid: None,
+                source: Box::new(source),
+            }
         }
         other => TaskError::WalletBackend {
             source: Arc::new(other),
@@ -3020,7 +3035,8 @@ mod tests {
             matches!(
                 refused,
                 Err(TaskError::AssetLockFundsAwaitingConfirmation {
-                    waiting: PENDING_DUFFS
+                    waiting: PENDING_DUFFS,
+                    source: None,
                 })
             ),
             "{refused:?}"

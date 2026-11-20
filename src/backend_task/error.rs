@@ -471,7 +471,14 @@ pub enum TaskError {
         "This amount would use {waiting_dash} of your funds that are still waiting to be confirmed. Wait a few minutes for the confirmation, then try again.",
         waiting_dash = format_duffs_as_dash(*.waiting)
     )]
-    AssetLockFundsAwaitingConfirmation { waiting: u64 },
+    AssetLockFundsAwaitingConfirmation {
+        waiting: u64,
+        /// The wallet's own refusal when a build or resume reported it. `None`
+        /// for the check made before the unlock prompt, which finds the same
+        /// condition on a trial build and has no wallet error to keep.
+        #[source]
+        source: Option<Box<platform_wallet::error::PlatformWalletError>>,
+    },
 
     /// The wallet's available amount is not quoted while another operation
     /// that moves the funds it is quoted from is in progress: one that can

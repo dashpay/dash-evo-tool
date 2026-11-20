@@ -3460,8 +3460,11 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
 
         // Only coins that are not final yet could fund the lock. Nothing was
         // built for the wire, and the same request works once they confirm.
-        P::AssetLockFundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+        other @ P::AssetLockFundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(other)),
+            }
         }
 
         // Only shielding from Platform raises this, and
@@ -3715,7 +3718,10 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
             }
         }
         IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(e)),
+            }
         }
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
@@ -3766,7 +3772,10 @@ fn map_identity_top_up_error(
             }
         }
         IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(e)),
+            }
         }
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
@@ -3853,7 +3862,10 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
             }
         }
         IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation { waiting }
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(e)),
+            }
         }
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
@@ -4196,12 +4208,19 @@ mod tests {
             map_platform_address_fund_error(error()),
             map_shielded_op_error(error()),
         ] {
+            let TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting: 250_000,
+                source: Some(source),
+            } = &mapped
+            else {
+                panic!("expected AssetLockFundsAwaitingConfirmation with its source: {mapped:?}");
+            };
             assert!(
                 matches!(
-                    mapped,
-                    TaskError::AssetLockFundsAwaitingConfirmation { waiting: 250_000 }
+                    source.as_ref(),
+                    P::AssetLockFundsAwaitingFinality { waiting: 250_000 }
                 ),
-                "{mapped:?}"
+                "the wallet's refusal stays in the error chain: {source:?}"
             );
             assert_eq!(
                 mapped.to_string(),
@@ -5399,6 +5418,8 @@ mod tests {
             map_shielded_op_error(broadcast_unconfirmed()),
             // The payment and asset-lock-creation façades share this one.
             super::payments::map_core_broadcast_error(None, broadcast_unconfirmed()),
+            // Resuming a tracked lock: its transaction may already be out.
+            super::payments::map_asset_lock_error(broadcast_unconfirmed()),
         ];
         for error in mapped {
             assert!(

@@ -827,7 +827,7 @@ fn another_contacts_details_open_at_the_top_of_the_pane() {
             move |hub, owner| deliver_all(hub, owner, vec![bao(None), cam]),
         );
         // Short enough that the details overflow their pane.
-        hub.set_size(egui::vec2(WIDE, 640.0));
+        hub.set_size(egui::vec2(WIDE, 700.0));
         hub.get_by_role_and_label(Role::Button, "Bao Nguyen")
             .click();
         hub.run_steps(4);

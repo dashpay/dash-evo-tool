@@ -103,6 +103,31 @@ fn tc_ovl_002_overlay_appears_after_show() {
     assert!(harness.query_by_role(SPINNER_ROLE).is_some());
 }
 
+/// The full-window plane that swallows pointer input behind the card is not
+/// content: assistive technology must not see it as an unnamed widget.
+#[test]
+fn overlay_input_sink_is_hidden_from_assistive_technology() {
+    let mut harness = overlay_harness();
+    let _handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Registering your identity.",
+        OverlayConfig::default(),
+    );
+    step_into_view(&mut harness);
+    let window = harness.ctx.content_rect();
+    let exposed_planes = harness
+        .query_all(egui_kittest::kittest::by().predicate(|node| {
+            node.role() == egui::accesskit::Role::Unknown
+                && !node.is_hidden()
+                && node.bounding_box().is_some_and(|bounds| {
+                    bounds.width() >= f64::from(window.width())
+                        && bounds.height() >= f64::from(window.height())
+                })
+        }))
+        .count();
+    assert_eq!(exposed_planes, 0, "the input sink must be hidden");
+}
+
 /// TC-OVL-003 — show returns a usable handle (ctx.data level).
 #[test]
 fn tc_ovl_003_show_returns_usable_handle() {

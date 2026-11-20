@@ -38,6 +38,10 @@ use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionR
 /// char boundary so it never splits a multibyte sequence.
 const SPV_ERROR_SNIPPET_MAX: usize = 200;
 
+/// Shown for an error reported through the SPV error callback, whose own text
+/// is withheld.
+const SPV_CALLBACK_ERROR_GUIDANCE: &str = "Chain sync stopped unexpectedly. Disconnect and connect again in Settings, or restart Dash Evo Tool.";
+
 /// DET-authored handler registered with `PlatformWalletManager` at
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`
 /// and clone-free on the event hot path.
@@ -334,9 +338,15 @@ impl EventHandler for EventBridge {
     }
 
     fn on_error(&self, error: &str) {
-        let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
+        // The text can hold a worker's formatted panic message (dash-spv
+        // formats a `JoinError` into it and logs it itself), so DET keeps only
+        // its length and shows fixed guidance.
+        tracing::error!(
+            error_bytes = error.len(),
+            "Chain sync reported an error; its text is withheld"
+        );
         self.connection_status
-            .set_spv_last_error(Some(error[..limit].to_string()));
+            .set_spv_last_error(Some(SPV_CALLBACK_ERROR_GUIDANCE.to_string()));
         self.apply_status(SpvStatus::Error);
         self.nudge_refresh();
     }
@@ -966,14 +976,31 @@ mod tests {
         );
     }
 
+    /// The callback text can carry a worker's formatted panic message, so the
+    /// error state shows fixed guidance and neither it nor the log holds that text.
     #[test]
-    fn on_error_sets_error_and_records_message() {
+    fn on_error_sets_error_with_fixed_guidance_and_withholds_the_callback_text() {
+        let panic_text = "synthetic-seed-words-for-an-spv-worker";
         let (bridge, cs, mut rx) = make_bridge();
+        let log = crate::test_support::CapturedLog::start();
+
+        bridge.on_error(&format!(
+            "Invalid state: Manager task panicked: task 7 panicked with message \"{panic_text}\""
+        ));
+        let shown = cs
+            .spv_last_error()
+            .expect("the error state keeps a message");
+        let tooltip = cs.tooltip_text();
         bridge.on_error("network down");
+
         assert_eq!(cs.spv_status(), SpvStatus::Error);
-        assert!(
-            cs.spv_last_error()
-                .is_some_and(|e| e.contains("network down"))
+        assert!(!shown.contains(panic_text), "{shown}");
+        assert!(!tooltip.contains(panic_text), "{tooltip}");
+        assert!(!log.text().contains(panic_text), "{}", log.text());
+        assert_eq!(
+            cs.spv_last_error().as_deref(),
+            Some(shown.as_str()),
+            "every callback error shows the same guidance"
         );
         assert!(drained_repaint(&mut rx));
     }

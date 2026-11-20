@@ -31,24 +31,39 @@ fn main() -> ExitCode {
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
-        .thread_stack_size(SDK_THREAD_STACK_SIZE) // 4 MiB stack size for each worker thread
+        .thread_stack_size(SDK_THREAD_STACK_SIZE)
         // Each worker/blocking thread needs its own alternate signal stack.
         .on_thread_start(install_alt_signal_stack)
         .enable_all()
-        .build()
-        .expect("multi-threading runtime cannot be initialized");
+        .build();
+    let runtime = match runtime {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::error!(?error, "Could not start the async runtime");
+            report_startup_failure_to_terminal(&[&error]);
+            return ExitCode::FAILURE;
+        }
+    };
 
-    // Run the native application
+    // Run the native application. `environment` stays here so its error is
+    // still reported if eframe fails before the app is created.
     let outcome = crate::boot::StartupOutcome::default();
-    let result = runtime.block_on(start(environment, outcome.clone()));
+    let result = runtime.block_on(start(&environment, outcome.clone()));
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
         crate::boot::show_window_failure_dialog();
     }
     if result.is_err() || outcome.failed() {
-        // Generic, actionable notice to the real terminal (fd 2 is redirected
-        // into det.log, so this writes to the preserved original stderr).
-        report_startup_failure_to_terminal();
+        // Notice to the real terminal, independent of tracing (fd 2 is
+        // redirected into det.log, so this writes to the preserved stderr).
+        let mut causes: Vec<&dyn std::fmt::Debug> = Vec::new();
+        if let Err(error) = &environment {
+            causes.push(error);
+        }
+        if let Err(error) = &result {
+            causes.push(error);
+        }
+        report_startup_failure_to_terminal(&causes);
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -70,7 +85,7 @@ fn load_icon() -> egui::IconData {
 }
 
 async fn start(
-    environment: Result<std::path::PathBuf, std::io::Error>,
+    environment: &Result<std::path::PathBuf, std::io::Error>,
     outcome: crate::boot::StartupOutcome,
 ) -> Result<(), eframe::Error> {
     // Load icon for the window
@@ -102,7 +117,7 @@ async fn start(
         Box::new(move |cc| {
             Ok(Box::new(match environment {
                 Ok(_) => crate::boot::BootApp::new(cc.egui_ctx.clone(), outcome),
-                Err(error) => crate::boot::BootApp::failed(&error, &outcome),
+                Err(error) => crate::boot::BootApp::failed(error, &outcome),
             }))
         }),
     )

@@ -78,7 +78,8 @@ use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
-pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
+/// Stack budget for SDK proof verification on worker and blocking threads.
+pub const SDK_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
 type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
@@ -2287,7 +2288,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2372,7 +2373,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2444,7 +2445,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2534,7 +2535,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");

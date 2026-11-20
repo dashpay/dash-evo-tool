@@ -484,6 +484,17 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// Shielding from Platform was refused although the planner's maximum
+    /// covers the amount: a selected address held less than its cached
+    /// balance, typically right after another spend from it.
+    #[error(
+        "Your Platform balance changed and no longer covers this amount. Wait a moment for the balance to refresh, then try again."
+    )]
+    ShieldFromPlatformBalanceChanged {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Shielding from Platform was refused and the planner can shield
     /// nothing: no Platform address can keep the shielding fee back.
     #[error(

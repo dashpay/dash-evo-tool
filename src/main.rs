@@ -55,7 +55,7 @@ fn main() -> ExitCode {
     if result.is_err() || outcome.failed() {
         // Notice to the real terminal, independent of tracing (fd 2 is
         // redirected into det.log, so this writes to the preserved stderr).
-        let mut causes: Vec<&dyn std::fmt::Debug> = Vec::new();
+        let mut causes: Vec<&dyn std::error::Error> = Vec::new();
         if let Err(error) = &environment {
             causes.push(error);
         }

@@ -268,8 +268,9 @@ automate secret entry. Prepare fields manually with recording stopped as needed.
 A recorded scene refuses to click controls that open credential prompts (for
 example `Unlock Wallet`): stop recording, unlock or import, then record the next
 scene. While recording, every wait, hold and step checks for visible password
-fields or credential labels without reading their values. A detected prompt
-stops capture and deletes the clip. The clip is written as `NAME.incomplete.mkv`
+fields or credential labels without reading their values; the screen is checked
+again after capture stops, and an element that cannot be inspected counts as a
+password field. A detected prompt stops capture and deletes the clip. The clip is written as `NAME.incomplete.mkv`
 and appears at the requested path only after the whole scene passes; an
 interrupted clip keeps the `.incomplete` name and is never a media input.
 

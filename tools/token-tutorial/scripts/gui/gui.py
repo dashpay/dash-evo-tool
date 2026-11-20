@@ -30,6 +30,8 @@ SENSITIVE_WORDS = (
 )
 # Clicks that open credential prompts must happen while recording is stopped.
 CREDENTIAL_TRIGGERS = SENSITIVE_WORDS + ("unlock",)
+# Lets a dialog opened by the last action reach the accessibility tree.
+STOP_SETTLE_SECONDS = 0.5
 
 
 class SensitiveScreen(RuntimeError):
@@ -84,7 +86,11 @@ class Gui:
         command("xdotool", "windowactivate", "--sync", self.window)
 
     def scan(self):
-        """Return visible non-entry nodes and whether a password field is visible."""
+        """Return visible non-entry nodes and whether a password field may be visible.
+
+        A node whose role or name cannot be read, or a password field whose extents
+        cannot be read, counts as a visible password field.
+        """
 
         def walk(node):
             yield node
@@ -105,21 +111,24 @@ class Gui:
         has_frame = secret_field = False
         for node in walk(apps[0]):
             try:
+                role, name = node.getRoleName(), node.name
+            except (NotImplementedError, RuntimeError):
+                secret_field = True
+                continue
+            try:
                 bounds = tuple(
                     node.queryComponent().getExtents(self.spi.DESKTOP_COORDS)
                 )
-                role = node.getRoleName()
-                visible = bounds[2] > 0 and bounds[3] > 0
-                if role in ("text", "password text", "entry"):
-                    secret_field = secret_field or (visible and role == "password text")
-                    continue
-                if visible:
-                    has_frame = has_frame or role == "frame"
-                    nodes.append(
-                        (node, {"name": node.name, "role": role, "bounds": bounds})
-                    )
             except (NotImplementedError, RuntimeError):
+                secret_field = secret_field or role == "password text"
                 continue
+            visible = bounds[2] > 0 and bounds[3] > 0
+            if role in ("text", "password text", "entry"):
+                secret_field = secret_field or (visible and role == "password text")
+                continue
+            if visible:
+                has_frame = has_frame or role == "frame"
+                nodes.append((node, {"name": name, "role": role, "bounds": bounds}))
         if not has_frame:
             raise RuntimeError(
                 "The app accessibility tree has no readable window frame"
@@ -293,6 +302,13 @@ class Gui:
         if recorder and recorder.returncode not in (0, 255):
             raise RuntimeError("Recording failed")
         if partial:
+            # Prompts persist: re-check after capture stops, before publishing.
+            time.sleep(STOP_SETTLE_SECONDS)
+            try:
+                self.guard()
+            except SensitiveScreen:
+                partial.unlink(missing_ok=True)
+                raise
             os.link(partial, output)
             partial.unlink()
 

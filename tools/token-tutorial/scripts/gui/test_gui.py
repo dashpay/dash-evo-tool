@@ -263,3 +263,46 @@ def test_interrupted_clip_stays_out_of_the_media_inputs(recording):
     assert not output.exists()
     assert Recorder.started[0].exists()
     assert Recorder.started[0].name == "03.incomplete.mkv"
+
+
+class Uninspectable(Element):
+    def __init__(self, role=None):
+        super().__init__("", role or "")
+        self.role_readable = role is not None
+
+    def queryComponent(self):
+        raise RuntimeError("component query failed")
+
+    def getRoleName(self):
+        if not self.role_readable:
+            raise RuntimeError("role query failed")
+        return self.role
+
+
+@pytest.mark.parametrize("element", [Uninspectable("password text"), Uninspectable()])
+def test_uninspectable_node_counts_as_sensitive(module, tmp_path, monkeypatch, element):
+    gui = fake_gui(module, tmp_path, [screen(element)])
+    calls = []
+    monkeypatch.setattr(module, "command", lambda *args: calls.append(args))
+    with pytest.raises(RuntimeError, match="Sensitive"):
+        gui.screenshot("uninspectable")
+    assert calls == []
+
+
+def test_prompt_seen_after_capture_stops_discards_the_clip(
+    module, recording, monkeypatch
+):
+    gui, tree, output = recording
+    output.parent.mkdir()
+
+    class LatePrompt(Recorder):
+        def send_signal(self, signal):
+            # The click's dialog reaches the accessibility tree only at stop time.
+            tree.children[0].children.append(Element("", "password text"))
+            super().send_signal(signal)
+
+    monkeypatch.setattr(module.subprocess, "Popen", LatePrompt)
+    with pytest.raises(RuntimeError, match="Sensitive"):
+        gui.scene({"steps": [{"action": "wait", "target": {"name": "Ready"}}]}, output)
+    assert not output.exists()
+    assert not any(path.exists() for path in Recorder.started)

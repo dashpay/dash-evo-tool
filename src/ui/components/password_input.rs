@@ -4,7 +4,6 @@ use egui::{Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use crate::model::secret::Secret;
 use crate::ui::theme::{DashColors, ResponseExt, Typography};
 
-const PASSWORD_INPUT_HORIZONTAL_PADDING: f32 = 8.0;
 const PASSWORD_INPUT_REVEAL_ICON_WIDTH: f32 = 28.0;
 
 /// Default cap on typed/pasted characters — a paste guard, not the length
@@ -176,13 +175,14 @@ impl PasswordInput {
         // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
         let intrinsic_width_char_limit = self.intrinsic_width_char_limit();
+        let margin = egui::Margin {
+            right: PASSWORD_INPUT_REVEAL_ICON_WIDTH as i8,
+            ..crate::ui::theme::Spacing::INPUT_MARGIN
+        };
         let mut text_edit = styled_text_edit_singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)
-            .margin(egui::Margin {
-                right: PASSWORD_INPUT_REVEAL_ICON_WIDTH as i8,
-                ..crate::ui::theme::Spacing::INPUT_MARGIN
-            });
+            .margin(margin);
 
         if self.monospace {
             text_edit = text_edit.font(egui::TextStyle::Monospace);
@@ -207,11 +207,7 @@ impl PasswordInput {
             // Wide glyph upper bound — identical width in monospace, safe upper bound in proportional.
             let sample = "W".repeat(limit);
             let measured_width = Typography::measure_text_width(ui, sample, font_id);
-            text_edit = text_edit.desired_width(
-                measured_width
-                    + PASSWORD_INPUT_HORIZONTAL_PADDING
-                    + PASSWORD_INPUT_REVEAL_ICON_WIDTH,
-            );
+            text_edit = text_edit.desired_width(measured_width + margin.sum().x);
         } else {
             text_edit = text_edit.desired_width(ui.available_width());
         }
@@ -361,6 +357,37 @@ mod tests {
             typed_into(read_only),
             "abc",
             "a read-only field keeps its text"
+        );
+    }
+
+    /// A fixed-length field is wide enough for its longest value inside the
+    /// margins it renders with, so a revealed key is never clipped.
+    #[test]
+    fn intrinsic_width_fits_the_longest_value_inside_the_rendered_margins() {
+        let mut input = PasswordInput::new().with_char_limit(64).with_monospace();
+        input.set_text("W".repeat(64));
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1200.0, 200.0))
+            .build_ui_state(
+                |ui, (input, width): &mut (PasswordInput, f32)| {
+                    *width = input.show(ui).response.rect.width();
+                },
+                (input, 0.0),
+            );
+        harness.run();
+        let font = egui::TextStyle::Monospace.resolve(&harness.ctx.global_style());
+        let text = harness.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap("W".repeat(64), font, egui::Color32::WHITE)
+                .size()
+                .x
+        });
+        let margins = f32::from(crate::ui::theme::Spacing::INPUT_MARGIN.left)
+            + PASSWORD_INPUT_REVEAL_ICON_WIDTH;
+        let width = harness.state().1;
+        assert!(
+            width >= text + margins,
+            "field width {width} cannot show {text} of text inside {margins} of margins"
         );
     }
 

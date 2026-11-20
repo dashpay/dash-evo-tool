@@ -701,7 +701,7 @@ impl DashColors {
     pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(35, 39, 44);
     pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Color32::from_rgb(29, 31, 34);
     pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Color32::from_rgb(237, 240, 244);
-    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(170, 166, 157);
+    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(138, 134, 125);
     pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(115, 123, 134);
 
     /// Popup fill color adapting to dark/light mode
@@ -1072,6 +1072,11 @@ impl ComponentStyles {
 
     pub fn input_stroke() -> Stroke {
         Stroke::new(1.0, DashColors::border_strong(false))
+    }
+
+    /// Stroke for a chart's data line.
+    pub fn chart_line(visuals: &egui::Visuals) -> Stroke {
+        Stroke::new(2.0, visuals.selection.stroke.color)
     }
 
     pub fn input_stroke_focused() -> Stroke {
@@ -1539,6 +1544,42 @@ mod tests {
         let ctx = egui::Context::default();
         apply_theme(&ctx, mode);
         ctx.global_style()
+    }
+
+    /// Control boundaries meet the 3:1 UI-component contrast on every fill
+    /// they sit on.
+    #[test]
+    fn control_boundaries_contrast_with_their_surroundings() {
+        for dark in [false, true] {
+            for (name, fill) in [
+                ("card", DashColors::surface(dark)),
+                ("page", DashColors::background(dark)),
+                ("input", DashColors::input_background(dark)),
+            ] {
+                let ratio = contrast_ratio(DashColors::border_strong(dark), fill);
+                assert!(
+                    ratio >= 3.0,
+                    "dark={dark}: control boundary on the {name} fill has contrast {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    /// A chart line stays visible on the card and the page in both themes.
+    #[test]
+    fn chart_line_contrasts_with_its_surroundings() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let style = themed_style(mode);
+            let dark = mode == ThemeMode::Dark;
+            let line = ComponentStyles::chart_line(&style.visuals).color;
+            for fill in [DashColors::surface(dark), DashColors::background(dark)] {
+                let ratio = contrast_ratio(line, fill);
+                assert!(
+                    ratio >= 3.0,
+                    "{mode:?}: chart line {line:?} on {fill:?} has contrast {ratio:.2}"
+                );
+            }
+        }
     }
 
     #[test]

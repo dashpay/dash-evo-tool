@@ -78,6 +78,15 @@ impl TokensScreen {
                             .stroke(egui::Stroke::NONE)
                             .wrap_mode(egui::TextWrapMode::Extend),
                         );
+                        if response.has_focus() {
+                            let focus = &ui.visuals().widgets.active;
+                            ui.painter().rect_stroke(
+                                response.rect,
+                                focus.corner_radius,
+                                focus.bg_stroke,
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                         if response.clicked() {
                             self.creator_workspace.section = section;
                         }
@@ -395,9 +404,14 @@ fn label_with_help(
 }
 
 fn text(ui: &mut Ui, caption: &str, key: &str, value: &mut String, topic: &mut Option<String>) {
-    let caption = label(ui, caption, key, topic);
-    ui.add(styled_text_edit_singleline(value).desired_width(f32::INFINITY))
-        .labelled_by(caption.id);
+    let caption_label = label(ui, caption, key, topic);
+    // Keyed by the field, not its position, so focus survives layout changes.
+    ui.add(
+        styled_text_edit_singleline(value)
+            .id_salt((caption, key))
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(caption_label.id);
     ui.add_space(8.0);
 }
 
@@ -424,8 +438,12 @@ fn amount(
         ui.available_width()
     };
     let render = |ui: &mut Ui| {
-        ui.add(styled_text_edit_singleline(&mut value.text).desired_width(input_width))
-            .labelled_by(caption_response.id);
+        ui.add(
+            styled_text_edit_singleline(&mut value.text)
+                .id_salt((caption, key))
+                .desired_width(input_width),
+        )
+        .labelled_by(caption_response.id);
         let mut raw = value.base_units;
         egui::ComboBox::from_id_salt((caption, "units"))
             .width(120.0)
@@ -442,14 +460,15 @@ fn amount(
                     format!("{caption} units"),
                 )
             });
-        if let Err(error) = value.change_units(raw, decimals) {
-            ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-        }
+        value.change_units(raw, decimals)
     };
-    if inline_units {
-        ui.horizontal(render);
+    let unit_change = if inline_units {
+        ui.horizontal(render).inner
     } else {
-        ui.vertical(render);
+        ui.vertical(render).inner
+    };
+    if let Err(error) = unit_change {
+        ui.colored_label(ui.visuals().error_fg_color, error.to_string());
     }
     if !value.text.trim().is_empty() {
         match value.parse(decimals) {

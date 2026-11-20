@@ -105,7 +105,7 @@ pub(super) fn show(
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(),130.0),egui::Sense::hover());
                             let max = rows.iter().map(|row| row.amount).max().unwrap_or(1).max(1) as f64;
                             let points: Vec<_> = rows.iter().map(|row| egui::pos2(rect.left() + rect.width() * row.index as f32 / 10.0,rect.bottom() - rect.height() * (row.amount as f64 / max) as f32)).collect();
-                            ui.painter().add(egui::Shape::line(points,egui::Stroke::new(2.0,ui.visuals().selection.bg_fill)));
+                            ui.painter().add(egui::Shape::line(points,ComponentStyles::chart_line(ui.visuals())));
                             egui::Grid::new("emission_table").striped(true).show(ui, |ui| {
                                 for title in ["Period","Base units","Tokens","Cumulative tokens"] { ui.strong(title); } ui.end_row();
                                 for row in rows { ui.label(row.index.to_string()); ui.label(row.amount.to_string()); ui.label(format_amount(row.amount,state.draft.decimals)); ui.label(format_amount(row.cumulative,state.draft.decimals)); ui.end_row(); }

@@ -3544,6 +3544,13 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             TaskError::from_token_operation_failure(operation, source)
         }
 
+        // An SDK error reaches the user the same way whichever layer returned
+        // it. Shielding from Core broadcasts through the SDK, so a result that
+        // could not be read comes back here as an SDK error; under the generic
+        // envelope it would advise a retry, and a retried shield builds a new
+        // lock and can shield the amount, and pay the fee, a second time.
+        P::Sdk(sdk_error) => map_shielded_sdk_error(sdk_error),
+
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
         | P::StaleReservation
@@ -3575,7 +3582,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::CoreInsufficientFunds { .. }
         | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
-        | P::Sdk(_)
         | P::AddressSync(_)
         | P::AddressOperation(_)
         | P::OnlyOutputAddressesFunded { .. }
@@ -3641,6 +3647,25 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
+    }
+}
+
+/// Classify the SDK error a shielded operation failed with through
+/// [`TaskError::from`], as the funding mappers do, so an outcome the classifier
+/// knows (a result that could not be confirmed, servers that are not ready, a
+/// consumed funding lock) reads the same here as when the SDK returns it
+/// directly. An error the classifier has no dedicated answer for keeps the
+/// generic wallet envelope it had before.
+fn map_shielded_sdk_error(sdk_error: dash_sdk::Error) -> TaskError {
+    match TaskError::from(sdk_error) {
+        TaskError::PlatformRejected { source_error } | TaskError::SdkError { source_error } => {
+            TaskError::WalletBackend {
+                source: Arc::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    *source_error,
+                )),
+            }
+        }
+        classified => classified,
     }
 }
 
@@ -5275,6 +5300,75 @@ mod tests {
                 matches!(error, TaskError::TransactionConfirmationUnknown { .. }),
                 "Expected TransactionConfirmationUnknown, got: {error:?}"
             );
+        }
+    }
+
+    /// The two shapes the SDK reports a broadcast in whose result could not be
+    /// read: directly, and wrapped once every server has been tried.
+    fn unconfirmed_platform_results() -> [platform_wallet::error::PlatformWalletError; 2] {
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dapi_client::transport::TransportError;
+        let unreachable = || {
+            dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::unavailable("connection refused"),
+            )))
+        };
+        [
+            dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(
+                dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            )),
+        ]
+        .map(platform_wallet::error::PlatformWalletError::Sdk)
+    }
+
+    /// A request that went out and whose result could not be read may have
+    /// completed. Whichever wallet operation it comes back through, the user is
+    /// told to check before trying again: shielding from Core, registering,
+    /// topping up and funding an address each build a new funding lock on a
+    /// retry, so "please retry" can move the amount and pay the fee twice.
+    #[test]
+    fn an_unconfirmed_platform_result_never_maps_to_retry_advice() {
+        type Mapper = fn(platform_wallet::error::PlatformWalletError) -> TaskError;
+        let mappers: [(&str, Mapper); 4] = [
+            ("shield", map_shielded_op_error),
+            ("register", map_identity_register_error),
+            ("top up", |e| {
+                map_identity_top_up_error(dash_sdk::platform::Identifier::random(), e)
+            }),
+            ("fund address", map_platform_address_fund_error),
+        ];
+        for (operation, mapper) in mappers {
+            for wallet_error in unconfirmed_platform_results() {
+                let error = mapper(wallet_error);
+                let TaskError::PlatformResultUnconfirmed { source_error } = &error else {
+                    panic!("{operation}: expected PlatformResultUnconfirmed, got {error:?}");
+                };
+                assert!(source_error.is_state_transition_result_unconfirmed());
+                assert_eq!(
+                    error.to_string(),
+                    "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again.",
+                    "{operation}"
+                );
+            }
+        }
+    }
+
+    /// An SDK error the classifier has no dedicated answer for keeps the
+    /// generic wallet envelope and its SDK cause, as before; only outcomes the
+    /// classifier knows leave it.
+    #[test]
+    fn map_shielded_op_error_keeps_the_envelope_for_an_unclassified_sdk_error() {
+        use platform_wallet::error::PlatformWalletError as P;
+        for wallet_error in [
+            P::Sdk(dash_sdk::Error::Generic("boom".to_string())),
+            unmapped_broadcast_rejection_wallet_error(),
+        ] {
+            let mapped = map_shielded_op_error(wallet_error);
+            let TaskError::WalletBackend { source } = &mapped else {
+                panic!("expected WalletBackend, got {mapped:?}");
+            };
+            assert!(matches!(source.as_ref(), P::Sdk(_)), "{source:?}");
         }
     }
 

@@ -176,19 +176,37 @@ fn report_panic(info: &panic::PanicHookInfo<'_>) {
     let mut text = report.terminal_text();
     // Like the default hook, print a backtrace on stderr only when
     // RUST_BACKTRACE asks for one; the log above always carries it.
-    if backtrace.status() == BacktraceStatus::Captured
-        && terminal_backtrace_requested(std::env::var_os("RUST_BACKTRACE").as_deref())
-    {
-        text.push_str(&format!("stack backtrace:\n{backtrace}\n"));
+    if backtrace.status() == BacktraceStatus::Captured {
+        match TerminalBacktrace::from_rust_backtrace(std::env::var_os("RUST_BACKTRACE").as_deref())
+        {
+            TerminalBacktrace::Off => {}
+            TerminalBacktrace::Short => text.push_str(&format!("stack backtrace:\n{backtrace}\n")),
+            TerminalBacktrace::Full => text.push_str(&format!("stack backtrace:\n{backtrace:#}\n")),
+        }
     }
     // Nothing useful can be done if stderr is gone.
     let _ = std::io::stderr().lock().write_all(text.as_bytes());
 }
 
-/// Whether a `RUST_BACKTRACE` value asks for a backtrace: set and not `0`,
-/// as for the default hook. `RUST_LIB_BACKTRACE` does not apply to panics.
-fn terminal_backtrace_requested(rust_backtrace: Option<&std::ffi::OsStr>) -> bool {
-    rust_backtrace.is_some_and(|value| value != "0")
+/// The terminal backtrace a panic gets, read from `RUST_BACKTRACE` as the
+/// default hook reads it. `RUST_LIB_BACKTRACE` does not apply to panics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalBacktrace {
+    Off,
+    Short,
+    Full,
+}
+
+impl TerminalBacktrace {
+    /// Unset or `0` is off, `full` is full, any other value is short.
+    fn from_rust_backtrace(value: Option<&std::ffi::OsStr>) -> Self {
+        match value {
+            None => Self::Off,
+            Some(value) if value == "0" => Self::Off,
+            Some(value) if value == "full" => Self::Full,
+            Some(_) => Self::Short,
+        }
+    }
 }
 
 /// What a panic report may say about a panic message.
@@ -911,17 +929,61 @@ mod tests {
             "stderr must carry the backtrace RUST_BACKTRACE asked for:\n{}",
             child.terminal
         );
+        assert!(
+            !child.terminal.contains(FULL_BACKTRACE_ONLY_FRAME),
+            "RUST_BACKTRACE=1 asks for the short backtrace:\n{}",
+            child.terminal
+        );
+    }
+
+    /// A frame of the backtrace capture itself, which only the full style
+    /// shows.
+    const FULL_BACKTRACE_ONLY_FRAME: &str = "force_capture";
+
+    #[test]
+    fn panic_hook_prints_the_full_terminal_backtrace_when_rust_backtrace_is_full() {
+        let name = libtest_name(
+            "panic_hook_prints_the_full_terminal_backtrace_when_rust_backtrace_is_full",
+        );
+        let env = [("RUST_BACKTRACE", "full")];
+        let Some(child) = run_panic_hook_child(&name, "literal", &env) else {
+            panic_as_child();
+        };
+        assert!(
+            child.terminal.contains(FULL_BACKTRACE_ONLY_FRAME),
+            "RUST_BACKTRACE=full asks for the full backtrace:\n{}",
+            child.terminal
+        );
+    }
+
+    #[test]
+    fn panic_hook_prints_no_terminal_backtrace_unless_rust_backtrace_asks() {
+        let name =
+            libtest_name("panic_hook_prints_no_terminal_backtrace_unless_rust_backtrace_asks");
+        let unset: &[(&str, &str)] = &[("RUST_LIB_BACKTRACE", "1")];
+        let off: &[(&str, &str)] = &[("RUST_BACKTRACE", "0"), ("RUST_LIB_BACKTRACE", "1")];
+        for env in [unset, off] {
+            let Some(child) = run_panic_hook_child(&name, "literal", env) else {
+                panic_as_child();
+            };
+            assert!(
+                !child.terminal.contains("stack backtrace:"),
+                "{env:?} asks for no terminal backtrace:\n{}",
+                child.terminal
+            );
+        }
     }
 
     #[test]
     fn terminal_backtrace_follows_rust_backtrace_like_the_default_hook() {
-        assert!(!terminal_backtrace_requested(None));
-        assert!(!terminal_backtrace_requested(Some("0".as_ref())));
-        for value in ["1", "full", "short"] {
-            assert!(
-                terminal_backtrace_requested(Some(value.as_ref())),
-                "{value}"
-            );
+        let style = |value: Option<&str>| {
+            TerminalBacktrace::from_rust_backtrace(value.map(std::ffi::OsStr::new))
+        };
+        assert_eq!(style(None), TerminalBacktrace::Off);
+        assert_eq!(style(Some("0")), TerminalBacktrace::Off);
+        assert_eq!(style(Some("full")), TerminalBacktrace::Full);
+        for value in ["1", "short", ""] {
+            assert_eq!(style(Some(value)), TerminalBacktrace::Short, "{value:?}");
         }
     }
 

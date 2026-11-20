@@ -9,12 +9,10 @@ rust-version = "1.99"
 [dependencies]
 tokio-util = { version = "0.7.20" }
 bip39 = { version = "2.2.2", features = ["all-languages", "rand", "zeroize"] }
-derive_more = "2.1.1"
 # `monochrome_emoji_fonts` bundles the emoji fonts named in `src/bundled.rs` font families.
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_extras = "0.37.0"
 egui_commonmark = "0.26.0"
-rfd = "0.18.0"
 qrcode = "0.14.1"
 nix = { version = "0.32.0", features = ["signal"] }
 eframe = { version = "0.37.0", features = ["persistence", "wgpu"] }
@@ -47,7 +45,6 @@ platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "
     "shielded",
     "serde",
 ] }
-zip32 = "0.2.1"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.12.0"
 thiserror = "2.0.21"
@@ -74,7 +71,6 @@ bincode = { package = "grovedb-bincode", version = "=2.1.0", features = [
 ] }
 hex = { version = "0.4.3" }
 async-trait = "0.1.92"
-itertools = "0.15.0"
 enum-iterator = "2.3.0"
 futures = "0.3.34"
 tracing = "0.1.44"
@@ -115,10 +111,8 @@ unicode-segmentation = "1.13.3"
 argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
 aes-gcm = "0.11.1" # For AES-256-GCM encryption
 cbc = "0.2.1" # For CBC mode encryption
-regex = "1.13.1"
 humantime = "2.4.0"
 which = { version = "8.0.6" }
-tz-rs = { version = "0.7.3" }
 tempfile = "3.27.0"
 arc-swap = "1.9.5"
 urlencoding = "2.1.3"

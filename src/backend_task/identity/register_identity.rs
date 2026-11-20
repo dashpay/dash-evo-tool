@@ -8,7 +8,6 @@ use crate::model::fee_estimation::identity_create_min_funding_duffs;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
-use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -124,23 +123,7 @@ impl AppContext {
                             source: Box::new(e),
                         })?;
 
-                // Build inputs with fresh nonces incremented by 1
-                let inputs_with_nonces = inputs
-                    .into_iter()
-                    .map(|(addr, credits)| {
-                        // Get the fetched info, falling back to cached info if not found on platform
-                        let nonce = fetched_address_infos
-                            .get(&addr)
-                            .and_then(|opt| opt.as_ref())
-                            .map(|info| info.nonce)
-                            .or_else(|| {
-                                self.get_platform_address_best_info(&addr, self.network)
-                                    .map(|info| info.nonce)
-                            })
-                            .unwrap_or(0);
-                        (addr, (nonce.saturating_add(1), credits))
-                    })
-                    .collect::<BTreeMap<PlatformAddress, (AddressNonce, Credits)>>();
+                let inputs_with_nonces = inputs_with_next_nonces(inputs, &fetched_address_infos);
 
                 self.register_identity_from_platform_addresses(
                     keys,
@@ -414,42 +397,60 @@ impl AppContext {
             }
         }
     }
+}
 
-    /// Get the best (most recent nonce) AddressInfo from all wallets for the given [PlatformAddress] in current [Self::network].
-    ///
-    /// Returns `None`` if no info is found.
-    fn get_platform_address_best_info(
-        &self,
-        platform_address: &PlatformAddress,
-        network: Network,
-    ) -> Option<AddressInfo> {
-        let generic_address = platform_address.to_address_with_network(network);
-        let wallets = self.wallet_context().wallets();
-
-        let mut recent_info: Option<AddressInfo> = None;
-        for wallet in wallets.values() {
-            let wallet_guard = wallet.read().ok()?;
-
-            if let Some(new_info) = wallet_guard.get_platform_address_info(&generic_address)
-                && recent_info
-                    .as_ref()
-                    .is_none_or(|recent| new_info.nonce > recent.nonce)
-            {
-                recent_info = Some(AddressInfo {
-                    address: *platform_address,
-                    balance: new_info.balance,
-                    nonce: new_info.nonce,
-                });
-            }
-        }
-
-        recent_info
-    }
+/// Pair each input with the nonce its spend must carry: one above the nonce
+/// Platform just proved for it. A `None` entry is a proven absence, so the
+/// address has never spent (nonce 0); a cached nonce could only be stale.
+fn inputs_with_next_nonces(
+    inputs: BTreeMap<PlatformAddress, Credits>,
+    fetched: &dash_sdk::query_types::AddressInfos,
+) -> BTreeMap<PlatformAddress, (AddressNonce, Credits)> {
+    inputs
+        .into_iter()
+        .map(|(addr, credits)| {
+            let nonce = fetched
+                .get(&addr)
+                .and_then(|opt| opt.as_ref())
+                .map_or(0, |info| info.nonce);
+            (addr, (nonce.saturating_add(1), credits))
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dash_spv::Network;
+
+    /// Platform proved one input absent and the other at nonce 4. The absent
+    /// one is spent with nonce 1 and the other with 5.
+    #[test]
+    fn inputs_take_the_next_nonce_platform_proved() {
+        let absent = PlatformAddress::P2pkh([1; 20]);
+        let known = PlatformAddress::P2pkh([2; 20]);
+        let fetched: dash_sdk::query_types::AddressInfos = [
+            (absent, None),
+            (
+                known,
+                Some(AddressInfo {
+                    address: known,
+                    nonce: 4,
+                    balance: 900,
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let inputs = BTreeMap::from([(absent, 100), (known, 200)]);
+
+        let signed = inputs_with_next_nonces(inputs, &fetched);
+
+        assert_eq!(
+            signed,
+            BTreeMap::from([(absent, (1, 100)), (known, (5, 200))])
+        );
+    }
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 

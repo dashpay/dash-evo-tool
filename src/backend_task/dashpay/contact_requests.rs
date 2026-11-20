@@ -600,9 +600,8 @@ async fn send_contact_request_inner(
     // DET's custom send path bypasses
     // `IdentityWallet::send_contact_request_with_external_signer`, so we
     // must call `add_sent_contact_request` explicitly after the state
-    // transition commits.  Without this, `established_contacts` is never
-    // populated and contact receiving-account registration is silently
-    // skipped for all users who send a contact request from DET.
+    // transition commits. A failed record is recovered by a sync (see
+    // `recover_unrecorded`).
     let contact_record = UpstreamContactRequest::new(
         owner_id,
         to_identity_id,
@@ -639,31 +638,28 @@ async fn finish_send(
     contact_record: UpstreamContactRequest,
     held: Option<&HeldPeerLock>,
 ) -> Result<(), TaskError> {
-    // A cancel ignores the person and then records the withdrawal; a
-    // re-engagement landing in between would leave this fresh request
-    // withdrawn, so it waits for the person's lock.
-    let _peer_guard = lock_peer_unless_held(backend, owner_id, to_identity_id, held).await;
-
-    if let Err(err) = backend
-        .record_sent_contact_request(seed_hash, &owner_id, contact_record)
-        .await
-    {
-        tracing::warn!(
-            %err,
-            "record_sent_contact_request failed; contact was sent but \
-             local wallet-manager state not updated",
-        );
-    }
-
-    // Sending to someone retires an earlier decline of their request and an
-    // earlier withdrawal of ours: the user has deliberately re-engaged, so
-    // neither direction may stay filtered out of the list.
-    re_engage_after_send(&PlatformReEngage {
-        backend,
-        owner: owner_id,
-        peer: to_identity_id,
-    })
-    .await
+    let (recorded, re_engaged) = {
+        // A cancel ignores the person and then records the withdrawal; a
+        // re-engagement landing in between would leave this fresh request
+        // withdrawn, so it waits for the person's lock.
+        let _peer_guard = lock_peer_unless_held(backend, owner_id, to_identity_id, held).await;
+        let recorded = backend
+            .record_sent_contact_request(seed_hash, &owner_id, contact_record)
+            .await;
+        // Sending to someone retires an earlier decline of their request and
+        // an earlier withdrawal of ours: the user has deliberately re-engaged,
+        // so neither direction may stay filtered out of the list.
+        let re_engaged = re_engage_after_send(&PlatformReEngage {
+            backend,
+            owner: owner_id,
+            peer: to_identity_id,
+        })
+        .await;
+        (recorded, re_engaged)
+    };
+    // After re-engagement, so the sync is not filtered by a lifted ignore.
+    recover_unrecorded(recorded, || backend.dashpay_sync(&owner_id)).await;
+    re_engaged
 }
 
 /// `owner`'s request-action lock for `peer`, or `None` when `held` already
@@ -807,62 +803,24 @@ pub async fn accept_contact_request(
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
-    // Option A fix: record A's incoming CR into B's wallet-manager
-    // BEFORE sending the reciprocal.
-    //
-    // After record_sent_contact_request populates sent[A], upstream
-    // sync_contact_requests skips A's document (skip guard:
-    //   sent[A] || incoming[A] || established[A] → continue)
-    // so dashpay_sync can never call add_incoming_contact_request and
-    // established_contacts stays empty.
-    //
-    // By pre-populating incoming[A] here, add_sent_contact_request for
-    // B's outgoing CR (fired by record_sent_contact_request at the end of
-    // send_contact_request_with_proof) finds incoming[A] and auto-establishes
-    // established_contacts[A] in-process — no dashpay_sync round-trip needed.
-    if let Some(seed_hash) = identity.dashpay_wallet_seed_hash() {
-        let owner_id = identity.identity.id();
-        let props = doc.properties();
-        let maybe_incoming_cr = (|| -> Option<UpstreamContactRequest> {
-            let sender_key_index = props.get("senderKeyIndex")?.to_integer::<u32>().ok()?;
-            let recipient_key_index = props.get("recipientKeyIndex")?.to_integer::<u32>().ok()?;
-            let account_reference = props.get("accountReference")?.to_integer::<u32>().ok()?;
-            let encrypted_public_key = props.get("encryptedPublicKey")?.as_bytes()?.clone();
-            Some(UpstreamContactRequest::new(
-                from_identity_id, // sender = A
-                owner_id,         // recipient = B
-                sender_key_index,
-                recipient_key_index,
-                account_reference,
-                encrypted_public_key,
-                doc.created_at_core_block_height().unwrap_or(0),
-                doc.created_at().unwrap_or(0),
-            ))
-        })();
-
-        match maybe_incoming_cr {
-            Some(incoming_cr) => {
-                if let Ok(backend) = app_context.wallet_backend()
-                    && let Err(err) = backend
-                        .record_incoming_contact_request(&seed_hash, &owner_id, incoming_cr)
-                        .await
-                {
-                    tracing::warn!(
-                        %err,
-                        "record_incoming_contact_request failed; \
-                         auto-establishment will depend on dashpay_sync",
-                    );
-                }
-            }
-            None => {
-                tracing::warn!(
-                    sender_id = %from_identity_id,
-                    "accept_contact_request: incoming CR document missing required \
-                     fields; auto-establishment will depend on dashpay_sync",
-                );
-            }
+    // A request missing a field a contact is built from could never form
+    // one, and no sync can repair it, so it is not answered (or paid for).
+    let incoming_cr = incoming_contact_request(&doc, from_identity_id, owner_id)
+        .ok_or(TaskError::DashPay(DashPayError::UnreadableContactRequest))?;
+    // Recorded before the reply is published, so recording the reply
+    // establishes the contact in-process; if it cannot be recorded, a sync
+    // after the reply takes it in instead.
+    let recorded_incoming = match (
+        identity.dashpay_wallet_seed_hash(),
+        app_context.wallet_backend(),
+    ) {
+        (Some(seed_hash), Ok(backend)) => {
+            backend
+                .record_incoming_contact_request(&seed_hash, &owner_id, incoming_cr)
+                .await
         }
-    }
+        _ => Ok(()),
+    };
 
     // The reply is sent under the person's lock taken above, which the send
     // would otherwise wait on forever.
@@ -878,11 +836,61 @@ pub async fn accept_contact_request(
     )
     .await;
 
-    match result {
-        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
-            request_id,
-        )),
-        Err(e) => Err(e),
+    result?;
+    if let Ok(backend) = app_context.wallet_backend() {
+        recover_unrecorded(recorded_incoming, || backend.dashpay_sync(&owner_id)).await;
+    }
+    Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
+        request_id,
+    ))
+}
+
+/// The contact request `doc`, sent by `sender` to `recipient`, as
+/// platform-wallet records it; `None` when a required field is missing or
+/// unreadable.
+fn incoming_contact_request(
+    doc: &Document,
+    sender: Identifier,
+    recipient: Identifier,
+) -> Option<UpstreamContactRequest> {
+    let props = doc.properties();
+    let sender_key_index = props.get("senderKeyIndex")?.to_integer::<u32>().ok()?;
+    let recipient_key_index = props.get("recipientKeyIndex")?.to_integer::<u32>().ok()?;
+    let account_reference = props.get("accountReference")?.to_integer::<u32>().ok()?;
+    // Any byte variant, as platform-wallet's sync reads it.
+    let encrypted_public_key = props.get("encryptedPublicKey")?.to_binary_bytes().ok()?;
+    Some(UpstreamContactRequest::new(
+        sender,
+        recipient,
+        sender_key_index,
+        recipient_key_index,
+        account_reference,
+        encrypted_public_key,
+        doc.created_at_core_block_height().unwrap_or(0),
+        doc.created_at().unwrap_or(0),
+    ))
+}
+
+/// Recover a contact request this device could not record: `resync` re-reads
+/// the owner's sent and received requests from Platform and records them. If
+/// it fails too, the next contacts load runs the same sync.
+async fn recover_unrecorded<S>(recorded: Result<(), TaskError>, resync: impl FnOnce() -> S)
+where
+    S: Future<Output = Result<(), TaskError>>,
+{
+    let Err(error) = recorded else {
+        return;
+    };
+    tracing::debug!(
+        ?error,
+        "contact request not recorded on this device; syncing it"
+    );
+    if let Err(sync_error) = resync().await {
+        tracing::warn!(
+            ?error,
+            ?sync_error,
+            "contact request still not recorded on this device; the next contacts load retries"
+        );
     }
 }
 
@@ -2475,6 +2483,66 @@ mod tests {
         assert!(
             !*ops.unignored.lock().unwrap(),
             "the withdrawal's ignore stands"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Recovery of contact requests this device could not record.
+    // -----------------------------------------------------------------
+
+    fn full_request_doc(encrypted_public_key: Value) -> Document {
+        let mut doc = request_doc(id(2), Some(id(1)));
+        let props = doc.properties_mut();
+        props.insert("senderKeyIndex".into(), Value::U32(3));
+        props.insert("recipientKeyIndex".into(), Value::U32(4));
+        props.insert("accountReference".into(), Value::U32(5));
+        props.insert("encryptedPublicKey".into(), encrypted_public_key);
+        doc
+    }
+
+    /// Read like platform-wallet's sync reads it, whatever byte variant the
+    /// query returns, so a request sync would take in is never refused here.
+    #[test]
+    fn an_incoming_request_reads_any_byte_variant() {
+        let key = vec![9_u8; 96];
+        for value in [
+            Value::Bytes(key.clone()),
+            Value::Array(key.iter().copied().map(Value::U8).collect()),
+        ] {
+            let request = incoming_contact_request(&full_request_doc(value), id(2), id(1))
+                .expect("a complete request is read");
+            assert_eq!(request.encrypted_public_key, key);
+            assert_eq!(request.account_reference, 5);
+        }
+    }
+
+    #[test]
+    fn an_incoming_request_without_its_account_is_unreadable() {
+        let mut doc = full_request_doc(Value::Bytes(vec![9; 96]));
+        doc.properties_mut().remove("accountReference");
+
+        assert!(incoming_contact_request(&doc, id(2), id(1)).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unrecorded_request_is_recovered_by_one_sync() {
+        let syncs = Mutex::new(0);
+        recover_unrecorded(Err(TaskError::WalletStateInconsistent), || async {
+            *syncs.lock().unwrap() += 1;
+            Err(TaskError::WalletStateInconsistent)
+        })
+        .await;
+        assert_eq!(*syncs.lock().unwrap(), 1);
+
+        recover_unrecorded(Ok(()), || async {
+            *syncs.lock().unwrap() += 1;
+            Ok(())
+        })
+        .await;
+        assert_eq!(
+            *syncs.lock().unwrap(),
+            1,
+            "a recorded request needs no sync"
         );
     }
 }

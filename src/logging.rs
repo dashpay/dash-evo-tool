@@ -496,9 +496,11 @@ fn write_to_terminal(bytes: &[u8]) {
 /// Writes `bytes` to the terminal, best-effort.
 #[cfg(not(unix))]
 fn write_to_terminal(bytes: &[u8]) {
+    use std::io::Write as _;
     // stderr is not redirected on non-Unix targets, so a plain write reaches the
-    // terminal. Lossy UTF-8 is fine here — the message is ASCII.
-    eprint!("{}", String::from_utf8_lossy(bytes));
+    // terminal. Unlike `eprint!`, a rejected write (e.g. a full redirect file)
+    // is ignored instead of panicking.
+    let _ = std::io::stderr().lock().write_all(bytes);
 }
 
 fn rotate_log_file() {

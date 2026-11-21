@@ -177,6 +177,18 @@ impl RuleDraft {
             && !self.allow_replace_administrator
     }
 
+    /// Whether the rule can never change after signing: nobody performs the action and
+    /// no administrator can appoint a performer. The allowances only bind an administrator.
+    pub fn is_fixed(&self) -> bool {
+        self.performer == ActorDraft::NoOne && self.administrator == ActorDraft::NoOne
+    }
+
+    /// Whether the administrator may later remove every administrator. The protocol
+    /// checks the replace allowance before any administrator change.
+    pub fn allows_removing_administrators(&self) -> bool {
+        self.allow_remove_administrator && self.allow_replace_administrator
+    }
+
     /// Parses exactly what is displayed, including otherwise hidden administrator selections.
     pub fn parse(
         &self,
@@ -347,6 +359,42 @@ mod tests {
             ..Default::default()
         };
         assert!(!rule.permanently_disabled());
+    }
+
+    #[test]
+    fn a_rule_without_performer_or_administrator_is_fixed_whatever_its_allowances() {
+        let locked = RuleDraft {
+            allow_disable_action: true,
+            allow_remove_administrator: true,
+            allow_replace_administrator: true,
+            ..Default::default()
+        };
+        assert!(locked.is_fixed());
+        for open in [
+            RuleDraft {
+                administrator: ActorDraft::Owner,
+                ..Default::default()
+            },
+            RuleDraft {
+                performer: ActorDraft::Owner,
+                ..Default::default()
+            },
+        ] {
+            assert!(!open.is_fixed(), "{open:?}");
+        }
+    }
+
+    #[test]
+    fn removing_all_administrators_needs_the_replace_allowance_too() {
+        let rule = |remove, replace| RuleDraft {
+            administrator: ActorDraft::Owner,
+            allow_remove_administrator: remove,
+            allow_replace_administrator: replace,
+            ..Default::default()
+        };
+        assert!(!rule(true, false).allows_removing_administrators());
+        assert!(!rule(false, true).allows_removing_administrators());
+        assert!(rule(true, true).allows_removing_administrators());
     }
 
     #[test]

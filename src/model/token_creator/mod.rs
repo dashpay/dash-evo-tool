@@ -162,9 +162,7 @@ pub enum DraftIssue {
     Name,
     #[error("Use each language only once and include English (en).")]
     Language,
-    #[error(
-        "Use at least 3 characters without spaces or control characters, within 25 UTF-8 bytes."
-    )]
+    #[error("Use 3 to 25 UTF-8 bytes without spaces or control characters.")]
     NameFormat,
     #[error("Leave the description empty or enter 3 to 100 UTF-8 bytes.")]
     Description,

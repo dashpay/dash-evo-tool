@@ -321,7 +321,7 @@ impl TokenDraft {
                 return Err(error(DraftIssue::Name));
             }
             for text in [&name.singular, &name.plural] {
-                if !(3..=25).contains(&text.chars().count())
+                if !(3..=25).contains(&text.len())
                     || text.chars().any(|c| c.is_whitespace() || c.is_control())
                 {
                     return Err(error(DraftIssue::NameFormat));
@@ -575,6 +575,30 @@ mod tests {
             parse(&draft).unwrap_err().issue,
             DraftIssue::DuplicateSchedule
         ));
+    }
+
+    /// Platform bounds both name forms at 3 to 25 UTF-8 bytes, not characters.
+    #[test]
+    fn token_names_are_bounded_in_utf8_bytes() {
+        let check = |name: &str| {
+            let mut draft = TokenDraft::example(false);
+            draft.names[0].singular = name.into();
+            draft.names[0].plural = name.into();
+            draft
+                .parse_names(PlatformVersion::latest())
+                .map(|_| ())
+                .map_err(|error| error.issue)
+        };
+        assert!(
+            check("金币").is_ok(),
+            "two three-byte characters are six bytes"
+        );
+        assert!(check(&format!("{}a", "é".repeat(12))).is_ok(), "25 bytes");
+        assert!(matches!(
+            check(&"é".repeat(13)),
+            Err(DraftIssue::NameFormat)
+        ));
+        assert!(matches!(check("ab"), Err(DraftIssue::NameFormat)));
     }
 
     #[test]

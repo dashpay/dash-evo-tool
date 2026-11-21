@@ -3464,21 +3464,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
 
-        other @ P::AssetLockTooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(other),
-            }
-        }
-
-        // Only coins that are not final yet could fund the lock. Nothing was
-        // built for the wire, and the same request works once they confirm.
-        other @ P::AssetLockFundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(other)),
-            }
+        other @ (P::AssetLockTooManyInputs { .. } | P::AssetLockFundsAwaitingFinality { .. }) => {
+            payments::map_asset_lock_refusal_or(other, |other| TaskError::WalletBackend {
+                source: Arc::new(other),
+            })
         }
 
         // Only shielding from Platform raises this, and
@@ -3723,20 +3712,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::TooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(e),
-            }
-        }
-        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(e)),
-            }
-        }
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
         },
@@ -3754,7 +3730,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Same as [`map_identity_register_error`] but for the top-up façade —
@@ -3777,20 +3753,7 @@ fn map_identity_top_up_error(
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::TooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(e),
-            }
-        }
-        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(e)),
-            }
-        }
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
             source: Box::new(e),
@@ -3811,7 +3774,7 @@ fn map_identity_top_up_error(
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Classify an SDK error from a directly-submitted identity top-up — the path a
@@ -3867,20 +3830,7 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::TooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(e),
-            }
-        }
-        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(e)),
-            }
-        }
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
@@ -3899,16 +3849,11 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
-    /// The built transaction exceeds the input cap and cannot be re-sent.
-    TooManyInputs { count: usize, max: usize },
-    /// Only coins that are not final yet could fund the asset lock; nothing
-    /// was built for the wire.
-    FundsAwaitingFinality { waiting: u64 },
     /// Network or broadcast rejected the submission (SDK error or asset-lock
     /// transaction broadcast failure).
     Rejected,
@@ -3934,15 +3879,6 @@ enum IdentityOpErrorKind {
 fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> IdentityOpErrorKind {
     use platform_wallet::error::PlatformWalletError as P;
     match e {
-        P::AssetLockTooManyInputs { count, max } => IdentityOpErrorKind::TooManyInputs {
-            count: *count,
-            max: *max,
-        },
-
-        P::AssetLockFundsAwaitingFinality { waiting } => {
-            IdentityOpErrorKind::FundsAwaitingFinality { waiting: *waiting }
-        }
-
         // Network / broadcast rejections. A failed token operation carries the
         // SDK rejection that caused it.
         P::Sdk(_) | P::TransactionBroadcast(_) | P::TokenOperationFailed { .. } => {
@@ -3967,7 +3903,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         P::TransactionBroadcastUnconfirmed(_) => IdentityOpErrorKind::ConfirmationUnknown,
 
         // Everything else — preconditions, wallet state, builder errors.
-        P::WalletCreation(_)
+        // Asset-lock refusals never get here: callers classify them first via
+        // `payments::map_asset_lock_refusal_or`.
+        P::AssetLockTooManyInputs { .. }
+        | P::AssetLockFundsAwaitingFinality { .. }
+        | P::WalletCreation(_)
         | P::StaleReservation
         | P::InputMidBroadcast { .. }
         | P::AssetLockInputConflict { .. }

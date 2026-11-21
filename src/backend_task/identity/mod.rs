@@ -1173,9 +1173,11 @@ impl AppContext {
     /// as a failed task the user might repeat.
     ///
     /// TODO(platform-wallet): interim DET-side write. Once `IdentityManager`
-    /// holds the identity record, wallet-owned identities go through
-    /// `IdentityWallet::*_with_signer`, which store only the confirmed balance
-    /// via `persist_confirmed_balance`.
+    /// holds the identity record, wallet-owned payers go through the
+    /// manager-backed `IdentityWallet::*_with_external_signer`, which store the
+    /// payer's confirmed balance via `persist_confirmed_balance`; the
+    /// `*_with_signer` variants store none, and a receiver loaded here still
+    /// needs this write.
     fn store_observed_balance(
         &self,
         id: &Identifier,

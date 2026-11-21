@@ -86,9 +86,12 @@ impl AppContext {
     /// Store the `(identity, balance)` pairs a finished transfer reports for
     /// its sender and receiver, each only when that identity is loaded here.
     ///
-    /// TODO(platform-wallet): `IdentityWallet::transfer_credits_with_signer`
-    /// stores both via `persist_confirmed_balance`; route wallet-owned
-    /// identities through it once `IdentityManager` holds the identity record.
+    /// TODO(platform-wallet): once `IdentityManager` holds the identity record,
+    /// route wallet-owned senders through the manager-backed
+    /// `IdentityWallet::transfer_credits_with_external_signer`, which stores
+    /// only the sender's balance via `persist_confirmed_balance`
+    /// (`transfer_credits_with_signer` stores none); a receiver loaded here
+    /// still needs its own write.
     fn store_transfer_balances(
         &self,
         (sender_id, sender_balance): (Identifier, Credits),

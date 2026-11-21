@@ -18,6 +18,8 @@ bip39 = { version = "2.2.2", features = ["all-languages", "rand", "zeroize"] }
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_extras = "0.37.0"
 egui_commonmark = "0.26.0"
+# Native save dialog for the token creator's contract JSON export.
+rfd = "0.18.0"
 qrcode = "0.14.1"
 nix = { version = "0.32.0", features = ["signal"] }
 eframe = { version = "0.37.0", features = ["persistence", "wgpu"] }

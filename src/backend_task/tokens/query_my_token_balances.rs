@@ -126,7 +126,7 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let context = Arc::clone(self);
-        await_managed_network_request_with_timeout(
+        let refreshed = await_managed_network_request_with_timeout(
             self.subtasks.clone(),
             "token_balance_refresh_reaper",
             NETWORK_REQUEST_TIMEOUT,
@@ -136,10 +136,16 @@ impl AppContext {
             },
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
-        .await??;
-        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
-            .await;
-        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
+        .await?;
+        // A partly read refresh published the identities it did read.
+        if matches!(
+            refreshed,
+            Ok(()) | Err(TaskError::TokenBalancesNotChecked { .. })
+        ) {
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+                .await;
+        }
+        refreshed.map(|()| BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
     /// Stop tracking one identity-token balance. Un-watches the pair in the
@@ -281,7 +287,9 @@ fn token_balance_sync_task_error(error: TokenBalanceSyncError) -> TaskError {
     match error {
         TokenBalanceSyncError::SyncStopped => TaskError::TokenBalanceRefreshDisconnected,
         TokenBalanceSyncError::MasternodesNotReady => TaskError::MasternodeListSyncPending,
-        TokenBalanceSyncError::UpstreamPassStillRunning => TaskError::TokenBalanceRefreshInProgress,
+        TokenBalanceSyncError::UpstreamPassStillRunning => {
+            TaskError::TokenBalanceRefreshTookTooLong
+        }
         TokenBalanceSyncError::NotRead(identities) => {
             TaskError::TokenBalancesNotChecked { identities }
         }
@@ -561,6 +569,61 @@ mod tests {
                 .query_my_token_balances(&unwired.sdk(), f.sender.clone())
                 .await,
             Err(TaskError::WalletBackendNotYetWired)
+        ));
+    }
+
+    /// A refresh that read some identities but not all still tells the
+    /// screens to re-read the balances it published.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_partly_read_refresh_still_notifies_the_token_cache() {
+        let directory = tempfile::tempdir().expect("app data directory");
+        let ctx = crate::context::test_support::test_app_context_for_network(
+            directory.path(),
+            Network::Regtest,
+        );
+        // No expected query: every balance read fails.
+        let sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_network(Network::Regtest)
+            .build()
+            .expect("mock Platform SDK");
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(64);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender.clone())
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        backend.mark_started_for_test();
+        backend.mark_masternodes_ready_for_test();
+        let token = ident(2);
+        register_token(&ctx, token, "Coffee");
+
+        let outcome = ctx
+            .track_token_balances_again(&ctx.sdk(), vec![pair(ident(1), token)], sender)
+            .await;
+        backend.shutdown().await;
+        assert!(
+            matches!(outcome, Err(TaskError::TokenBalancesNotChecked { .. })),
+            "{outcome:?}"
+        );
+        let mut notified = false;
+        while let Ok(result) = rx.try_recv() {
+            notified |= matches!(
+                result,
+                TaskResult::CacheUpdated(update)
+                    if update.domain == crate::backend_task::CacheDomain::Tokens
+            );
+        }
+        assert!(notified, "the token cache was notified");
+    }
+
+    /// Upstream's own pass outlasting the wait is reported as slow, not as a
+    /// refresh to retry quietly.
+    #[test]
+    fn a_long_upstream_pass_is_reported_as_slow() {
+        assert!(matches!(
+            token_balance_sync_task_error(TokenBalanceSyncError::UpstreamPassStillRunning),
+            TaskError::TokenBalanceRefreshTookTooLong
         ));
     }
 

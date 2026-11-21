@@ -48,20 +48,23 @@ type IdentityBalances = BTreeMap<Identifier, u64>;
 pub(super) type SyncStamps = BTreeMap<Identifier, u64>;
 
 /// The identities an upstream pass that ran between `started` and `finished`
-/// read. Upstream leaves an identity's stamp alone when its read fails.
+/// read. Upstream leaves an identity's stamp alone when its read fails; a read
+/// after the clock stepped back stamps an earlier second, so any change counts.
 pub(super) fn refreshed_between(
     started: &SyncStamps,
     finished: &SyncStamps,
 ) -> BTreeSet<Identifier> {
     finished
         .iter()
-        .filter(|(identity_id, at)| **at > started.get(*identity_id).copied().unwrap_or(0))
+        .filter(|(identity_id, at)| **at != started.get(*identity_id).copied().unwrap_or(0))
         .map(|(identity_id, _)| *identity_id)
         .collect()
 }
 
 /// Start a pass after the second of the latest stamp in `started`: upstream
 /// stamps in whole seconds, so a pass ending in that second would look unread.
+/// Waits at most a second: a stamp further ahead means the clock stepped
+/// back, and the pass then stamps an earlier, different second anyway.
 pub(super) async fn after_latest_stamp_second(started: &SyncStamps) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -69,7 +72,8 @@ pub(super) async fn after_latest_stamp_second(started: &SyncStamps) {
     if let Some(latest) = started.values().max()
         && *latest >= now.as_secs()
     {
-        tokio::time::sleep(std::time::Duration::from_secs(latest + 1).saturating_sub(now)).await;
+        let wait = std::time::Duration::from_secs(latest + 1).saturating_sub(now);
+        tokio::time::sleep(wait.min(std::time::Duration::from_secs(1))).await;
     }
 }
 
@@ -194,8 +198,10 @@ impl TokenBalanceStore {
             }
             for (&pair, marker) in &current.local_writes {
                 let (identity_id, token_id) = pair;
-                let unchanged =
-                    pre_pass.get(&identity_id, &token_id) == incoming.get(&identity_id, &token_id);
+                // Upstream re-watches a token with a placeholder zero, and a
+                // read that finds no balance drops it: both are zero.
+                let unchanged = pre_pass.get(&identity_id, &token_id).unwrap_or(0)
+                    == incoming.get(&identity_id, &token_id).unwrap_or(0);
                 if current.locally_written_since(before, pair)
                     || !refreshed.contains(&identity_id)
                     || unchanged
@@ -440,6 +446,40 @@ mod tests {
         assert_eq!(store.load().get(&identity, &token), Some(20));
     }
 
+    /// A first purchase or claim: upstream re-watches the token with a
+    /// placeholder zero, and a node a block behind still finds no balance.
+    /// Both mean the pre-operation state, so the proof-derived balance stays.
+    #[test]
+    fn a_lagging_read_of_a_first_acquisition_keeps_the_local_write() {
+        let (identity, token) = (id(1), id(2));
+        let store = store_with([(identity, BTreeMap::new())]);
+        store.apply(identity, token, 7);
+        store.replace(
+            snapshot(identity, &[]),
+            &snapshot(identity, &[(token, 0)]),
+            &store.load(),
+            &BTreeSet::from([identity]),
+        );
+        assert_eq!(store.load().get(&identity, &token), Some(7));
+    }
+
+    /// The wait for the next stamp second is at most a second, even when
+    /// the clock stepped back behind a stamp.
+    #[tokio::test]
+    async fn the_wait_for_the_next_stamp_second_is_bounded() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
+        let ahead = SyncStamps::from([(id(1), now + 3_600)]);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(1_500),
+            after_latest_stamp_second(&ahead),
+        )
+        .await
+        .expect("waits at most a second");
+    }
+
     /// An identity the pass did not read keeps what was published: upstream's
     /// placeholder zero for a newly watched token is never shown.
     #[test]
@@ -463,6 +503,12 @@ mod tests {
         );
         let never_read = SyncStamps::from([(new, 0)]);
         assert!(refreshed_between(&SyncStamps::new(), &never_read).is_empty());
+        // A read after the clock stepped back stamps an earlier second.
+        let stepped_back = SyncStamps::from([(same, 9)]);
+        assert_eq!(
+            refreshed_between(&started, &stepped_back),
+            BTreeSet::from([same])
+        );
     }
 
     /// A local write that lands while upstream is read is newer than the

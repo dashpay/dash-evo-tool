@@ -2491,7 +2491,7 @@ impl TokensScreen {
                     token_info.data_contract_id,
                 ]))),
                 BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
             ],
             BackendTasksExecutionMode::Sequential,
         ))

@@ -2000,6 +2000,34 @@ mod tests {
     fn app_context_reports_invalid_node_addresses() {
         use crate::database::test_helpers::create_database_at_path;
 
+        // Loading the .env sets process variables, so run in a child process
+        // that inherits no network settings.
+        const CHILD_MARKER: &str = "DET_INVALID_NODE_ADDRESSES_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args([
+                    "context::tests::app_context_reports_invalid_node_addresses",
+                    "--exact",
+                ])
+                .env(CHILD_MARKER, "1");
+            for (key, _) in std::env::vars_os() {
+                let key = key.to_string_lossy();
+                if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
+                {
+                    command.env_remove(key.as_ref());
+                }
+            }
+            let output = command.output().expect("run isolated test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "isolated test failed: {stdout}");
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+            return;
+        }
+
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
         std::fs::write(

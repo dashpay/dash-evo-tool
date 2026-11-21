@@ -101,7 +101,20 @@ access. The branch does not change live repository settings or move secrets.
    separately assess privileged workflow execution policies. The shared Actions
    status-writer identity is not a boundary against arbitrary write-capable
    workflows. Do not tie scheduled runs to an assumed permanent `github.actor`.
-6. Before the next stable release, update `master` through the normal reviewed
+6. `Contents: write` also authorizes the Releases API: the agent could create,
+   edit or delete releases, and replace or delete assets on published releases.
+   Branch and tag rules do not govern these calls, and withholding Workflows
+   write does not prevent them. Before any direct agent write grant, require:
+   - **immutable releases** for the repository, so published assets and tags
+     cannot change. Drafts stay mutable, so weekly must attach every asset,
+     including Flatpaks, before publishing;
+   - **attestation verification** before a release or asset is used:
+     `gh release verify <tag>`, `gh release verify-asset <tag> <file>`, and the
+     build-provenance check against the `release.yml` signer identity. This
+     also detects assets replaced in a draft before publication.
+
+   Do not grant direct write access until both are in place.
+7. Before the next stable release, update `master` through the normal reviewed
    release process so it contains these workflow changes. Historical workflow
    runs retain their old workflow code; removing global signing credentials also
    removes their old signing path. Signing from arbitrary feature refs is
@@ -137,6 +150,8 @@ run after the settings/secrets rollout; they cannot be proved by the Linux tests
 - [Deployment environment protections and ref matching](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
 - [Environment secrets in reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow)
 - [Actions execution policies](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)
+- [Immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases)
+  and [verifying a release](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/verifying-the-integrity-of-a-release)
 - [Personal access token limitations](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens-limitations)
 
 <sub>Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

@@ -36,6 +36,37 @@ use crate::ui::components::startup_error_dialog::{StartupErrorDialog, StartupErr
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
+/// A panic caught while the app was being built. Never shown as the message:
+/// the dialog falls back to the generic one and shows this in the details. A
+/// formatted panic message is redacted as the panic hook redacts it.
+#[derive(thiserror::Error)]
+#[error("startup panicked: {message}")]
+pub struct BootPanic {
+    message: crate::logging::PanicMessage,
+}
+
+impl BootPanic {
+    fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
+        Self {
+            message: crate::logging::PanicMessage::from_payload(payload),
+        }
+    }
+}
+
+impl std::fmt::Debug for BootPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootPanic")
+            .field("message", &format_args!("{}", self.message))
+            .finish()
+    }
+}
+
+/// `build()`, with a panic turned into a [`BootPanic`] error.
+fn catch_boot_panic<T>(build: impl FnOnce() -> Result<T, BootError>) -> Result<T, BootError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+        .unwrap_or_else(|payload| Err(Box::new(BootPanic::from_payload(&*payload))))
+}
+
 /// Sole owner of the production boot environment: resolve the app data
 /// directory (creating it if needed), ensure the `.env` file exists, and
 /// initialize logging. Returns the resolved data directory.
@@ -136,7 +167,7 @@ pub enum BootApp {
     /// Startup failed. Only the failure dialog is shown; no part of the app
     /// is built.
     Failed(StartupFailure),
-    /// The failure dialog closed through the macOS menu Quit; exits when
+    /// The failure dialog closed on macOS, by any route; reports and exits when
     /// eframe drops the app.
     Exiting(FailureExit),
 }
@@ -162,10 +193,17 @@ impl BootApp {
         // Every boot outcome, the failure dialog included, keeps selections
         // out of PRIMARY.
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
-        match preparation
-            .0
-            .and_then(|prepared| Self::open(ctx, prepared, outcome))
-        {
+        Self::guarded(outcome, || {
+            preparation
+                .0
+                .and_then(|prepared| Self::open(ctx, prepared, outcome))
+        })
+    }
+
+    /// `build()`, or the failure state when it fails or panics. A panic leaves
+    /// the half-built app behind; only the failure dialog is shown afterwards.
+    fn guarded(outcome: &StartupOutcome, build: impl FnOnce() -> Result<Self, BootError>) -> Self {
+        match catch_boot_panic(build) {
             Ok(app) => app,
             Err(error) => Self::failed(&*error, outcome),
         }
@@ -232,12 +270,14 @@ impl BootApp {
         };
         match AppContext::open_secret_store_with_passphrase(&state.data_dir, passphrase) {
             Ok(store) => {
-                *self = match AppState::new_inner(
-                    state.ctx.clone(),
-                    Arc::clone(&state.db),
-                    state.data_dir.clone(),
-                    store,
-                ) {
+                *self = match catch_boot_panic(|| {
+                    AppState::new_inner(
+                        state.ctx.clone(),
+                        Arc::clone(&state.db),
+                        state.data_dir.clone(),
+                        store,
+                    )
+                }) {
                     Ok(app) => BootApp::Running(Box::new(app)),
                     Err(error) => Self::failed(&*error, &state.outcome),
                 };
@@ -296,15 +336,36 @@ impl eframe::App for BootApp {
     fn on_exit(&mut self) {
         match self {
             BootApp::Running(app) => app.on_exit(),
-            // After the macOS menu Quit, eframe never returns to `main`, so the
-            // failure is reported and the status set when this app is dropped.
-            // Elsewhere `main` does both after eframe finishes its teardown.
+            // On macOS, every close is handled here: after the menu Quit eframe
+            // never returns to `main`, so the failure is reported and the
+            // status set when this app is dropped. Elsewhere `main` does both
+            // after eframe finishes its teardown.
             BootApp::Failed(failure) if cfg!(target_os = "macos") => {
                 let notice = FailureNotice(failure.clone());
                 *self = BootApp::Exiting(FailureExit(notice));
             }
             BootApp::Failed(_) | BootApp::Unlocking(_) | BootApp::Exiting(_) => {}
         }
+    }
+}
+
+/// Tell the user in a system dialog that the app window could not be opened,
+/// so a launch without a terminal does not end silently. Best effort: without
+/// a dialog service (e.g. no zenity or kdialog on Linux) only the log remains.
+pub fn show_window_failure_dialog() {
+    let text =
+        crate::model::error_report::window_failure_text(crate::logging::log_file_path().as_deref());
+    if let Err(error) = native_dialog::DialogBuilder::message()
+        .set_level(native_dialog::MessageLevel::Error)
+        .set_title(crate::ui::components::startup_error_dialog::STARTUP_ERROR_TITLE)
+        .set_text(text)
+        .alert()
+        .show()
+    {
+        tracing::warn!(
+            ?error,
+            "Could not show the system dialog about the window failure"
+        );
     }
 }
 
@@ -353,7 +414,8 @@ struct Prepared {
 impl BootPreparation {
     /// Prepare the data folder and database, and open the seed vault.
     pub fn run() -> Self {
-        Self(AppState::boot_inputs().and_then(|(data_dir, db)| {
+        Self(catch_boot_panic(|| {
+            let (data_dir, db) = AppState::boot_inputs()?;
             let decision = classify_open(&data_dir)?;
             Ok(Prepared {
                 data_dir,
@@ -438,6 +500,14 @@ impl Startup {
             Self::EnvironmentFailed(error) => Some(&**error as _),
             Self::Prepared { preparation, .. } => preparation.error(),
             Self::Spent => None,
+        }
+    }
+
+    /// Drop successful boot steps without building the app, releasing the
+    /// vault and the database; a failure stays for the terminal notice.
+    pub fn release(&mut self) {
+        if self.error().is_none() {
+            *self = Self::Spent;
         }
     }
 
@@ -670,6 +740,43 @@ mod tests {
         assert!(outcome.failed());
     }
 
+    /// A panic while the app is being built shows the dialog with the generic
+    /// message and the panic text in the details, instead of closing silently.
+    #[test]
+    fn panic_during_boot_enters_failed_state() {
+        let outcome = StartupOutcome::default();
+
+        let app = BootApp::guarded(&outcome, || panic!("boot exploded"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a boot panic must be fatal");
+        };
+        assert_eq!(failure.report().message(), GENERIC_STARTUP_FAILURE);
+        assert!(
+            failure.report().details().contains("boot exploded"),
+            "{}",
+            failure.report().details()
+        );
+        assert!(outcome.failed());
+    }
+
+    /// A formatted panic message can embed any runtime value, so like the
+    /// panic hook the dialog, log and terminal get only its length.
+    #[test]
+    fn formatted_boot_panic_message_is_redacted() {
+        const MARKER: &str = "runtime-value-marker";
+        let outcome = StartupOutcome::default();
+
+        let app = BootApp::guarded(&outcome, || panic!("boot exploded with {MARKER}"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a boot panic must be fatal");
+        };
+        let details = failure.report().details();
+        assert!(!details.contains(MARKER), "{details}");
+        assert!(details.contains("redacted"), "{details}");
+    }
+
     /// The failure dialog keeps no egui memory, so closing it writes nothing to
     /// eframe's storage, which falls back to the system default folder when the
     /// data folder could not be prepared.
@@ -713,17 +820,24 @@ mod tests {
         )
         .expect("dangling .env symlink");
         let test_name = std::thread::current().name().expect("test name").to_owned();
-        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
             .env("DASH_EVO_DATA_DIR", dir.path())
-            .status()
+            .output()
             .expect("run child");
-        assert!(status.success(), "child failed: {status}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "child failed:\n{stdout}{stderr}");
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
+        );
     }
 
-    /// The exit `on_exit` takes after the macOS menu Quit, where eframe never
-    /// returns to `main`: a failure status and the cause on the terminal.
+    /// The exit a closed failure dialog takes on macOS, where the menu Quit
+    /// never returns to `main`: dropping the app reports the cause on the
+    /// terminal and exits with a failure status.
     #[test]
     fn exit_from_failure_dialog_reports_failure() {
         const CHILD_ENV: &str = "DET_FAILED_BOOT_EXIT_CHILD";
@@ -770,6 +884,11 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{stderr}");
         assert!(!stderr.contains("failed to start"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
+        );
     }
 
     /// The legacy vault prompt holds no vault lock, so it saves no egui memory
@@ -937,6 +1056,22 @@ mod tests {
         let startup = Startup::prepare(Ok::<_, std::io::Error>(dir));
         assert!(startup.error().is_none());
         assert!(!startup.persist_window());
+    }
+
+    /// Releasing a successful preparation frees the vault for another launch,
+    /// so a restart while the window failure dialog is up is not refused.
+    #[test]
+    fn release_frees_the_vault() {
+        let Some(dir) = in_data_dir_child(keyless_vault) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir.clone()));
+        assert!(startup.persist_window(), "the vault opened and is held");
+
+        startup.release();
+
+        assert!(startup.error().is_none());
+        AppContext::open_secret_store(&dir).expect("the vault is free after release");
     }
 
     /// Each data folder step gets its own plain message; paths and I/O

@@ -81,15 +81,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
                             self.assertIs(step["with"]["persist-credentials"], False)
 
     def test_signing_runs_on_a_fresh_runner_without_repository_checkout(self):
-        jobs = workflow("release.yml")["jobs"]
+        document = workflow("release.yml")
         signers = [
-            job for job in jobs.values() if job.get("environment") == "release-signing"
+            job
+            for job in document["jobs"].values()
+            if job.get("environment") == "release-signing"
         ]
         self.assertTrue(signers)
         for job in signers:
             self.assertNotIn("actions/checkout@", str(job))
             self.assertNotIn("cargo ", str(job))
-            self.assertNotIn("contents: write", str(job))
+            permissions = job.get("permissions", document.get("permissions", {}))
+            self.assertNotIn("write", permissions.values())
             self.assertTrue(
                 any(
                     s.get("uses", "").startswith("actions/download-artifact@")

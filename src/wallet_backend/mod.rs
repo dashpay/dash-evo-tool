@@ -89,6 +89,7 @@ pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
+pub(crate) use platform_address_ops::PreparedPlatformSpend;
 pub use secret_access::{
     PromptMeta, SecretAccess, SecretLease, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
 };

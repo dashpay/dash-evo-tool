@@ -970,36 +970,28 @@ impl AppContext {
 
     /// Show a spend submitted straight through the SDK (address-funded
     /// identity registration) like one platform-wallet sent: its proof is
-    /// reconciled in platform-wallet at `proof_height`, then the committed
-    /// entries go through [`Self::apply_platform_address_spend`].
-    /// Runs after a successful broadcast, so it never fails: when
-    /// platform-wallet does not hold the wallet, only DET's per-address view
-    /// takes the proof, pinned at the same height.
+    /// reconciled in the platform-wallet `prepared` for it at
+    /// `proof_height`, then the committed entries go through
+    /// [`Self::apply_platform_address_spend`]. Runs after a successful
+    /// broadcast, so it never fails: when platform-wallet did not hold the
+    /// wallet at preparation, only DET's per-address view takes the proof,
+    /// pinned at the same height.
     pub(crate) async fn record_platform_address_spend_proof(
         &self,
         seed_hash: WalletSeedHash,
+        prepared: &crate::wallet_backend::PreparedPlatformSpend,
         address_infos: &dash_sdk::query_types::AddressInfos,
         proof_height: u64,
         context: &'static str,
     ) {
-        let reconciled = match self.wallet_backend() {
-            Ok(backend) => {
-                backend
-                    .reconcile_platform_address_proof(
-                        &seed_hash,
-                        address_infos,
-                        proof_height,
-                        context,
-                    )
-                    .await
-            }
-            Err(e) => Err(e),
-        };
-        match reconciled {
-            Ok(entries) => self.apply_platform_address_spend(seed_hash, entries),
-            Err(e) => {
-                tracing::warn!(
-                    "{context}: platform-wallet cannot reach the paying wallet, updating DET's view only: {e:?}"
+        match prepared
+            .reconcile(address_infos, proof_height, context)
+            .await
+        {
+            Some(entries) => self.apply_platform_address_spend(seed_hash, entries),
+            None => {
+                tracing::debug!(
+                    "{context}: platform-wallet did not hold the paying wallet, updating DET's view only"
                 );
                 if let Err(e) = self.update_wallet_platform_address_info_from_sdk(
                     seed_hash,

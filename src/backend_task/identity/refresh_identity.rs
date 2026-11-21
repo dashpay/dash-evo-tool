@@ -49,7 +49,8 @@ impl AppContext {
             |stored| {
                 match maybe_refreshed_identity {
                     Some(fetched) => {
-                        let mut managed = ManagedIdentity::new(stored.identity.clone(), 0);
+                        let mut managed =
+                            ManagedIdentity::new_out_of_wallet(stored.identity.clone());
                         managed.take_fetched_identity(
                             &fetched,
                             BlockTime::new(

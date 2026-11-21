@@ -3608,6 +3608,12 @@ pub enum TaskError {
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
     NetworkContextCreationFailed { network: Network },
 
+    /// No network context could be created at startup, so the app cannot open.
+    #[error(
+        "Dash Evo Tool could not set up a connection to any Dash network. Check the network settings in the .env file in the app data folder, then restart the application."
+    )]
+    NoNetworkAvailable,
+
     /// A DAPI refresh completed after its network context was removed.
     #[error(
         "The node addresses could not be applied because the selected network changed. Select the network and retry."

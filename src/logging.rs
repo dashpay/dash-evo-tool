@@ -5,10 +5,10 @@ use std::fs;
 use std::io::Write as _;
 use std::panic;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
 #[cfg(unix)]
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Once, OnceLock};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::{LevelFilter, Targets};
@@ -36,7 +36,7 @@ pub fn sensitive_target_cap() -> Targets {
 }
 
 /// Duplicate of the real terminal stderr (fd 2), saved before it is redirected
-/// to the crash sidecar. Lets [`report_startup_failure_to_terminal`] surface a
+/// to the log file. Lets [`report_startup_failure`] surface a
 /// user-facing notice on the terminal even while fd 2 points at the log file.
 /// `-1` means no handle was preserved (capture skipped or `dup` failed).
 #[cfg(unix)]
@@ -50,10 +50,14 @@ static ORIGINAL_STDERR_FD: AtomicI32 = AtomicI32::new(-1);
 /// redirect it.
 static LOGGER_USES_FILE: AtomicBool = AtomicBool::new(false);
 
+/// The log file and a second handle to it, which [`capture_stderr_to_file`]
+/// points stderr at so native crash output lands in the same file.
+static LOG_FILE: OnceLock<(PathBuf, fs::File)> = OnceLock::new();
+
 /// Number of days a rotated log file is kept before cleanup removes it.
 const LOG_RETENTION_DAYS: i64 = 7;
 
-/// Whether stderr may be redirected to the crash sidecar file.
+/// Whether stderr may be redirected to the log file.
 ///
 /// Returns `false` when the logger fell back to stderr, so redirecting would
 /// hide the only visible logs. This guards the no-op-on-fallback contract of
@@ -79,10 +83,14 @@ fn initialize_logger_internal() {
     });
 
     // Try to create a log file; fall back to stderr if it fails
-    let log_file_result = app_user_data_file_path("det.log").and_then(std::fs::File::create);
+    let log_file_result = app_user_data_file_path("det.log").and_then(|path| {
+        let file = create_append_log(&path)?;
+        let stderr_handle = file.try_clone()?;
+        Ok((path, file, stderr_handle))
+    });
 
     let (subscriber_set, log_file_path_for_msg) = match log_file_result {
-        Ok(log_file) => {
+        Ok((path, log_file, stderr_handle)) => {
             let subscriber = tracing_subscriber::fmt()
                 .with_env_filter(filter)
                 .with_writer(log_file)
@@ -91,9 +99,10 @@ fn initialize_logger_internal() {
                 .with(sensitive_target_cap());
             let set = tracing::subscriber::set_global_default(subscriber).is_ok();
             if set {
+                let _ = LOG_FILE.set((path.clone(), stderr_handle));
                 LOGGER_USES_FILE.store(true, Ordering::SeqCst);
             }
-            (set, Some(app_user_data_file_path("det.log").ok()))
+            (set, Some(Some(path)))
         }
         Err(e) => {
             // Fall back to stderr logging
@@ -140,6 +149,19 @@ fn initialize_logger_internal() {
     }
 }
 
+/// Empties the log file at `path`, then opens it for appending. Every writer
+/// sharing the returned handle appends, so tracing and stderr never overwrite
+/// each other's lines.
+fn create_append_log(path: &Path) -> std::io::Result<fs::File> {
+    fs::File::create(path)?;
+    fs::OpenOptions::new().append(true).open(path)
+}
+
+/// The log file this run writes to, or `None` when logging fell back to stderr.
+pub fn log_file_path() -> Option<PathBuf> {
+    LOG_FILE.get().map(|(path, _)| path.clone())
+}
+
 static INSTALL_PANIC_HOOK: Once = Once::new();
 
 /// Replaces the process panic hook with one that never writes a runtime-
@@ -152,8 +174,8 @@ static INSTALL_PANIC_HOOK: Once = Once::new();
 /// backtrace are kept: they name code, not data.
 ///
 /// The hook writes to the active tracing subscriber (with a full backtrace)
-/// and to stderr, in the default hook's format, so `det-stderr.log` and the
-/// terminal still get a crash marker. The default hook is replaced, not
+/// and to stderr, in the default hook's format, so `det.log` (stderr is redirected
+/// there) and the terminal still get a crash marker. The default hook is replaced, not
 /// chained: it would print the unredacted message to stderr.
 ///
 /// Every entry point must call this ([`initialize_logger`] does, except in
@@ -280,15 +302,15 @@ impl PanicReport {
     }
 }
 
-/// Redirects the process's stderr (fd 2) to a persistent sidecar file so
+/// Redirects the process's stderr (fd 2) into the log file (`det.log`) so
 /// abnormal terminations leave evidence on disk.
 ///
 /// The tracing panic hook already records catchable Rust panics to `det.log`,
 /// but native crashes — `SIGSEGV`/`SIGABRT` from FFI, `abort()` (including a
 /// `panic = abort` double-panic), allocation-failure aborts ("memory allocation
 /// of N bytes failed") and OOM — write to stderr or nowhere. In a GUI launch
-/// there is no terminal, so that output is lost. Pointing stderr at
-/// `det-stderr.log` captures all of it.
+/// there is no terminal, so that output is lost. Pointing stderr at the log
+/// file captures all of it; both append, so lines interleave without loss.
 ///
 /// Call once, early in GUI startup, after [`initialize_logger`] and before the
 /// eframe/tokio runtime starts. CLI/stdio entry points should not call this:
@@ -298,41 +320,26 @@ impl PanicReport {
 /// then would swallow the fallback logs. On non-Unix targets this is currently
 /// a best-effort no-op; see the inline note.
 pub fn capture_stderr_to_file() {
-    if !should_capture_stderr() {
+    let Some((path, file)) = LOG_FILE.get().filter(|_| should_capture_stderr()) else {
         tracing::warn!(
             "Logging is using the stderr fallback; skipping crash-stderr capture to keep logs visible"
         );
         return;
-    }
-
-    let path = match app_user_data_file_path("det-stderr.log") {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::warn!(error = %e, "Could not resolve crash-stderr log path; capture disabled");
-            return;
-        }
     };
 
+    // Earlier versions wrote a separate det-stderr.log; age those copies out.
     if let Some(parent) = path.parent() {
         rotate_log_in_dir(parent, "det-stderr");
     }
 
-    redirect_stderr_to(&path);
+    redirect_stderr_to(file);
 }
 
 #[cfg(unix)]
-fn redirect_stderr_to(path: &Path) {
+fn redirect_stderr_to(file: &fs::File) {
     use std::os::fd::AsRawFd;
 
-    let file = match fs::File::create(path) {
-        Ok(file) => file,
-        Err(e) => {
-            tracing::warn!(error = %e, "Could not open crash-stderr log file; capture disabled");
-            return;
-        }
-    };
-
-    // fd 2 is about to point at the sidecar; keep a handle to the real terminal
+    // fd 2 is about to point at the log file; keep a handle to the real terminal
     // so a startup-failure notice can still reach the user (see ORIGINAL_STDERR_FD).
     // SAFETY: `dup` only reads the fd table; STDERR_FILENO (2) is valid here.
     let saved_fd = unsafe { nix::libc::dup(nix::libc::STDERR_FILENO) };
@@ -340,24 +347,22 @@ fn redirect_stderr_to(path: &Path) {
         ORIGINAL_STDERR_FD.store(saved_fd, Ordering::SeqCst);
     }
 
-    // SAFETY: `dup2` only manipulates the file-descriptor table. `file`'s fd is
-    // valid for the duration of the call, and `STDERR_FILENO` (2) is the
-    // standard error descriptor. On success fd 2 is rebound to the sidecar
-    // file; on failure (-1) stderr is left unchanged and we report the error.
+    // SAFETY: `dup2` only manipulates the file-descriptor table. `file` lives in
+    // `LOG_FILE` for the whole run, so its fd is valid, and `STDERR_FILENO` (2)
+    // is the standard error descriptor. On success fd 2 shares the log file's
+    // open description; on failure (-1) stderr is left unchanged.
     let dup_ok = unsafe { nix::libc::dup2(file.as_raw_fd(), nix::libc::STDERR_FILENO) != -1 };
 
     if dup_ok {
-        // Keep the file alive so fd 2 stays backed by it for the whole run.
-        std::mem::forget(file);
-        info!(stderr_log = ?path, "Crash stderr capture enabled");
+        info!("Crash stderr capture enabled");
     } else {
         let err = std::io::Error::last_os_error();
-        tracing::warn!(error = %err, "Could not redirect stderr to crash-stderr log file");
+        tracing::warn!(error = %err, "Could not redirect stderr to the log file");
     }
 }
 
 #[cfg(not(unix))]
-fn redirect_stderr_to(_path: &Path) {
+fn redirect_stderr_to(_file: &fs::File) {
     // TODO: Capture stderr on Windows (e.g. SetStdHandle on a CreateFileW
     // handle, or freopen). Until then native crashes that write to stderr are
     // not captured on this target.
@@ -383,7 +388,7 @@ const ALT_SIGNAL_STACK_SIZE: usize = 64 * 1024;
 /// A bare native fault from FFI (grovedb, secp, prover, zmq…) terminates the
 /// process with nothing on stderr, so [`capture_stderr_to_file`] alone cannot
 /// see it. This handler closes that gap: it records *which* signal fired so the
-/// sidecar log shows a crash happened even when there is no other output.
+/// log file shows a crash happened even when there is no other output.
 ///
 /// The handler is async-signal-safe — it only calls `write(2)` on a fixed
 /// byte string, no allocation, no locks, no `tracing`. It is registered with
@@ -392,7 +397,7 @@ const ALT_SIGNAL_STACK_SIZE: usize = 64 * 1024;
 /// normal crash / core dump.
 ///
 /// Call once, after [`capture_stderr_to_file`], so the marker lands in the
-/// sidecar file rather than a lost terminal. This also installs an alternate
+/// log file rather than a lost terminal. This also installs an alternate
 /// signal stack for the calling thread. Other threads need to call
 /// [`install_alt_signal_stack`] separately; `src/main.rs` does so for every
 /// Tokio worker/blocking thread through `Builder::on_thread_start`.
@@ -553,13 +558,17 @@ fn install_fatal_signal_handler_impl() {
     );
 }
 
-/// Builds the calm, generic notice shown on the terminal when startup fails.
+/// Builds the notice shown on the terminal when startup fails.
 ///
-/// Pure function: names what happened and lists each provided log path on its
-/// own line, with no raw error text, no jargon, and no support redirect. Side
-/// effect free so it can be unit-tested directly.
-fn startup_failure_message(log_paths: &[PathBuf]) -> String {
+/// Pure function: names what happened, then each of the `causes` known to
+/// `main` (a failure before any log file or window exists leaves no other
+/// trace) as its message followed by its technical details, then each
+/// provided log path on its own line.
+fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::error::Error]) -> String {
     let mut message = String::from("Dash Evo Tool failed to start.\n");
+    for cause in causes {
+        message.push_str(&format!("Cause: {cause}\nDetails: {cause:?}\n"));
+    }
     if log_paths.is_empty() {
         message.push_str("Please try again, and report the problem if it keeps happening.\n");
         return message;
@@ -575,18 +584,21 @@ fn startup_failure_message(log_paths: &[PathBuf]) -> String {
     message
 }
 
-/// Writes a generic startup-failure notice to the real terminal.
+/// Writes a startup-failure notice with `causes` to the real terminal and to
+/// the log file.
 ///
-/// Best-effort: resolves the log paths, builds the message, and writes it to the
-/// preserved terminal stderr (fd 2 is redirected to the sidecar during a normal
-/// run). Never panics; write errors are ignored.
-pub fn report_startup_failure_to_terminal() {
-    let log_paths: Vec<PathBuf> = ["det.log", "det-stderr.log"]
-        .into_iter()
-        .filter_map(|name| app_user_data_file_path(name).ok())
-        .collect();
-    let message = startup_failure_message(&log_paths);
+/// Best-effort and independent of tracing, whose filter may drop everything:
+/// resolves the log paths, builds the message, writes it to the preserved
+/// terminal stderr (fd 2 is redirected to the log file during a normal run),
+/// which may be /dev/null for a launch without a terminal, and appends it to
+/// the open log file. Never panics; write errors are ignored.
+pub fn report_startup_failure(causes: &[&dyn std::error::Error]) {
+    let log_paths: Vec<PathBuf> = log_file_path().into_iter().collect();
+    let message = startup_failure_message(&log_paths, causes);
     write_to_terminal(message.as_bytes());
+    if let Some((_, file)) = LOG_FILE.get() {
+        let _ = (&*file).write_all(message.as_bytes());
+    }
 }
 
 /// Writes `bytes` to the real terminal, best-effort.
@@ -611,9 +623,11 @@ fn write_to_terminal(bytes: &[u8]) {
 /// Writes `bytes` to the terminal, best-effort.
 #[cfg(not(unix))]
 fn write_to_terminal(bytes: &[u8]) {
+    use std::io::Write as _;
     // stderr is not redirected on non-Unix targets, so a plain write reaches the
-    // terminal. Lossy UTF-8 is fine here — the message is ASCII.
-    eprint!("{}", String::from_utf8_lossy(bytes));
+    // terminal. Unlike `eprint!`, a rejected write (e.g. a full redirect file)
+    // is ignored instead of panicking.
+    let _ = std::io::stderr().lock().write_all(bytes);
 }
 
 fn rotate_log_file() {
@@ -685,6 +699,47 @@ pub(crate) fn parse_rotated_ts(name: &str, stem: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// stderr lands in det.log next to the tracing output, in order and
+    /// without either overwriting the other; no separate stderr file is made.
+    #[cfg(unix)]
+    #[test]
+    fn stderr_is_captured_into_the_log_file() {
+        const CHILD_ENV: &str = "DET_LOGGING_STDERR_CAPTURE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            initialize_logger();
+            tracing::info!("tracing line before capture");
+            capture_stderr_to_file();
+            eprintln!("stderr line after capture");
+            tracing::info!("tracing line after capture");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let test_name = std::thread::current().name().unwrap().to_owned();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .env("DASH_EVO_DATA_DIR", dir.path())
+            .env("RUST_LOG", "info")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let log = fs::read_to_string(dir.path().join("det.log")).unwrap();
+        let positions: Vec<usize> = [
+            "tracing line before capture",
+            "stderr line after capture",
+            "tracing line after capture",
+        ]
+        .iter()
+        .map(|line| {
+            log.find(line)
+                .unwrap_or_else(|| panic!("{line} missing:\n{log}"))
+        })
+        .collect();
+        assert!(positions.is_sorted(), "{log}");
+        assert!(!dir.path().join("det-stderr.log").exists());
+    }
 
     /// Captures everything a subscriber writes, for asserting on log output.
     #[derive(Clone, Default)]
@@ -1232,7 +1287,7 @@ mod tests {
             PathBuf::from("/tmp/data/det.log"),
             PathBuf::from("/tmp/data/det-stderr.log"),
         ];
-        let message = startup_failure_message(&paths);
+        let message = startup_failure_message(&paths, &[]);
 
         assert!(
             message.contains("failed to start"),
@@ -1251,9 +1306,24 @@ mod tests {
         );
     }
 
+    /// The terminal notice names each known cause, so a failure before any log
+    /// file or window exists still leaves a diagnostic.
+    #[test]
+    fn startup_failure_message_names_each_cause() {
+        let first = std::io::Error::other("data folder unreadable");
+        let second = std::io::Error::other("no graphics adapter");
+        let message = startup_failure_message(&[], &[&first, &second]);
+        for cause in [&first, &second] {
+            assert!(
+                message.contains(&format!("Cause: {cause}\nDetails: {cause:?}\n")),
+                "message should give the message and details of {cause:?}, got {message:?}"
+            );
+        }
+    }
+
     #[test]
     fn startup_failure_message_omits_path_list_when_empty() {
-        let message = startup_failure_message(&[]);
+        let message = startup_failure_message(&[], &[]);
         assert!(
             message.contains("failed to start"),
             "message should still state the failure, got {message:?}"

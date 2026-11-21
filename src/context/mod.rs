@@ -8,8 +8,10 @@ mod dpns_vote_operations;
 mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
+mod network_context_error;
 pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
+pub use network_context_error::NetworkContextError;
 pub mod feature_gate;
 mod identity_db;
 mod identity_names;
@@ -522,16 +524,13 @@ impl AppContext {
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
         user_role: UserRoleCell,
-    ) -> Option<Arc<Self>> {
-        let config = match Config::load_from(&data_dir) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::error!("Failed to load config: {e}");
-                return None;
-            }
-        };
+    ) -> Result<Arc<Self>, NetworkContextError> {
+        let config = Config::load_from(&data_dir)?;
 
-        let network_config = config.config_for_network(network).clone()?;
+        let network_config = config
+            .config_for_network(network)
+            .clone()
+            .ok_or(NetworkContextError::NotConfigured { network })?;
         let config_lock = Arc::new(RwLock::new(network_config.clone()));
 
         // Create the SDK context provider; bind to app context later
@@ -540,59 +539,34 @@ impl AppContext {
 
         // Parse configured DAPI addresses directly (no auto-discovery at startup)
         let address_list = match &network_config.dapi_addresses {
-            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
-                Ok(list) => list,
-                Err(e) => {
-                    tracing::error!(
-                        ?network,
-                        error = %e,
-                        "Failed to parse configured DAPI addresses"
-                    );
-                    return None;
-                }
-            },
-            _ => {
-                tracing::error!(
-                    ?network,
-                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
-                );
-                return None;
-            }
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(|source| NetworkContextError::InvalidDapiAddresses { network, source })?,
+            _ => return Err(NetworkContextError::NoDapiAddresses { network }),
         };
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
-            Ok(sdk) => sdk,
-            Err(e) => {
-                tracing::error!("Failed to initialize SDK: {e}");
-                return None;
-            }
-        };
-        let system_contracts = match SystemContracts::load(sdk.version()) {
-            Ok(contracts) => SystemContractsCache::new(contracts),
-            Err(e) => {
-                tracing::error!(?network, "Failed to load the system contracts: {e}");
-                return None;
-            }
-        };
+        let sdk = initialize_sdk(address_list, network, spv_provider.clone())
+            .map_err(|source| NetworkContextError::Sdk { network, source })?;
+        let system_contracts = SystemContractsCache::new(
+            SystemContracts::load(sdk.version())
+                .map_err(|source| NetworkContextError::SystemContracts { source })?,
+        );
 
         let addr = format!(
             "http://{}:{}",
             network_config.rpc_host(),
             network_config.rpc_port(network)
         );
-        let core_client = match Self::create_core_rpc_client(
+        let core_client = Self::create_core_rpc_client(
             &addr,
             network,
             &network_config.devnet_name,
             &network_config,
-        ) {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::error!(?network, "Failed to create CoreClient: {e}");
-                return None;
-            }
-        };
+        )
+        .map_err(|source| NetworkContextError::CoreClient {
+            network,
+            source: Box::new(source),
+        })?;
 
         // T-W-01 / T-W-01b: both HD and single-key wallets are now
         // rehydrated from the upstream `SecretStore` + DET k/v sidecars
@@ -690,15 +664,13 @@ impl AppContext {
         // Bind the SDK context provider. Chain sync is SPV-only (owned by
         // upstream platform-wallet); the SPV provider is the sole SDK
         // quorum/context provider.
-        match app_context.spv_context_provider.read() {
-            Ok(provider) => provider.bind_app_context(app_context.clone()),
-            Err(e) => {
-                tracing::error!("Failed to bind SPV provider: {}", e);
-                return None;
-            }
-        }
+        app_context
+            .spv_context_provider
+            .read()
+            .map_err(|_| NetworkContextError::ContextProviderUnavailable { network })?
+            .bind_app_context(app_context.clone());
 
-        Some(app_context)
+        Ok(app_context)
     }
 
     /// Force UI animations off for this context, whatever the role — the switch
@@ -815,8 +787,10 @@ impl AppContext {
             .map_err(|source| TaskError::FileSystem { source })?;
         crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
+            .map_err(|source| {
+                crate::backend_task::error::vault_error(source, |source| TaskError::SecretStore {
+                    source,
+                })
             })
     }
 
@@ -1271,7 +1245,7 @@ impl AppContext {
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
         let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
-            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+            .map_err(|source| TaskError::SdkInitializationFailed { source })?;
         let mut client_lock = self.core_client.write()?;
 
         // 4. Nothing below can fail: move the list, swap in the new client
@@ -1977,6 +1951,92 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A seed vault under a folder other accounts can change is refused with
+    /// advice about folder permissions, on the keyless and the passphrase
+    /// open alike, not with "close other copies".
+    #[cfg(unix)]
+    #[test]
+    fn vault_in_an_insecure_folder_gets_permission_advice() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir(&shared).expect("mkdir shared");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777))
+            .expect("make shared world-writable");
+        let data_dir = shared.join("data");
+
+        let keyless = AppContext::open_secret_store(&data_dir).err();
+        let keyed = AppContext::open_secret_store_with_passphrase(
+            &data_dir,
+            platform_wallet_storage::secrets::SecretString::new(hex::encode(
+                crate::test_support::keys::secret_bytes(),
+            )),
+        )
+        .err();
+
+        for error in [keyless, keyed] {
+            let error = error.expect("an insecure folder must be refused");
+            assert!(
+                matches!(error, TaskError::SecretStoreFolderInsecure { .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("other accounts"), "{error}");
+            // Also right for a folder owned by another account, not only for
+            // one others may write to.
+            assert!(
+                error
+                    .to_string()
+                    .contains("belong to your account and that only your account can change them"),
+                "{error}"
+            );
+        }
+    }
+
+    /// A network whose saved node addresses cannot be parsed reports that
+    /// reason instead of an unexplained failure.
+    #[test]
+    fn app_context_reports_invalid_node_addresses() {
+        use crate::database::test_helpers::create_database_at_path;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        std::fs::write(
+            data_dir.join(".env"),
+            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
+        )
+        .expect("write .env");
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+
+        let result = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        );
+        let Err(error) = result else {
+            panic!("invalid node addresses must fail");
+        };
+
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidDapiAddresses {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
 
     /// Regression: a connection rebuild gave the app a new SDK while the
     /// wallet backend kept the one it was built with, so wallet operations

@@ -24,8 +24,9 @@ first-run branches also depend on on-disk state a real launch creates.
 - A legacy `data.db` is needed only for the migration variant (step 5). If none is
   available, record that variant as NOT COVERED rather than fabricating one.
 - The data directory's **entire ancestor chain** must be free of group/other-write
-  permission. The secret store refuses to open otherwise and the app exits during
-  startup with `AppCreation(SecretStore { source: InsecureParentDir { mode: … } })`.
+  permission. The secret store refuses to open otherwise, and startup stops at the
+  "Dash Evo Tool could not start" window with the folder-permission message
+  (`SecretStoreFolderInsecure`; the technical details name the offending folder).
   A `mktemp -d` under a world-writable `/tmp` or a `~/.config` at mode `0775` both
   trip this. See "Known gotchas".
 
@@ -177,13 +178,12 @@ the scenario regardless of what the screen showed.
 ## Known gotchas
 
 - **The secret store validates the data directory's whole ancestor chain.** A single
-  group-writable ancestor aborts startup with
-  `AppCreation(SecretStore { source: InsecureParentDir { mode: 509 } })` (509 is
-  decimal for `0775`). This bites the two most natural choices: a plain `mktemp -d`
+  group-writable ancestor, or one owned by another account, stops startup at the
+  "Dash Evo Tool could not start" window with the folder-permission message
+  (`SecretStoreFolderInsecure`); its technical details name the folder and the reason. This bites the two most natural choices: a plain `mktemp -d`
   under a world-writable `/tmp`, and the default `~/.config/dash-evo-tool` on a system
-  where `~/.config` is `0775`. The failure is written only to the log — the launching
-  terminal shows a short "failed to start" message with no permission detail — so read
-  `det.log` before assuming the binary is broken.
+  where `~/.config` is `0775`. The window, `det.log` and the terminal notice all carry
+  the cause, so check them before assuming the binary is broken.
 - **A fresh data directory does not start on testnet.** Read the network selector
   before concluding a fixture is dead; a zero balance or a "masternode not found" on a
   fresh install is far more often the wrong network than a broken fixture.

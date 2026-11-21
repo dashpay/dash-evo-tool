@@ -5,7 +5,6 @@ use dash_sdk::{
         DataContract, IdentityPublicKey,
         transition::{
             broadcast::BroadcastStateTransition, put_contract::ensure_private_document_entries_fit,
-            waitable::Waitable,
         },
     },
 };
@@ -33,12 +32,12 @@ impl AppContext {
         let transition =
             prepare_contract_transition(sdk, data_contract, &identity, &signing_key, signing_time)
                 .await?;
-        let result = async {
-            transition.broadcast(sdk, None).await?;
-            DataContract::wait_for_response(sdk, transition, None).await
-        }
-        .await;
-        match result {
+        // A failed wait after a possible submission is reported unconfirmed,
+        // so a paid registration is never offered as a plain retry.
+        match transition
+            .broadcast_and_wait::<DataContract>(sdk, None)
+            .await
+        {
             Ok(returned_contract) => {
                 let optional_alias = match alias.is_empty() {
                     true => None,
@@ -131,4 +130,143 @@ async fn prepare_contract_transition(
     // Unlocking can outlive an expiry or activation; confirm a fresh block before sending.
     super::contract::prepare_contract_signing_key(sdk, identity, key).await?;
     Ok(transition)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+    use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dapi_client::{
+        DapiClientError, DumpData, ExecutionError, ExecutionResponse, mock::MockResult,
+    };
+    use dash_sdk::dapi_grpc::platform::v0::{
+        BroadcastStateTransitionRequest, WaitForStateTransitionResultRequest,
+    };
+    use dash_sdk::dapi_grpc::tonic::Status;
+    use dash_sdk::dpp::data_contract::conversion::value::v0::DataContractValueConversionMethodsV0;
+    use dash_sdk::dpp::identity::SecurityLevel;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::platform_value::platform_value;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
+    use dash_sdk::query_types::IdentityNonceFetcher;
+
+    /// An offline SDK that answers the identity nonce of `owner`.
+    async fn sdk_with_nonce(owner: Identifier) -> Sdk {
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("a mock SDK");
+        sdk.mock()
+            .expect_fetch::<IdentityNonceFetcher, _>(owner, Some(IdentityNonceFetcher(1)))
+            .await
+            .expect("nonce expectation");
+        sdk
+    }
+
+    fn save<R>(dir: &std::path::Path, request: &R, response: &MockResult<R>)
+    where
+        R: dash_sdk::dapi_client::transport::TransportRequest,
+    {
+        let dump = DumpData::new(request, response);
+        dump.save(&dir.join(dump.filename().expect("dump name")))
+            .expect("dump saved");
+    }
+
+    /// A registration whose broadcast may have reached Platform, and whose
+    /// result cannot be read, may already be paid for: the user is told to
+    /// check before trying again, never just to retry.
+    #[tokio::test]
+    async fn a_registration_that_may_have_been_accepted_is_reported_unconfirmed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let mut key = auth_key(1, SecurityLevel::CRITICAL);
+        let secret = crate::test_support::keys::labelled_secret(
+            "context::test_support::identity_holding",
+            1,
+        );
+        key.set_data(
+            dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1
+                .public_key_data_from_private_key_data(&secret, context.network())
+                .expect("generated key")
+                .into(),
+        );
+        let identity = identity_holding(std::slice::from_ref(&key));
+        let owner = Identifier::from([8; 32]);
+        let contract = DataContract::from_value(
+            platform_value!({
+                "$formatVersion": "1",
+                "id": Identifier::from([7; 32]).to_string(Encoding::Base58),
+                "ownerId": owner.to_string(Encoding::Base58),
+                "version": 1,
+                "documentSchemas": { "note": {
+                    "type": "object",
+                    "properties": { "text": { "type": "string", "maxLength": 20, "position": 0 } },
+                    "additionalProperties": false
+                } }
+            }),
+            true,
+            PlatformVersion::latest(),
+        )
+        .expect("a contract");
+
+        // The exact transition registration signs, from a separate SDK so
+        // both read the same nonce.
+        let transition = prepare_contract_transition(
+            &sdk_with_nonce(owner).await,
+            contract.clone(),
+            &identity,
+            &key,
+            0,
+        )
+        .await
+        .expect("a signed transition");
+        let dumps = tempfile::tempdir().expect("tempdir");
+        let broadcast: BroadcastStateTransitionRequest = transition
+            .broadcast_request_for_state_transition()
+            .expect("broadcast request");
+        save(
+            dumps.path(),
+            &broadcast,
+            &Err(ExecutionError {
+                possibly_accepted: false,
+                inner: DapiClientError::Transport(TransportError::Grpc(Status::already_exists(
+                    "tx already exists in cache",
+                ))),
+                address: None,
+                retries: 0,
+            }),
+        );
+        // No proof comes back: the outcome stays unknown.
+        let wait: WaitForStateTransitionResultRequest = transition
+            .wait_for_state_transition_result_request()
+            .expect("wait request");
+        save(
+            dumps.path(),
+            &wait,
+            &Ok(ExecutionResponse {
+                inner: Default::default(),
+                retries: 0,
+                address: "http://127.0.0.1".parse().expect("address"),
+            }),
+        );
+        let mut sdk = sdk_with_nonce(owner).await;
+        sdk.mock()
+            .load_expectations_sync(dumps.path())
+            .expect("submission expectations");
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let result = context
+            .register_data_contract(contract, String::new(), identity, key, &sdk, sender)
+            .await;
+
+        assert!(
+            matches!(&result, Err(TaskError::PlatformResultUnconfirmed { .. })),
+            "{result:?}"
+        );
+    }
 }

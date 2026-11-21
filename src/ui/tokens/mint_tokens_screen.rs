@@ -101,6 +101,22 @@ impl MintAction {
         (destination != Some(proposed)).then_some((proposed, destination))
     }
 
+    /// Why the proposal cannot be co-signed, naming the destination as the
+    /// app last read it, since its stored copy of the token may be out of date.
+    fn proposal_mismatch_text(&self) -> Option<String> {
+        let (proposed, destination) = self.proposal_mismatch()?;
+        let proposed = proposed.to_string(Encoding::Base58);
+        Some(match destination {
+            Some(destination) => format!(
+                "This proposal mints to {proposed}, but this token's destination for new tokens was last known as {destination}, so it cannot be signed here. Ask the group to propose the mint again.",
+                destination = destination.to_string(Encoding::Base58)
+            ),
+            None => format!(
+                "This proposal mints to {proposed}, but this token was last known to have no destination for new tokens, so it cannot be signed here. Ask the group to propose the mint again."
+            ),
+        })
+    }
+
     /// What a group co-signer is told about where the proposed tokens go.
     fn proposed_recipient_text(&self) -> String {
         match self
@@ -140,6 +156,14 @@ impl MintAction {
             .exclude(&[ctx.info.identity.identity.id()]),
         );
     }
+}
+
+/// Where new tokens go for a token that forbids choosing, as last read.
+fn destination_text(destination: &Identifier) -> String {
+    format!(
+        "New tokens go to this token's destination identity, last known as {destination}.",
+        destination = destination.to_string(Encoding::Base58)
+    )
 }
 
 impl TokenAction for MintAction {
@@ -238,17 +262,7 @@ impl TokenAction for MintAction {
             );
             ui.add_space(5.0);
             ui.label(self.proposed_recipient_text());
-            if let Some((proposed, destination)) = self.proposal_mismatch() {
-                let proposed = proposed.to_string(Encoding::Base58);
-                let explanation = match destination {
-                    Some(destination) => format!(
-                        "This proposal mints to {proposed}, but this token now sends new tokens to {destination}, so Platform would refuse your signature.",
-                        destination = destination.to_string(Encoding::Base58)
-                    ),
-                    None => format!(
-                        "This proposal mints to {proposed}, but this token no longer has a destination for new tokens, so Platform would refuse your signature."
-                    ),
-                };
+            if let Some(explanation) = self.proposal_mismatch_text() {
                 ui.add_space(5.0);
                 ui.colored_label(
                     DashColors::error_color(ui.style().visuals.dark_mode),
@@ -274,10 +288,7 @@ impl TokenAction for MintAction {
             self.render_recipient_input(ui, ctx);
         } else if let Some(destination) = destination {
             ui.add_space(10.0);
-            ui.label(format!(
-                "New tokens go to this token's destination identity {destination}.",
-                destination = destination.to_string(Encoding::Base58)
-            ));
+            ui.label(destination_text(&destination));
         }
     }
 
@@ -290,7 +301,7 @@ impl TokenAction for MintAction {
 
     fn disabled_reason(&self) -> &'static str {
         if self.proposal_mismatch().is_some() {
-            "This proposal mints to an identity that is no longer this token's destination, so it cannot be signed."
+            "This proposal mints to an identity other than this token's last known destination, so it cannot be signed here. Ask the group to propose the mint again."
         } else if self.can_mint {
             FILL_IN_THE_FORM
         } else {
@@ -502,6 +513,27 @@ pub(crate) mod tests {
         assert_eq!(
             action.proposal_mismatch(),
             Some((proposed, Some(Identifier::from([5; 32]))))
+        );
+        // The destination is the app's stored copy, so it is named as last
+        // known, with what the user can do about it.
+        assert_eq!(
+            action.disabled_reason(),
+            "This proposal mints to an identity other than this token's last known destination, so it cannot be signed here. Ask the group to propose the mint again."
+        );
+        assert_eq!(
+            action.proposal_mismatch_text(),
+            Some(format!(
+                "This proposal mints to {proposed}, but this token's destination for new tokens was last known as {destination}, so it cannot be signed here. Ask the group to propose the mint again.",
+                proposed = proposed.to_string(Encoding::Base58),
+                destination = Identifier::from([5; 32]).to_string(Encoding::Base58),
+            ))
+        );
+        assert_eq!(
+            destination_text(&Identifier::from([5; 32])),
+            format!(
+                "New tokens go to this token's destination identity, last known as {}.",
+                Identifier::from([5; 32]).to_string(Encoding::Base58)
+            )
         );
     }
 

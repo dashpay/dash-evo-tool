@@ -1,0 +1,961 @@
+{
+  "schema_version": 1,
+  "scenario": "dialogue.json",
+  "scenario_sha256": "88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc",
+  "teacher_voice": "cedar",
+  "learner_voice": "nova",
+  "turn_gap_seconds": 0.2,
+  "synthetic_test": false,
+  "credits": "../assets/ATTRIBUTION.txt",
+  "font_license": "../assets/slides/montserrat-ofl.txt",
+  "segments": {
+    "p1-intro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/p1-intro-00/ready/audio.wav"
+      ]
+    },
+    "00": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/00-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/00-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/00-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/00-03/ready/audio.wav"
+      ]
+    },
+    "01": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/episode1-roadmap.png"
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/01-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/01-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/01-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/01-03/ready/audio.wav"
+      ]
+    },
+    "02": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/episode1-prerequisites.png"
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/02-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/02-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/02-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/02-03/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/02-04/ready/audio.wav"
+      ]
+    },
+    "03": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/03.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/03-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/03-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/03-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/03-03/ready/audio.wav"
+      ]
+    },
+    "04": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/04-take02.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/04-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/04-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/04-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/04-03/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/04-04/ready/audio.wav"
+      ]
+    },
+    "05": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/05-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/05-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/05-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/05-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/05-03/ready/audio.wav"
+      ]
+    },
+    "06": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/06-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/06-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/06-01-plain-take02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/06-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/06-03/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/06-04/ready/audio.wav"
+      ]
+    },
+    "07": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/06-focus.mkv",
+        "offset": 19,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/07-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/07-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/07-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/07-03/ready/audio.wav"
+      ]
+    },
+    "08": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/08-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/08-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/08-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/08-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/08-03/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/08-04/ready/audio.wav"
+      ]
+    },
+    "09": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode1/09-joined.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/09-00/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/09-01/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/09-02/ready/audio.wav",
+        "../local/archive/audio/part-01-takes/09-03/ready/audio.wav"
+      ]
+    },
+    "p1-outro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/part-01-takes/p1-outro-00/ready/audio.wav"
+      ]
+    },
+    "p2-intro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-02-intro-00/ff7b747720a44670829727f3b8b472db/ready/audio.wav"
+      ]
+    },
+    "10": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/episode2/10.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-10-turn-00/9ba1a3c15681495ab81ebd3751971600/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-10-turn-01/fb6d7fcc9bc64db093ac7160cc42cb67/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-10-turn-02/a0b5dd315405456f8edd5750a0f556aa/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-10-turn-03/8121a791e9544ecd8bf8088ffcf30b7b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-10-turn-04/646a75d61d194561b54444af42ca55af/ready/audio.wav"
+      ]
+    },
+    "11": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/11-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-11-turn-00/fd1eb81d99604ea38e373d6dd7a9674c/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-11-turn-01/8d109bdec081474cba9bf7e4ce62a5e6/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-11-turn-02/3ec74f1686a04359bedbad923bb9a996/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-11-turn-03/ce3144ef8fe0452eb3d67fcf63606e47/ready/audio.wav"
+      ]
+    },
+    "12": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/12-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-12-turn-00/4cdfbf774dd641e180261b0f920efd02/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-12-turn-01/6193e57ca7c84efe8dd6d6a9f38aaff8/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-12-turn-02/fb2eb569bb274d55a4fd486d52eec3fa/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-12-turn-03/2fbf56ffb5d54a6e9c365a00e3c49e50/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-12-turn-04/d8819953cb044df0b369ebadbbc35967/ready/audio.wav"
+      ]
+    },
+    "13": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/13-focus-clean.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-13-turn-00/92b1f1db4a8d4e16a4798723df4656f8/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-13-turn-01/78cd3eb9b21e4aa086ab538a213c0479/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-13-turn-02/21b5a62a671d4523b68de990d81f4fbf/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-13-turn-03/b9df40688b814bafa614c658f30bf85e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-13-turn-04/dc588c9ef6cb4de089293678fd323068/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-13-turn-05/89ce451598f6497b93e375f510328c74/ready/audio.wav"
+      ]
+    },
+    "14": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/14-focus-clean.mkv",
+        "offset": 0,
+        "hold_last_frame": true
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-14-turn-00/6a72bf9da58349c0ace459708e96c88c/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-14-turn-01/62c4071be83343f38cf704f77d033985/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-14-turn-02/1a47ed16e52f415aa9f2c194a6b0a59e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-14-turn-03/cb0560e7d784426688715c874a2c7223/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-14-turn-04/b075011349a54821a4647dddaf9ba378/ready/audio.wav"
+      ]
+    },
+    "15": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/15-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-15-turn-00/2200b61d653c4f04818b375a460bd105/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-15-turn-01/17651d304d53429aa2732e3b969edf08/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-15-turn-02/d6f639b6870c4d6297e150bd5a6c264e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-15-turn-03/5bb0613efca0443294fa0b900e2705a1/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-15-turn-04/a203c1f77215479ba6397bf6611df287/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-15-turn-05/9c0455ed7b964d0ea58a6f5e43f12415/ready/audio.wav"
+      ]
+    },
+    "16": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/16-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-16-turn-00/89a7badcbc0845d69b4fb47a91e78c82/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-16-turn-01/a92efe0c87e54236adc4cdab8173c8c8/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-16-turn-02/cb589ca780df45cfb7929cae8ce56006/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-16-turn-03/91a686e8d4ab4913a7f5a151f213ad88/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-16-turn-04/0670b0eb73814dd1a8314d4f4b879c8a/ready/audio.wav"
+      ]
+    },
+    "17": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/17-focus.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-17-turn-00/9e575953ecaf441fb227c80e82e3eb61/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-17-turn-01/0e40ec8e01ca4b78be729d0fc1cc6e5e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-17-turn-02/ff7a6d4c807048279340d95d291b511a/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-17-turn-03/5c4493f6f1374d779ba40838567fa242/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-17-turn-04/04cea9f5bbfe48fea636f16bdb3a11cf/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-17-turn-05/d662011bd1ff44ba869242929bd07c75/ready/audio.wav"
+      ]
+    },
+    "18": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/part02/18-focus-clean.mkv",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-18-turn-00/2811b6e3e1224a19bd9cabcc3bbc7afd/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-18-turn-01/a4c4fe5c285b487e9095e2eeeb12b5f4/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-18-turn-02/b27b5441e9ca4b509eefbc4f322f5106/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-18-turn-03/895e5a6211d7453aaf0737993660aae7/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-18-turn-04/b6c39ad18a05498d92e5c2f00dbc7f0e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-18-turn-05/d81b29afed8646909bdd7803f01e167d/ready/audio.wav"
+      ]
+    },
+    "p2-outro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-02-outro-00/aafbbff2a9044c72b2a82ac26d5a704c/ready/audio.wav"
+      ]
+    },
+    "p3-intro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-03-intro-00/ef856ccbb7164a5982bf5d69c469279c/ready/audio.wav"
+      ]
+    },
+    "19": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/19.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-19-turn-00/f330c47bc839493abeaf03b593b4a784/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-19-turn-01/2be924fa24424c83a263ff57cdd660ff/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-19-turn-02/20627ef216da407090832c9f2ce77b8d/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-19-turn-03/e79ab7d2ee464aca9922dd41fc5f1de7/ready/audio.wav"
+      ]
+    },
+    "20": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/20.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-20-turn-00/47cc38e9bb15495faaf762fccee896bc/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-20-turn-01/2dc72d0a5ae64101b3ce8f48e827bf09/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-20-turn-02/29f07646c55f4ad68ee5261d1c6d6cac/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-20-turn-03/2abdb4ba4b554d3aa1f6531690050b17/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-20-turn-04/36853b2d90084bab8427293d326cb138/ready/audio.wav"
+      ]
+    },
+    "21": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/21.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-21-turn-00/25f6c7b1a4d648e9b45c9bfd7aaa428c/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-21-turn-01/37a9523e1110497a9c95ce52215a4068/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-21-turn-02/b059274109244f198c4a4e3315141ae4/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-21-turn-03/30117767828544a8a437f55101aeae73/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-21-turn-04/3ffaa1e972f844a79eb0ae3692fa8379/ready/audio.wav"
+      ]
+    },
+    "22": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/22.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-22-turn-00/e44a3064aa6548da9669425d7e20fd83/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-22-turn-01/16805861a4e548f19e86a4a6f58d095b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-22-turn-02/239d708a056346f6969d0ad8fc00b172/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-22-turn-03/112ce81aabd246e0a5ffb2241b171b5b/ready/audio.wav"
+      ]
+    },
+    "23": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/23.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-23-turn-00/58a6cb1d69234c0eb049349c680b5cc6/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-23-turn-01/f802e0ea92e34d2788ef34028c355653/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-23-turn-02/4b87d36dc31b4a209909d8f59ddab300/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-23-turn-03/d2e96d8178ad4c3e9befc7cc4ed23036/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-23-turn-04/7fc8afa636274e0a89ced3e1ed10e470/ready/audio.wav"
+      ]
+    },
+    "24": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/24.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-24-turn-00/28538817cd714cad96b1810f53481aef/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-24-turn-01/4a2ced5e9455427fbb8a96e5e6ab48a3/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-24-turn-02/8a161e015e0b4f96b94860801a8af2bd/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-24-turn-03/607d1acfe91042aab368c1129fd480c1/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-24-turn-04/0b36ed98d40343eda3441c722d2f670c/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-24-turn-05/e82b777353a74242986baffadcb6e21e/ready/audio.wav"
+      ]
+    },
+    "25": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/25.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-25-turn-00/2f7d370ebf49429593ed848e0d656e4b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-25-turn-01/b74436f64fab4977aaac1499390854ab/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-25-turn-02/eb788f3f31924f68aaa8a814203dd874/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-25-turn-03/1b3f9fe0392940d9810c062c60f35dff/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-25-turn-04/8e7160ae0cff4a6cab6fb728e086b32d/ready/audio.wav"
+      ]
+    },
+    "26": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/26.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-26-turn-00/da165516bfa443619d4ebd767f4f9921/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-26-turn-01/0edfd4efdd8d4222b1b4a0df1ff540c8/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-26-turn-02/d8acdf9fb1114737aa1f82f4b89f75b8/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-26-turn-03/a868ebf42e6b4b9aab8b0f00472869a5/ready/audio.wav"
+      ]
+    },
+    "27": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/27.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-27-turn-00/0369cd0acabf4045bdfa09ec1de6a31f/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-27-turn-01/ff0e881334f94602b9fae475d71e73a9/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-27-turn-02/37324894bc044e6f98541753f0259150/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-27-turn-03/8e988188763f47f6a859277360ee7c8f/ready/audio.wav"
+      ]
+    },
+    "28": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/28.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-28-turn-00/fa1635e5740c41059e745676352c1ebe/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-28-turn-01/37d8d9984f244a6eb0210da2618d5c08/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-28-turn-02/bd8d75e329e84dbda3a4de86ac21beea/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-28-turn-03/2d29e9273bab4930aa8b86e4e8406183/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-28-turn-04/1404a7d02ed84101b4d5a48369570521/ready/audio.wav"
+      ]
+    },
+    "29": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-03/29.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-29-turn-00/4553d7abddc747dcbdd8638185994208/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-29-turn-01/ae26c731b8d948cc97083fa335b5c68d/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-29-turn-02/65be76ddd3a74c67869278f3b4b72ba7/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-29-turn-03/d0c3900b3d29438c98b80c825deaef57/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-29-turn-04/d24ab430f27e4ababc19a883e1480b0e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-29-turn-05/5b2803b45b234670b32a12d3342c8910/ready/audio.wav"
+      ]
+    },
+    "p3-outro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-03-outro-00/dde436e3f46b4cf3aa4a4cb7984f0ce6/ready/audio.wav"
+      ]
+    },
+    "p4-intro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-04-intro-00/f9a6ec559bbd4beaa4b6e0888e937cfb/ready/audio.wav"
+      ]
+    },
+    "30": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/30.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-30-turn-00/87c6c7d159e64f81b880f025b3eb0bbd/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-30-turn-01/2ea670bbf1fb4f9d82c650cb90d80a19/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-30-turn-02/62b2b9be7ebc47eb93d7e3f5af9694cd/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-30-turn-03/8cdd63ba9e1345bea98c9f0adc2d9efd/ready/audio.wav"
+      ]
+    },
+    "31": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/31.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-31-turn-00/bfa1dddef6084bb08ade02b7b0e11d8b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-31-turn-01/5dc243d4ec5a4727b417e107897ee328/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-31-turn-02/3c0fdd2ecf154c42b930f49d6eaa6557/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-31-turn-03/099aee96dac846ba95f6945df9bd36e6/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-31-turn-04/9cbc17ca087e43f7a9ee5c9807aa2093/ready/audio.wav"
+      ]
+    },
+    "32": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/32.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-32-turn-00/88781a74d82848a6a1a83d0641e544cc/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-32-turn-01/e93ed592366546fba50c6baa0506eb66/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-32-turn-02/5ddd2eac25234041ac54885613019604/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-32-turn-03/44ba55831918456f97c55e578f022eb7/ready/audio.wav"
+      ]
+    },
+    "33": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/33.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-33-turn-00/365f59c5da814dcabb99009c7c0683f0/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-33-turn-01/4e720eaea5e34f1b955e011db476860c/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-33-turn-02/46dcae18b50c45828f0a78304dff9d83/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-33-turn-03/d3b5244ea2ac4c14bcf8272a078adb80/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-33-turn-04/8a3513792c7f4400a00d93a8e19f9001/ready/audio.wav"
+      ]
+    },
+    "34": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/34.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-34-turn-00/97826c59c4354203b75e7dd031785dea/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-34-turn-01/38aaf5c217ed4f1fa390302c64f0cb92/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-34-turn-02/24950a3b4b3e49ba8fe55afd25fd3bf1/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-34-turn-03/51e65c200cc94d8db9c74caf53862685/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-34-turn-04/d0953c57f1b24b5ba50dea47643679ce/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-34-turn-05/635acc67c088458783466deac0cc9856/ready/audio.wav"
+      ]
+    },
+    "35": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/35.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-35-turn-00/cdc518bb676b40e097a9dbec745b7eea/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-35-turn-01/cfc8fd9102c54e138bff02705e49957f/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-35-turn-02/a34a0ba49e074544a4dec4bf3592f395/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-35-turn-03/2187b73b17eb46c38d069e5e7453b9b2/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-35-turn-04/6e5584a176ad4824a63f0498d99355b6/ready/audio.wav"
+      ]
+    },
+    "36": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/36.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-36-turn-00/6ef4f158a8ca45b9a6905aeb6cce2fcb/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-36-turn-01/99e7b275b34841f4b4fb834328280469/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-36-turn-02/46a3d237a00d496a845a127f096d8bc4/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-36-turn-03/3dc530b691be4a2eb6650e46a1c8538a/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-36-turn-04/2f7c787460df42de8f3d57b00a0063b3/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-36-turn-05/e63f8049cc844dcba87d29b683084772/ready/audio.wav"
+      ]
+    },
+    "37": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/37.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-37-turn-00/2b58edf6faa9407e887462283f7ac896/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-37-turn-01/02b2a306ec294d1bb0e66ac76f72318a/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-37-turn-02/c7f4af9e1662431b96d3ddeec84eab3b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-37-turn-03/92769fe3515c425ea5c963b35891352d/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-37-turn-04/31a64157e75e438b972f965ac052673f/ready/audio.wav"
+      ]
+    },
+    "38": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/38.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-38-turn-00/77c54f05dc474a7fa6767c85549f7985/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-38-turn-01/0d48d639c98e4ec8b510b533e906a4eb/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-38-turn-02/7f0eb5b7189b46e0816f0d9a2450bd35/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-38-turn-03/f20ba3cc78ac4b47b645a204374ac480/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-38-turn-04/8a0aac35957a44cbadd05c2c86887a92/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-38-turn-05/bed5562958f54451a02b7ac128cc9c22/ready/audio.wav"
+      ]
+    },
+    "39": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/39.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-39-turn-00/5afd46d711394617a33d343cc874d92f/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-39-turn-01/2a57ffb9995b4c94a2ad10d5cdaa4a25/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-39-turn-02/28d51aaf9b4141dda4bf8dafa1481565/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-39-turn-03/7c52eccc6d7141628d5ab1a768cf1e68/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-39-turn-04/a062439f0184492eb8c5bae5f1f81463/ready/audio.wav"
+      ]
+    },
+    "40": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/40.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-40-turn-00/e7e3ea1308d2449c8fe28aab5f4b5851/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-40-turn-01/a37ba133db934b469e872fea08428cd3/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-40-turn-02/8c7252b3faea4c8e80a704237d15a101/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-40-turn-03/7cabe7ebe8494862a4c9505e8e254f4d/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-40-turn-04/ffc4d855ef6143f5a5f2156ac6d9d0aa/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-40-turn-05/ce0529340d0a411e8c132ecaa1cbe445/ready/audio.wav"
+      ]
+    },
+    "41": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/41.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-41-turn-00/d11db601cab4487f947452c0fb97a597/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-41-turn-01/49c08815d189400cbd50aa08955f0dd7/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-41-turn-02/0f9e0bf7b208407bbe2aeeac8e2b2cb7/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-41-turn-03/14811190f1de4a31a8e97d58663a0bce/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-41-turn-04/aceeac81b02e4c93a7d5df489934aab1/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-41-turn-05/8d3a99e8518f4ac2908a37307b28efaf/ready/audio.wav"
+      ]
+    },
+    "42": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/42.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-42-turn-00/29c6aeb899fe44029bf5a02cbbb94e63/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-42-turn-01/a631d9b0d64f43fd9ab22a44bd6ec7f3/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-42-turn-02/0220bbe06a904085bfebc28a36573485/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-42-turn-03/bde83a3e7b2d48d9b9f68735eaed836e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-42-turn-04/5f792988887f44bfafe270c38f0a0ea6/ready/audio.wav"
+      ]
+    },
+    "43": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/43.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-43-turn-00/820056a9538c4dffb6ee7aa00ca60c2b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-43-turn-01/af258db38e504d08baf691e8fd1513d2/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-43-turn-02/7b6892ef91a54a239984069db50d8877/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-43-turn-03/7df37a05533449408bec7b3092d6eac1/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-43-turn-04/5562ed9528f8405eafae2c6c320be58f/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-43-turn-05/cb6d99d674424b1ab2847f023c4a63b6/ready/audio.wav"
+      ]
+    },
+    "44": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts34/part-04/44.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-44-turn-00/da0997cc76344a06b27639b7d3b93f99/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-44-turn-01/c2170aa875a54554950c0db1c68b1354/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-44-turn-02/dfb1495ba69949db9f250bad9cc954a0/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-44-turn-03/90b1c9af55b04908b58f1040e159f7f9/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-44-turn-04/ffca370f553f46e4ba9137d42b91e6ec/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-44-turn-05/45b522175c5343ca92a60c7506301d04/ready/audio.wav"
+      ]
+    },
+    "p4-outro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-04-outro-00/52827d1cfc1c403487f19f9c47cbaca7/ready/audio.wav"
+      ]
+    },
+    "p5-intro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-05-intro-00/a8f65198d2654f2e954ef799a41a394f/ready/audio.wav"
+      ]
+    },
+    "45": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/45.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-45-turn-00/04ea4466479743d6b000afd3bd9c3523/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-45-turn-01/a30b88a1363645aebb63373baa6509d9/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-45-turn-02/6c90e331aff348fc86e8a687b69009e3/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-45-turn-03/91f1a30bfc8f45a4a0335a6290470c50/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-45-turn-04/ffe07503ef784866b903ef0ea6cb3ab3/ready/audio.wav"
+      ]
+    },
+    "46": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/46.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-46-turn-00/f14b52de85dc4306a1397c272fbcb963/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-46-turn-01/42576037681b4d46aeff16d1bcaa35d5/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-46-turn-02/72c452e74e6f4ad4a11a3e379680484f/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-46-turn-03/ce09c54b8db94281bdfb40788678c4f4/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-46-turn-04/681ceba942be4250b3eec1fd35b1610b/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-46-turn-05/35f3a787d8e94ab3a0f76252f7e36229/ready/audio.wav"
+      ]
+    },
+    "47": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/47.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-47-turn-00/f2df4735ef6b4be8bdac4bdc30a96dbb/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-47-turn-01/3cde5a7743aa4998929eef7918b3598e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-47-turn-02/5e5106c21e5b479195f7cfd2849be528/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-47-turn-03/5557e3ee83174c55bb2ef1e6f9221544/ready/audio.wav"
+      ]
+    },
+    "48": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/48.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-48-turn-00/07284402be0e407789d82dc1af5cbd71/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-48-turn-01/f51176edf51446aba1663f61cbf3ccc6/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-48-turn-02/4e654875a21641aea82e7f2964278644/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-48-turn-03/e049eecdb8d34f11be9f543f2f204810/ready/audio.wav"
+      ]
+    },
+    "49": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/49.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-49-turn-00/5bb3c60b148c4c08b65a9f8bbae14e38/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-49-turn-01/f065643b38a241c6ab82ba434f928789/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-49-turn-02/5654e615730045dfa77cbed0b913b3e4/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-49-turn-03/d5bcd8f5c8084a688bfcfddc67db553d/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-49-turn-04/c40a73045fe046dcabfaf5cdce75e057/ready/audio.wav"
+      ]
+    },
+    "p5-outro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-05-outro-00/07c2146b61e9412689d5d620a8abe9c7/ready/audio.wav"
+      ]
+    },
+    "p6-intro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/title-revision/opening-1920x1080.png",
+        "fade": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-06-intro-00/0d5071a7779e471b8fab185dc929ca59/ready/audio.wav"
+      ]
+    },
+    "50": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/video/compositions/parts56/final-authority-review-caption-margin.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-50-turn-00/a42b52491f1a439297dcb5c80ee3e285/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-50-turn-01/05588d6ae89a48179d8ecd3c819f58fd/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-50-turn-02/fc8fddb8447f49f4a25b4e8b90e0f38f/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-50-turn-03/4af0d3f657c24d09acce31d3d9cf39ba/ready/audio.wav"
+      ]
+    },
+    "51": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/51.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-51-turn-00/8aa4a31750b74e72a59a9b70bc643181/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-51-turn-01/224cb49196cb447185ccec61d8cd8dcf/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-51-turn-02/a0c56bd5a62f4644b6b44637238e57db/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-51-turn-03/8c819849ee904e57b0ebff3e48c150a8/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-51-turn-04/267205c7248a4aef8812de0830669f48/ready/audio.wav"
+      ]
+    },
+    "52": {
+      "visual": {
+        "kind": "video",
+        "path": "../local/archive/video/compositions/parts56/clean-overlay/52.mp4",
+        "offset": 0,
+        "hold_last_frame": false
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-52-turn-00/2e22b48eee004b4396641efbb6d2871e/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-52-turn-01/b62e0c588af14f13a28b921f4aed46c0/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-52-turn-02/5647a67fb48e4acf933717c3390bc4f5/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-52-turn-03/4ab5ddedee264c9fb7aacbab146fea29/ready/audio.wav"
+      ]
+    },
+    "53": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/scene-53-turn-00/13defb4244fd4d93b53669774215c12a/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-53-turn-01/51f832d435a14a37b3a0d3e40f5bb927/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-53-turn-02/6aa578855dec49339a0a4af6ea54b602/ready/audio.wav",
+        "../local/archive/audio/narration/attempts/scene-53-turn-03/c599f70d5762401d86f3fdf33c052195/ready/audio.wav"
+      ]
+    },
+    "p6-outro": {
+      "visual": {
+        "kind": "slide",
+        "path": "../local/archive/assets/slides/closing-1920x1080.png"
+      },
+      "audio": [
+        "../local/archive/audio/narration/attempts/part-06-outro-00/02361daf5394400680bf3c71f1f155d1/ready/audio.wav"
+      ]
+    }
+  },
+  "editorial": {
+    "accepted_parts": [
+      {
+        "part": 1,
+        "accepted_package": "delivery/episode-01-v1/ready",
+        "input_manifest_sha256": "35c5a60e222c8dc38cdc217f55eb349f4909c0bedc6744f7f1d61171aec5c3de"
+      },
+      {
+        "part": 2,
+        "accepted_package": "delivery/episode-02-v2/ready",
+        "input_manifest_sha256": "f39dba1552358f7e9324aec9a79eb081a5232803d119a050cf6f67f7ed0e4e40"
+      },
+      {
+        "part": 3,
+        "accepted_package": "delivery/episode-03-v1/ready",
+        "input_manifest_sha256": "00e702a278f73b0000fd52226a4fcf3c2b4307f3a192b13c3244f0ae8ea85f0a"
+      },
+      {
+        "part": 4,
+        "accepted_package": "delivery/episode-04-v1/ready",
+        "input_manifest_sha256": "8b46d3ab30bd701c21ab2dbb98403d8c8fef63400539e4958f57e87784d5c5a4"
+      },
+      {
+        "part": 5,
+        "accepted_package": "delivery/episode-05-v2/ready",
+        "input_manifest_sha256": "50fe7c424a260fc0b90c5c861fe8fe3551d7e8fa593f8050b5992a2149e215d9"
+      },
+      {
+        "part": 6,
+        "accepted_package": "delivery/episode-06-v2/ready",
+        "input_manifest_sha256": "76bf59d1d13dcb8216235b4c906710a7552473a31367cd3a344b40561e03934a"
+      }
+    ],
+    "combined_includes": "54 main scenes; standalone episode bridges excluded",
+    "audio": "All existing validated actual WAVs; no paid generation."
+  },
+  "title_lead_seconds": 3
+}

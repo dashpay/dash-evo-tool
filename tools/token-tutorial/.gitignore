@@ -1,0 +1,16 @@
+/local/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.wav
+*.mp3
+*.mp4
+*.mkv
+*.png
+*.db
+*.db-*
+.env
+.env.*
+*.ttf
+*.otf

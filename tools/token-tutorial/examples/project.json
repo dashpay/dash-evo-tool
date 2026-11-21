@@ -1,0 +1,5 @@
+{
+  "scenario": "../scenario/dialogue.json",
+  "work": "../local",
+  "font_license": "../assets/slides/montserrat-ofl.txt"
+}

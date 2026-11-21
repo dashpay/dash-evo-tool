@@ -106,12 +106,17 @@ access. The branch does not change live repository settings or move secrets.
    Branch and tag rules do not govern these calls, and withholding Workflows
    write does not prevent them. Before any direct agent write grant, require:
    - **immutable releases** for the repository, so published assets and tags
-     cannot change. Drafts stay mutable, so weekly must attach every asset,
-     including Flatpaks, before publishing;
+     cannot change. An immutable release rejects assets added after
+     publication, and drafts stay mutable, so every release path (weekly,
+     tag push, direct dispatch and the standalone Flatpak workflow) must first
+     attach all of its assets to a draft and only then publish it;
    - **attestation verification** before a release or asset is used:
-     `gh release verify <tag>`, `gh release verify-asset <tag> <file>`, and the
-     build-provenance check against the `release.yml` signer identity. This
-     also detects assets replaced in a draft before publication.
+     `gh release verify <tag>`, `gh release verify-asset <tag> <file>`, and
+     `gh attestation verify <file> --repo dashpay/dash-evo-tool
+     --signer-workflow dashpay/dash-evo-tool/.github/workflows/release.yml
+     --source-digest <authorized release commit>`. The release checks prove
+     the bytes did not change after publication; only the source digest
+     detects an asset from another `release.yml` build substituted in a draft.
 
    Do not grant direct write access until both are in place.
 7. Before the next stable release, update `master` through the normal reviewed

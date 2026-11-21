@@ -285,24 +285,31 @@ impl eframe::App for BootApp {
         }
     }
 
-    /// The failure dialog saves nothing: with no data folder, eframe's storage
-    /// is the system default folder, outside the one the user chose.
+    /// Only the running app saves egui memory. The failure dialog may have no
+    /// data folder (eframe then uses the system default folder), and the
+    /// legacy vault prompt holds no lock on the profile another launch shares.
     fn persist_egui_memory(&self) -> bool {
-        !matches!(self, BootApp::Failed(_))
+        matches!(self, BootApp::Running(_))
     }
 
     fn on_exit(&mut self) {
         match self {
             BootApp::Running(app) => app.on_exit(),
-            // eframe calls this on every exit, but after the macOS menu Quit it
-            // never returns to `main`: report and exit with `main`'s status here.
-            BootApp::Failed(failure) => {
-                crate::logging::report_startup_failure_to_terminal(&[&FailureNotice(failure)]);
-                std::process::exit(1);
+            // After the macOS menu Quit, eframe never returns to `main`, so the
+            // failure is reported and the status set here. Elsewhere `main`
+            // does both after eframe finishes its teardown.
+            BootApp::Failed(failure) if cfg!(target_os = "macos") => {
+                report_failure_and_exit(failure)
             }
-            BootApp::Unlocking(_) => {}
+            BootApp::Failed(_) | BootApp::Unlocking(_) => {}
         }
     }
+}
+
+/// Name `failure` on the terminal and exit with `main`'s failure status.
+fn report_failure_and_exit(failure: &StartupFailure) -> ! {
+    crate::logging::report_startup_failure_to_terminal(&[&FailureNotice(failure)]);
+    std::process::exit(1)
 }
 
 /// A shown startup failure as a terminal cause: its message and details.
@@ -668,18 +675,18 @@ mod tests {
         assert!(status.success(), "child failed: {status}");
     }
 
-    /// Leaving the failure dialog by any route, the macOS menu Quit included
-    /// (eframe never returns to `main` there), exits with a failure status and
-    /// names the cause on the terminal.
+    /// The exit `on_exit` takes after the macOS menu Quit, where eframe never
+    /// returns to `main`: a failure status and the cause on the terminal.
     #[test]
     fn exit_from_failure_dialog_reports_failure() {
         const CHILD_ENV: &str = "DET_FAILED_BOOT_EXIT_CHILD";
         const MARKER: &str = "failed-boot-exit-marker";
         if std::env::var_os(CHILD_ENV).is_some() {
-            let mut app =
-                BootApp::failed(&std::io::Error::other(MARKER), &StartupOutcome::default());
-            eframe::App::on_exit(&mut app);
-            return;
+            let app = BootApp::failed(&std::io::Error::other(MARKER), &StartupOutcome::default());
+            let BootApp::Failed(failure) = &app else {
+                panic!("expected the failure dialog");
+            };
+            report_failure_and_exit(failure);
         }
         let test_name = std::thread::current().name().expect("test name").to_owned();
         let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
@@ -691,6 +698,45 @@ mod tests {
         assert_eq!(output.status.code(), Some(1), "{stderr}");
         assert!(stderr.contains("failed to start"), "{stderr}");
         assert!(stderr.contains(MARKER), "{stderr}");
+    }
+
+    /// Off macOS, closing the failure dialog returns to `main`, which reports
+    /// and exits; `on_exit` must not cut eframe's teardown (the profile save)
+    /// short by exiting itself.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn failure_dialog_exit_returns_to_main_off_macos() {
+        const CHILD_ENV: &str = "DET_FAILED_BOOT_RETURN_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let mut app =
+                BootApp::failed(&std::io::Error::other("cause"), &StartupOutcome::default());
+            eframe::App::on_exit(&mut app);
+            return;
+        }
+        let test_name = std::thread::current().name().expect("test name").to_owned();
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run child");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{stderr}");
+        assert!(!stderr.contains("failed to start"), "{stderr}");
+    }
+
+    /// The legacy vault prompt holds no vault lock, so it saves no egui memory
+    /// into a profile another launch may share.
+    #[test]
+    fn legacy_vault_prompt_does_not_persist_egui_memory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+            .expect("create passphrase vault");
+        let mut startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        let app = startup.boot(egui::Context::default(), &StartupOutcome::default());
+        assert!(matches!(app, BootApp::Unlocking(_)));
+        assert!(!eframe::App::persist_egui_memory(&app));
     }
 
     /// Runs `f` with `DASH_EVO_DATA_DIR` set to `dir`, serialized with every

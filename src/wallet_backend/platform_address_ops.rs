@@ -334,28 +334,26 @@ impl WalletBackend {
             .await?;
         self.ensure_platform_address_slots(&wallet, path_index, addresses)
             .await?;
-        Ok(PreparedPlatformSpend(Some(wallet)))
+        Ok(PreparedPlatformSpend(wallet))
     }
 }
 
-/// Where the proof of a spend submitted outside platform-wallet is recorded,
-/// fixed when its inputs are prepared: the prepared platform-wallet, or
-/// DET's view alone when platform-wallet did not hold the wallet then.
+/// The platform-wallet a spend submitted outside it was prepared in, which
+/// records the spend's proof.
 #[derive(Debug, Clone)]
-pub(crate) struct PreparedPlatformSpend(Option<Arc<platform_wallet::PlatformWallet>>);
+pub(crate) struct PreparedPlatformSpend(Arc<platform_wallet::PlatformWallet>);
 
 impl PreparedPlatformSpend {
     /// Record the spend's proof-attested `address_infos` in the prepared
     /// platform-wallet, pinned at `proof_height`, and return what it
-    /// committed; `None` when the proof belongs to DET's view alone.
+    /// committed.
     pub(crate) async fn reconcile(
         &self,
         address_infos: &AddressInfos,
         proof_height: u64,
         context: &'static str,
-    ) -> Option<Vec<PlatformAddressEntry>> {
-        let wallet = self.0.as_deref()?;
-        Some(reconcile_on(wallet, address_infos, proof_height, context).await)
+    ) -> Vec<PlatformAddressEntry> {
+        reconcile_on(&self.0, address_infos, proof_height, context).await
     }
 }
 
@@ -946,59 +944,6 @@ mod tests {
         );
     }
 
-    /// A spend prepared for DET's view alone keeps its proof there even when
-    /// the platform-wallet mapping appears before the proof is handled: no
-    /// second lookup reconciles against a pool missing the spent slot.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn spend_proof_follows_the_prepared_outcome_when_the_mapping_appears_late() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = wired_test_app_context(dir.path()).await;
-        let backend = ctx.wallet_backend().expect("wired backend");
-        let seed = crate::test_support::keys::seed();
-        let mut wallet =
-            Wallet::new_from_seed(seed, Network::Testnet, Some("payer".to_string()), None)
-                .expect("build wallet");
-        let mut issued = None;
-        for _ in 0..=20 {
-            issued = Some(
-                wallet
-                    .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
-                    .expect("issued address"),
-            );
-        }
-        let spent = issued.expect("slot 20");
-        let funding = PlatformAddress::try_from(spent.clone()).expect("p2pkh");
-        // DET holds the wallet; no upstream registration starts on its own,
-        // so the call below is the mapping's only publisher.
-        let seed_hash = wallet.seed_hash();
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-        ctx.wallet_context()
-            .insert_test_wallet(seed_hash, Arc::clone(&wallet_arc));
-
-        let prepared = PreparedPlatformSpend(None);
-        backend
-            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
-            .await
-            .expect("the mapping appears before the proof is handled");
-        ctx.record_platform_address_spend_proof(
-            seed_hash,
-            &prepared,
-            &infos(&[(funding, 250_000, 2)]),
-            600,
-            "test registration",
-        )
-        .await;
-
-        let wallet = wallet_arc.read().expect("wallet lock");
-        let det = wallet
-            .get_platform_address_info(&spent)
-            .expect("DET records the spend");
-        assert_eq!(
-            (det.balance, det.nonce, det.as_of_height),
-            (250_000, 2, 600)
-        );
-    }
-
     /// A poisoned wallet map is not an unloaded wallet: the spend is refused
     /// before its seed session, so before anything is broadcast.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1132,12 +1077,12 @@ mod tests {
         let PlatformAddress::P2pkh(owned_hash) = owned else {
             panic!("p2pkh address expected");
         };
-        let prepared = PreparedPlatformSpend(Some(
+        let prepared = PreparedPlatformSpend(
             backend
                 .resolve_wallet(&seed_hash)
                 .await
                 .expect("held wallet"),
-        ));
+        );
 
         ctx.record_platform_address_spend_proof(
             seed_hash,
@@ -1205,49 +1150,5 @@ mod tests {
                 .contains_key(&foreign.to_address_with_network(Network::Testnet)),
             "a foreign recipient stays out of DET's model"
         );
-    }
-
-    /// Without platform-wallet holding the wallet, the proof still updates
-    /// DET's model, pinned at its height, as it did before platform-wallet
-    /// reconciled these spends.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn spend_proof_without_platform_wallet_still_updates_det_model() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = crate::context::test_support::test_app_context(dir.path());
-        let seed = rand::random::<[u8; 64]>();
-        let mut wallet =
-            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
-        let address = wallet
-            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
-            .expect("platform address");
-        let owned = PlatformAddress::try_from(address.clone()).expect("p2pkh address");
-        let seed_hash = wallet.seed_hash();
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-        ctx.wallet_context()
-            .insert_test_wallet(seed_hash, Arc::clone(&wallet_arc));
-        let prepared = PreparedPlatformSpend(None);
-
-        ctx.record_platform_address_spend_proof(
-            seed_hash,
-            &prepared,
-            &infos(&[(owned, 41_000, 3)]),
-            500,
-            "test registration",
-        )
-        .await;
-        ctx.record_platform_address_spend_proof(
-            seed_hash,
-            &prepared,
-            &infos(&[(owned, 80_000, 2)]),
-            400,
-            "older proof",
-        )
-        .await;
-
-        let wallet = wallet_arc.read().expect("wallet lock");
-        let det = wallet
-            .get_platform_address_info(&address)
-            .expect("DET has the owned address");
-        assert_eq!((det.balance, det.nonce), (41_000, 3));
     }
 }

@@ -556,8 +556,7 @@ mod tests {
             .await
             .expect("platform-wallet holds the wallet")
             .reconcile(&proof, 600, "test registration")
-            .await
-            .expect("platform-wallet holds the wallet");
+            .await;
         assert_eq!(entries.len(), 1, "the funding slot must be reconcilable");
     }
     use dash_sdk::dpp::version::PlatformVersion;

@@ -14,8 +14,10 @@ use dash_evo_tool::model::token::{
     IdentityTokenIdentifier, distribution_rules_with_once_per_identity,
 };
 use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab, token_copy};
+use dash_evo_tool::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::{
     TokenConfigurationV0Getters, TokenConfigurationV0Setters,
@@ -1312,5 +1314,207 @@ fn a_disconnected_refresh_cannot_be_retried_while_the_connection_stops() {
             2,
             "the retry works once connected"
         );
+    });
+}
+
+#[test]
+fn regression_import_by_id_restores_a_dismissed_token() {
+    with_isolated_data_dir(|| {
+        let (runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let tokens = seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::STOP_TRACKING_LABEL).click();
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::STOP_TRACKING_LABEL).click();
+        hub.run_steps(3);
+        let pair = hub
+            .state()
+            .1
+            .iter()
+            .find_map(|action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    ..
+                } => {
+                    if let TokenTask::StopTrackingTokenBalance(pair) = **task {
+                        Some(pair)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .expect("stop-tracking request");
+        ctx.mark_token_balance_untracked(pair)
+            .expect("persist dismissal");
+        assert!(
+            ctx.get_all_known_tokens()
+                .expect("global registry")
+                .contains_key(&tokens[0])
+        );
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label("DashCoffee").is_none(),
+            "the dismissal hides the row before the import"
+        );
+        hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::ADD_BY_ID_LABEL).click();
+        hub.run_steps(2);
+        let screen = hub
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::AddScreen(Screen::AddTokenById(screen)) => Some(screen),
+                _ => None,
+            })
+            .expect("hub opens import-by-ID");
+        let contract = ctx.get_contract_by_token_id(&tokens[0]).unwrap().unwrap();
+        let mut import = crate::support::builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui,
+                 state: &mut (
+                    dash_evo_tool::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen,
+                    Vec<AppAction>,
+                )| {
+                    let action = state.0.ui(ui);
+                    state.1.push(action);
+                },
+                (screen, Vec::new()),
+            );
+        import.state_mut().0.display_task_result(
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+                contract.contract,
+                0,
+            ),
+        );
+        import.run_steps(3);
+        import
+            .get_all_by_role_and_label(Role::Button, "Import Token")
+            .last()
+            .expect("import form button")
+            .click();
+        import.run_steps(2);
+        let task = import
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::BackendTasks(tasks, _) => {
+                    tasks.into_iter().find_map(|task| match task {
+                        BackendTask::ContractTask(task) => Some(*task),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("import saves contract");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        runtime
+            .block_on(ctx.run_contract_task(
+                task,
+                &ctx.sdk(),
+                dash_evo_tool::utils::egui_mpsc::SenderAsync::new(sender, egui::Context::default()),
+            ))
+            .unwrap();
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label("DashCoffee").is_some(),
+            "import restores the identity's row"
+        );
+    });
+}
+
+#[test]
+fn regression_search_can_reimport_a_dismissed_known_token() {
+    with_isolated_data_dir(|| {
+        let (runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let tokens = seed_three_tokens(&ctx, identity);
+        let pair = IdentityTokenIdentifier {
+            identity_id: identity,
+            token_id: tokens[0],
+        };
+        ctx.mark_token_balance_untracked(pair).unwrap();
+        let mut hub = mount_tokens_tab(&ctx);
+        assert!(
+            hub.query_by_label("DashCoffee").is_none(),
+            "the dismissal hides the row before the import"
+        );
+        hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::FIND_BY_NAME_LABEL).click();
+        hub.run_steps(2);
+        assert!(hub.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch)
+        )));
+        let contract = ctx.get_contract_by_token_id(&tokens[0]).unwrap().unwrap();
+        let contract_id = contract.contract.id();
+        let token = dash_evo_tool::ui::tokens::tokens_screen::TokenInfo {
+            token_id: tokens[0],
+            token_name: "DashCoffee".into(),
+            data_contract_id: contract_id,
+            token_position: 0,
+            token_configuration: contract.contract.tokens()[&0].clone(),
+            description: None,
+        };
+        let mut screen = TokensScreen::new(&ctx, TokensSubscreen::SearchTokens);
+        screen.selected_contract_id = Some(contract_id);
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::ContractsWithDescriptions(
+                BTreeMap::from([(contract_id, (None, vec![token]))]),
+            ),
+        );
+        let mut search = crate::support::builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, state: &mut (TokensScreen, Vec<AppAction>)| {
+                    let action = state.0.ui(ui);
+                    state.1.push(action);
+                },
+                (screen, Vec::new()),
+            );
+        search.run_steps(3);
+        search.get_by_label("Add to My Tokens").click();
+        search.run_steps(2);
+        let task = search
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::BackendTasks(tasks, _) => {
+                    tasks.into_iter().find_map(|task| match task {
+                        BackendTask::TokenTask(task)
+                            if matches!(*task, TokenTask::SaveTokenLocally(_)) =>
+                        {
+                            Some(*task)
+                        }
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("a dismissed known token can be imported again");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+        runtime
+            .block_on(ctx.run_token_task(
+                task,
+                &ctx.sdk(),
+                dash_evo_tool::utils::egui_mpsc::SenderAsync::new(sender, egui::Context::default()),
+            ))
+            .unwrap();
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("DashCoffee").is_some());
     });
 }

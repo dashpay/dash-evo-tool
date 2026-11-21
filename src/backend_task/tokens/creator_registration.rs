@@ -83,7 +83,6 @@ impl AppContext {
             .ok_or(TaskError::TokenCreatorKeyUnavailable)?;
         if current != key
             || key.disabled_at().is_some()
-            || key.read_only()
             || key.contract_bounds().is_some()
             || key.purpose() != Purpose::AUTHENTICATION
             || !matches!(
@@ -144,6 +143,20 @@ impl AppContext {
             TaskError::InvalidTokenDraft {
                 source: Box::new(source),
             }
+        })?;
+        // The transition is built here, not by `PutContract`, so run its preflight.
+        dash_sdk::platform::transition::put_contract::ensure_private_document_entries_fit(
+            &contract, None,
+        )
+        .map_err(|error| match error {
+            dash_sdk::Error::Protocol(source) => TaskError::InvalidTokenDraft {
+                source: Box::new(crate::model::token_creator::DraftError::protocol(
+                    crate::model::token_creator::Section::Documents,
+                    "Document types",
+                    source,
+                )),
+            },
+            other => TaskError::from(other),
         })?;
         let registration_cost =
             crate::model::fee_estimation::token_creator_registration_charge(&contract, version)
@@ -367,11 +380,7 @@ impl AppContext {
             })
             .is_ok();
         let local_cache_saved = self
-            .insert_contract_if_not_exists(
-                &contract,
-                Some(&record.alias),
-                crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded,
-            )
+            .creator_cache_receipt(&contract, &record.alias)
             .map_err(|error| {
                 tracing::warn!(?error, "Token accepted but local cache persistence failed")
             })
@@ -383,6 +392,29 @@ impl AppContext {
                 journal_saved,
             },
         )))
+    }
+
+    /// Saves the accepted contract and its token only where nothing is cached yet: a later
+    /// configuration update may have replaced the creation-time settings.
+    fn creator_cache_receipt(&self, accepted: &DataContract, alias: &str) -> Result<(), TaskError> {
+        let cached = self
+            .get_contract_by_id(&accepted.id())?
+            .map(|cached| cached.contract);
+        let contract = cached.as_ref().unwrap_or(accepted);
+        let mut missing = Vec::new();
+        for position in contract.tokens().keys().copied() {
+            if let Some(token_id) = contract.token_id(position)
+                && self.get_token_config_for_id(&token_id)?.is_none()
+            {
+                missing.push(position);
+            }
+        }
+        // The contract entry itself is written only when absent.
+        self.insert_contract_if_not_exists(
+            contract,
+            Some(alias),
+            crate::model::qualified_contract::InsertTokensToo::SomeTokensShouldBeAdded(missing),
+        )
     }
 
     pub(super) async fn check_token_creation(
@@ -707,6 +739,153 @@ mod tests {
                 .await
                 .unwrap(),
             11
+        );
+    }
+
+    /// An owner Platform and this device both hold, with one enabled HIGH
+    /// authentication key (id 1) changed by `edit` and its private key held.
+    fn owner_holding(
+        context: &AppContext,
+        seed: u8,
+        edit: impl FnOnce(&mut IdentityPublicKey),
+    ) -> QualifiedIdentity {
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+        let mut owner = crate::context::test_support::user_identity_with_signing_key(
+            Identifier::from([seed; 32]),
+            context.network,
+            false,
+        );
+        let mut key = owner.identity.get_public_key_by_id(1).unwrap().clone();
+        edit(&mut key);
+        owner.identity.add_public_key(key.clone());
+        owner.private_keys = KeyStorage::from(std::collections::BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (key.into(), PrivateKeyData::InVault),
+        )]));
+        context
+            .insert_local_qualified_identity(&owner, &None)
+            .unwrap();
+        owner
+    }
+
+    fn mock_sdk() -> Sdk {
+        dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .unwrap()
+    }
+
+    /// `read_only` only stops the key record from changing; Platform lets such
+    /// a key sign. A disabled key still cannot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_creator_signs_with_a_read_only_key_but_never_a_disabled_one() {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let read_only = owner_holding(&context, 41, |key| key.set_read_only(true));
+        let disabled = owner_holding(&context, 42, |key| key.set_disabled_at(1));
+        let mut sdk = mock_sdk();
+        for owner in [&read_only, &disabled] {
+            sdk.mock()
+                .expect_fetch::<Identity, _>(owner.identity.id(), Some(owner.identity.clone()))
+                .await
+                .unwrap();
+        }
+        let key =
+            |owner: &QualifiedIdentity| owner.identity.get_public_key_by_id(1).unwrap().clone();
+        assert!(
+            context
+                .creator_current_owner(&sdk, read_only.identity.id(), &key(&read_only))
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            context
+                .creator_current_owner(&sdk, disabled.identity.id(), &key(&disabled))
+                .await,
+            Err(TaskError::TokenCreatorKeyUnavailable)
+        ));
+    }
+
+    /// The SDK's PutContract preflight refuses private document types whose
+    /// entries cannot hold their largest payload; the creator builds the
+    /// transition itself, so its review must run the same check.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_creator_refuses_private_documents_whose_entries_cannot_hold_them() {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::query_types::IdentityNonceFetcher;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let owner = owner_holding(&context, 43, |_| {});
+        let owner_id = owner.identity.id();
+        let mut sdk = mock_sdk();
+        sdk.mock()
+            .expect_fetch::<Identity, _>(owner_id, Some(owner.identity.clone()))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch::<IdentityNonceFetcher, _>(owner_id, Some(IdentityNonceFetcher(6)))
+            .await
+            .unwrap();
+        // The SDK's own example: the largest payload needs 376-byte entries.
+        let mut draft = TokenDraft::example(false);
+        draft.documents = r#"{"request":{"type":"object","private":{"entrySize":375},"documentsMutable":false,"canBeDeleted":false,"properties":{"reference":{"type":"integer","position":0},"key":{"type":"array","byteArray":true,"minItems":69,"maxItems":69,"position":1}},"required":["reference","key"],"additionalProperties":false}}"#.into();
+        let key = owner.identity.get_public_key_by_id(1).unwrap().clone();
+        let result = context
+            .prepare_token_creation(&sdk, draft, owner_id, key)
+            .await;
+        assert!(
+            matches!(&result, Err(TaskError::InvalidTokenDraft { source })
+                if source.section == crate::model::token_creator::Section::Documents),
+            "{result:?}"
+        );
+    }
+
+    /// Restoring a receipt must not replace token settings a later update
+    /// saved, but it still fills a missing token entry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_registration_restore_keeps_newer_token_settings() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Setters;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (mut record, contract) = fixture(&context);
+        record.status = RegistrationStatus::Confirmed;
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&record).unwrap();
+        context
+            .insert_contract_if_not_exists(
+                &contract,
+                Some("Fixture"),
+                crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded,
+            )
+            .unwrap();
+        let token_id = contract.token_id(0).unwrap();
+        let mut updated = contract.expected_token_configuration(0).unwrap().clone();
+        updated.set_max_supply(Some(123));
+        context
+            .insert_token(&token_id, "Fixture", updated.clone(), &contract.id(), 0)
+            .unwrap();
+
+        context
+            .creator_accept(&journal, record.clone(), contract.clone())
+            .unwrap();
+        assert_eq!(
+            context.get_token_config_for_id(&token_id).unwrap(),
+            Some(updated),
+            "the later update's settings stay"
+        );
+
+        context.remove_token(&token_id).unwrap();
+        context
+            .creator_accept(&journal, record, contract.clone())
+            .unwrap();
+        assert_eq!(
+            context.get_token_config_for_id(&token_id).unwrap(),
+            Some(contract.expected_token_configuration(0).unwrap().clone()),
+            "a missing entry is filled from the cached contract"
         );
     }
 }

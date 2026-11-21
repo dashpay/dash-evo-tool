@@ -621,7 +621,7 @@ fn design_system_recurring_authority_warning_precedes_expanded_fields() {
             harness.run_steps(5);
             harness.get_by_label("Done").click();
             harness.run_steps(5);
-            let label = "Contract owner can change recurring distribution.";
+            let label = "Contract owner is recorded as the recurring distribution performer, but this network does not support changing recurring distribution after creation.";
             harness
                 .query_all_by_label(label)
                 .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))

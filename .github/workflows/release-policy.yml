@@ -1,0 +1,49 @@
+name: Release policy checks
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release*.yml
+      - .github/workflows/flatpak*.yml
+      - .github/workflows/weekly-build.yml
+      - .github/workflows/tests.yml
+      - .github/workflows/clippy.yml
+      - .github/workflows/claude-code-review.yml
+      - scripts/ci/**
+      - scripts/github/**
+  push:
+    branches: [v1.0-dev]
+    paths:
+      - .github/workflows/release*.yml
+      - .github/workflows/flatpak*.yml
+      - .github/workflows/weekly-build.yml
+      - scripts/ci/**
+      - scripts/github/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Release policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Install workflow parser
+        run: python3 -m pip install PyYAML==6.0.3
+      - name: Test source authorization and signing boundaries
+        run: python3 -m unittest discover -s scripts/ci -p 'test_release_*.py' -v
+      - name: Test required PR check availability
+        run: python3 -m unittest discover -s scripts/ci -p 'test_pr_scope.py' -v
+      - name: Test read-only administrator collector
+        run: python3 -m unittest discover -s scripts/github -p 'test_*.py' -v
+      - name: Test weekly behavior
+        run: |
+          bash scripts/ci/test-weekly-gate.sh
+          bash scripts/ci/test-weekly-jobs.sh

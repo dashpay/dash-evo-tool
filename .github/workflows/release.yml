@@ -10,6 +10,11 @@ on:
       - published
   workflow_dispatch:
     inputs:
+      source_sha:
+        description: "Source commit; when supplied, it must match the workflow event SHA"
+        required: false
+        type: string
+        default: ""
       tag:
         description: "Version (i.e. v0.1.0)"
         required: false
@@ -25,6 +30,16 @@ on:
         default: ""
   workflow_call:
     inputs:
+      weekly:
+        description: "Mark this caller's draft for automatic weekly cleanup"
+        required: false
+        type: boolean
+        default: false
+      source_sha:
+        description: "Source commit; when supplied, it must match the workflow event SHA"
+        required: false
+        type: string
+        default: ""
       tag:
         description: "Version (i.e. v0.1.0)"
         required: false
@@ -40,13 +55,46 @@ on:
         type: string
         default: ""
 
+    secrets:
+      APPLE_CERTIFICATE:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_TEAM_ID:
+        required: true
+      APPLE_APP_SPECIFIC_PASSWORD:
+        required: true
+
 permissions:
-  id-token: write
-  attestations: write
-  contents: write
+  contents: read
 
 jobs:
+  # This code is read from the protected development branch, never a release tag.
+  authorize:
+    name: Authorize release source
+    runs-on: ubuntu-24.04
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      tag: ${{ steps.source.outputs.tag }}
+      policy_sha: ${{ steps.source.outputs.policy_sha }}
+    steps:
+      - name: Checkout trusted release policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/heads/v1.0-dev
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authorize immutable source
+        id: source
+        env:
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/ci/release_source.py
+
   build-and-release:
+    needs: [authorize]
     name: Build and Release Dash Evo Tool
     strategy:
       matrix:
@@ -68,41 +116,11 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     steps:
-      - name: Resolve checkout ref
-        id: resolve_ref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_INPUT: ${{ inputs.tag }}
-          DEFAULT_REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          tag="$TAG_INPUT"
-          if [ -z "$tag" ]; then
-            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
-          elif err=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>&1 >/dev/null); then
-            echo "ref=$tag" >> "$GITHUB_OUTPUT"
-          elif printf '%s' "$err" | grep -q "HTTP 404"; then
-            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Failed to verify whether tag '$tag' exists (gh api error was not a 404, so this could be an auth/rate-limit/network problem rather than a genuinely missing tag): $err"
-            exit 1
-          fi
-
-      - name: Check out code
-        uses: actions/checkout@v4
+      - name: Check out authorized code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # inputs.tag is checked out ONLY when it already exists as a real
-          # ref (verified above via the API — github.event_name cannot be
-          # used here: a reusable workflow inherits the CALLER's original
-          # event_name, e.g. schedule/workflow_dispatch, it is never
-          # 'workflow_call'). weekly-build.yml's call always passes an
-          # already-pushed tag, so this pins the build to it. Direct
-          # workflow_dispatch's `tag` input is often a NEW tag name
-          # softprops/action-gh-release creates at the end of this job, not
-          # an existing ref yet — that case (and push/release triggers, and
-          # workflow_dispatch with no tag) correctly falls back to
-          # github.ref via the resolve step above.
-          ref: ${{ steps.resolve_ref.outputs.ref }}
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -124,11 +142,10 @@ jobs:
           mkdir -p dash-evo-tool/
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
@@ -210,57 +227,23 @@ jobs:
         run: |
           zip -r dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool/
 
-      - name: Attest
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: "dash-evo-tool-${{ matrix.platform }}.zip"
-
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
           retention-days: 14
 
   build-macos-arm64:
-    name: Build macOS ARM64 (Signed & Notarized)
+    needs: [authorize]
+    name: Build macOS ARM64 (Unsigned)
     runs-on: macos-latest
     steps:
-      - name: Resolve checkout ref
-        id: resolve_ref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_INPUT: ${{ inputs.tag }}
-          DEFAULT_REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          tag="$TAG_INPUT"
-          if [ -z "$tag" ]; then
-            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
-          elif err=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>&1 >/dev/null); then
-            echo "ref=$tag" >> "$GITHUB_OUTPUT"
-          elif printf '%s' "$err" | grep -q "HTTP 404"; then
-            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Failed to verify whether tag '$tag' exists (gh api error was not a 404, so this could be an auth/rate-limit/network problem rather than a genuinely missing tag): $err"
-            exit 1
-          fi
-
-      - name: Check out code
-        uses: actions/checkout@v4
+      - name: Check out authorized code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # inputs.tag is checked out ONLY when it already exists as a real
-          # ref (verified above via the API — github.event_name cannot be
-          # used here: a reusable workflow inherits the CALLER's original
-          # event_name, e.g. schedule/workflow_dispatch, it is never
-          # 'workflow_call'). weekly-build.yml's call always passes an
-          # already-pushed tag, so this pins the build to it. Direct
-          # workflow_dispatch's `tag` input is often a NEW tag name
-          # softprops/action-gh-release creates at the end of this job, not
-          # an existing ref yet — that case (and push/release triggers, and
-          # workflow_dispatch with no tag) correctly falls back to
-          # github.ref via the resolve step above.
-          ref: ${{ steps.resolve_ref.outputs.ref }}
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -282,14 +265,16 @@ jobs:
             exit 1
           fi
           # Strip prerelease and build metadata suffixes for macOS plist (Apple requires numeric-only)
-          PLIST_VERSION=$(echo "$VERSION" | sed 's/[-+].*//')
+          PLIST_VERSION="${VERSION%%[-+]*}"
           if ! echo "$PLIST_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
             echo "::error::Invalid plist version '$PLIST_VERSION' derived from Cargo version '$VERSION'. Expected numeric x[.y[.z]]."
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "plist_version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "plist_version=$PLIST_VERSION"
+            echo "build_number=${{ github.run_number }}"
+          } >> "$GITHUB_OUTPUT"
           echo "Extracted version: $VERSION (plist: $PLIST_VERSION, build: ${{ github.run_number }})"
 
       - name: Initial disk cleanup
@@ -423,198 +408,24 @@ jobs:
           fi
           echo "✅ macOS binary dependencies look clean"
 
-      - name: Import signing certificates
-        uses: Apple-Actions/import-codesign-certs@v3
+      - name: Upload unsigned app bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
-          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-
-      - name: Resolve signing identity
-        id: signid
-        run: |
-          ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | sed -E 's/.*"(.+)"/\1/' | head -n1)
-          echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
-
-      - name: Code sign app bundle with hardened runtime and timestamp
-        run: |
-          # Create entitlements file
-          cat > entitlements.plist <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-            <true/>
-            <key>com.apple.security.cs.allow-jit</key>
-            <true/>
-            <key>com.apple.security.cs.disable-library-validation</key>
-            <true/>
-          </dict>
-          </plist>
-          EOF
-
-          # Sign the app bundle (deep signing to get all components)
-          codesign --force --deep --options runtime --timestamp \
-            --sign "${{ steps.signid.outputs.IDENTITY }}" \
-            --entitlements entitlements.plist \
-            "build/Dash Evo Tool.app"
-
-          # Verify the signature
-          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
-
-      - name: Free up disk space before DMG creation
-        run: |
-          echo "Disk usage before cleanup:"
-          df -h
-          du -sh ~/* 2>/dev/null | sort -rh | head -20
-
-          # Remove the ENTIRE target directory since we already copied the binary
-          rm -rf target
-
-          # Remove the entire Cargo directory
-          rm -rf ~/.cargo
-
-          # Clean up homebrew completely
-          brew cleanup --prune=all
-          rm -rf $(brew --cache)
-
-          # Remove any unnecessary Xcode simulators and caches
-          sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
-          sudo rm -rf ~/Library/Caches 2>/dev/null || true
-
-          # Remove temporary icon files after creating the app bundle
-          rm -rf AppIcon.iconset 2>/dev/null || true
-
-          # Clean system caches more aggressively
-          sudo rm -rf /Library/Caches/* 2>/dev/null || true
-          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
-          sudo rm -rf /private/var/folders/* 2>/dev/null || true
-          sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
-
-          # Remove any iOS simulators and SDKs we don't need
-          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
-          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
-          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
-          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
-
-          echo "Disk usage after cleanup:"
-          df -h
-          du -sh ~/* 2>/dev/null | sort -rh | head -20
-
-      - name: Create DMG
-        run: |
-          # Get app size for sparse image
-          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
-          DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
-
-          # Create a sparse image instead of using srcfolder
-          # Sparse images only use disk space as needed
-          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
-
-          # Mount the sparse image
-          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
-
-          # Copy app to mounted volume
-          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
-          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
-
-          # Remove macOS metadata directories that get created automatically
-          rm -rf /Volumes/"Dash Evo Tool"/.fseventsd
-          rm -rf /Volumes/"Dash Evo Tool"/.Spotlight-V100
-          rm -f /Volumes/"Dash Evo Tool"/.DS_Store
-
-          # Unmount
-          hdiutil detach /Volumes/"Dash Evo Tool"
-
-          # Convert sparse image to compressed DMG
-          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-arm64.dmg
-
-          # Clean up sparse image
-          rm -f temp.sparseimage
-
-          # Sign the DMG
-          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-arm64.dmg
-
-      - name: Validate Apple credentials
-        run: |
-          if [ -z "${{ secrets.APPLE_ID }}" ]; then
-            echo "Error: APPLE_ID secret is not set"
-            exit 1
-          fi
-          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then
-            echo "Error: APPLE_TEAM_ID secret is not set"
-            exit 1
-          fi
-          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
-            echo "Error: APPLE_APP_SPECIFIC_PASSWORD secret is not set"
-            exit 1
-          fi
-          echo "Apple credentials validation passed"
-
-      - name: Notarize DMG
-        run: |
-          echo "Submitting DMG for notarization..."
-          xcrun notarytool submit dash-evo-tool-macos-arm64.dmg \
-            --apple-id "${{ secrets.APPLE_ID }}" \
-            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-            --wait --verbose
-
-          echo "Stapling notarization ticket..."
-          xcrun stapler staple dash-evo-tool-macos-arm64.dmg
-
-      - name: Attest
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: "dash-evo-tool-macos-arm64.dmg"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dash-evo-tool-macos-arm64.dmg
-          path: dash-evo-tool-macos-arm64.dmg
-          retention-days: 14
+          name: unsigned-macos-arm64
+          path: build/Dash Evo Tool.app
+          if-no-files-found: error
+          retention-days: 2
 
   build-macos-x86:
-    name: Build macOS x86_64 (Signed & Notarized)
+    needs: [authorize]
+    name: Build macOS x86_64 (Unsigned)
     runs-on: macos-latest
     steps:
-      - name: Resolve checkout ref
-        id: resolve_ref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_INPUT: ${{ inputs.tag }}
-          DEFAULT_REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          tag="$TAG_INPUT"
-          if [ -z "$tag" ]; then
-            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
-          elif err=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>&1 >/dev/null); then
-            echo "ref=$tag" >> "$GITHUB_OUTPUT"
-          elif printf '%s' "$err" | grep -q "HTTP 404"; then
-            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Failed to verify whether tag '$tag' exists (gh api error was not a 404, so this could be an auth/rate-limit/network problem rather than a genuinely missing tag): $err"
-            exit 1
-          fi
-
-      - name: Check out code
-        uses: actions/checkout@v4
+      - name: Check out authorized code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # inputs.tag is checked out ONLY when it already exists as a real
-          # ref (verified above via the API — github.event_name cannot be
-          # used here: a reusable workflow inherits the CALLER's original
-          # event_name, e.g. schedule/workflow_dispatch, it is never
-          # 'workflow_call'). weekly-build.yml's call always passes an
-          # already-pushed tag, so this pins the build to it. Direct
-          # workflow_dispatch's `tag` input is often a NEW tag name
-          # softprops/action-gh-release creates at the end of this job, not
-          # an existing ref yet — that case (and push/release triggers, and
-          # workflow_dispatch with no tag) correctly falls back to
-          # github.ref via the resolve step above.
-          ref: ${{ steps.resolve_ref.outputs.ref }}
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -636,14 +447,16 @@ jobs:
             exit 1
           fi
           # Strip prerelease and build metadata suffixes for macOS plist (Apple requires numeric-only)
-          PLIST_VERSION=$(echo "$VERSION" | sed 's/[-+].*//')
+          PLIST_VERSION="${VERSION%%[-+]*}"
           if ! echo "$PLIST_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
             echo "::error::Invalid plist version '$PLIST_VERSION' derived from Cargo version '$VERSION'. Expected numeric x[.y[.z]]."
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "plist_version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
-          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "plist_version=$PLIST_VERSION"
+            echo "build_number=${{ github.run_number }}"
+          } >> "$GITHUB_OUTPUT"
           echo "Extracted version: $VERSION (plist: $PLIST_VERSION, build: ${{ github.run_number }})"
 
       - name: Initial disk cleanup
@@ -773,8 +586,54 @@ jobs:
           fi
           echo "✅ macOS binary dependencies look clean"
 
+      - name: Upload unsigned app bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-macos-x86_64
+          path: build/Dash Evo Tool.app
+          if-no-files-found: error
+          retention-days: 2
+
+  sign-macos:
+    name: Sign macOS (${{ matrix.arch }})
+    needs: [authorize, build-macos-arm64, build-macos-x86]
+    runs-on: macos-latest
+    environment: release-signing
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - name: Download unsigned app from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-macos-${{ matrix.arch }}
+          path: build/Dash Evo Tool.app
+      - name: Check the unsigned bundle before loading credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          app='build/Dash Evo Tool.app'
+          # This app contains two executables, one icon and one plist; no links or helpers.
+          while IFS= read -r -d '' entry; do
+            case "$entry" in
+              "$app"|"$app/Contents"|"$app/Contents/MacOS"|"$app/Contents/Resources")
+                test -d "$entry" && test ! -L "$entry" ;;
+              "$app/Contents/MacOS/dash-evo-tool"|"$app/Contents/MacOS/det-cli"|\
+              "$app/Contents/Resources/AppIcon.icns"|"$app/Contents/Info.plist")
+                test -f "$entry" && test ! -L "$entry" ;;
+              *) echo 'Unexpected entry in unsigned app bundle.' >&2; exit 1 ;;
+            esac
+          done < <(find "$app" -print0)
+          test -s "$app/Contents/Info.plist"
+          test -s "$app/Contents/Resources/AppIcon.icns"
+          test -s "$app/Contents/MacOS/dash-evo-tool"
+          test -s "$app/Contents/MacOS/det-cli"
+          chmod 755 "$app/Contents/MacOS/dash-evo-tool" "$app/Contents/MacOS/det-cli"
+
       - name: Import signing certificates
-        uses: Apple-Actions/import-codesign-certs@v3
+        uses: Apple-Actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -786,6 +645,8 @@ jobs:
           echo "IDENTITY=$ID" >> "$GITHUB_OUTPUT"
 
       - name: Code sign app bundle with hardened runtime and timestamp
+        env:
+          SIGNING_IDENTITY: ${{ steps.signid.outputs.IDENTITY }}
         run: |
           # Create entitlements file
           cat > entitlements.plist <<EOF
@@ -805,54 +666,16 @@ jobs:
 
           # Sign the app bundle (deep signing to get all components)
           codesign --force --deep --options runtime --timestamp \
-            --sign "${{ steps.signid.outputs.IDENTITY }}" \
+            --sign "$SIGNING_IDENTITY" \
             --entitlements entitlements.plist \
             "build/Dash Evo Tool.app"
 
           # Verify the signature
           codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
 
-      - name: Free up disk space before DMG creation
-        run: |
-          echo "Disk usage before cleanup:"
-          df -h
-          du -sh ~/* 2>/dev/null | sort -rh | head -20
-
-          # Remove the ENTIRE target directory since we already copied the binary
-          rm -rf target
-
-          # Remove the entire Cargo directory
-          rm -rf ~/.cargo
-
-          # Clean up homebrew completely
-          brew cleanup --prune=all
-          rm -rf $(brew --cache)
-
-          # Remove any unnecessary Xcode simulators and caches
-          sudo rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/Xcode 2>/dev/null || true
-          sudo rm -rf ~/Library/Caches 2>/dev/null || true
-
-          # Remove temporary icon files after creating the app bundle
-          rm -rf AppIcon.iconset 2>/dev/null || true
-
-          # Clean system caches more aggressively
-          sudo rm -rf /Library/Caches/* 2>/dev/null || true
-          sudo rm -rf /System/Library/Caches/* 2>/dev/null || true
-          sudo rm -rf /private/var/folders/* 2>/dev/null || true
-          sudo rm -rf /Users/runner/Library/Caches/* 2>/dev/null || true
-
-          # Remove any iOS simulators and SDKs we don't need
-          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
-          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/iPhoneOS.platform 2>/dev/null || true
-          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/AppleTVOS.platform 2>/dev/null || true
-          sudo rm -rf /Applications/Xcode*.app/Contents/Developer/Platforms/WatchOS.platform 2>/dev/null || true
-
-          echo "Disk usage after cleanup:"
-          df -h
-          du -sh ~/* 2>/dev/null | sort -rh | head -20
-
       - name: Create DMG
+        env:
+          SIGNING_IDENTITY: ${{ steps.signid.outputs.IDENTITY }}
         run: |
           # Get app size for sparse image
           APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
@@ -869,91 +692,150 @@ jobs:
           cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
           ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
 
+          # Remove macOS metadata directories that get created automatically
+          rm -rf /Volumes/"Dash Evo Tool"/.fseventsd
+          rm -rf /Volumes/"Dash Evo Tool"/.Spotlight-V100
+          rm -f /Volumes/"Dash Evo Tool"/.DS_Store
+
           # Unmount
           hdiutil detach /Volumes/"Dash Evo Tool"
 
           # Convert sparse image to compressed DMG
-          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-x86_64.dmg
+          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-${{ matrix.arch }}.dmg
 
           # Clean up sparse image
           rm -f temp.sparseimage
 
           # Sign the DMG
-          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg
+          codesign --force --sign "$SIGNING_IDENTITY" dash-evo-tool-macos-${{ matrix.arch }}.dmg
 
       - name: Validate Apple credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          if [ -z "${{ secrets.APPLE_ID }}" ]; then
+          if [ -z "$APPLE_ID" ]; then
             echo "Error: APPLE_ID secret is not set"
             exit 1
           fi
-          if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then
+          if [ -z "$APPLE_TEAM_ID" ]; then
             echo "Error: APPLE_TEAM_ID secret is not set"
             exit 1
           fi
-          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
+          if [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
             echo "Error: APPLE_APP_SPECIFIC_PASSWORD secret is not set"
             exit 1
           fi
           echo "Apple credentials validation passed"
 
       - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           echo "Submitting DMG for notarization..."
-          xcrun notarytool submit dash-evo-tool-macos-x86_64.dmg \
-            --apple-id "${{ secrets.APPLE_ID }}" \
-            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+          xcrun notarytool submit dash-evo-tool-macos-${{ matrix.arch }}.dmg \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --wait --verbose
 
           echo "Stapling notarization ticket..."
-          xcrun stapler staple dash-evo-tool-macos-x86_64.dmg
-
-      - name: Attest
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: "dash-evo-tool-macos-x86_64.dmg"
+          xcrun stapler staple dash-evo-tool-macos-${{ matrix.arch }}.dmg
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dash-evo-tool-macos-x86_64.dmg
-          path: dash-evo-tool-macos-x86_64.dmg
+          name: dash-evo-tool-macos-${{ matrix.arch }}.dmg
+          path: dash-evo-tool-macos-${{ matrix.arch }}.dmg
           retention-days: 14
 
   release:
     name: Create GitHub Release
-    needs: [build-and-release, build-macos-arm64, build-macos-x86]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    needs: [authorize, build-and-release, sign-macos]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout the same trusted release policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.authorize.outputs.policy_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release_source.py
+          sparse-checkout-cone-mode: false
+          path: release-policy
       - name: Download Linux AMD64 Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-linux-x86_64.zip
       - name: Download Linux Arm64 Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-linux-arm64.zip
       - name: Download macOS ARM64 Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-macos-arm64.dmg
       - name: Download macOS x86_64 Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-macos-x86_64.dmg
       - name: Download Windows Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-windows.zip
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v1
+      - name: Attest completed release artifacts
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        with:
+          subject-path: |
+            dash-evo-tool-linux-x86_64.zip
+            dash-evo-tool-linux-arm64.zip
+            dash-evo-tool-windows.zip
+            dash-evo-tool-macos-arm64.dmg
+            dash-evo-tool-macos-x86_64.dmg
+
+      - name: Recheck the publication tag
+        if: needs.authorize.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.tag }}
+        run: python3 release-policy/scripts/ci/release_source.py --verify-remote-tag --allow-new-tag
+
+      - name: Publish weekly draft
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: ${{ inputs.tag != '' }}
+        if: ${{ inputs.weekly && inputs.tag != '' }}
         with:
-          tag_name: ${{ inputs.tag }}
+          body: >-
+            ${{ format('<!-- weekly-version: {0} -->', inputs.version_override) }}
+          tag_name: ${{ needs.authorize.outputs.tag }}
+          target_commitish: ${{ needs.authorize.outputs.source_sha }}
+          files: |
+            ./dash-evo-tool-linux-x86_64.zip
+            ./dash-evo-tool-linux-arm64.zip
+            ./dash-evo-tool-macos-arm64.dmg
+            ./dash-evo-tool-macos-x86_64.dmg
+            ./dash-evo-tool-windows.zip
+          draft: ${{ inputs.draft || false }}
+          prerelease: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: ${{ !inputs.weekly && inputs.tag != '' }}
+        with:
+          tag_name: ${{ needs.authorize.outputs.tag }}
+          target_commitish: ${{ needs.authorize.outputs.source_sha }}
           files: |
             ./dash-evo-tool-linux-x86_64.zip
             ./dash-evo-tool-linux-arm64.zip

@@ -427,12 +427,8 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                     "Available key in identity"
                 );
             }
-            ProtocolError::Generic(format!(
-                "Key {} ({}) not found in identity {:?}",
-                identity_public_key.id(),
-                identity_public_key.purpose(),
-                self.identity.id().to_string(Encoding::Base58)
-            ))
+            // Marked so the caller reports a missing key, not a network failure.
+            self.signing_key_unavailable(identity_public_key, &TaskError::IdentityKeyMissing)
         })?;
 
         tracing::debug!("Successfully resolved private key, proceeding to sign");

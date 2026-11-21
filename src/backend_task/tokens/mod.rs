@@ -1227,7 +1227,7 @@ mod token_action_routing_tests {
     /// identity) still acts on tokens: each action is built through the SDK
     /// and signed with the identity's own key, without borrowing a loaded
     /// wallet. Holding the key gets every action past signing; without it,
-    /// the identity's signer refuses.
+    /// the identity's signer refuses and says the key is missing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_actions_of_an_identity_no_wallet_holds_are_signed_by_the_identity() {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -1274,6 +1274,14 @@ mod token_action_routing_tests {
                     .run_token_task(task, &sdk, sender.clone())
                     .await
                     .expect_err("the mock SDK accepts no broadcast");
+                if !signs {
+                    // The user is told the key is missing, not to check the connection.
+                    assert!(
+                        matches!(err, TaskError::IdentitySigningKeyMissing { .. }),
+                        "{kind:?} without the key: {err:?}"
+                    );
+                    continue;
+                }
                 let TaskError::TokenOperationFailed {
                     operation,
                     source_error,
@@ -1282,10 +1290,9 @@ mod token_action_routing_tests {
                     panic!("{kind:?}: {err:?}");
                 };
                 assert_eq!(*operation, kind);
-                assert_eq!(
+                assert!(
                     !matches!(**source_error, dash_sdk::Error::Protocol(_)),
-                    signs,
-                    "{kind:?} with the key held: {signs}: {err:?}"
+                    "{kind:?} got past signing: {err:?}"
                 );
             }
         }

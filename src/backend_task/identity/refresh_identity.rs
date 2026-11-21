@@ -4,12 +4,12 @@ use crate::context::AppContext;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::utils::egui_mpsc::SenderAsync;
+use crate::wallet_backend::fold_fetched_identity;
 use dash_sdk::dapi_grpc::platform::v0::ResponseMetadata;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 use dash_sdk::query_types::IdentityBalance;
 use dash_sdk::{Error as SdkError, Sdk};
-use platform_wallet::{BlockTime, ManagedIdentity};
 use std::sync::Arc;
 
 use super::BackendTaskSuccessResult;
@@ -36,30 +36,16 @@ impl AppContext {
         };
         // Apply only what was fetched, to the record as stored now: a stale
         // snapshot written back would undo whatever changed while the fetch
-        // ran, such as a removed key whose vault secret is already gone.
-        // Upstream's fold keeps raised key limits and, below the stored
-        // revision, the stored keys plus any permanent disable; DET's watermark
-        // still orders the balance.
-        // TODO(platform-wallet): a fetch at the stored revision still takes
-        // reversible key states whole, so a lagging proof can undo one
-        // (dashpay/platform#5542 item 6).
+        // ran, such as a removed key whose vault secret is already gone. DET's
+        // watermark still orders the balance.
         let mut qualified_identity_to_update = self.edit_local_qualified_identity_observed(
             &refreshed_identity_id,
             provenance,
             |stored| {
                 match maybe_refreshed_identity {
                     Some(fetched) => {
-                        let mut managed =
-                            ManagedIdentity::new_out_of_wallet(stored.identity.clone());
-                        managed.take_fetched_identity(
-                            &fetched,
-                            BlockTime::new(
-                                metadata.height,
-                                metadata.core_chain_locked_height,
-                                metadata.time_ms,
-                            ),
-                        );
-                        stored.identity = managed.identity;
+                        stored.identity =
+                            fold_fetched_identity(&stored.identity, &fetched, &metadata);
                         stored.status.update(IdentityStatus::Active);
                     }
                     None => stored.status.update(IdentityStatus::NotFound),

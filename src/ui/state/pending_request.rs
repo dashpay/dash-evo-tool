@@ -141,16 +141,6 @@ impl<S> PendingRequests<S> {
     {
         self.slots.iter().any(|(_, pending)| pending == subject)
     }
-
-    /// How many requests are outstanding.
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    /// Whether no request is outstanding.
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-    }
 }
 
 impl PendingRequest {
@@ -271,7 +261,7 @@ mod tests {
         let mut pending = PendingRequests::<u8>::default();
         let (_, first) = dispatched(pending.dispatch_with(refresh_task(), 1));
         let (_, second) = dispatched(pending.dispatch_with(refresh_task(), 2));
-        assert_eq!(pending.len(), 2);
+        assert!(pending.is_pending_for(&1) && pending.is_pending_for(&2));
         assert_eq!(
             pending.settle(&BackendTaskContext::for_dispatch(&refresh_task())),
             None
@@ -281,10 +271,10 @@ mod tests {
             Some(1),
             "the earlier request is kept"
         );
-        assert!(pending.is_pending());
+        assert!(!pending.is_pending_for(&1) && pending.is_pending_for(&2));
         assert_eq!(pending.settle(&first), None);
         assert_eq!(pending.settle(&second), Some(2));
-        assert!(pending.is_empty());
+        assert!(!pending.is_pending());
     }
 
     #[test]

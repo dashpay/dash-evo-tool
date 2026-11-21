@@ -403,6 +403,15 @@ fn merge_confirmation_action(mut action: AppAction, confirmation_action: AppActi
     action
 }
 
+/// Why nothing can be withdrawn from Platform addresses: no single address
+/// can keep back the withdrawal `fee` and still give the input minimum.
+fn withdrawal_fee_unpayable_message(fee: Credits) -> String {
+    let fee = format_credits_as_dash(fee);
+    format!(
+        "None of your Platform addresses holds enough on its own to pay the withdrawal fee of approximately {fee}. Move funds onto one address, for example with a transfer between your Platform addresses, and try again."
+    )
+}
+
 impl WalletSendScreen {
     pub fn new(app_context: &Arc<AppContext>, wallet: Arc<RwLock<Wallet>>) -> Self {
         Self::new_with_wallet(app_context, Some(wallet))
@@ -1612,6 +1621,16 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
+        if let Some(min) =
+            self.min_output_amount(Some(AddressKind::Platform), Some(AddressKind::Core))
+            && amount_credits < min
+        {
+            let min = format_credits_as_dash(min);
+            return Err(format!(
+                "The network accepts withdrawals of at least {min}. Enter a larger amount and try again."
+            ));
+        }
+
         // Calculate total balance across all platform addresses
         let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
 
@@ -1676,10 +1695,7 @@ impl WalletSendScreen {
                 },
             );
             if max.amount == 0 {
-                let fee = format_credits_as_dash(max.estimated_fee);
-                return Err(format!(
-                    "None of your Platform addresses can keep back the network fee of approximately {fee}, so nothing can be withdrawn right now."
-                ));
+                return Err(withdrawal_fee_unpayable_message(max.estimated_fee));
             }
             let max_sendable = max.amount;
 
@@ -3309,9 +3325,7 @@ impl WalletSendScreen {
                 if max.amount == 0 {
                     (
                         None,
-                        Some(format!(
-                            "None of your Platform addresses can keep back the network fee of approximately {fee}, so nothing can be withdrawn right now."
-                        )),
+                        Some(withdrawal_fee_unpayable_message(max.estimated_fee)),
                     )
                 } else if sources > max_inputs {
                     (
@@ -7384,6 +7398,82 @@ mod tests {
             precheck.fee_fully_covered,
             "Platform refuses a Max whose fee strategy cannot cover its pre-check fee"
         );
+    }
+
+    /// Three Platform addresses none of which can keep back the withdrawal
+    /// fee and still give Platform's input minimum.
+    fn screen_with_unpayable_withdrawal() -> (
+        WalletSendScreen,
+        tempfile::TempDir,
+        Vec<(PlatformAddress, Address, u64)>,
+    ) {
+        let (mut screen, dir) = send_screen();
+        let addresses: Vec<_> = (2..5)
+            .map(|index| {
+                let core = testnet_core_address(index);
+                let platform = PlatformAddress::try_from(core.clone()).expect("Platform address");
+                (platform, core, 300_000_000)
+            })
+            .collect();
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(addresses.clone()));
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(9)));
+        (screen, dir, addresses)
+    }
+
+    /// When no address can pay the withdrawal fee, no Max is offered, and the
+    /// form and the refusal both say what to do instead.
+    #[test]
+    fn platform_withdrawal_without_a_fee_payer_offers_no_max_and_says_what_to_do() {
+        const ACTION: &str = "Move funds onto one address";
+        let (screen, _dir, addresses) = screen_with_unpayable_withdrawal();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("wallet");
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        assert!(
+            harness
+                .state()
+                .amount
+                .as_ref()
+                .is_none_or(|amount| amount.value() == 0),
+            "no Max is offered"
+        );
+        assert!(
+            harness.query_by_label_contains(ACTION).is_some(),
+            "the form says what to do"
+        );
+
+        harness.state_mut().amount = Some(Amount::new_dash(0.001));
+        let error = harness
+            .state_mut()
+            .send_platform_to_core(seed_hash, addresses)
+            .expect_err("nothing can be withdrawn");
+        assert!(error.contains(ACTION), "{error}");
+        assert!(!error.contains("exceeds maximum"), "{error}");
+        assert!(!error.contains("right now"), "{error}");
+    }
+
+    /// An amount below what the network accepts for a withdrawal is refused
+    /// as such, not as one over the maximum.
+    #[test]
+    fn platform_withdrawal_below_the_minimum_says_so() {
+        let (mut screen, _dir, _) = screen_with_unpayable_withdrawal();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("wallet");
+        let addresses = vec![{
+            let core = testnet_core_address(2);
+            let platform = PlatformAddress::try_from(core.clone()).expect("Platform address");
+            (platform, core, 10_000_000_000)
+        }];
+        screen.amount = Some(Amount::new(50_000, DASH_DECIMAL_PLACES));
+        let error = screen
+            .send_platform_to_core(seed_hash, addresses)
+            .expect_err("below the minimum");
+        assert!(error.contains("at least"), "{error}");
+        assert!(!error.contains("exceeds maximum"), "{error}");
     }
 
     /// A Platform balance that changes behind the open form (a top-up from

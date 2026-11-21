@@ -2648,14 +2648,12 @@ impl App for AppState {
         // stopping sync is dispatch work this loop owns — so it joins the frame's
         // action list rather than being applied inside the reconciler.
         actions.extend(spv_block_action.map(|action| (None, action)));
-        if let Some(task) = self.connection_banner.update(
+        self.connection_banner.update(
             ctx,
             &active_context,
             spv_overlaying,
             self.show_welcome_screen,
-        ) {
-            self.handle_backend_task(task);
-        }
+        );
         crate::ui::identity::top_up_identity_screen::restore_top_up_background_banner(ctx);
         self.pending_confirmation.update(ctx, &active_context);
         if !self.network_selection_required {

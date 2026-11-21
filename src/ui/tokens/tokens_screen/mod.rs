@@ -3997,7 +3997,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "test fixture setup/teardown outside any production deletion path"
     )]
-    fn once_per_identity_distribution_builds_version_1_rules_only_on_protocol_14() {
+    fn once_per_identity_distribution_builds_version_1_rules_on_supported_networks() {
         let db_file_path = "test_db_once_per_identity_distribution";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
@@ -4074,17 +4074,7 @@ mod tests {
         token_creator_ui.enable_once_per_identity_distribution = true;
         token_creator_ui.once_per_identity_amount_input = "250".to_string();
 
-        // The connected network's version is not known yet: refused locally.
-        let err = token_creator_ui
-            .parse_token_build_args()
-            .expect_err("a network below protocol 14 refuses the distribution");
-        assert_eq!(
-            err,
-            crate::backend_task::error::TaskError::TokenOncePerIdentityNotSupported.to_string(),
-            "the local refusal reads like the backend's"
-        );
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        assert_eq!(app_context.protocol_version_info().verified_version, None);
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");
@@ -4115,7 +4105,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "test fixture setup/teardown outside any production deletion path"
     )]
-    fn non_transferable_token_builds_a_version_1_configuration_only_on_protocol_14() {
+    fn non_transferable_token_builds_a_version_1_configuration_on_supported_networks() {
         use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
         let db_file_path = "test_db_non_transferable_token";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -4207,13 +4197,7 @@ mod tests {
 
         token_creator_ui.transferable_input = false;
 
-        // The connected network's version is not known yet: refused locally.
-        let err = token_creator_ui
-            .parse_token_build_args()
-            .expect_err("a network below protocol 14 refuses a non-transferable token");
-        assert!(err.contains("does not accept"), "got: {err}");
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        assert_eq!(app_context.protocol_version_info().verified_version, None);
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");
@@ -4697,38 +4681,15 @@ mod tests {
             .drop_without_applying_deltas();
     }
 
-    /// A non-transferable choice is kept, not silently flipped back to
-    /// transferable, while the network's support is not confirmed; creating is
-    /// blocked with the reason instead.
     #[test]
-    fn non_transferable_choice_survives_until_the_network_supports_it() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
+    fn non_transferable_choice_can_be_prepared_offline() {
+        let tmp = tempfile::tempdir().unwrap();
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         screen.transferable_input = false;
-
-        render_transferable_row(&mut screen);
-
-        assert!(
-            !screen.transferable_input,
-            "the user's non-transferable choice must not be overwritten"
-        );
-        assert_eq!(
-            screen.creation_blocked_reason().as_deref(),
-            Some(TRANSFERS_OFF_HINT),
-            "the reason must say where the hidden option is"
-        );
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
         render_transferable_row(&mut screen);
         assert!(!screen.transferable_input);
-        assert_eq!(screen.creation_blocked_reason(), None);
     }
-
-    /// Why creating is blocked while transfers are off on a network that does
-    /// not accept it, naming where the option is: it is offered only under
-    /// Advanced, so the form may not show it.
-    const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
 
     /// The confirmation always states the irreversible "holders cannot send"
     /// choice; the transferable default is stated only with Advanced Options,
@@ -4822,17 +4783,13 @@ mod tests {
         assert!(!unlocked.contains("marketplace"));
     }
 
-    /// Both modes name the preset first and then a setting the network does not
-    /// accept, so the user fixes one thing at a time.
     #[test]
-    fn blocked_reasons_name_the_preset_before_transferability() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
+    fn blocked_reasons_require_a_preset_without_network_gating() {
+        let tmp = tempfile::tempdir().unwrap();
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
         screen.transferable_input = false;
-        let unsupported = TRANSFERS_OFF_HINT.to_owned();
-
         assert_eq!(
             screen.simple_mode_blocked_reason().as_deref(),
             Some("Choose a preset to create the token.")
@@ -4841,17 +4798,9 @@ mod tests {
             screen.advanced_mode_blocked_reason().as_deref(),
             Some("Choose a preset, or Custom to use the rules below.")
         );
-
         screen.change_to_preset(owner_preset(
             TokenConfigurationPresetFeatures::WithExtremeActions,
         ));
-        assert_eq!(
-            screen.simple_mode_blocked_reason(),
-            Some(unsupported.clone())
-        );
-        assert_eq!(screen.advanced_mode_blocked_reason(), Some(unsupported));
-
-        screen.transferable_input = true;
         assert_eq!(screen.simple_mode_blocked_reason(), None);
         assert_eq!(screen.advanced_mode_blocked_reason(), None);
     }

@@ -2843,13 +2843,13 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
-        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+        use crate::sdk_wrapper::MIN_PLATFORM_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         crate::context::test_support::prove_protocol_version(
             &ctx,
-            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+            MIN_PLATFORM_VERSION.protocol_version,
         );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);

@@ -51,6 +51,7 @@ mod payments;
 pub(crate) mod persist_fault_test_support;
 pub mod platform_compatibility;
 pub(crate) mod poison;
+mod protocol_refresh;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
@@ -503,6 +504,8 @@ struct Inner {
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
     coordinator_gate: Arc<CoordinatorGate>,
+    protocol_refresh: protocol_refresh::ProtocolRefresh,
+    app_context: std::sync::Weak<AppContext>,
     /// Frame-loop result channel, used by [`WalletBackend::start`] to nudge
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
@@ -592,6 +595,14 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
 /// [`wallet_database_path`] holding all Orchard state.
 pub(crate) fn shielded_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}-shielded.sqlite", network_prefix(network)))
+}
+
+fn protocol_refresh_action(context: std::sync::Weak<AppContext>) -> impl Fn() + Send + Sync {
+    move || {
+        if let Some(ctx) = context.upgrade() {
+            ctx.queue_platform_protocol_refresh();
+        }
+    }
 }
 
 impl WalletBackend {
@@ -739,6 +750,8 @@ impl WalletBackend {
                 secret_access,
                 start_latch: StartLatch::default(),
                 coordinator_gate,
+                protocol_refresh: protocol_refresh::ProtocolRefresh::default(),
+                app_context: Arc::downgrade(ctx),
                 task_result_sender,
                 spend_activity: Arc::default(),
                 platform_shield_activity: Arc::default(),
@@ -1968,6 +1981,7 @@ impl WalletBackend {
         reason = "PlatformWalletError is an upstream type we cannot shrink"
     )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
+        self.inner.protocol_refresh.stop().await;
         let config = self.build_client_config();
 
         // New API: `start(config)` (async, initializes the SPV client) is called first,
@@ -1975,6 +1989,10 @@ impl WalletBackend {
         // The old `spawn_in_background(config)` combined both steps.
         let spv = self.inner.pwm.spv_arc();
         spv.start(config).await?;
+        self.inner.protocol_refresh.start(
+            self.inner.app_context.clone(),
+            Arc::clone(&self.inner.coordinator_gate),
+        );
         spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The
@@ -1996,11 +2014,12 @@ impl WalletBackend {
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
-        // is provably reachable. Cloning the sender avoids capturing any
-        // `Weak<AppContext>` in this run-loop closure.
+        // is provably reachable.
         let task_result_sender = self.inner.task_result_sender.clone();
         let network = self.inner.network;
+        let refresh_protocol = protocol_refresh_action(self.inner.app_context.clone());
         self.inner.coordinator_gate.arm(Box::new(move || {
+            refresh_protocol();
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
@@ -2036,6 +2055,16 @@ impl WalletBackend {
         Ok(())
     }
 
+    /// Whether this backend's SPV session has the masternode list needed for proofs.
+    pub(crate) fn quorum_keys_ready(&self) -> bool {
+        self.inner.coordinator_gate.masternodes_ready()
+    }
+
+    /// Schedule a metadata probe within the running, quorum-ready SPV session.
+    pub(crate) fn queue_platform_protocol_refresh(&self) {
+        self.inner.protocol_refresh.queue();
+    }
+
     /// Whether chain sync has been started on this backend.
     ///
     /// Reflects the latch set by [`Self::start`]; used by tests and by callers
@@ -2046,8 +2075,8 @@ impl WalletBackend {
 
     /// Stop all upstream background tasks. Idempotent.
     ///
-    /// Stops the SPV run-loop task **first**, then quiesces the sync-manager
-    /// coordinators.  Ordering matters for the platform-open registry:
+    /// Drains metadata probes, stops the SPV run-loop task, then quiesces the
+    /// sync-manager coordinators. Ordering matters for the platform-open registry:
     ///
     /// The spawned SPV background task holds `Arc<SpvRuntime>`, which
     /// transitively keeps `Arc<SqlitePersister>` alive via the chain
@@ -2071,6 +2100,8 @@ impl WalletBackend {
     /// *consumers* is safe — no new events can arrive, and any in-flight
     /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
+        let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
@@ -2099,7 +2130,8 @@ impl WalletBackend {
     /// Unlike [`Self::shutdown`], this deliberately does **not** call
     /// `pwm.shutdown()`: that cancels and joins the wallet-event adapter task,
     /// which has no re-create path, so a subsequent restart would lose event
-    /// processing. Instead it stops the restartable pieces only:
+    /// processing. Metadata probes are cancelled and drained before the SPV
+    /// session loses its quorum keys. The restartable pieces stop in order:
     ///
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
@@ -2127,6 +2159,7 @@ impl WalletBackend {
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(

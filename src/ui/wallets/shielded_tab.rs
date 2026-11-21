@@ -51,7 +51,6 @@ pub const SHIELDED_TAB_SKIPPED_LABEL: &str =
 /// Shown in place of the Shield / Send / Unshield controls when the connected
 /// network does not yet support shielded state transitions. Viewing balance,
 /// address, and notes stays available.
-pub const SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL: &str = "Shielded sending is not available on this network yet. You can still view your shielded balance and receive address.";
 /// Shown in place of the Shield / Send / Unshield controls when the connected
 /// network supports shielded state transitions but the user's interface mode
 /// does not unlock them yet. Viewing balance, address, and notes stays
@@ -719,7 +718,6 @@ impl ShieldedTabView {
             }
             Some(check) => {
                 let label = match check {
-                    Check::Capability(_) => SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL,
                     Check::MinRole(_) | Check::Experimental(_) => {
                         SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL
                     }
@@ -855,16 +853,6 @@ mod tests {
         assert_eq!(
             crate::model::address::AddressKind::detect(&address),
             Some(crate::model::address::AddressKind::Shielded),
-        );
-    }
-
-    /// The network notice is complete and says what remains available.
-    #[test]
-    fn network_unavailable_label_is_i18n_clean() {
-        assert!(SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL.ends_with('.'));
-        assert!(
-            SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL.contains("view"),
-            "the notice must state what the user can still do"
         );
     }
 

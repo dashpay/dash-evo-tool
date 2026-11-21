@@ -132,6 +132,12 @@ impl WalletSendScreen {
         )
     }
 
+    /// A wallet unlocked for its quotes is asked again once registered;
+    /// until then its earlier failures read as still checking.
+    fn awaits_registration(&self, seed_hash: &WalletSeedHash) -> bool {
+        self.requote_on_registration.as_ref() == Some(seed_hash)
+    }
+
     /// Auto has nothing to pay someone else's private address with only
     /// because the private balance waits for its verification.
     pub(super) fn auto_waits_for_shielded(&self) -> bool {
@@ -163,7 +169,9 @@ impl WalletSendScreen {
                     let max_duffs = if Self::funds_asset_lock(source, dest_kind) {
                         let max = self.asset_lock_max_amount(&seed_hash).ok();
                         if max.is_none() {
-                            quote = if self.asset_lock_balance.is_failed(&seed_hash) {
+                            quote = if self.asset_lock_balance.is_failed(&seed_hash)
+                                && !self.awaits_registration(&seed_hash)
+                            {
                                 QuoteState::Failed
                             } else if self.asset_lock_balance.is_busy(&seed_hash) {
                                 QuoteState::Busy
@@ -428,7 +436,9 @@ impl WalletSendScreen {
         else {
             return QuoteState::Ready;
         };
-        if self.spend_limits.is_failed(&seed_hash, kind, revision) {
+        if self.spend_limits.is_failed(&seed_hash, kind, revision)
+            && !self.awaits_registration(&seed_hash)
+        {
             return QuoteState::Failed;
         }
         if self.spend_limits.is_busy(&seed_hash, kind, revision) {

@@ -4180,12 +4180,10 @@ impl ScreenLike for WalletSendScreen {
                 WalletUnlockResult::Unlocked => {
                     // A receiving address may now be derived.
                     self.unlock_target = None;
-                    // Quotes refused while locked are asked again now, and
-                    // once more when the backend has registered the wallet.
+                    // Quotes refused while locked are asked again once the
+                    // backend has registered the wallet.
                     if let Some(seed_hash) = self.quote_needs_unlock.take() {
                         self.requote_on_registration = Some(seed_hash);
-                        self.asset_lock_balance.invalidate();
-                        self.spend_limits.invalidate();
                     }
                     if std::mem::take(&mut self.unlock_then_send) {
                         self.sync_route();
@@ -8946,6 +8944,37 @@ mod tests {
             }
             assert_eq!(harness.state().missing_step(), Some(PAUSED), "max: {max}");
         }
+    }
+
+    /// After the paying wallet is unlocked for its quotes, Auto reads as
+    /// checking until the backend has registered the wallet, not as failed.
+    #[test]
+    fn auto_checks_while_an_unlocked_wallet_registers() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        });
+        // What a successful unlock leaves behind.
+        screen.quote_needs_unlock = None;
+        screen.requote_on_registration = Some(seed_hash);
+        screen.sync_route();
+
+        assert!(
+            matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::Checking { .. })
+            ),
+            "{:?}",
+            screen.route.auto
+        );
+        assert_eq!(
+            screen.missing_step(),
+            Some("Checking the available amount…")
+        );
     }
 
     /// Switching My wallets to the paying wallet while Receive into names the

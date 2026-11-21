@@ -277,10 +277,9 @@ impl AppContext {
         let kv = backend.kv();
         let key = contract_key(&data_contract.id());
 
-        // Only write the contract entry if none exists yet (INSERT OR IGNORE).
-        let existing: Option<StoredContract> =
-            kv.get(DetScope::Global, &key).map_err(contract_err)?;
-        if existing.is_none() {
+        // Only write the contract entry if none exists yet (INSERT OR IGNORE),
+        // readable or not.
+        if !kv.contains(DetScope::Global, &key).map_err(contract_err)? {
             let contract_bytes = data_contract
                 .serialize_to_bytes_with_platform_version(self.platform_version())
                 .map_err(|source| TaskError::ContractEncoding {
@@ -586,44 +585,54 @@ impl AppContext {
         &self,
         token_id: &Identifier,
     ) -> std::result::Result<bool, TaskError> {
-        Ok(self
-            .det_kv()?
-            .get::<StoredToken>(DetScope::Global, &token_key(token_id))
-            .map_err(token_err)?
-            .is_some())
+        self.det_kv()?
+            .contains(DetScope::Global, &token_key(token_id))
+            .map_err(token_err)
     }
 
-    /// Stores a token entry this build cannot decode.
+    /// Stores a token entry this build cannot decode: its configuration, or
+    /// with `envelope` the stored record itself.
     #[cfg(test)]
     pub(crate) fn put_unreadable_token_entry_for_test(
         &self,
         token_id: &Identifier,
         contract_id: &Identifier,
+        envelope: bool,
     ) {
-        let stored = StoredToken {
-            config_bytes: vec![0xff; 4],
-            alias: "Unreadable".into(),
-            data_contract_id: contract_id.to_buffer(),
-            position: 0,
-        };
-        self.det_kv()
-            .unwrap()
-            .put(DetScope::Global, &token_key(token_id), &stored)
-            .unwrap();
+        let kv = self.det_kv().unwrap();
+        let key = token_key(token_id);
+        if envelope {
+            kv.put(DetScope::Global, &key, &0u8).unwrap();
+        } else {
+            let stored = StoredToken {
+                config_bytes: vec![0xff; 4],
+                alias: "Unreadable".into(),
+                data_contract_id: contract_id.to_buffer(),
+                position: 0,
+            };
+            kv.put(DetScope::Global, &key, &stored).unwrap();
+        }
     }
 
-    /// Stores a contract entry this build cannot decode.
+    /// Stores a contract entry this build cannot decode: its contract, or
+    /// with `envelope` the stored record itself.
     #[cfg(test)]
-    pub(crate) fn put_unreadable_contract_entry_for_test(&self, contract_id: &Identifier) {
-        let stored = StoredContract {
-            contract_bytes: vec![0xff; 4],
-            alias: None,
-        };
-        self.wallet_backend()
-            .unwrap()
-            .kv()
-            .put(DetScope::Global, &contract_key(contract_id), &stored)
-            .unwrap();
+    pub(crate) fn put_unreadable_contract_entry_for_test(
+        &self,
+        contract_id: &Identifier,
+        envelope: bool,
+    ) {
+        let backend = self.wallet_backend().unwrap();
+        let key = contract_key(contract_id);
+        if envelope {
+            backend.kv().put(DetScope::Global, &key, &0u8).unwrap();
+        } else {
+            let stored = StoredContract {
+                contract_bytes: vec![0xff; 4],
+                alias: None,
+            };
+            backend.kv().put(DetScope::Global, &key, &stored).unwrap();
+        }
     }
 
     /// Read the canonical [`TokenConfiguration`] stored at

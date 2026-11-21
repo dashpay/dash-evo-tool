@@ -959,31 +959,35 @@ mod tests {
         journal.claim(&record).unwrap();
         let token_id = contract.token_id(0).unwrap();
 
-        context.put_unreadable_token_entry_for_test(&token_id, &contract.id());
-        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
-            context.creator_accept(&journal, record.clone(), contract.clone())
-        else {
-            panic!("the restore is accepted");
-        };
-        assert!(outcome.local_cache_saved);
-        assert!(
-            context.get_token_config_for_id(&token_id).is_err(),
-            "the unreadable entry is left as it was"
-        );
+        // An unreadable payload, then an unreadable stored record.
+        for envelope in [false, true] {
+            context.remove_contract(&contract.id()).unwrap();
+            context.put_unreadable_token_entry_for_test(&token_id, &contract.id(), envelope);
+            let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
+                context.creator_accept(&journal, record.clone(), contract.clone())
+            else {
+                panic!("the restore is accepted ({envelope})");
+            };
+            assert!(outcome.local_cache_saved, "{envelope}");
+            assert!(
+                context.get_token_config_for_id(&token_id).is_err(),
+                "the unreadable entry is left as it was ({envelope})"
+            );
 
-        context.remove_token(&token_id).unwrap();
-        context.put_unreadable_contract_entry_for_test(&contract.id());
-        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
-            context.creator_accept(&journal, record, contract.clone())
-        else {
-            panic!("the restore is accepted");
-        };
-        assert!(outcome.local_cache_saved);
-        assert_eq!(
-            context.get_token_config_for_id(&token_id).unwrap(),
-            Some(contract.expected_token_configuration(0).unwrap().clone()),
-            "the missing token is filled from the accepted contract"
-        );
+            context.remove_token(&token_id).unwrap();
+            context.put_unreadable_contract_entry_for_test(&contract.id(), envelope);
+            let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
+                context.creator_accept(&journal, record.clone(), contract.clone())
+            else {
+                panic!("the restore is accepted ({envelope})");
+            };
+            assert!(outcome.local_cache_saved, "{envelope}");
+            assert_eq!(
+                context.get_token_config_for_id(&token_id).unwrap(),
+                Some(contract.expected_token_configuration(0).unwrap().clone()),
+                "the missing token is filled from the accepted contract ({envelope})"
+            );
+        }
     }
 
     /// After Platform confirmed a creation whose receipt was not saved, the
@@ -991,6 +995,7 @@ mod tests {
     /// configuration update can never turn it into a conflict.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_confirmed_receipt_is_saved_from_the_proven_record() {
+        use dash_sdk::dpp::dashcore::Network;
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let (mut record, _) = fixture(&context);
@@ -1006,20 +1011,49 @@ mod tests {
         let mut proven = record.clone();
         proven.status = RegistrationStatus::Confirmed;
 
-        let mut other = proven.clone();
-        other.attempt_id = [99; 32];
-        assert!(matches!(
-            context.save_confirmed_token_creation(other),
-            Err(TaskError::TokenCreatorChanged)
-        ));
-        assert_eq!(status(), RegistrationStatus::Submitted);
+        let other_network = if context.network == Network::Testnet {
+            Network::Devnet
+        } else {
+            Network::Testnet
+        };
+        type Change = fn(&mut RegistrationRecord, Network);
+        let foreign: [(&str, Change); 4] = [
+            ("another attempt", |r, _| r.attempt_id = [99; 32]),
+            ("other contract bytes", |r, _| r.contract_bytes.push(0)),
+            ("another network", |r, network| r.network = network),
+            ("not confirmed", |r, _| {
+                r.status = RegistrationStatus::Submitted
+            }),
+        ];
+        for (case, change) in foreign {
+            let mut other = proven.clone();
+            change(&mut other, other_network);
+            assert!(
+                matches!(
+                    context.save_confirmed_token_creation(other),
+                    Err(TaskError::TokenCreatorChanged)
+                ),
+                "{case}"
+            );
+            assert_eq!(status(), RegistrationStatus::Submitted, "{case}");
+        }
 
         let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
-            context.save_confirmed_token_creation(proven)
+            context.save_confirmed_token_creation(proven.clone())
         else {
             panic!("the proven receipt is saved");
         };
         assert!(outcome.journal_saved && outcome.local_cache_saved);
+        assert_eq!(status(), RegistrationStatus::Confirmed);
+
+        // A journal an earlier network check left at Conflict is repaired.
+        {
+            let journal = context.token_registration_journal().unwrap();
+            let mut conflict = journal.read().unwrap().unwrap();
+            conflict.status = RegistrationStatus::Conflict;
+            journal.update(&conflict).unwrap();
+        }
+        assert!(context.save_confirmed_token_creation(proven).is_ok());
         assert_eq!(status(), RegistrationStatus::Confirmed);
     }
 }

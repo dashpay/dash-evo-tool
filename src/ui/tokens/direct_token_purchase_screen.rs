@@ -296,6 +296,10 @@ impl PurchaseTokenScreen {
 
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
+                if self.status == PurchaseTokensStatus::WaitingForResult {
+                    self.confirmation_dialog = None;
+                    return AppAction::None;
+                }
                 let Some(signing_key) =
                     validate_signing_key(&self.app_context, self.selected_key.as_ref())
                 else {
@@ -600,7 +604,9 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no valid amounts are available)
-                let can_purchase = self.fetched_pricing_schedule.is_some()
+                let in_flight = self.status == PurchaseTokensStatus::WaitingForResult;
+                let can_purchase = !in_flight
+                    && self.fetched_pricing_schedule.is_some()
                     && self.calculated_price_credits.unwrap_or_default() > 0
                     && self
                         .amount_to_purchase_value
@@ -640,15 +646,15 @@ impl ScreenLike for PurchaseTokenScreen {
                     }
                 } else {
                     ComponentStyles::add_primary_button_enabled(ui, false, purchase_text)
-                        .disabled_tooltip(
-                            if self.pricing_fetch_attempted
-                                && self.fetched_pricing_schedule.is_none()
-                            {
-                                "This token is not available for purchase"
-                            } else {
-                                "Fetch token price and enter amount first"
-                            },
-                        );
+                        .disabled_tooltip(if in_flight {
+                            "Wait for the current purchase to finish."
+                        } else if self.pricing_fetch_attempted
+                            && self.fetched_pricing_schedule.is_none()
+                        {
+                            "This token is not available for purchase"
+                        } else {
+                            "Fetch token price and enter amount first"
+                        });
                 }
 
                 // Show confirmation dialog if it exists
@@ -693,6 +699,64 @@ impl ScreenLike for PurchaseTokenScreen {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
+    use egui_kittest::kittest::Queryable;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A purchase is charged, so while one is in flight the Purchase button
+    /// must not send another.
+    #[test]
+    fn a_purchase_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_user_role(UserRole::Developer);
+        let mut info = token_info(&context, None, false);
+        info.identity.identity.add_public_key(signing_key());
+        let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+        screen.selected_key = Some(signing_key());
+        screen.display_task_result(BackendTaskSuccessResult::TokenPricing {
+            token_id: info.token_id,
+            prices: Some(TokenPricingSchedule::SinglePrice(10)),
+        });
+        let purchases = Rc::new(RefCell::new(0));
+        let seen = purchases.clone();
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                move |ui, screen: &mut PurchaseTokenScreen| {
+                    if let AppAction::BackendTasks(tasks, _) = screen.ui(ui) {
+                        *seen.borrow_mut() += tasks
+                            .iter()
+                            .filter(|task| {
+                                matches!(task, BackendTask::TokenTask(task)
+                                    if matches!(**task, TokenTask::PurchaseTokens { .. }))
+                            })
+                            .count();
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Amount to Purchase:").focus();
+        harness.run_steps(2);
+        harness.get_by_label("Amount to Purchase:").type_text("5");
+        harness.run_steps(3);
+        for _ in 0..2 {
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Purchase")
+                .last()
+                .expect("the Purchase button")
+                .click();
+            harness.run_steps(3);
+            if let Some(confirm) = harness.query_by_label("Confirm") {
+                confirm.click();
+                harness.run_steps(3);
+            }
+        }
+        assert_eq!(*purchases.borrow(), 1, "one purchase while it is in flight");
+    }
+
     use crate::model::amount::DASH_DECIMAL_PLACES;
 
     #[test]

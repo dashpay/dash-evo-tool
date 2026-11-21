@@ -163,7 +163,7 @@ impl UpdateTokenConfigScreen {
         // Step 1 (choosing the signing key) only shows in advanced mode.
         let first_step = if self.show_advanced_options { 2 } else { 1 };
 
-        ui.heading(format!("{first_step}. Select the item to update"));
+        let item_heading = ui.heading(format!("{first_step}. Select the item to update"));
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -500,7 +500,9 @@ impl UpdateTokenConfigScreen {
                     {
                         self.update_group_based_on_change_item();
                     }
-                });
+                })
+                .response
+                .labelled_by(item_heading.id);
 
 
         if self.change_item != item_before_selection {
@@ -722,7 +724,12 @@ impl UpdateTokenConfigScreen {
             )
         {
             ui.add_space(20.0);
-            if ComponentStyles::add_primary_button(ui, &button_text).clicked() {
+            let in_flight = self.update_status == UpdateTokenConfigStatus::Updating;
+            if ComponentStyles::add_primary_button_enabled(ui, !in_flight, &button_text)
+                .disabled_tooltip("Wait for the current update to finish.")
+                .clicked()
+                && !in_flight
+            {
                 let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
@@ -1267,5 +1274,58 @@ mod sdk_adapter_tests {
         // A deliberately empty field means "none" and can be sent.
         assert!(change_item_can_be_submitted(&max_supply, "", None));
         assert!(change_item_can_be_submitted(&destination, "", None));
+    }
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
+    use egui_kittest::kittest::Queryable;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A configuration update cannot be undone, so while one is in flight the
+    /// Update button must not send another.
+    #[test]
+    fn a_config_update_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_user_role(UserRole::Developer);
+        let mut info = token_info(&context, None, false);
+        info.identity.identity.add_public_key(signing_key());
+        let mut screen = UpdateTokenConfigScreen::new(info, &context);
+        screen.signing_key = Some(signing_key());
+        screen.change_item = TokenConfigurationChangeItem::MaxSupply(Some(17));
+        let updates = Rc::new(RefCell::new(0));
+        let seen = updates.clone();
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui_state(
+                move |ui, screen: &mut UpdateTokenConfigScreen| {
+                    let sent = match screen.ui(ui) {
+                        AppAction::BackendTask(task) => vec![task],
+                        AppAction::BackendTasks(tasks, _) => tasks,
+                        _ => vec![],
+                    };
+                    *seen.borrow_mut() += sent
+                        .iter()
+                        .filter(|task| {
+                            matches!(task, BackendTask::TokenTask(task)
+                                if matches!(**task, TokenTask::UpdateTokenConfig { .. }))
+                        })
+                        .count();
+                },
+                screen,
+            );
+        harness.run_steps(3);
+        for _ in 0..2 {
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Update Config")
+                .last()
+                .expect("the Update Config button")
+                .click();
+            harness.run_steps(3);
+        }
+        assert_eq!(*updates.borrow(), 1, "one update while it is in flight");
     }
 }

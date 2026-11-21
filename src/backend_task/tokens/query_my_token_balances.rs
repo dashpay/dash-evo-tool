@@ -13,7 +13,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_managed_network_request_with_timeout};
 use crate::context::AppContext;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::model::token::{IdentityTokenIdentifier, tracked_token_ids};
 use crate::wallet_backend::TokenBalanceSyncOutcome;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -164,16 +164,8 @@ impl AppContext {
         Ok(identity_ids
             .into_iter()
             .map(|identity_id| {
-                let watched = token_ids
-                    .iter()
-                    .copied()
-                    .filter(|token_id| {
-                        !untracked.contains(&IdentityTokenIdentifier {
-                            identity_id,
-                            token_id: *token_id,
-                        })
-                    })
-                    .collect();
+                let watched =
+                    tracked_token_ids(token_ids.iter().copied(), &untracked, identity_id).collect();
                 (identity_id, watched)
             })
             .collect())

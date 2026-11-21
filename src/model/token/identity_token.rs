@@ -328,8 +328,8 @@ pub fn is_perpetual_distribution_recipient(
     }
 }
 
-/// The registry name of a token as shown to the user: control and bidi
-/// characters removed, so a look-alike name cannot hide its difference or
+/// The registry name of a token as shown to the user: control, bidi and
+/// invisible format characters removed, so a look-alike name cannot hide its difference or
 /// reorder the text around it. A name with nothing left falls back to the
 /// shortened token ID.
 pub fn token_display_name(name: &str, token_id: &Identifier) -> String {
@@ -796,6 +796,23 @@ mod tests {
         assert!(
             !is_recurring_distribution_recipient(&config, None, &bystander),
             "the once-per-identity claim alone recurs for nobody"
+        );
+        let (contract, _) = owner_administered_contract(identity(1).identity.id());
+        let can_claim = |config: &TokenConfiguration| {
+            get_available_token_actions_for_identity(
+                None, &bystander, config, &contract, false, None,
+            )
+            .can_claim
+        };
+        assert!(
+            can_claim(&config),
+            "a once-per-identity claim is offered to every identity"
+        );
+        let rules = pre_programmed_to(&transferable(), recipient.identity.id());
+        config.set_distribution_rules(distribution_rules_with_once_per_identity(rules, None));
+        assert!(
+            !can_claim(&config),
+            "without it a bystander has nothing to claim"
         );
     }
 

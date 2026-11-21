@@ -488,7 +488,7 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                ui.label(itb.amount_of(known_rewards).to_string());
+                                                                ui.label(itb.amount_of(known_rewards).to_string_without_unit());
 
                                                                 // Info button to show explanation
                                                                 let identity_token_id = IdentityTokenIdentifier {

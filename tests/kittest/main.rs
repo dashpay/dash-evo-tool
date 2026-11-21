@@ -41,6 +41,7 @@ mod secret_prompt;
 mod send_form;
 mod send_screen;
 mod startup;
+mod startup_error;
 mod support;
 mod tokens_screen;
 mod tools_screen;

@@ -1791,6 +1791,17 @@ As a user with more than one wallet, I want every wallet picker to show each wal
 - If the balances of the wallet's identities cannot be read, the load-existing-identity screen says so, leaves them out of the totals instead of showing them as zero, and stays usable.
 - The top-bar wallet pill keeps its own format.
 
+### UX-007: See why the app could not start [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose app fails to start, I want a window that explains what happened so that I can fix it myself or ask for help with the right information.
+
+- When startup fails after the app window can open, the app shows a window instead of closing silently; the app itself does not open behind it.
+- The window says in plain language what happened and what to try. A known cause (for example, a data folder other accounts can change) gets its own message; any other cause gets a general one.
+- It suggests reporting the problem on the project's issue page if the user cannot solve it, shows that address so it can be copied, and can open it in the browser.
+- It shows the technical details, selectable and with a Copy details button, and where the log file is.
+- Quit closes the app.
+
 ## Identities Hub (IDH)
 
 ### IDH-001: First-time identity setup [Implemented]

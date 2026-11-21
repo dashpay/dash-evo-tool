@@ -5171,7 +5171,7 @@ mod tests {
     }
 
     fn app_context_for_network(dir: &std::path::Path, network: Network) -> Arc<AppContext> {
-        crate::app_dir::ensure_env_file(dir);
+        crate::app_dir::ensure_env_file(dir).expect("write .env");
         let db_file = dir.join("data.db");
         let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
         db.create_tables(true).expect("create tables");

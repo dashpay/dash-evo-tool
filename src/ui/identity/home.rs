@@ -13,6 +13,7 @@ use crate::ui::components::avatar::Avatar;
 use crate::ui::components::copyable_id::CopyableId;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
+use crate::ui::identity::token_copy::{ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT};
 pub use crate::ui::state::identity_home::HomeState;
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
@@ -351,6 +352,7 @@ fn render_main_column(
         }
         if ComponentStyles::add_secondary_button(ui, "Receive", dark).clicked() {
             state.receive_open = true;
+            state.receive_tokens_hint = false;
         }
         if ComponentStyles::add_secondary_button(ui, "Top up", dark).clicked() {
             action = AppAction::AddScreen(
@@ -457,16 +459,24 @@ fn render_payments(ui: &mut Ui, app_context: &Arc<AppContext>, state: &HomeState
     action
 }
 
-fn render_receive(
+/// The Receive dialog. Opened from the Tokens tab (`receive_tokens_hint`) it
+/// also says how a received token shows up, since tokens reach an identity
+/// the same way Dash does.
+pub(super) fn render_receive(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut HomeState,
 ) -> AppAction {
     let mut action = AppAction::None;
+    let tokens_hint = state.receive_tokens_hint;
     let response = egui::Modal::new(egui::Id::unique("identity_receive")).show(ui.ctx(), |ui| {
         ui.set_max_width(400.0);
-        ui.heading("Receive Dash");
+        ui.heading(if tokens_hint {
+            "Receive"
+        } else {
+            "Receive Dash"
+        });
         let name = app_context.main_username(identity);
         let share = name
             .as_ref()
@@ -474,7 +484,11 @@ fn render_receive(
             .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
         if let Some(name) = name {
             ui.strong(format!("@{name}"));
-            ui.label("Share your username with someone sending to your identity.");
+            ui.label(if tokens_hint {
+                "Share your username with someone sending Dash or tokens to your identity."
+            } else {
+                "Share your username with someone sending to your identity."
+            });
             if ui.button("Copy username").clicked() {
                 ui.ctx().copy_text(share.clone());
             }
@@ -501,6 +515,16 @@ fn render_receive(
                     )
             })
             .show(ui, &share);
+        if tokens_hint {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RECEIVE_TOKENS_HINT);
+                if ui.link(ADD_TOKEN_LABEL).clicked() {
+                    action =
+                        AppAction::AddScreen(ScreenType::AddTokenById.create_screen(app_context));
+                    state.receive_open = false;
+                }
+            });
+        }
         if ui.button("Done").clicked() {
             state.receive_open = false;
         }

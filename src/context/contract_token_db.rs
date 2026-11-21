@@ -792,7 +792,9 @@ impl AppContext {
     /// Upstream-fed token-balance view (T6 seam). Reads the lock-free
     /// snapshot the wallet backend refreshes from the upstream identity-sync
     /// loop.
-    fn token_balances_view(&self) -> std::result::Result<UpstreamTokenBalances, TaskError> {
+    pub(crate) fn token_balances_view(
+        &self,
+    ) -> std::result::Result<UpstreamTokenBalances, TaskError> {
         Ok(self.wallet_backend()?.token_balances())
     }
 

@@ -1346,6 +1346,21 @@ As a token creator, I want to create a token that holders cannot send to other i
 - For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
 
+### TOK-021: See and use my identity's tokens in the Identity Hub [Implemented]
+**Persona:** Alex, Priya
+
+As an identity owner, I want to see the tokens this identity holds — with balances and information about rewards I can claim — inside the Identities hub, so that I don't have to find them in a token-first table that also shows issuer actions.
+
+- The hub has a Tokens tab (`Home · Contacts · Tokens · Profile`) listing this identity's tracked tokens with the balance in the token's decimals, a short ID, "Issued by you" and "Can't be sent" badges, and one plain-words status line per row: "Checking balance…" before a successful check or while refreshing, "No balance found." when a successful check leaves the balance absent (never shown as zero), "Rewards may be waiting for you in Tokens › My Tokens.", "You can claim {amount} once in Tokens › My Tokens." / "Claimed on {date}." for once-per-identity distributions, and "Add a key to this identity to send or claim tokens." for a view-only identity.
+- The Tokens tab has no count badge.
+- The hub offers no Send, Claim or administrative action; the status lines say where to claim. Dedicated hub sending and claiming flows are follow-up work; Tokens › My Tokens keeps these operations.
+- Balances refresh on arrival (older than two minutes) and on demand; a refresh already running elsewhere is never an error. A failed refresh is explained inline with "Try again" while known balances stay on screen with "Showing balances from {time}."
+- A fetched zero renders as a normal row; "Hide tokens with zero balance" (always visible, remembered per device) never hides a row still being checked.
+- Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again", one request). Adding a token (by name or ID) sits in the header; checking a balance now, copying the ID and stop tracking (with confirmation) are in the row menu; the Receive dialog explains how a received token appears. Every network read waits for the masternode list, and for a disconnect to finish, and says so.
+- Token names from the chain are shown without control, direction-override or invisible characters; a name with nothing visible left shows the short token ID.
+- After a failed refresh every unchecked balance says "Couldn't check this balance." with Try again; a check refused because a refresh is already running is retried when it ends.
+- Design: `docs/ai-design/2026-10-28-identity-tokens/`.
+
 ## Contracts and Documents (DOC)
 
 ### DOC-001: Register a new data contract [Implemented]

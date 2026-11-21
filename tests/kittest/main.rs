@@ -15,6 +15,7 @@ mod identity_hub_layout;
 mod identity_hub_onboarding;
 mod identity_hub_settings;
 mod identity_hub_switcher;
+mod identity_hub_tokens;
 mod identity_selector;
 mod identity_usernames;
 mod import_mnemonic_screen;

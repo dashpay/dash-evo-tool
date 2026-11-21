@@ -8,7 +8,6 @@ use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::WalletSeedHash;
-use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::version::PlatformVersion;
@@ -417,7 +416,7 @@ async fn step_transfer_credits(
         seed_hash,
         inputs,
         outputs,
-        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+        fee_payer_index: 0,
     });
 
     let result = run_task_with_nonce_retry(&ctx.app_context, task)

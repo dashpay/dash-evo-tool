@@ -317,7 +317,7 @@ impl AppContext {
         let network = self.network;
         let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
         let backend = self.wallet_backend()?;
-        backend
+        let prepared = backend
             .prepare_platform_address_slots(&wallet_seed_hash, &path_index, inputs.keys().copied())
             .await?;
 
@@ -355,6 +355,7 @@ impl AppContext {
                 // the wallet total at once, pinned at the proof's height.
                 self.record_platform_address_spend_proof(
                     wallet_seed_hash,
+                    &prepared,
                     &address_infos,
                     height,
                     "identity registration",
@@ -490,6 +491,10 @@ mod tests {
             .await
             .expect("register wallet with the upstream manager");
 
+        let path_index = crate::wallet_backend::PlatformPathIndex::from_wallet(
+            &wallet_arc.read().expect("wallet lock"),
+            Network::Testnet,
+        );
         let registered = ctx
             .register_identity_from_platform_addresses(
                 crate::backend_task::identity::IdentityKeySpecs::empty(),
@@ -511,8 +516,12 @@ mod tests {
         )]
         .into_iter()
         .collect();
+        // Preparing nothing more returns the registration's handle as is.
         let entries = backend
-            .reconcile_platform_address_proof(&seed_hash, &proof, 600, "test registration")
+            .prepare_platform_address_slots(&seed_hash, &path_index, [])
+            .await
+            .expect("platform-wallet holds the wallet")
+            .reconcile(&proof, 600, "test registration")
             .await
             .expect("platform-wallet holds the wallet");
         assert_eq!(entries.len(), 1, "the funding slot must be reconcilable");

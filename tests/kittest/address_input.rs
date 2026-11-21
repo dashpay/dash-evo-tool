@@ -304,12 +304,11 @@ fn sibling_inputs_open_only_their_own_type_filter() {
     };
     let inputs = Rc::new(RefCell::new((filter_input(), filter_input())));
     let ui_inputs = Rc::clone(&inputs);
-    let mut harness =
-        crate::support::allowing_unnamed_widgets(Harness::builder()).build_ui(move |ui| {
-            let mut inputs = ui_inputs.borrow_mut();
-            inputs.0.show(ui);
-            inputs.1.show(ui);
-        });
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let mut inputs = ui_inputs.borrow_mut();
+        inputs.0.show(ui);
+        inputs.1.show(ui);
+    });
     harness.run();
 
     let first_filter = harness
@@ -324,4 +323,23 @@ fn sibling_inputs_open_only_their_own_type_filter() {
         1,
         "only the clicked input's filter may list its options"
     );
+}
+
+/// Without a label, screen readers still hear a name for the field instead of
+/// only its placeholder; with one, the label names it.
+#[test]
+fn field_has_an_accessible_name_with_or_without_a_label() {
+    let mut unlabelled = AddressInput::new(Network::Testnet);
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let _ = unlabelled.show(ui);
+    });
+    harness.run();
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Address");
+
+    let mut labelled = AddressInput::new(Network::Testnet).with_label("Recipient");
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let _ = labelled.show(ui);
+    });
+    harness.run();
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Recipient");
 }

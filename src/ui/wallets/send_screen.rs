@@ -374,6 +374,9 @@ pub struct WalletSendScreen {
     /// Backend-quoted Max amounts for sends whose builder applies rules the
     /// screen cannot see.
     spend_limits: SpendLimitCache,
+    /// The live Platform balances revision the selected Platform source's
+    /// figures were read at.
+    platform_source_revision: Option<u64>,
 
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
@@ -439,6 +442,7 @@ impl WalletSendScreen {
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
             spend_limits: SpendLimitCache::default(),
+            platform_source_revision: None,
             flow: SendFlow::General,
             identity_flow: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -829,6 +833,40 @@ impl WalletSendScreen {
             .into_iter()
             .map(|(_, addr, platform_addr, balance)| (addr, platform_addr, balance))
             .collect()
+    }
+
+    /// Replace a selected Platform source's figures with the wallet's live
+    /// balances when they changed, so Max and the send plan never use
+    /// figures a top-up or a sync has since replaced. Runs each frame: it
+    /// never waits on the wallet lock and rebuilds the figures only when the
+    /// balances revision moved.
+    fn refresh_platform_source(&mut self) {
+        if !matches!(
+            self.selected_source,
+            Some(SourceSelection::PlatformAddresses(_))
+        ) {
+            return;
+        }
+        let Some(revision) = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.try_read().ok())
+            .map(|wallet| {
+                platform_balances_revision(funded_platform_addresses(&wallet.platform_address_info))
+            })
+        else {
+            return;
+        };
+        if self.platform_source_revision == Some(revision) {
+            return;
+        }
+        self.platform_source_revision = Some(revision);
+        let live = self
+            .get_platform_addresses()
+            .into_iter()
+            .map(|(core_addr, platform_addr, balance)| (platform_addr, core_addr, balance))
+            .collect();
+        self.selected_source = Some(SourceSelection::PlatformAddresses(live));
     }
 
     /// Get shielded pool balance for the selected wallet from the frame-safe
@@ -5240,6 +5278,7 @@ impl ScreenLike for WalletSendScreen {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = AppAction::None;
+        self.refresh_platform_source();
 
         action |= add_top_panel(
             ui,
@@ -7367,6 +7406,63 @@ mod tests {
         assert!(
             precheck.fee_fully_covered,
             "Platform refuses a Max whose fee strategy cannot cover its pre-check fee"
+        );
+    }
+
+    /// A Platform balance that changes behind the open form (a top-up from
+    /// another screen, a sync pass) requotes Max, and the send plans against
+    /// the same live figures.
+    #[test]
+    fn platform_max_is_requoted_when_live_balances_change() {
+        const BALANCE_CREDITS: u64 = 400_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let estimator = screen.app_context.fee_estimator();
+        let core = testnet_core_address(2);
+        let source = PlatformAddress::try_from(core.clone()).expect("Platform source");
+        let wallet = screen.selected_wallet.clone().expect("selected wallet");
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(core.clone(), BALANCE_CREDITS, 1);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source,
+            core.clone(),
+            BALANCE_CREDITS,
+        )]));
+        let destination =
+            PlatformAddress::try_from(testnet_core_address(4)).expect("Platform destination");
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination,
+            bech32m: destination.to_bech32m_string(Network::Testnet),
+        });
+
+        // The balance drops behind the form's back.
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(core.clone(), BALANCE_CREDITS / 4, 2);
+        screen.refresh_platform_source();
+
+        let live = vec![(source, core, BALANCE_CREDITS / 4)];
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(platform_transfer_max(&estimator, &live, Some(&destination)).amount),
+            "Max is quoted from the live balance"
+        );
+        assert!(
+            matches!(
+                &harness.state().selected_source,
+                Some(SourceSelection::PlatformAddresses(addresses)) if *addresses == live
+            ),
+            "the send plans against the live balance"
         );
     }
 

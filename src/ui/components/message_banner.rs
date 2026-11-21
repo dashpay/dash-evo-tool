@@ -1,5 +1,6 @@
 use crate::ui::MessageType;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::technical_details::TechnicalDetails;
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
 use std::fmt;
@@ -20,8 +21,6 @@ const BANNER_STATE_ID: &str = "__global_message_banner";
 /// `action_id` here when the user clicks the action button — the app
 /// loop consumes it to dispatch the matching backend task.
 const BANNER_ACTIONS_ID: &str = "__global_message_banner_actions";
-/// Maximum height for the expanded details section before scrolling.
-const DETAILS_MAX_HEIGHT: f32 = 120.0;
 
 /// Monotonic counter for generating unique banner keys.
 static BANNER_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -874,25 +873,7 @@ fn render_banner(
 
                 if *details_expanded {
                     ui.add_space(4.0);
-                    egui::Frame::new()
-                        .fill(DashColors::input_background(dark_mode))
-                        .inner_margin(egui::Margin::symmetric(8, 6))
-                        .corner_radius(Shape::RADIUS_SM as f32)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt(banner_key)
-                                .max_height(DETAILS_MAX_HEIGHT)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(details)
-                                                .font(Typography::monospace())
-                                                .color(secondary_color),
-                                        )
-                                        .wrap(),
-                                    );
-                                });
-                        });
+                    TechnicalDetails::new(banner_key, details).show(ui);
                 }
             }
         });

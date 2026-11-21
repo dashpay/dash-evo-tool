@@ -161,7 +161,7 @@ pub(super) fn legacy_wallet_context(
     use crate::context::AppContext;
     use dash_sdk::dpp::dashcore::Network;
 
-    crate::app_dir::ensure_env_file(data_dir);
+    crate::app_dir::ensure_env_file(data_dir).expect("write .env");
     let db = std::sync::Arc::new(
         crate::database::test_helpers::create_database_at_path(&data_dir.join("data.db"))
             .expect("create legacy database"),

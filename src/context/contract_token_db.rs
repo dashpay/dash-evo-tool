@@ -670,7 +670,7 @@ impl AppContext {
                 token_id,
                 TokenInfoWithDataContract {
                     token_id,
-                    token_name: stored.alias,
+                    token_name: token_display_name(&stored.alias, &token_id),
                     data_contract: qc.contract,
                     token_position: stored.position,
                     token_configuration: token_config,
@@ -1365,6 +1365,36 @@ mod tests {
     // ----------------------------------------------------------------
     // Token order: prune helper rewrites the list only when it shrinks.
     // ----------------------------------------------------------------
+
+    /// Every screen listing known tokens gets the registry name cleaned of
+    /// invisible and direction characters, like identity names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn known_token_names_are_cleaned_for_display() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::version::PlatformVersion;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let contract = user_contract_at(PlatformVersion::latest(), None);
+        ctx.insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
+            .expect("contract");
+        let token_id = ident(9);
+        ctx.insert_token(
+            &token_id,
+            "\u{202E}Dash\u{200B}Coffee",
+            TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+            &contract.id(),
+            0,
+        )
+        .expect("token");
+        let names: Vec<String> = ctx
+            .get_all_known_tokens_with_data_contract()
+            .expect("known tokens")
+            .into_values()
+            .map(|token| token.token_name)
+            .collect();
+        assert_eq!(names, ["DashCoffee"]);
+    }
 
     #[test]
     fn prune_token_order_drops_only_filtered_pairs() {

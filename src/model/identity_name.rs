@@ -33,7 +33,7 @@ pub fn display_label(display_name: Option<&str>, username: Option<&str>, id: &st
     })
 }
 
-/// Remove control and bidi characters from rendered text, then trim surrounding whitespace.
+/// Remove control, bidi and invisible format characters from rendered text, then trim surrounding whitespace.
 pub fn clean_display_text(text: &str) -> String {
     let cleaned: String = text
         .chars()

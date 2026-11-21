@@ -1362,3 +1362,63 @@ fn token_subnav_labels_stay_on_one_line() {
         }
     });
 }
+
+/// The send screen asks in Send wording, and its success line names the
+/// amount and recipient that were confirmed, even if the recipient field is
+/// edited while the send runs.
+#[test]
+fn the_send_screen_reports_the_confirmed_recipient() {
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    use dash_evo_tool::model::amount::Amount;
+    use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
+        CONFIRM_SEND_TITLE, SEND_LABEL, send_question, sent_text,
+    };
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.harness.state_mut().test_capture_dispatches();
+        // The sender pays the fee in credits.
+        let mut sender = f.info.identity.clone();
+        sender.identity.set_balance(1_000_000_000);
+        f.app_context
+            .update_local_qualified_identity(&sender)
+            .expect("fund the sender");
+        let recipient = Identifier::from([0x55; 32]).to_string(Encoding::Base58);
+        f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
+        f.fill_text_input(0, "1");
+        f.fill_text_input(1, &recipient);
+        f.click_button(SEND_LABEL);
+        let amount = Amount::new(100_000_000, 8).with_unit_name(SMOKE_TOKEN);
+        assert!(f.harness.query_by_label(CONFIRM_SEND_TITLE).is_some());
+        assert!(
+            f.harness
+                .query_by_label(&send_question(&amount, &recipient))
+                .is_some(),
+            "the confirmation names the amount and the recipient"
+        );
+        f.click_button(SEND_LABEL);
+        assert_eq!(f.harness.state().test_captured_dispatches().len(), 1);
+
+        let other = Identifier::from([0x66; 32]).to_string(Encoding::Base58);
+        f.fill_text_input(1, &format!("{other}x"));
+        f.harness
+            .state_mut()
+            .screen_stack
+            .last_mut()
+            .expect("the send screen")
+            .display_task_result(BackendTaskSuccessResult::TransferredTokens(
+                FeeResult::estimated_only(0),
+            ));
+        f.harness.run_steps(3);
+        assert!(
+            f.harness
+                .query_by_label(&sent_text(&amount, &recipient))
+                .is_some(),
+            "the success line names the confirmed recipient"
+        );
+        assert!(f.harness.query_by_label_contains("Transfer").is_none());
+    });
+}

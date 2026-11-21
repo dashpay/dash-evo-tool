@@ -385,9 +385,12 @@ pub fn cmp_displayed_quantity(
     b_decimals: u8,
 ) -> std::cmp::Ordering {
     // Scale the side with fewer decimals up to the other's. Only that side
-    // can overflow, and an overflowing value exceeds any unscaled u64.
+    // can overflow, and an overflowing non-zero value exceeds any unscaled u64.
     let decimals = a_decimals.max(b_decimals);
     let scaled = |value: TokenAmount, own: u8| {
+        if value == 0 {
+            return Some(0);
+        }
         10u128
             .checked_pow(u32::from(decimals - own))
             .and_then(|factor| factor.checked_mul(u128::from(value)))
@@ -419,6 +422,7 @@ mod tests {
             "an overflowing scale is the larger side"
         );
         assert_eq!(super::cmp_displayed_quantity(1, 255, 1, 0), Less);
+        assert_eq!(super::cmp_displayed_quantity(0, 0, 5, 255), Less);
     }
 
     use super::*;

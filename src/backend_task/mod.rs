@@ -365,6 +365,7 @@ impl BackendTask {
                     ..
                 } => &identity_token_info.identity,
                 TokenTask::QueryMyTokenBalances
+                | TokenTask::RefreshBalancesAfterOperation
                 | TokenTask::TrackTokenBalancesAgain(_)
                 | TokenTask::StopTrackingTokenBalance(_)
                 | TokenTask::ClearOncePerIdentityClaimHint(_)
@@ -467,6 +468,8 @@ pub enum BackendTaskContext {
     FetchDocumentsPage(Box<DocumentQuery>),
     /// A refresh of all tracked token balances.
     TokenBalanceRefresh,
+    /// A refresh of all tracked token balances after a token operation.
+    TokenBalanceRefreshAfterOperation,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
     /// A direct contact-details write, including failures before its handler runs.
@@ -878,6 +881,11 @@ impl From<&BackendTask> for BackendTaskContext {
                 if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances) =>
             {
                 Self::TokenBalanceRefresh
+            }
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::RefreshBalancesAfterOperation) =>
+            {
+                Self::TokenBalanceRefreshAfterOperation
             }
             BackendTask::TokenTask(task) => match task.as_ref() {
                 TokenTask::EstimatePerpetualTokenRewardsWithExplanation {

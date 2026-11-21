@@ -28,6 +28,12 @@ use crate::backend_task::TaskResult;
 
 const TOKEN_BALANCE_REFRESH_MAX_LIFETIME: Duration = NETWORK_REQUEST_TIMEOUT.saturating_mul(2);
 
+/// How long a refresh waits for another one to finish before running its own.
+const TOKEN_BALANCE_REFRESH_JOIN_LIMIT: Duration = NETWORK_REQUEST_TIMEOUT;
+
+/// How often a waiting refresh checks whether the running one has finished.
+const TOKEN_BALANCE_REFRESH_JOIN_POLL: Duration = Duration::from_millis(100);
+
 struct TokenBalanceRefreshLease {
     context: Arc<AppContext>,
     released: AtomicBool,
@@ -73,7 +79,7 @@ impl AppContext {
         let identity_ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
         let watch_sets = self.token_watch_sets(identity_ids)?;
 
-        let refresh_guard = self.begin_token_balance_refresh()?;
+        let refresh_guard = self.begin_token_balance_refresh().await?;
         self.run_token_balance_refresh(refresh_guard, watch_sets, sender)
             .await
     }
@@ -100,7 +106,7 @@ impl AppContext {
         // Gate and guard come first: a refusal must leave the dismissals as they
         // were, or the rows would reappear with no refresh to fill them.
         self.ensure_token_balance_reads_allowed()?;
-        let refresh_guard = self.begin_token_balance_refresh()?;
+        let refresh_guard = self.begin_token_balance_refresh().await?;
         for pair in &pairs {
             self.clear_untracked_token_balance(*pair)?;
         }
@@ -191,16 +197,37 @@ impl AppContext {
     }
 
     /// Whether a token balance refresh is running anywhere in the app. The
-    /// guard is app-wide, so a second surface asking now would be refused
-    /// with [`TaskError::TokenBalanceRefreshInProgress`].
+    /// guard is app-wide, so a second surface asking now waits for it.
     pub fn token_balance_refresh_in_flight(&self) -> bool {
         self.token_balance_refresh_in_flight.load(Ordering::Acquire)
     }
 
-    fn begin_token_balance_refresh(
+    async fn begin_token_balance_refresh(
         self: &Arc<Self>,
     ) -> Result<TokenBalanceRefreshGuard, TaskError> {
-        self.begin_token_balance_refresh_with_timeout(TOKEN_BALANCE_REFRESH_MAX_LIFETIME)
+        self.begin_token_balance_refresh_after(TOKEN_BALANCE_REFRESH_JOIN_LIMIT)
+            .await
+    }
+
+    /// Take the app-wide refresh guard, waiting up to `join_limit` for a
+    /// refresh already running: it may not have seen this caller's changes,
+    /// so this one runs its own pass after it.
+    async fn begin_token_balance_refresh_after(
+        self: &Arc<Self>,
+        join_limit: Duration,
+    ) -> Result<TokenBalanceRefreshGuard, TaskError> {
+        let deadline = tokio::time::Instant::now() + join_limit;
+        loop {
+            match self.begin_token_balance_refresh_with_timeout(TOKEN_BALANCE_REFRESH_MAX_LIFETIME)
+            {
+                Err(TaskError::TokenBalanceRefreshInProgress)
+                    if tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(TOKEN_BALANCE_REFRESH_JOIN_POLL).await;
+                }
+                outcome => return outcome,
+            }
+        }
     }
 
     fn begin_token_balance_refresh_with_timeout(
@@ -254,6 +281,10 @@ fn token_balance_sync_task_error(error: TokenBalanceSyncError) -> TaskError {
     match error {
         TokenBalanceSyncError::SyncStopped => TaskError::TokenBalanceRefreshDisconnected,
         TokenBalanceSyncError::MasternodesNotReady => TaskError::MasternodeListSyncPending,
+        TokenBalanceSyncError::UpstreamPassStillRunning => TaskError::TokenBalanceRefreshInProgress,
+        TokenBalanceSyncError::NotRead(identities) => {
+            TaskError::TokenBalancesNotChecked { identities }
+        }
     }
 }
 
@@ -354,21 +385,44 @@ mod tests {
         }
     }
 
+    /// A refresh that meets another one waits for it and then runs, so a
+    /// refresh after a token operation never fails on a collision.
     #[tokio::test]
-    async fn overlapping_token_refresh_is_rejected_until_the_first_finishes() {
+    async fn a_second_refresh_waits_for_the_one_in_flight() {
         let f = fixture().await;
         let first_refresh = f
             .ctx
             .begin_token_balance_refresh()
+            .await
             .expect("first refresh must acquire the single-flight guard");
 
+        let ctx = Arc::clone(&f.ctx);
+        let second = tokio::spawn(async move { ctx.begin_token_balance_refresh().await.is_ok() });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!second.is_finished(), "the second refresh waits");
+        drop(first_refresh);
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .expect("the second refresh starts once the first ends")
+            .expect("join");
+        assert!(joined);
+    }
+
+    /// The wait for another refresh is bounded.
+    #[tokio::test]
+    async fn a_refresh_stops_waiting_for_one_that_does_not_end() {
+        let f = fixture().await;
+        let _first_refresh = f
+            .ctx
+            .begin_token_balance_refresh()
+            .await
+            .expect("first refresh must acquire the single-flight guard");
         assert!(matches!(
-            f.ctx.begin_token_balance_refresh(),
+            f.ctx
+                .begin_token_balance_refresh_after(std::time::Duration::from_millis(200))
+                .await,
             Err(TaskError::TokenBalanceRefreshInProgress)
         ));
-
-        drop(first_refresh);
-        assert!(f.ctx.begin_token_balance_refresh().is_ok());
     }
 
     #[tokio::test]
@@ -397,7 +451,10 @@ mod tests {
 
         let reacquired_guard = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                match f.ctx.begin_token_balance_refresh() {
+                match f
+                    .ctx
+                    .begin_token_balance_refresh_with_timeout(TOKEN_BALANCE_REFRESH_MAX_LIFETIME)
+                {
                     Ok(guard) => break guard,
                     Err(TaskError::TokenBalanceRefreshInProgress) => {
                         tokio::time::sleep(std::time::Duration::from_millis(1)).await;

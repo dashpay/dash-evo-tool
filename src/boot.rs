@@ -46,6 +46,15 @@ type BootError = Box<dyn std::error::Error + Send + Sync>;
 /// `Once` guard makes the second call a no-op, so this stays the single place
 /// the sequence is written.
 pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
+    let data_dir = ensure_data_folder()?;
+    // Logging first, so a failure to write the settings file is logged too.
+    crate::logging::initialize_logger();
+    ensure_settings_file(&data_dir)?;
+    Ok(data_dir)
+}
+
+/// Locate the app data folder and create it if it is missing.
+pub(crate) fn ensure_data_folder() -> Result<PathBuf, PrepareEnvironmentError> {
     use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
     let data_dir =
         app_user_data_dir_path().map_err(|source| PrepareEnvironmentError::Locate { source })?;
@@ -55,9 +64,6 @@ pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
             source,
         }
     })?;
-    // Logging first, so a failure to write the settings file is logged too.
-    crate::logging::initialize_logger();
-    ensure_settings_file(&data_dir)?;
     Ok(data_dir)
 }
 
@@ -136,7 +142,7 @@ pub enum BootApp {
     /// Startup failed. Only the failure dialog is shown; no part of the app
     /// is built.
     Failed(StartupFailure),
-    /// The failure dialog closed through the macOS menu Quit; exits when
+    /// The failure dialog closed on macOS, by any route; reports and exits when
     /// eframe drops the app.
     Exiting(FailureExit),
 }
@@ -296,9 +302,10 @@ impl eframe::App for BootApp {
     fn on_exit(&mut self) {
         match self {
             BootApp::Running(app) => app.on_exit(),
-            // After the macOS menu Quit, eframe never returns to `main`, so the
-            // failure is reported and the status set when this app is dropped.
-            // Elsewhere `main` does both after eframe finishes its teardown.
+            // On macOS, every close is handled here: after the menu Quit eframe
+            // never returns to `main`, so the failure is reported and the
+            // status set when this app is dropped. Elsewhere `main` does both
+            // after eframe finishes its teardown.
             BootApp::Failed(failure) if cfg!(target_os = "macos") => {
                 let notice = FailureNotice(failure.clone());
                 *self = BootApp::Exiting(FailureExit(notice));
@@ -643,6 +650,11 @@ mod tests {
     use crate::model::error_report::GENERIC_STARTUP_FAILURE;
     use crate::wallet_backend::single_key::open_secret_store;
 
+    /// A passphrase generated at run time for vaults a test only needs sealed.
+    fn throwaway_passphrase() -> SecretString {
+        SecretString::new(hex::encode(crate::test_support::keys::secret_bytes()))
+    }
+
     /// A non-passphrase failure while unlocking shows the dialog instead of
     /// closing the window.
     #[test]
@@ -713,17 +725,24 @@ mod tests {
         )
         .expect("dangling .env symlink");
         let test_name = std::thread::current().name().expect("test name").to_owned();
-        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
             .env("DASH_EVO_DATA_DIR", dir.path())
-            .status()
+            .output()
             .expect("run child");
-        assert!(status.success(), "child failed: {status}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "child failed:\n{stdout}{stderr}");
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
+        );
     }
 
-    /// The exit `on_exit` takes after the macOS menu Quit, where eframe never
-    /// returns to `main`: a failure status and the cause on the terminal.
+    /// The exit a closed failure dialog takes on macOS, where the menu Quit
+    /// never returns to `main`: dropping the app reports the cause on the
+    /// terminal and exits with a failure status.
     #[test]
     fn exit_from_failure_dialog_reports_failure() {
         const CHILD_ENV: &str = "DET_FAILED_BOOT_EXIT_CHILD";
@@ -770,6 +789,11 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{stderr}");
         assert!(!stderr.contains("failed to start"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
+        );
     }
 
     /// The legacy vault prompt holds no vault lock, so it saves no egui memory
@@ -821,7 +845,7 @@ mod tests {
     }
 
     fn passphrase_vault(dir: &std::path::Path) {
-        AppContext::open_secret_store_with_passphrase(dir, SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(dir, throwaway_passphrase())
             .expect("create passphrase vault");
     }
 
@@ -1008,7 +1032,7 @@ mod tests {
     #[test]
     fn classify_open_unlock_for_passphrase_vault() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), throwaway_passphrase())
             .expect("create passphrase vault");
 
         let decision = classify_open(tmp.path()).expect("classify");
@@ -1043,7 +1067,7 @@ mod tests {
     fn keyless_open_of_passphrase_vault_is_the_gated_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), throwaway_passphrase())
             .expect("create passphrase vault");
 
         let err = open_secret_store(&vault).expect_err("keyless open must fail");

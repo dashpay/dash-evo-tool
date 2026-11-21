@@ -11,8 +11,9 @@ use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -33,6 +34,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -76,6 +78,8 @@ pub struct PurchaseTokenScreen {
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
+    /// The purchase in flight; only its own result or error ends the wait.
+    purchase_request: PendingRequest,
     refresh_banner: Option<BannerHandle>,
 }
 
@@ -121,6 +125,7 @@ impl PurchaseTokenScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
             completed_fee_result: None,
+            purchase_request: PendingRequest::default(),
             refresh_banner: None,
         }
     }
@@ -302,6 +307,10 @@ impl PurchaseTokenScreen {
 
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
+                if self.purchase_request.is_pending() {
+                    self.confirmation_dialog = None;
+                    return AppAction::None;
+                }
                 let Some(signing_key) =
                     validate_signing_key(&self.app_context, self.selected_key.as_ref())
                 else {
@@ -318,21 +327,23 @@ impl PurchaseTokenScreen {
                 handle.with_elapsed();
                 self.refresh_banner = Some(handle);
 
-                AppAction::BackendTasks(
-                    vec![
-                        BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
-                            identity: self.identity_token_info.identity.clone(),
-                            data_contract: Arc::new(
-                                self.identity_token_info.data_contract.contract.clone(),
-                            ),
-                            token_position: self.identity_token_info.token_position,
-                            signing_key,
-                            amount: amount.value(),
-                            total_agreed_price: total_price_credits,
-                        })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                    ],
-                    BackendTasksExecutionMode::Sequential,
+                let purchase = BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
+                    identity: self.identity_token_info.identity.clone(),
+                    data_contract: Arc::new(
+                        self.identity_token_info.data_contract.contract.clone(),
+                    ),
+                    token_position: self.identity_token_info.token_position,
+                    signing_key,
+                    amount: amount.value(),
+                    total_agreed_price: total_price_credits,
+                }));
+                let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+                self.purchase_request.dispatch_action_on(
+                    AppAction::BackendTasks(
+                        vec![purchase, refresh],
+                        BackendTasksExecutionMode::Sequential,
+                    ),
+                    self.app_context.network,
                 )
             }
             Some(ConfirmationStatus::Canceled) => {
@@ -351,6 +362,14 @@ impl PurchaseTokenScreen {
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
             None,
         )
+    }
+}
+
+impl PurchaseTokenScreen {
+    /// A price result only sets the status of a screen with no purchase in
+    /// flight or completed; otherwise it would reopen the purchase form.
+    fn price_may_change_status(&self) -> bool {
+        !self.purchase_request.is_pending() && self.status != PurchaseTokensStatus::Complete
     }
 }
 
@@ -373,10 +392,14 @@ impl ScreenLike for PurchaseTokenScreen {
                 if let Some(schedule) = prices {
                     self.fetched_pricing_schedule = Some(schedule);
                     self.recalculate_price();
-                    self.status = PurchaseTokensStatus::NotStarted;
+                    if self.price_may_change_status() {
+                        self.status = PurchaseTokensStatus::NotStarted;
+                    }
                 } else {
                     // No pricing schedule found - token is not for sale
-                    self.status = PurchaseTokensStatus::Error;
+                    if self.price_may_change_status() {
+                        self.status = PurchaseTokensStatus::Error;
+                    }
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         "This token is not available for direct purchase. No pricing has been set.",
@@ -385,6 +408,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
             }
             BackendTaskSuccessResult::PurchasedTokens(fee_result) => {
+                self.purchase_request.clear();
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.status = PurchaseTokensStatus::Complete;
@@ -393,9 +417,17 @@ impl ScreenLike for PurchaseTokenScreen {
         }
     }
 
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.purchase_request.settle(context);
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the purchase's own outcome, a later error (its balance refresh) changes nothing.
+        if !self.purchase_request.is_pending()
+            && self.status != PurchaseTokensStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.status = PurchaseTokensStatus::Error;
         }
@@ -619,7 +651,9 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no valid amounts are available)
-                let can_purchase = self.fetched_pricing_schedule.is_some()
+                let in_flight = self.purchase_request.is_pending();
+                let can_purchase = !in_flight
+                    && self.fetched_pricing_schedule.is_some()
                     && self.calculated_price_credits.unwrap_or_default() > 0
                     && self
                         .amount_to_purchase_value
@@ -659,15 +693,15 @@ impl ScreenLike for PurchaseTokenScreen {
                     }
                 } else {
                     ComponentStyles::add_primary_button_enabled(ui, false, purchase_text)
-                        .disabled_tooltip(
-                            if self.pricing_fetch_attempted
-                                && self.fetched_pricing_schedule.is_none()
-                            {
-                                "This token is not available for purchase"
-                            } else {
-                                "Fetch token price and enter amount first"
-                            },
-                        );
+                        .disabled_tooltip(if in_flight {
+                            "Wait for the current purchase to finish."
+                        } else if self.pricing_fetch_attempted
+                            && self.fetched_pricing_schedule.is_none()
+                        {
+                            "This token is not available for purchase"
+                        } else {
+                            "Fetch token price and enter amount first"
+                        });
                 }
 
                 // Show confirmation dialog if it exists
@@ -712,6 +746,156 @@ impl ScreenLike for PurchaseTokenScreen {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
+    use egui_kittest::kittest::Queryable;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A purchase is charged, so while one is in flight the Purchase button
+    /// must not send another.
+    #[test]
+    fn a_purchase_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_user_role(UserRole::Developer);
+        let mut info = token_info(&context, None, false);
+        info.identity.identity.add_public_key(signing_key());
+        let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+        screen.selected_key = Some(signing_key());
+        screen.display_task_result(BackendTaskSuccessResult::TokenPricing {
+            token_id: info.token_id,
+            prices: Some(TokenPricingSchedule::SinglePrice(10)),
+        });
+        let purchases = Rc::new(RefCell::new(0));
+        let seen = purchases.clone();
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                move |ui, screen: &mut PurchaseTokenScreen| {
+                    if let AppAction::BackendTasksWithContexts(tasks, _) = screen.ui(ui) {
+                        *seen.borrow_mut() += tasks
+                            .iter()
+                            .filter(|(task, _)| {
+                                matches!(task, BackendTask::TokenTask(task)
+                                    if matches!(**task, TokenTask::PurchaseTokens { .. }))
+                            })
+                            .count();
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Amount to Purchase:").focus();
+        harness.run_steps(2);
+        harness.get_by_label("Amount to Purchase:").type_text("5");
+        harness.run_steps(3);
+        for _ in 0..2 {
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Purchase")
+                .last()
+                .expect("the Purchase button")
+                .click();
+            harness.run_steps(3);
+            if let Some(confirm) = harness.query_by_label("Confirm") {
+                confirm.click();
+                harness.run_steps(3);
+            }
+        }
+        assert_eq!(*purchases.borrow(), 1, "one purchase while it is in flight");
+    }
+
+    /// Clicks Purchase, then Confirm.
+    fn purchase(harness: &mut egui_kittest::Harness<'_, PurchaseTokenScreen>) {
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Purchase")
+            .last()
+            .expect("the Purchase button")
+            .click();
+        harness.run_steps(3);
+        if let Some(confirm) = harness.query_by_label("Confirm") {
+            confirm.click();
+            harness.run_steps(3);
+        }
+    }
+
+    /// Only the purchase's own outcome ends the wait: a price fetch or another
+    /// task's error must not open Purchase again, while the purchase's own
+    /// error does.
+    #[test]
+    fn only_the_purchase_itself_releases_the_purchase_button() {
+        use crate::backend_task::BackendTaskContext;
+        use crate::backend_task::error::TaskError;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_user_role(UserRole::Developer);
+        let mut info = token_info(&context, None, false);
+        info.identity.identity.add_public_key(signing_key());
+        let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+        screen.selected_key = Some(signing_key());
+        let price = BackendTaskSuccessResult::TokenPricing {
+            token_id: info.token_id,
+            prices: Some(TokenPricingSchedule::SinglePrice(10)),
+        };
+        screen.display_task_result(price.clone());
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let seen = sent.clone();
+        let is_purchase = |task: &BackendTask| {
+            matches!(task, BackendTask::TokenTask(task)
+                if matches!(**task, TokenTask::PurchaseTokens { .. }))
+        };
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                move |ui, screen: &mut PurchaseTokenScreen| match screen.ui(ui) {
+                    AppAction::BackendTasks(tasks, _) => seen
+                        .borrow_mut()
+                        .extend(tasks.iter().filter(|t| is_purchase(t)).map(|_| None)),
+                    AppAction::BackendTasksWithContexts(tasks, _) => seen.borrow_mut().extend(
+                        tasks
+                            .iter()
+                            .filter(|(t, _)| is_purchase(t))
+                            .map(|(_, request)| Some(request.clone())),
+                    ),
+                    _ => {}
+                },
+                screen,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Amount to Purchase:").focus();
+        harness.run_steps(2);
+        harness.get_by_label("Amount to Purchase:").type_text("5");
+        harness.run_steps(3);
+        purchase(&mut harness);
+        assert_eq!(sent.borrow().len(), 1);
+
+        harness.state_mut().display_task_result(price);
+        let other = BackendTaskContext::for_dispatch_on(&BackendTask::None, context.network);
+        harness
+            .state_mut()
+            .display_backend_task_error(&other, &TaskError::WalletStateInconsistent);
+        harness
+            .state_mut()
+            .display_message("Fetching the price failed", MessageType::Error);
+        harness.run_steps(2);
+        purchase(&mut harness);
+        assert_eq!(sent.borrow().len(), 1, "still one purchase in flight");
+
+        let request = sent.borrow()[0].clone().expect("the purchase's context");
+        harness
+            .state_mut()
+            .display_backend_task_error(&request, &TaskError::WalletStateInconsistent);
+        harness
+            .state_mut()
+            .display_message("The purchase failed", MessageType::Error);
+        harness.run_steps(2);
+        purchase(&mut harness);
+        assert_eq!(
+            sent.borrow().len(),
+            2,
+            "a failed purchase can be tried again"
+        );
+    }
+
     use crate::model::amount::DASH_DECIMAL_PLACES;
 
     #[test]
@@ -810,5 +994,47 @@ mod tests {
             10 * user_price_credits_0,
             "Should be 0.5 DASH total"
         );
+    }
+
+    /// A failed balance refresh after the purchase went through must not
+    /// bring the purchase form back.
+    #[test]
+    fn a_completed_purchase_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut screen = PurchaseTokenScreen::new(info, &context);
+        screen.display_task_result(BackendTaskSuccessResult::PurchasedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.status == PurchaseTokensStatus::Complete);
+    }
+
+    /// A price that arrives after the purchase went through must not bring
+    /// the purchase form back.
+    #[test]
+    fn a_late_price_keeps_a_completed_purchase_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+        screen.display_task_result(BackendTaskSuccessResult::PurchasedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        for prices in [Some(TokenPricingSchedule::SinglePrice(10)), None] {
+            screen.display_task_result(BackendTaskSuccessResult::TokenPricing {
+                token_id: info.token_id,
+                prices,
+            });
+            assert!(screen.status == PurchaseTokensStatus::Complete);
+        }
     }
 }

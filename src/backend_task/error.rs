@@ -914,6 +914,18 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
+    /// The seed vault's folder, or a folder above it, is writable by other
+    /// accounts or owned by one, so the vault is refused. Only fixing those
+    /// folders' permissions or owner helps; the folder and reason travel in
+    /// `source`.
+    #[error(
+        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make sure these folders belong to your account and that only your account can change them, then restart the application."
+    )]
+    SecretStoreFolderInsecure {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
     /// The encrypted seed vault could not be read or written. Distinct
     /// from [`Self::SecretStore`] so the banner can speak about "your
     /// wallet" rather than imported keys. Backed by the same upstream
@@ -1747,6 +1759,65 @@ pub enum TaskError {
     UpgradeBackupCleanup {
         #[source]
         source: std::io::Error,
+    },
+
+    /// The app may not write to its data folder: missing permissions or a
+    /// read-only disk. Distinct from [`Self::FileSystem`] because freeing disk
+    /// space or restarting never fixes it.
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    DataFolderAccessDenied {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app data folder's location could not be determined: the account
+    /// has no home folder.
+    #[error(
+        "Dash Evo Tool could not find a place for its data because your user account has no home folder. Sign in with an account that has one, or set DASH_EVO_DATA_DIR to a folder you can change, then start the application again."
+    )]
+    DataFolderNotFound {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// A file or link occupies the app data folder's place.
+    #[error(
+        "The app data location {path} is a file or a link, not a folder. Move or rename it, then start the application again.",
+        path = .path.display()
+    )]
+    DataFolderNotADirectory {
+        path: std::path::PathBuf,
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The disk holding the app data folder is full.
+    #[error(
+        "There is not enough free disk space for the app data. Free up some space, then start the application again."
+    )]
+    DataFolderDiskFull {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app data folder or its settings file at `path` could not be
+    /// prepared for another reason; `source` names the step.
+    #[error(
+        "Dash Evo Tool could not prepare its data at {path}. Check that this location exists and that you can change it, then start the application again.",
+        path = .path.display()
+    )]
+    DataFolderSetupFailed {
+        path: std::path::PathBuf,
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app may not open or write its database in the data folder: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`], seen by SQLite.
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    DatabaseAccessDenied {
+        #[source]
+        source: rusqlite::Error,
     },
 
     /// A local filesystem operation failed (e.g. creating a data directory).
@@ -3090,7 +3161,10 @@ pub enum TaskError {
     #[error(
         "Could not connect to the Dash network. Please check your network settings and restart the application."
     )]
-    SdkInitializationFailed { detail: String },
+    SdkInitializationFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
 
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
@@ -3673,13 +3747,21 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network },
+    NetworkContextCreationFailed {
+        network: Network,
+        #[source]
+        source: Box<crate::context::NetworkContextError>,
+    },
 
     /// No network context could be created at startup, so the app cannot open.
+    /// `source` is why the saved network could not be set up.
     #[error(
         "Dash Evo Tool could not set up a connection to any Dash network. Check the network settings in the .env file in the app data folder, then restart the application."
     )]
-    NoNetworkAvailable,
+    NoNetworkAvailable {
+        #[source]
+        source: Box<crate::context::NetworkContextError>,
+    },
 
     /// A DAPI refresh completed after its network context was removed.
     #[error(
@@ -3882,7 +3964,65 @@ pub enum TaskError {
     SecretPromptUnavailable,
 }
 
+/// Message for a data folder or database the app is not allowed to change.
+const DATA_FOLDER_ACCESS_DENIED: &str = "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application.";
+
 impl TaskError {
+    /// A failure to open or prepare the app database at `path`: read-only,
+    /// permission and access-refused codes get [`Self::DatabaseAccessDenied`],
+    /// the rest, and a directory in the file's place, [`Self::Database`].
+    pub fn from_database_open_error(source: rusqlite::Error, path: &std::path::Path) -> Self {
+        use rusqlite::{ErrorCode, ffi};
+        let is_dir = matches!(&source, rusqlite::Error::SqliteFailure(e, _)
+            if e.extended_code == ffi::SQLITE_CANTOPEN_ISDIR);
+        if is_dir || path.is_dir() {
+            return Self::Database { source };
+        }
+        match source.sqlite_error_code() {
+            Some(
+                ErrorCode::ReadOnly
+                | ErrorCode::CannotOpen
+                | ErrorCode::PermissionDenied
+                | ErrorCode::AuthorizationForStatementDenied,
+            ) => Self::DatabaseAccessDenied { source },
+            _ => Self::Database { source },
+        }
+    }
+
+    /// A failure to prepare the app data folder, with advice for its step and
+    /// kind: access problems, a full disk, no home folder, a file in the
+    /// folder's place, or [`Self::DataFolderSetupFailed`] for anything else.
+    /// Every variant keeps the failed step as source.
+    pub fn from_prepare_environment_error(source: crate::boot::PrepareEnvironmentError) -> Self {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::ErrorKind;
+        match StorageFailure::of_io(source.io_error()) {
+            Some(StorageFailure::AccessDenied) => return Self::DataFolderAccessDenied { source },
+            Some(StorageFailure::Full) => return Self::DataFolderDiskFull { source },
+            _ => {}
+        }
+        match &source {
+            Step::Locate { .. } => Self::DataFolderNotFound { source },
+            Step::CreateDataFolder { path, source: io }
+                if matches!(
+                    io.kind(),
+                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
+                ) =>
+            {
+                Self::DataFolderNotADirectory {
+                    path: path.clone(),
+                    source,
+                }
+            }
+            Step::CreateDataFolder { path, .. } | Step::WriteSettingsFile { path, .. } => {
+                Self::DataFolderSetupFailed {
+                    path: path.clone(),
+                    source,
+                }
+            }
+        }
+    }
+
     /// Reclassifies SDK reachability failures when every configured DAPI address is exhausted.
     pub(crate) fn contextualize_dapi_availability(
         self,
@@ -4140,8 +4280,9 @@ impl TaskError {
 }
 
 /// Wrap a vault failure in its caller's class variant, except the
-/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`]
-/// whichever class hit it.
+/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
+/// and an insecure vault folder, which becomes
+/// [`TaskError::SecretStoreFolderInsecure`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4152,16 +4293,18 @@ pub(crate) fn vault_error(
     source: platform_wallet_storage::secrets::SecretStoreError,
     class: impl FnOnce(Box<platform_wallet_storage::secrets::SecretStoreError>) -> TaskError,
 ) -> TaskError {
-    // `max` is `usize`, so binding it here copies rather than moves `source`.
-    if let platform_wallet_storage::secrets::SecretStoreError::PassphraseTooLong { max, .. } =
-        source
-    {
-        return TaskError::PassphraseTooLong {
+    use platform_wallet_storage::secrets::SecretStoreError;
+    match source {
+        // `max` is `usize`, so binding it here copies rather than moves `source`.
+        SecretStoreError::PassphraseTooLong { max, .. } => TaskError::PassphraseTooLong {
             max,
             source: Box::new(source),
-        };
+        },
+        SecretStoreError::InsecureParentDir { .. } => TaskError::SecretStoreFolderInsecure {
+            source: Box::new(source),
+        },
+        source => class(Box::new(source)),
     }
-    class(Box::new(source))
 }
 
 /// User-facing text for [`TaskError::ShieldedRecoveryCorrupted`]. Upstream
@@ -5233,6 +5376,139 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A data folder the app may not write to gets its own advice; any other
+    /// file failure keeps the general one.
+    #[test]
+    fn data_folder_errors_name_permission_problems() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        use std::path::PathBuf;
+        let settings_file = |kind| Step::WriteSettingsFile {
+            path: PathBuf::from("/data/.env"),
+            source: Error::from(kind),
+        };
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            assert!(matches!(
+                TaskError::from_prepare_environment_error(settings_file(kind)),
+                TaskError::DataFolderAccessDenied { .. }
+            ));
+        }
+        let other = TaskError::from_prepare_environment_error(settings_file(ErrorKind::NotFound));
+        assert!(
+            matches!(other, TaskError::DataFolderSetupFailed { .. }),
+            "{other:?}"
+        );
+        assert!(other.to_string().contains("/data/.env"), "{other}");
+        assert!(!other.to_string().contains("disk space"), "{other}");
+        assert!(
+            format!("{other:?}").contains("WriteSettingsFile"),
+            "{other:?}"
+        );
+    }
+
+    /// Each data folder step and failure kind gets advice that can fix it:
+    /// no home folder, a file in the folder's place, a full disk.
+    #[test]
+    fn data_folder_errors_give_step_specific_advice() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        use std::path::PathBuf;
+
+        let locate = TaskError::from_prepare_environment_error(Step::Locate {
+            source: Error::from(ErrorKind::NotFound),
+        });
+        assert!(
+            matches!(locate, TaskError::DataFolderNotFound { .. }),
+            "{locate:?}"
+        );
+        assert!(locate.to_string().contains("home folder"), "{locate}");
+
+        let occupied = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+            path: PathBuf::from("/data/det"),
+            source: Error::from(ErrorKind::InvalidInput),
+        });
+        assert!(
+            matches!(occupied, TaskError::DataFolderNotADirectory { .. }),
+            "{occupied:?}"
+        );
+        assert!(occupied.to_string().contains("/data/det"), "{occupied}");
+        assert!(
+            occupied.to_string().contains("Move or rename"),
+            "{occupied}"
+        );
+
+        let full = TaskError::from_prepare_environment_error(Step::WriteSettingsFile {
+            path: PathBuf::from("/data/.env"),
+            source: Error::from(ErrorKind::StorageFull),
+        });
+        assert!(
+            matches!(full, TaskError::DataFolderDiskFull { .. }),
+            "{full:?}"
+        );
+        assert!(full.to_string().contains("disk space"), "{full}");
+    }
+
+    /// A database the app may not open or write (read-only, no permission,
+    /// access refused) gets the same advice as an unwritable data folder; any
+    /// other database failure keeps the general one.
+    #[test]
+    fn database_open_errors_name_permission_problems() {
+        use rusqlite::ffi;
+        let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+        let no_dir = std::path::Path::new("missing/data.db");
+        let folder_message = TaskError::DataFolderAccessDenied {
+            source: crate::boot::PrepareEnvironmentError::Locate {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            },
+        }
+        .to_string();
+        for code in [
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_PERM,
+            ffi::SQLITE_AUTH,
+        ] {
+            let error = TaskError::from_database_open_error(sqlite(code), no_dir);
+            assert!(
+                matches!(error, TaskError::DatabaseAccessDenied { .. }),
+                "{code}: {error:?}"
+            );
+            assert_eq!(error.to_string(), folder_message);
+        }
+        for source in [sqlite(ffi::SQLITE_FULL), rusqlite::Error::InvalidQuery] {
+            assert!(matches!(
+                TaskError::from_database_open_error(source, no_dir),
+                TaskError::Database { .. }
+            ));
+        }
+    }
+
+    /// A directory in the database file's place is not a permission problem,
+    /// so it keeps the general database advice.
+    #[test]
+    fn database_path_that_is_a_directory_is_not_access_denied() {
+        use rusqlite::ffi;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir
+            .path()
+            .join(crate::database::legacy_backups::LEGACY_DATABASE);
+        std::fs::create_dir(&db_path).expect("directory at the database path");
+        let source = crate::database::Database::open_legacy_read_only(&db_path)
+            .expect_err("a directory cannot be opened as a database");
+        let error = TaskError::from_database_open_error(source, &db_path);
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+
+        let is_dir =
+            rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CANTOPEN_ISDIR), None);
+        let error =
+            TaskError::from_database_open_error(is_dir, std::path::Path::new("missing/data.db"));
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+
+        let cant_open = rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CANTOPEN), None);
+        let error = TaskError::from_database_open_error(cant_open, &db_path);
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+    }
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;
     use dash_sdk::dpp::consensus::basic::data_contract::{

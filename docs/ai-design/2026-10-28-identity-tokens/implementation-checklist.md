@@ -10,8 +10,7 @@ Scope: README §10 Phase 0, Phase 1, Phase 2. **Phase 3 is out of scope**
 **As built (user decision, TOK-021):** the hub offers no Send or Claim and
 the Tokens tab has no count badge; the row status lines say where to claim
 (Tokens › My Tokens). Hub sending and claiming are follow-up work. Items
-marked *dropped* below record that decision. The Home card (P2.1) ships in
-a follow-up change.
+marked *dropped* below record that decision.
 
 ## User decisions (README §11)
 
@@ -52,7 +51,7 @@ Each item needs code + a test (unit or kittest) unless marked *(no test)*.
 - [x] P1.18 List scrolls inside the island at 800 px window height; header + controls stay fixed.
 
 ### Phase 2
-- [ ] P2.1 Home Tokens card, shown iff any balance > 0 OR a claim is pending (Q5), without Claim (several claims show a count); "See all tokens" opens the Tokens tab.
+- [x] P2.1 Home Tokens card, shown iff any balance > 0 OR a claim is pending (Q5), without Claim (several claims show a count); "See all tokens" opens the Tokens tab. Home sends the arrival refresh only when the identity tracks a token.
 - [x] P2.2 Token detail page (row click / "Token details"): facts in plain words, copyable IDs, Manage (Q3 rule; opens Tokens › My Tokens on that token through the pending-token-selection courier), Stop tracking. *Dropped:* Send/Claim.
 - [x] P2.3 Many-token controls: filter by name/symbol and sort; remembered per device together with hide-zero.
 

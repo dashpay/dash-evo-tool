@@ -102,6 +102,7 @@ type HomeHarnessState = (
     Option<(AppAction, HomeOutcome)>,
     dash_evo_tool::ui::state::AvatarCache,
     dash_evo_tool::ui::state::contacts_view::ContactsState,
+    dash_evo_tool::ui::state::identity_tokens::IdentityTokensState,
 );
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
@@ -131,6 +132,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     &mut state.0,
                     &mut state.1,
                     &mut state.4,
+                    &mut state.5,
                 );
                 result.0 |= header_action;
                 if header_outcome != HomeOutcome::None {
@@ -158,6 +160,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                 HomeState::default(),
                 ProfileCache::default(),
                 None,
+                Default::default(),
                 Default::default(),
                 Default::default(),
             ),

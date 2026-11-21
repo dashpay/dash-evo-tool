@@ -269,6 +269,13 @@ pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs, filter_sho
     !filter_shown || row.matches_filter(&prefs.filter)
 }
 
+/// Whether Home shows its Tokens card: only when the identity holds a token
+/// or has something to claim.
+pub fn home_card_shows(rows: &[TokenRow]) -> bool {
+    rows.iter()
+        .any(|row| row.holds_some() || row.open_once_claim().is_some())
+}
+
 /// Whether an arrival refresh is due: on arrival, when no refresh finished
 /// within [`ARRIVAL_REFRESH_AFTER`].
 pub fn arrival_refresh_due(arriving: bool, now_ms: u64, last_refreshed_at_ms: Option<u64>) -> bool {
@@ -528,6 +535,11 @@ impl IdentityTokensState {
     /// are re-read on their usual schedule, which paces the retries.
     pub fn row_load_error(&self) -> Option<&TaskError> {
         self.row_load_error.as_ref()
+    }
+
+    /// The identity whose rows were last read tracks at least one token.
+    pub fn tracks_tokens(&self) -> bool {
+        !self.rows.is_empty()
     }
 
     /// Tokens are known on this device, whether or not this identity tracks them.
@@ -1392,6 +1404,24 @@ mod tests {
     }
 
     #[test]
+    fn home_card_needs_a_balance_or_a_claim() {
+        assert!(!home_card_shows(&[]));
+        assert!(!home_card_shows(&[
+            row("Zero", Some(0)),
+            row("Checking", None)
+        ]));
+        assert!(home_card_shows(&[
+            row("Zero", Some(0)),
+            row("Held", Some(1))
+        ]));
+        assert!(home_card_shows(&[once_only(row("Air", Some(0)), None)]));
+        assert!(!home_card_shows(&[with_recurring_rewards(row(
+            "Future",
+            Some(0)
+        ))]));
+    }
+
+    #[test]
     fn detail_name_belongs_to_the_selected_identity_and_cached_token() {
         let token = row("Coffee", Some(1));
         let pair = token.pair();
@@ -1422,6 +1452,7 @@ mod tests {
         let both = with_recurring_rewards(once_only(row("Both", Some(5)), Some(1_700_000_000_000)));
         assert!(both.open_once_claim().is_none());
         assert_eq!(row_status(&both, false), RowStatus::RewardsMayBeWaiting);
+        assert!(home_card_shows(std::slice::from_ref(&both)));
         let open = with_recurring_rewards(once_only(row("Both", Some(5)), None));
         assert_eq!(
             row_status(&open, false),

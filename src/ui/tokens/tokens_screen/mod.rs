@@ -2384,6 +2384,10 @@ impl TokensScreen {
             self.identity_id_string.clear();
             self.selected_identity = None;
             self.selected_key = None;
+            // The registration being confirmed was built for this identity.
+            self.cached_build_args = None;
+            self.show_token_creator_confirmation_popup = false;
+            self.token_creator_confirmation_dialog = None;
             return;
         };
         self.selected_key = self.selected_key.take().and_then(|selected| {
@@ -4518,6 +4522,37 @@ mod tests {
         assert!(screen.selected_identity.is_some());
         let args = screen.parse_token_build_args().expect("token build args");
         assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
+    }
+
+    /// The registration being confirmed was built for the selected identity
+    /// (its owner and destinations). When a reload deselects that identity,
+    /// the confirmation closes, so a confirm cannot sign it with whichever
+    /// identity is selected next.
+    #[test]
+    fn deselecting_the_creator_identity_closes_its_confirmation() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
+        screen.show_token_creator_confirmation_popup = true;
+        screen.token_creator_confirmation_dialog = Some(
+            crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
+                "Confirm Token Contract Registration",
+                "summary",
+            ),
+        );
+
+        // The identity is no longer stored.
+        screen.refresh_token_creator_identity();
+
+        assert!(screen.selected_identity.is_none());
+        assert!(!screen.show_token_creator_confirmation_popup);
+        assert!(screen.token_creator_confirmation_dialog.is_none());
+        assert!(screen.cached_build_args.is_none());
     }
 
     /// After a successful creation, leaving the success screen gives a fresh

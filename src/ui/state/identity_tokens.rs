@@ -8,6 +8,7 @@
 //! never clones it.
 
 use crate::app::AppAction;
+use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -43,6 +44,9 @@ pub const ARRIVAL_REFRESH_AFTER: Duration = Duration::from_secs(2 * 60);
 /// Derived rows are re-read from the snapshot after this long.
 const ROWS_TTL: Duration = Duration::from_secs(5);
 
+/// The filter and sort controls appear from this many rows.
+pub const MANY_TOKENS_THRESHOLD: usize = 8;
+
 /// A once-per-identity distribution as it concerns the selected identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnceClaim {
@@ -67,6 +71,8 @@ pub struct TokenRow {
     pub once_claim: Option<OnceClaim>,
     /// The identity is a recipient of a perpetual or pre-programmed distribution.
     pub recurring_recipient: bool,
+    /// The identity holds an administrative permission on the token.
+    pub has_admin_permission: bool,
     /// No balance is known and the last check that would have found one failed.
     pub check_failed: bool,
 }
@@ -129,6 +135,17 @@ impl TokenRow {
                 .map(crate::model::datetime::local_date)
                 .unwrap_or_default(),
         )
+    }
+
+    /// Whether the name or ID contains `filter`, case-insensitively. An empty
+    /// filter matches everything.
+    pub fn matches_filter(&self, filter: &str) -> bool {
+        let filter = filter.trim().to_lowercase();
+        if filter.is_empty() {
+            return true;
+        }
+        self.name().to_lowercase().contains(&filter)
+            || self.token_id_base58().to_lowercase().contains(&filter)
     }
 }
 
@@ -235,10 +252,21 @@ fn balance_order(a: &TokenRow, b: &TokenRow) -> std::cmp::Ordering {
         })
 }
 
+/// Whether the filter box and sort control are shown for a list of `rows`
+/// tokens; below that the list is short enough to scan.
+pub fn filter_shown(rows: usize) -> bool {
+    rows >= MANY_TOKENS_THRESHOLD
+}
+
 /// Whether `row` stays listed under the current controls. The hide-zero
-/// control hides only a fetched zero, never an unknown balance.
-pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs) -> bool {
-    !(prefs.hide_zero_balances && row.balance() == Some(0))
+/// control hides only a fetched zero, never an unknown balance. The
+/// remembered filter applies only while its box is shown, so a filter typed
+/// on a long list never hides rows the user has no control to clear.
+pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs, filter_shown: bool) -> bool {
+    if prefs.hide_zero_balances && row.balance() == Some(0) {
+        return false;
+    }
+    !filter_shown || row.matches_filter(&prefs.filter)
 }
 
 /// Whether an arrival refresh is due: on arrival, when no refresh finished
@@ -309,11 +337,17 @@ pub struct IdentityTokensState {
     refresh_covers: BTreeSet<Identifier>,
     refresh_failure: Option<RefreshFailure>,
     arriving: bool,
+    /// The contract this tab is fetching for a token with missing issuer details.
+    contract_reload: PendingRequest<Identifier>,
+    /// The last requested contract the app could not reload.
+    failed_contract_reload: Option<Identifier>,
     prefs: Option<IdentityTokensViewPrefs>,
     /// The list controls changed since they were last written to the device.
     prefs_dirty: bool,
     /// The Stop tracking confirmation, with the pair it is about.
     pub stop_tracking_dialog: Option<(ConfirmationDialog, IdentityTokenIdentifier)>,
+    /// The token whose detail page is open instead of the list.
+    pub detail: Option<IdentityTokenIdentifier>,
     /// The refresh error banner was dismissed; rows keep their stale time.
     pub failure_dismissed: bool,
 }
@@ -342,6 +376,8 @@ impl IdentityTokensState {
             pair_checks: std::mem::take(&mut self.pair_checks),
             stop_tracking: std::mem::take(&mut self.stop_tracking),
             track_again: std::mem::take(&mut self.track_again),
+            contract_reload: std::mem::take(&mut self.contract_reload),
+            failed_contract_reload: self.failed_contract_reload,
             // Owed pairs belong to the previous identity; its next visit
             // offers "track again" anew.
             track_again_owed: None,
@@ -457,6 +493,7 @@ impl IdentityTokensState {
             rows.push(TokenRow {
                 issuer_id,
                 issued_by_me: issuer_id == Some(identity_id),
+                has_admin_permission: actions.has_admin_permission(),
                 check_failed: balance.is_none() && self.check_failed_for(pair),
                 once_claim,
                 recurring_recipient,
@@ -496,6 +533,18 @@ impl IdentityTokensState {
     /// Tokens are known on this device, whether or not this identity tracks them.
     pub fn registry_has_tokens(&self) -> bool {
         self.registry_has_tokens
+    }
+
+    /// The open detail's cached name, without reading the identity roster or registry.
+    pub fn detail_name(&self, selected_identity: Identifier) -> Option<&str> {
+        let pair = self.detail?;
+        if selected_identity != pair.identity_id {
+            return None;
+        }
+        self.rows
+            .iter()
+            .find(|row| row.pair() == pair)
+            .map(TokenRow::name)
     }
 
     /// The list controls, read from the device on first use.
@@ -732,6 +781,9 @@ impl IdentityTokensState {
             .filter(|row| row.pair() != pair)
             .cloned()
             .collect();
+        if self.detail == Some(pair) {
+            self.detail = None;
+        }
         self.stop_tracking.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::StopTrackingTokenBalance(pair))),
             pair,
@@ -771,6 +823,33 @@ impl IdentityTokensState {
         )
     }
 
+    /// Ask for the owning contract so its issuer and administrative rules can be shown.
+    pub fn reload_contract_action(
+        &mut self,
+        app_context: &AppContext,
+        contract_id: Identifier,
+    ) -> AppAction {
+        if !Self::can_read(app_context) || self.contract_reload.is_pending() {
+            return AppAction::None;
+        }
+        self.failed_contract_reload = None;
+        self.contract_reload.dispatch_on_with(
+            BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![contract_id]))),
+            app_context.network,
+            contract_id,
+        )
+    }
+
+    /// The contract whose reload is still waiting for an answer.
+    pub fn reloading_contract(&self) -> Option<Identifier> {
+        self.contract_reload.subject().copied()
+    }
+
+    /// Whether the last request to restore these details failed.
+    pub fn contract_reload_failed(&self, contract_id: Identifier) -> bool {
+        self.failed_contract_reload == Some(contract_id)
+    }
+
     /// Settle a result of this tab's requests. Returns whether it was one.
     pub fn record_result(
         &mut self,
@@ -778,6 +857,16 @@ impl IdentityTokensState {
         result: &BackendTaskSuccessResult,
         now_ms: u64,
     ) -> bool {
+        if let Some(contract_id) = self.contract_reload.settle(context) {
+            if matches!(result, BackendTaskSuccessResult::FetchedContracts(contracts)
+                if contracts.iter().flatten().any(|contract| contract.id() == contract_id))
+            {
+                self.invalidate_rows();
+            } else {
+                self.failed_contract_reload = Some(contract_id);
+            }
+            return true;
+        }
         // Only the full refresh fetched every identity's balances; "track
         // again" refreshed the selected identity's watch set alone.
         if let Some(covers) = self.refresh.settle(context) {
@@ -836,6 +925,10 @@ impl IdentityTokensState {
     /// failure: the request is owed again once it can go out, and no banner
     /// shows. Anything else is shown inline and by the default banner.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if let Some(contract_id) = self.contract_reload.settle(context) {
+            self.failed_contract_reload = Some(contract_id);
+            return;
+        }
         let in_progress = Self::is_deferred_balance_read(error);
         if let Some(mut pairs) = self.track_again.settle(context) {
             if in_progress {
@@ -950,6 +1043,7 @@ mod tests {
             issued_by_me: false,
             once_claim: None,
             recurring_recipient: false,
+            has_admin_permission: false,
             check_failed: false,
         }
     }
@@ -1207,13 +1301,45 @@ mod tests {
             hide_zero_balances: true,
             ..Default::default()
         };
-        assert!(!row_is_listed(&row("Zero", Some(0)), &prefs));
-        assert!(row_is_listed(&row("Checking", None), &prefs));
-        assert!(row_is_listed(&row("Held", Some(3)), &prefs));
+        assert!(!row_is_listed(&row("Zero", Some(0)), &prefs, true));
+        assert!(row_is_listed(&row("Checking", None), &prefs, true));
+        assert!(row_is_listed(&row("Held", Some(3)), &prefs, true));
         assert!(row_is_listed(
             &row("Zero", Some(0)),
             &IdentityTokensViewPrefs::default(),
+            true
         ));
+    }
+
+    #[test]
+    fn filter_matches_name_or_id_case_insensitively() {
+        let prefs = |filter: &str| IdentityTokensViewPrefs {
+            filter: filter.into(),
+            ..Default::default()
+        };
+        let coffee = row("DashCoffee", Some(1));
+        assert!(row_is_listed(&coffee, &prefs("coffee"), true));
+        assert!(row_is_listed(&coffee, &prefs("  "), true));
+        assert!(row_is_listed(
+            &coffee,
+            &prefs(&coffee.token_id_base58()[..6].to_lowercase()),
+            true
+        ));
+        assert!(!row_is_listed(&coffee, &prefs("points"), true));
+    }
+
+    #[test]
+    fn the_filter_applies_only_while_its_box_is_shown() {
+        let prefs = IdentityTokensViewPrefs {
+            filter: "coffee".into(),
+            ..Default::default()
+        };
+        let grit = row("Grit", Some(3));
+        assert!(!filter_shown(MANY_TOKENS_THRESHOLD - 1));
+        assert!(filter_shown(MANY_TOKENS_THRESHOLD));
+        assert!(row_is_listed(&grit, &prefs, false));
+        assert!(!row_is_listed(&grit, &prefs, true));
+        assert!(row_is_listed(&row("DashCoffee", Some(1)), &prefs, true));
     }
 
     #[test]
@@ -1263,6 +1389,22 @@ mod tests {
         badge.token.token_config.set_transferable(false);
         assert!(!badge.transferable());
         assert_eq!(row_status(&badge, true), RowStatus::None);
+    }
+
+    #[test]
+    fn detail_name_belongs_to_the_selected_identity_and_cached_token() {
+        let token = row("Coffee", Some(1));
+        let pair = token.pair();
+        let mut state = IdentityTokensState {
+            rows: vec![token].into(),
+            ..Default::default()
+        };
+        assert_eq!(state.detail_name(pair.identity_id), None);
+        state.detail = Some(pair);
+        assert_eq!(state.detail_name(pair.identity_id), Some("Coffee"));
+        assert_eq!(state.detail_name(Identifier::from([99; 32])), None);
+        state.rows = Vec::new().into();
+        assert_eq!(state.detail_name(pair.identity_id), None);
     }
 
     #[test]
@@ -1569,18 +1711,20 @@ mod tests {
         assert!(state.row_load_error().is_some());
     }
 
-    /// A Stop tracking question about one identity's token never stays open
-    /// for the next identity.
+    /// A token page or Stop tracking question about one identity's token
+    /// never stays open for the next identity.
     #[test]
-    fn an_identity_change_closes_the_stop_tracking_dialog() {
+    fn an_identity_change_closes_the_token_page_and_dialog() {
         let mut state = IdentityTokensState {
             rows: vec![row("A", Some(1))].into(),
             ..Default::default()
         };
         let pair = state.rows[0].pair();
         state.stop_tracking_dialog = Some((ConfirmationDialog::new("Stop?", "Stop?"), pair));
+        state.detail = Some(pair);
         state.reset_for_identity_change();
         assert!(state.stop_tracking_dialog.is_none());
+        assert_eq!(state.detail, None);
         assert!(state.rows.is_empty());
     }
 
@@ -1591,8 +1735,10 @@ mod tests {
             ..Default::default()
         };
         let pair = state.rows[0].pair();
+        state.detail = Some(pair);
         let _ = state.stop_tracking_action(pair);
         assert_eq!(names(&state.rows), ["Bee"]);
+        assert_eq!(state.detail, None);
     }
 
     /// In-flight bookkeeping survives an identity switch, so an answer that

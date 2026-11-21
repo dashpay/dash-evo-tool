@@ -12,7 +12,9 @@ use dash_evo_tool::model::qualified_contract::InsertTokensToo;
 use dash_evo_tool::model::token::{
     IdentityTokenIdentifier, distribution_rules_with_once_per_identity,
 };
+use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab, token_copy};
+use dash_evo_tool::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -574,6 +576,11 @@ fn the_list_scrolls_under_a_fixed_header_on_a_short_window() {
         assert!(
             first.max.y < 800.0,
             "the first row is visible, got {first:?}"
+        );
+        assert!(
+            hub.query_by_label(&token_copy::tracked_count_text(12))
+                .is_some(),
+            "a long list shows its count"
         );
     });
 }
@@ -1243,6 +1250,10 @@ fn hub_token_surfaces_offer_neither_send_nor_claim() {
             .click();
         hub.run_steps(3);
         assert_no_send_or_claim(&hub);
+        hub.get_by_label(token_copy::DETAILS_LABEL).click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::ABOUT_HEADING).is_some());
+        assert_no_send_or_claim(&hub);
     });
 }
 
@@ -1320,5 +1331,498 @@ fn a_disconnected_refresh_cannot_be_retried_while_the_connection_stops() {
             2,
             "the retry works once connected"
         );
+    });
+}
+
+#[test]
+fn the_manage_link_needs_a_real_admin_permission_not_a_role() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xA7);
+        app_context
+            .set_and_persist_user_role(UserRole::Power)
+            .expect("role");
+        // Somebody else's token with owner-only admin actions, and our own.
+        let theirs = seed_contract(
+            &app_context,
+            0xC3,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("Theirs", true)],
+        );
+        let mine = seed_contract(
+            &app_context,
+            0xC4,
+            identity,
+            vec![token_config("Mine", true)],
+        );
+        set_balance(&app_context, identity, theirs[0], 500);
+        set_balance(&app_context, identity, mine[0], 500);
+        let mut hub = mount_tokens_tab(&app_context);
+
+        assert!(
+            hub.query_by_label(token_copy::ISSUED_BY_YOU).is_some(),
+            "the identity issued one of the tokens"
+        );
+        hub.get_by_label("More actions for Theirs").click();
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::MANAGE_LABEL).is_none(),
+            "a Power user without permission gets no Manage link"
+        );
+        hub.get_by_label(token_copy::COPY_ID_LABEL).click();
+        hub.run_steps(2);
+
+        hub.get_by_label("More actions for Mine").click();
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::MANAGE_LABEL).is_some(),
+            "the issuer holds admin permissions, so Manage is offered"
+        );
+        assert!(
+            [
+                "Mint",
+                "Burn",
+                "Freeze",
+                "Unfreeze",
+                "Destroy frozen funds",
+                "Pause",
+                "Resume",
+                "Set price",
+                "Purchase",
+                "Update configuration",
+            ]
+            .iter()
+            .all(|admin| hub.query_by_label(admin).is_none()),
+            "no admin action is rendered in the hub"
+        );
+    });
+}
+
+#[test]
+fn the_detail_page_opens_from_the_row_and_goes_back() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB2);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::DETAILS_LABEL).click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        assert!(hub.query_by_label_contains("Held by").is_some());
+        assert!(hub.query_by_label("1250 DashCoffee").is_some());
+        assert!(hub.query_by_label(token_copy::CAN_BE_SENT_YES).is_some());
+        assert!(hub.query_by_label(token_copy::REWARDS_NONE).is_some());
+        assert!(
+            hub.query_by_label(token_copy::COPY_ID_LABEL).is_some(),
+            "the token ID can be copied"
+        );
+        assert!(
+            hub.query_by_label(token_copy::MANAGE_LABEL).is_none(),
+            "no admin permission, no Manage link"
+        );
+        assert!(
+            hub.query_by_label(token_copy::SUBTITLE).is_none(),
+            "the list is replaced by the page"
+        );
+
+        hub.get_by_label(token_copy::BACK_LABEL).click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
+
+        // The row name opens the page too.
+        hub.get_by_label("Grit").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        assert!(hub.query_by_label("0 Grit").is_some());
+
+        // So does a click anywhere on the row.
+        hub.get_by_label(token_copy::BACK_LABEL).click();
+        hub.run_steps(3);
+        hub.get_by_label("1250 DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+    });
+}
+
+#[test]
+fn check_balance_now_on_the_detail_page_says_why_it_waits_for_a_running_refresh() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD4);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::DETAILS_LABEL).click();
+        hub.run_steps(3);
+        assert_refresh_blocks(&mut hub, token_copy::CHECK_NOW_LABEL);
+
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+        hub.run_steps(2);
+        assert!(
+            asked_for_a_pair_check(&hub),
+            "the check works again once the refresh ended"
+        );
+    });
+}
+
+#[test]
+fn hub_token_regression_missing_contract_keeps_balance_and_reloads_details() {
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    use dash_evo_tool::backend_task::contract::ContractTask;
+
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let token = seed_contract(
+            &ctx,
+            0xC1,
+            identity,
+            vec![pre_programmed_token("Coffee", true, 1, identity)],
+        )[0];
+        let other = seed_contract(&ctx, 0xC2, identity, vec![token_config("Tea", false)])[0];
+        let contract_id = Identifier::from([0xC1; 32]);
+        let contract = ctx
+            .get_contract_by_id(&contract_id)
+            .expect("read")
+            .expect("cached");
+        ctx.remove_contract(&contract_id)
+            .expect("remove cached contract");
+        set_balance(&ctx, identity, token, 125);
+        set_balance(&ctx, identity, other, 300);
+        set_balance(&ctx, Identifier::from([0xFF; 32]), token, 9_900);
+
+        let mut hub = mount_tokens_tab(&ctx);
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+        assert!(hub.query_by_label("3 Tea").is_some());
+        assert!(hub.query_by_label(token_copy::STATUS_REWARDS).is_some());
+        assert!(hub.query_by_label(token_copy::EMPTY_HEADING).is_none());
+        assert!(hub.query_by_label(token_copy::DISMISSED_HEADING).is_none());
+
+        hub.get_by_label("Coffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+        assert!(hub.query_by_label(token_copy::MANAGE_LABEL).is_none());
+        assert!(hub.query_by_label(token_copy::ISSUED_BY_LABEL).is_none());
+        assert!(hub.query_by_label(token_copy::REWARDS_OVER_TIME).is_some());
+        let reload = |hub: &mut HubHarness| {
+            hub.state_mut().1.clear();
+            hub.get_by_label(token_copy::RELOAD_DETAILS_LABEL).click();
+            hub.run_steps(3);
+            hub.state()
+                .1
+                .iter()
+                .find_map(|action| match action {
+                    AppAction::BackendTaskWithContext {
+                        context,
+                        task: BackendTask::ContractTask(task),
+                    } if **task == ContractTask::FetchContracts(vec![contract_id]) => {
+                        Some(context.clone())
+                    }
+                    _ => None,
+                })
+                .expect("a correlated contract reload")
+        };
+        let first = reload(&mut hub);
+        hub.state_mut().0.display_backend_task_result(
+            &first,
+            BackendTaskSuccessResult::FetchedContracts(vec![None]),
+        );
+        hub.run_steps(3);
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+        assert!(
+            hub.query_by_label(token_copy::RELOAD_DETAILS_FAILED)
+                .is_some()
+        );
+        let second = reload(&mut hub);
+        ctx.insert_contract_if_not_exists(
+            &contract.contract,
+            None,
+            InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .expect("persist fetched contract");
+        let result = BackendTaskSuccessResult::FetchedContracts(vec![Some(contract.contract)]);
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&first, result.clone());
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::ISSUED_BY_LABEL).is_none());
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&second, result);
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::ISSUED_BY_YOU).is_some());
+        assert!(hub.query_by_label(token_copy::MANAGE_LABEL).is_some());
+        assert!(hub.query_by_label("1.25 Coffee").is_some());
+    });
+}
+
+/// Eight tokens named Alpha…Hotel, every balance known.
+fn seed_eight_tokens(app_context: &Arc<AppContext>, identity: Identifier) -> Vec<Identifier> {
+    let names = [
+        "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+    ];
+    let tokens = seed_contract(
+        app_context,
+        0xC8,
+        Identifier::from([0xEE; 32]),
+        names.iter().map(|name| token_config(name, false)).collect(),
+    );
+    for (index, token) in tokens.iter().enumerate() {
+        set_balance(app_context, identity, *token, (index as u64 + 1) * 100);
+    }
+    tokens
+}
+
+#[test]
+fn the_remembered_filter_does_not_hide_rows_while_its_box_is_hidden() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD1);
+        seed_three_tokens(&app_context, identity);
+        // A filter typed earlier on a long list is remembered per device.
+        app_context
+            .save_identity_tokens_view_prefs(
+                &dash_evo_tool::model::token::IdentityTokensViewPrefs {
+                    filter: "Coffee".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("prefs");
+        let hub = mount_tokens_tab(&app_context);
+        assert!(
+            hub.query_by_label("0 Grit").is_some(),
+            "a filter the user cannot see or clear hides nothing"
+        );
+        assert!(hub.query_by_label_contains("hidden.").is_none());
+    });
+}
+
+#[test]
+fn filter_and_sort_appear_from_eight_tokens_and_the_filter_applies() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD4);
+        seed_eight_tokens(&app_context, identity);
+        app_context
+            .save_identity_tokens_view_prefs(
+                &dash_evo_tool::model::token::IdentityTokensViewPrefs {
+                    filter: "alpha".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("prefs");
+        let hub = mount_tokens_tab(&app_context);
+        assert!(
+            hub.query_by_label(&token_copy::tracked_count_text(8))
+                .is_some()
+        );
+        assert!(
+            hub.query_by_label(token_copy::SORT_LABEL).is_some(),
+            "the sort control shows for a long list"
+        );
+        assert!(hub.query_by_label("1 Alpha").is_some());
+        assert!(
+            hub.query_by_label("2 Bravo").is_none(),
+            "the filter applies while its box is shown"
+        );
+        assert!(
+            hub.query_by_label(&token_copy::hidden_count_text(7))
+                .is_some()
+        );
+    });
+}
+
+#[test]
+fn manage_opens_my_tokens_on_this_token() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xDC);
+        let tokens = seed_contract(
+            &app_context,
+            0xC6,
+            identity,
+            vec![token_config("Mine", true)],
+        );
+        set_balance(&app_context, identity, tokens[0], 10);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_label("More actions for Mine").click();
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::MANAGE_LABEL).click();
+        hub.run_steps(2);
+        assert!(hub.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreen(RootScreenType::RootScreenMyTokenBalances)
+        )));
+        // What app.rs does on SetMainScreen: the root Tokens screen arrives.
+        let mut my_tokens = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        my_tokens.refresh_on_arrival();
+        assert_eq!(
+            my_tokens.selected_token,
+            Some(tokens[0]),
+            "My Tokens opens on this token"
+        );
+        assert_eq!(
+            app_context.take_pending_token_selection(),
+            None,
+            "the request is consumed on arrival"
+        );
+    });
+}
+
+/// The filter is written to the device when its box loses focus, not on
+/// every keystroke; the edit itself is never lost.
+#[test]
+fn the_filter_is_saved_when_its_box_loses_focus_not_while_typing() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD6);
+        seed_eight_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_role(Role::TextInput).click();
+        hub.run_steps(2);
+        hub.get_by_role(Role::TextInput).type_text("alp");
+        hub.run_steps(4);
+        assert!(
+            hub.get_by_role(Role::TextInput).is_focused(),
+            "the box keeps focus while typing"
+        );
+        assert_eq!(
+            app_context.identity_tokens_view_prefs().filter,
+            "",
+            "typing must not write the filter to the database"
+        );
+        assert!(
+            hub.query_by_label("2 Bravo").is_none() && hub.query_by_label("1 Alpha").is_some(),
+            "the typed filter applies at once"
+        );
+        hub.key_press(egui::Key::Enter);
+        hub.run_steps(4);
+        assert_eq!(
+            app_context.identity_tokens_view_prefs().filter,
+            "alp",
+            "leaving the box writes the filter once"
+        );
+    });
+}
+
+#[test]
+fn regression_returning_to_tokens_opens_the_list() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        hub.get_by_role_and_label(Role::Button, "Home").click();
+        hub.run_steps(3);
+        let tab_y = hub
+            .get_by_role_and_label(Role::Button, "Home")
+            .rect()
+            .center()
+            .y;
+        hub.get_all_by_role_and_label(Role::Button, "Tokens")
+            .find(|node| (node.rect().center().y - tab_y).abs() < 2.0)
+            .expect("Tokens tab")
+            .click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+    });
+}
+
+#[test]
+fn regression_token_breadcrumb_links_to_identity_token_list() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        let home_y = hub.get_by_role_and_label(Role::Button, "Home").rect().top();
+        let token_crumb = hub
+            .query_all_by_label("Tokens")
+            .find(|node| node.rect().bottom() < home_y)
+            .expect("Tokens breadcrumb above the tab bar");
+        assert!(
+            hub.query_all_by_label("DashCoffee")
+                .any(|node| node.rect().bottom() < home_y),
+            "token name in breadcrumb"
+        );
+        token_crumb.click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+    });
+}
+
+#[test]
+fn regression_token_breadcrumb_does_not_reload_the_identity_roster() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
+        let reads = |hub: &mut HubHarness| {
+            let before = AppContext::roster_loads_on_this_thread();
+            hub.step();
+            AppContext::roster_loads_on_this_thread() - before
+        };
+        let home_reads = reads(&mut hub);
+        hub.state_mut().0.select_tab(IdentityHubTab::Tokens);
+        hub.run_steps(4);
+        assert_eq!(
+            reads(&mut hub),
+            home_reads,
+            "the token list reuses the hub roster"
+        );
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert_eq!(
+            reads(&mut hub),
+            home_reads,
+            "the detail breadcrumb uses cached rows"
+        );
+    });
+}
+
+#[test]
+fn regression_token_breadcrumb_is_hidden_on_the_identity_picker() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        seed_three_tokens(&ctx, identity);
+        let mut hub = mount_tokens_tab(&ctx);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        // Returning from Wallets with a wallet that has no identities opens the picker.
+        ctx.set_selected_hd_wallet(Some([0xEE; 32]));
+        assert_eq!(ctx.selected_identity_id(), None);
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+        assert!(
+            hub.query_by_label("DashCoffee").is_none(),
+            "the picker has no stale token crumb"
+        );
+        assert!(hub.query_by_role_and_label(Role::Link, "Tokens").is_none());
     });
 }

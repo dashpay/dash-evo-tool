@@ -56,6 +56,7 @@ pub mod social_profile_gate_card;
 pub mod tabs;
 pub(crate) mod task_feedback;
 pub mod token_copy;
+pub mod token_detail;
 pub mod tokens_tab;
 pub mod top_up_identity_screen;
 pub mod transfer_screen;

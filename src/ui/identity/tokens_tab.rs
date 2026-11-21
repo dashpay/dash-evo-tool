@@ -1,8 +1,10 @@
 //! Identity Hub Tokens tab: balances and rewards for the selected identity.
-//! Sending, claiming and every administrative action stay in Tokens › My Tokens.
+//! Sending, claiming and every administrative action stay in Tokens › My
+//! Tokens; the only link there is "Manage in Tokens screen", shown when the
+//! identity actually holds an admin permission on the token.
 //!
 //! Copy lives in `token_copy.rs`; state in `ui/state/identity_tokens.rs`.
-//! Design: `docs/ai-design/2026-10-28-identity-tokens/` (frames T1–T3, T9).
+//! Design: `docs/ai-design/2026-10-28-identity-tokens/` (frames T1–T4, T7, T9).
 
 use super::home::HomeState;
 use super::token_copy::*;
@@ -10,6 +12,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::IdentityTokensViewPrefs;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::copyable_id::copy_with_confirmation;
@@ -18,13 +21,13 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill::accent_pill;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::state::identity_tokens::{
-    IdentityTokensState, RefreshFailure, RowStatus, TokenRow, reward_beside_balance, row_is_listed,
-    sort_rows,
+    IdentityTokensState, RefreshFailure, RowStatus, TokenRow, filter_shown, reward_beside_balance,
+    row_is_listed, sort_rows,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use crate::ui::{MessageType, RootScreenType, ScreenType};
 use egui::containers::menu::MenuButton;
-use egui::{self, RichText, Ui};
+use egui::{self, RichText, Sense, Ui, UiBuilder};
 use std::sync::Arc;
 
 /// A wide row lays the balance and the actions out as columns beside the
@@ -33,20 +36,22 @@ const WIDE_ROW_MIN_WIDTH: f32 = 640.0;
 const ACTIONS_COLUMN_WIDTH: f32 = 220.0;
 const BALANCE_COLUMN_WIDTH: f32 = 200.0;
 const NAME_COLUMN_MIN_WIDTH: f32 = 120.0;
-/// The token monogram on a row.
-const ROW_MONOGRAM_SIZE: f32 = 36.0;
+const FILTER_WIDTH: f32 = 200.0;
+/// The token monogram on a row and on the detail page.
+pub(super) const ROW_MONOGRAM_SIZE: f32 = 36.0;
+pub(super) const DETAIL_MONOGRAM_SIZE: f32 = 56.0;
 
 /// What every row needs to know about the identity and the network.
-struct RowContext {
+pub(super) struct RowContext {
     /// Balance reads may go out: see [`IdentityTokensState::can_read`].
-    synced: bool,
+    pub(super) synced: bool,
     /// The identity can sign nothing on this device.
-    view_only: bool,
-    identity_label: String,
+    pub(super) view_only: bool,
+    pub(super) identity_label: String,
 }
 
 impl RowContext {
-    fn new(app_context: &AppContext, identity: &QualifiedIdentity) -> Self {
+    pub(super) fn new(app_context: &AppContext, identity: &QualifiedIdentity) -> Self {
         Self {
             synced: IdentityTokensState::can_read(app_context),
             view_only: identity.private_keys.is_empty(),
@@ -56,7 +61,7 @@ impl RowContext {
 }
 
 /// The token's monogram: its initial on a hue derived from its ID.
-fn paint_token_monogram(ui: &mut Ui, row: &TokenRow, size: f32) {
+pub(super) fn paint_token_monogram(ui: &mut Ui, row: &TokenRow, size: f32) {
     super::avatar::paint_identity_monogram(
         ui,
         size,
@@ -81,7 +86,21 @@ pub fn render(
     let mut action = AppAction::None;
     let rows = state.rows(app_context, identity);
 
-    action |= render_header(ui, app_context, state);
+    if let Some(pair) = state.detail {
+        render_row_load_failure(ui, state);
+        // The row can leave while its page is open (stopped tracking elsewhere).
+        action |= match rows.iter().find(|row| row.pair() == pair) {
+            Some(row) => super::token_detail::render(ui, app_context, identity, row, state),
+            None => {
+                state.detail = None;
+                AppAction::None
+            }
+        };
+        action |= render_stop_tracking_dialog(ui, state);
+        return action;
+    }
+
+    action |= render_header(ui, app_context, state, &rows);
     ui.add_space(Spacing::XS);
     ui.label(
         RichText::new(SUBTITLE)
@@ -137,12 +156,19 @@ fn render_header(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut IdentityTokensState,
+    rows: &[TokenRow],
 ) -> AppAction {
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
     let synced = IdentityTokensState::can_read(app_context);
     ui.horizontal(|ui| {
         ui.label(RichText::new(HEADING).size(Typography::SCALE_XL).strong());
+        if filter_shown(rows.len()) {
+            ui.label(
+                RichText::new(tracked_count_text(rows.len()))
+                    .color(DashColors::text_secondary(dark)),
+            );
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             action |= render_add_menu(ui, app_context);
             let refreshing = state.refreshing(app_context);
@@ -165,7 +191,7 @@ fn render_header(
 }
 
 /// Why a refresh control is disabled: the network, or a refresh already running.
-fn refresh_block_reason(synced: bool) -> &'static str {
+pub(super) fn refresh_block_reason(synced: bool) -> &'static str {
     if synced {
         REFRESHING_TOOLTIP
     } else {
@@ -265,7 +291,10 @@ fn render_row_load_failure(ui: &mut Ui, state: &mut IdentityTokensState) -> bool
     true
 }
 
-/// Hide-zero, saved as it changes, with how many rows it hides.
+/// Hide-zero (always), plus filter and sort once the list is long. Hide-zero
+/// and sort are saved as they change; the filter applies at once but is
+/// written when its box loses focus (Enter included), when the tab is left
+/// or when the identity changes — never per keystroke.
 fn render_controls(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -275,12 +304,32 @@ fn render_controls(
     let mut prefs = state.prefs(app_context).clone();
     let before = prefs.clone();
     let dark = ui.visuals().dark_mode;
+    let filter_shown = filter_shown(rows.len());
+    let mut filter_done = false;
     ui.horizontal_wrapped(|ui| {
+        if filter_shown {
+            let filter = ui.add(
+                egui::TextEdit::singleline(&mut prefs.filter)
+                    .hint_text(FILTER_HINT)
+                    .char_limit(IdentityTokensViewPrefs::MAX_FILTER_CHARS)
+                    .desired_width(FILTER_WIDTH),
+            );
+            filter_done = filter.lost_focus();
+            egui::ComboBox::from_id_salt("identity_tokens_sort")
+                .selected_text(prefs.sort.label())
+                .show_ui(ui, |ui| {
+                    for sort in crate::model::token::TokenListSort::ALL {
+                        ui.selectable_value(&mut prefs.sort, sort, sort.label());
+                    }
+                })
+                .response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, SORT_LABEL));
+        }
         ui.checkbox(&mut prefs.hide_zero_balances, HIDE_ZERO_LABEL)
             .clickable_tooltip(HIDE_ZERO_TOOLTIP);
         let hidden = rows
             .iter()
-            .filter(|row| !row_is_listed(row, &prefs))
+            .filter(|row| !row_is_listed(row, &prefs, filter_shown))
             .count();
         if hidden > 0 {
             ui.label(
@@ -288,8 +337,12 @@ fn render_controls(
             );
         }
     });
+    let a_control_changed =
+        prefs.hide_zero_balances != before.hide_zero_balances || prefs.sort != before.sort;
     if prefs != before {
         state.edit_prefs(prefs);
+    }
+    if filter_done || a_control_changed {
         state.save_prefs(app_context);
     }
 }
@@ -302,9 +355,10 @@ fn render_list(
     rows: &[TokenRow],
 ) -> AppAction {
     let prefs = state.prefs(app_context).clone();
+    let filter_shown = filter_shown(rows.len());
     let mut listed: Vec<&TokenRow> = rows
         .iter()
-        .filter(|row| row_is_listed(row, &prefs))
+        .filter(|row| row_is_listed(row, &prefs, filter_shown))
         .collect();
     sort_rows(&mut listed, prefs.sort);
     let mut action = AppAction::None;
@@ -345,54 +399,88 @@ fn render_row(
     let dark = ui.visuals().dark_mode;
     let status = state.row_status(app_context, row, context.view_only);
     let wide = ui.available_width() >= WIDE_ROW_MIN_WIDTH;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = Spacing::SM;
-        paint_token_monogram(ui, row, ROW_MONOGRAM_SIZE);
-        let actions_width = if wide { ACTIONS_COLUMN_WIDTH } else { 0.0 };
-        let balance_width = if wide { BALANCE_COLUMN_WIDTH } else { 0.0 };
-        let name_width = (ui.available_width() - actions_width - balance_width - 2.0 * Spacing::SM)
-            .max(NAME_COLUMN_MIN_WIDTH);
-        ui.allocate_ui_with_layout(
-            egui::vec2(name_width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(name_width);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(row.name()).strong());
-                    if row.issued_by_me {
-                        accent_pill(ui, ISSUED_BY_YOU, DashColors::pill_accent(dark), None);
-                    }
-                    if !row.transferable() {
-                        accent_pill(ui, CANT_BE_SENT_BADGE, DashColors::pill_neutral(dark), None);
-                    }
-                });
-                ui.label(
-                    RichText::new(shorten_id(&row.token_id_base58()))
-                        .small()
-                        .monospace()
-                        .color(DashColors::text_secondary(dark)),
-                );
-                if !wide {
-                    action |=
-                        render_balance_and_status(ui, app_context, row, &status, context, state);
-                }
-            },
-        );
-        if wide {
+    // The whole row opens the detail page; its own buttons and menu keep
+    // their clicks, while plain text lets the click through. The row is a
+    // pointer target only: the name button is its keyboard stop.
+    let row_response = ui.scope_builder(UiBuilder::new().sense(Sense::CLICK), |ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = Spacing::SM;
+            paint_token_monogram(ui, row, ROW_MONOGRAM_SIZE);
+            let actions_width = if wide { ACTIONS_COLUMN_WIDTH } else { 0.0 };
+            let balance_width = if wide { BALANCE_COLUMN_WIDTH } else { 0.0 };
+            let name_width =
+                (ui.available_width() - actions_width - balance_width - 2.0 * Spacing::SM)
+                    .max(NAME_COLUMN_MIN_WIDTH);
             ui.allocate_ui_with_layout(
-                egui::vec2(balance_width, 0.0),
+                egui::vec2(name_width, 0.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.set_width(balance_width);
-                    action |=
-                        render_balance_and_status(ui, app_context, row, &status, context, state);
+                    ui.set_width(name_width);
+                    ui.horizontal_wrapped(|ui| {
+                        // The name opens the detail page; Enter works once focused.
+                        if ui
+                            .add(egui::Button::new(RichText::new(row.name()).strong()).frame(false))
+                            .clickable_tooltip(OPEN_DETAILS_TOOLTIP)
+                            .clicked()
+                        {
+                            state.detail = Some(row.pair());
+                        }
+                        if row.issued_by_me {
+                            accent_pill(ui, ISSUED_BY_YOU, DashColors::pill_accent(dark), None);
+                        }
+                        if !row.transferable() {
+                            accent_pill(
+                                ui,
+                                CANT_BE_SENT_BADGE,
+                                DashColors::pill_neutral(dark),
+                                None,
+                            );
+                        }
+                    });
+                    ui.label(
+                        RichText::new(shorten_id(&row.token_id_base58()))
+                            .small()
+                            .monospace()
+                            .color(DashColors::text_secondary(dark)),
+                    );
+                    if !wide {
+                        action |= render_balance_and_status(
+                            ui,
+                            app_context,
+                            row,
+                            &status,
+                            context,
+                            state,
+                        );
+                    }
                 },
             );
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            action |= render_row_menu(ui, app_context, state, row, context);
+            if wide {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(balance_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(balance_width);
+                        action |= render_balance_and_status(
+                            ui,
+                            app_context,
+                            row,
+                            &status,
+                            context,
+                            state,
+                        );
+                    },
+                );
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                action |= render_row_menu(ui, app_context, state, row, context);
+            });
         });
     });
+    if row_response.response.clicked() {
+        state.detail = Some(row.pair());
+    }
     action
 }
 
@@ -412,7 +500,7 @@ fn render_balance_and_status(
 
 /// The row's one status line; "Try again" re-checks a failed pair once the
 /// network is synced.
-fn render_row_status(
+pub(super) fn render_row_status(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     row: &TokenRow,
@@ -508,6 +596,10 @@ fn render_row_menu(
             action |= state.check_pair_action(app_context, row.pair());
             ui.close();
         }
+        if ui.button(DETAILS_LABEL).clicked() {
+            state.detail = Some(row.pair());
+            ui.close();
+        }
         if ui.button(COPY_ID_LABEL).clicked() {
             copy_with_confirmation(ui.ctx(), &row.token_id_base58(), COPIED_ID);
             ui.close();
@@ -516,6 +608,13 @@ fn render_row_menu(
             open_stop_tracking_dialog(state, row, &context.identity_label);
             ui.close();
         }
+        if row.has_admin_permission {
+            ui.separator();
+            if ui.button(MANAGE_LABEL).clicked() {
+                action |= manage_action(app_context, row);
+                ui.close();
+            }
+        }
     });
     response.response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::Role::Button, true, more_actions_label(row.name()))
@@ -523,8 +622,15 @@ fn render_row_menu(
     action
 }
 
+/// Open Tokens › My Tokens on this token, where the administrative actions
+/// live.
+pub(super) fn manage_action(app_context: &Arc<AppContext>, row: &TokenRow) -> AppAction {
+    app_context.set_pending_token_selection(row.token.token_id);
+    AppAction::SetMainScreen(RootScreenType::RootScreenMyTokenBalances)
+}
+
 /// Ask before a row leaves the list.
-fn open_stop_tracking_dialog(
+pub(super) fn open_stop_tracking_dialog(
     state: &mut IdentityTokensState,
     row: &TokenRow,
     identity_label: &str,

@@ -1,5 +1,6 @@
-//! User-facing copy for the Identity Hub's Tokens tab. Kept free of egui so
-//! the copy is unit-testable, and every string is one complete translation unit.
+//! User-facing copy for the Identity Hub's token surfaces: the Tokens tab and
+//! the token detail page. Kept free of egui so the copy
+//! is unit-testable, and every string is one complete translation unit.
 //!
 //! Design: `docs/ai-design/2026-10-28-identity-tokens/` frame T9.
 
@@ -18,14 +19,20 @@ pub const RECEIVE_LINK: &str = "How do I receive tokens?";
 pub const HIDE_ZERO_LABEL: &str = "Hide tokens with zero balance";
 pub const HIDE_ZERO_TOOLTIP: &str =
     "Hides tokens whose balance is 0. Tokens still being checked always stay visible.";
+pub const FILTER_HINT: &str = "Filter by name or ID";
+pub const SORT_LABEL: &str = "Sort";
 
 // Row actions and menu.
 pub const MENU_LABEL: &str = "•••";
 pub const CHECK_NOW_LABEL: &str = "Check balance now";
+pub const DETAILS_LABEL: &str = "Token details";
 pub const COPY_ID_LABEL: &str = "Copy token ID";
+pub const COPY_ID_TOOLTIP: &str = "Copy the full token ID.";
 pub const COPIED_ID: &str = "The token ID was copied to the clipboard.";
+pub const OPEN_DETAILS_TOOLTIP: &str = "Show this token's details.";
 pub const STOP_TRACKING_LABEL: &str = "Stop tracking";
 pub const STOP_TRACKING_TITLE: &str = "Stop tracking this token?";
+pub const MANAGE_LABEL: &str = "Manage in Tokens screen";
 pub const TRY_AGAIN_LABEL: &str = "Try again";
 pub const DISMISS_LABEL: &str = "Dismiss";
 pub const CANCEL_LABEL: &str = "Cancel";
@@ -57,6 +64,29 @@ pub const ERROR_REFRESH_SLOW: &str =
     "Updating token balances is taking longer than usual. Try again in a moment.";
 pub const ERROR_REFRESH_DISCONNECTED: &str = "Token balances weren't updated because the network connection stopped. Connect again, then try again. If this happens again, disconnect, wait a moment, and connect again.";
 
+// Detail page.
+pub const BACK_LABEL: &str = "‹ Back to tokens";
+pub const ABOUT_HEADING: &str = "About this token";
+pub const TOKEN_ID_LABEL: &str = "Token ID";
+pub const CONTRACT_LABEL: &str = "Contract";
+pub const ISSUED_BY_LABEL: &str = "Issued by";
+pub const SMALLEST_UNIT_LABEL: &str = "Smallest unit";
+pub const CAN_BE_SENT_LABEL: &str = "Can be sent";
+pub const REWARDS_LABEL: &str = "Rewards";
+pub const COPY_CONTRACT_ID_LABEL: &str = "Copy contract ID";
+pub const COPY_CONTRACT_ID_TOOLTIP: &str = "Copy the full contract ID.";
+pub const COPIED_CONTRACT_ID: &str = "The contract ID was copied to the clipboard.";
+pub const CAN_BE_SENT_YES: &str = "Yes. Holders can send it to other identities.";
+pub const CAN_BE_SENT_NO: &str = "No. This token cannot be sent to other identities.";
+pub const REWARDS_OVER_TIME: &str = "This token distributes rewards over time.";
+pub const REWARDS_NONE: &str = "This identity receives no rewards from this token.";
+pub const RELOAD_DETAILS_LABEL: &str = "Reload token details";
+pub const RELOADING_DETAILS: &str = "Reloading token details…";
+pub const CONTRACT_MISSING: &str = "Reload token details to see who issued this token.";
+pub const RELOAD_DETAILS_FAILED: &str =
+    "Token details couldn't be reloaded. Check your connection and try again.";
+pub const ISSUED_BY_SOMEONE_ELSE: &str = "Issued by someone else";
+
 // Receive dialog.
 pub const RECEIVE_TOKENS_HINT: &str = "A token you receive shows under Tokens once you add it.";
 
@@ -81,6 +111,11 @@ pub fn can_claim_once_text(amount: &Amount) -> String {
     format!("You can claim {amount} once in Tokens › My Tokens.")
 }
 
+/// "Every identity can claim {amount} once." — the detail page's rewards fact.
+pub fn once_claim_text(amount: &Amount) -> String {
+    format!("Every identity can claim {amount} once.")
+}
+
 /// "Claimed on {date}."
 pub fn claimed_on_text(date: &str) -> String {
     format!("Claimed on {date}.")
@@ -95,6 +130,11 @@ pub fn hidden_count_text(count: usize) -> String {
     }
 }
 
+/// "Tracking {count} tokens." — the header's count on a long list.
+pub fn tracked_count_text(count: usize) -> String {
+    format!("Tracking {count} tokens.")
+}
+
 /// "You stopped tracking every token for {identity}. …"
 pub fn dismissed_body_text(identity: &str) -> String {
     format!(
@@ -105,6 +145,11 @@ pub fn dismissed_body_text(identity: &str) -> String {
 /// "Stop tracking {token} for {identity}? …"
 pub fn stop_tracking_question(token: &str, identity: &str) -> String {
     format!("Stop tracking {token} for {identity}? You can add it again at any time.")
+}
+
+/// "Held by {identity}" — the detail page's caption.
+pub fn held_by_text(identity: &str) -> String {
+    format!("Held by {identity}")
 }
 
 /// Accessible name of a row's ••• button: "More actions for {token}".
@@ -121,6 +166,7 @@ mod tests {
         SUBTITLE,
         REFRESHING_TOOLTIP,
         HIDE_ZERO_TOOLTIP,
+        OPEN_DETAILS_TOOLTIP,
         STATUS_COULD_NOT_CHECK,
         STATUS_NO_BALANCE_FOUND,
         STATUS_REWARDS,
@@ -132,8 +178,15 @@ mod tests {
         ERROR_REFRESH_FAILED,
         ERROR_REFRESH_SLOW,
         ERROR_REFRESH_DISCONNECTED,
+        CAN_BE_SENT_YES,
+        CAN_BE_SENT_NO,
+        REWARDS_OVER_TIME,
+        REWARDS_NONE,
         RECEIVE_TOKENS_HINT,
+        COPY_ID_TOOLTIP,
         COPIED_ID,
+        COPY_CONTRACT_ID_TOOLTIP,
+        COPIED_CONTRACT_ID,
     ];
 
     /// Every label, heading and caption: a unit of its own, not a sentence.
@@ -145,11 +198,15 @@ mod tests {
         ADD_BY_ID_LABEL,
         RECEIVE_LINK,
         HIDE_ZERO_LABEL,
+        FILTER_HINT,
+        SORT_LABEL,
         MENU_LABEL,
         CHECK_NOW_LABEL,
+        DETAILS_LABEL,
         COPY_ID_LABEL,
         STOP_TRACKING_LABEL,
         STOP_TRACKING_TITLE,
+        MANAGE_LABEL,
         TRY_AGAIN_LABEL,
         DISMISS_LABEL,
         CANCEL_LABEL,
@@ -158,7 +215,17 @@ mod tests {
         STATUS_CHECKING,
         EMPTY_HEADING,
         DISMISSED_HEADING,
+        BACK_LABEL,
+        ABOUT_HEADING,
+        TOKEN_ID_LABEL,
+        CONTRACT_LABEL,
+        ISSUED_BY_LABEL,
+        SMALLEST_UNIT_LABEL,
+        CAN_BE_SENT_LABEL,
+        REWARDS_LABEL,
+        COPY_CONTRACT_ID_LABEL,
         ISSUED_BY_YOU,
+        ISSUED_BY_SOMEONE_ELSE,
     ];
 
     fn formatted() -> Vec<String> {
@@ -167,9 +234,11 @@ mod tests {
             last_updated_text(0),
             stale_since_text(0),
             can_claim_once_text(&amount),
+            once_claim_text(&amount),
             claimed_on_text("2026-10-20"),
             hidden_count_text(1),
             hidden_count_text(3),
+            tracked_count_text(8),
             dismissed_body_text("Alice"),
             stop_tracking_question("DCF", "Alice"),
         ]
@@ -195,12 +264,14 @@ mod tests {
             );
         }
         assert!(STATUS_CHECKING.ends_with('…'));
+        assert!(!held_by_text("Alice").ends_with('.'), "a caption");
     }
 
     #[test]
     fn plurals_read_right() {
         assert_eq!(hidden_count_text(1), "1 token is hidden.");
         assert_eq!(hidden_count_text(3), "3 tokens are hidden.");
+        assert_eq!(tracked_count_text(8), "Tracking 8 tokens.");
         assert_eq!(more_actions_label("DCF"), "More actions for DCF");
     }
 

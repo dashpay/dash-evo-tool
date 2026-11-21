@@ -979,6 +979,17 @@ impl ScreenLike for SetTokenPriceScreen {
                 &self.identity_token_info.identity,
                 self.identity_token_info.data_contract.contract.id(),
             );
+            if self.selected_key.follow_automatic_with_wallet(
+                &self.identity_token_info.identity,
+                TransactionType::TokenAction,
+                self.identity_token_info.data_contract.contract.id(),
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            ) {
+                // A pending confirmation was for the previous key.
+                self.show_confirmation_popup = false;
+                self.confirmation_dialog = None;
+            }
             let signing_available = matches!(
                 key_status,
                 SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly

@@ -21,6 +21,7 @@ use crate::context::AppContext;
 use crate::model::identity_key_usability::{SigningScope, key_caveats, now_ms};
 use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
+use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::helpers::{
@@ -30,7 +31,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui::Ui;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Loads local identities, displaying an error banner on failure.
 pub fn load_identities_with_banner(app_context: &AppContext) -> Vec<QualifiedIdentity> {
@@ -179,6 +180,28 @@ impl TokenSigningKey {
         }
         self.selected = automatic.cloned();
         true
+    }
+
+    /// [`Self::follow_automatic`], also moving the signing wallet to the new
+    /// key's wallet. Returns whether the selection changed.
+    fn follow_automatic_with_wallet(
+        &mut self,
+        identity: &QualifiedIdentity,
+        transaction_type: TransactionType,
+        contract_id: Identifier,
+        selected_wallet: &mut Option<Arc<RwLock<Wallet>>>,
+        wallet_open_attempted: &mut bool,
+    ) -> bool {
+        let changed = self.follow_automatic(identity, transaction_type, contract_id);
+        if changed {
+            crate::ui::identity::sync_signing_wallet(
+                Some(identity),
+                self.as_ref(),
+                selected_wallet,
+                wallet_open_attempted,
+            );
+        }
+        changed
     }
 }
 

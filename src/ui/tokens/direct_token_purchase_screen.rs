@@ -465,6 +465,16 @@ impl ScreenLike for PurchaseTokenScreen {
                 &self.identity_token_info.identity,
                 self.identity_token_info.data_contract.contract.id(),
             );
+            if self.selected_key.follow_automatic_with_wallet(
+                &self.identity_token_info.identity,
+                TransactionType::TokenAction,
+                self.identity_token_info.data_contract.contract.id(),
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            ) {
+                // A pending confirmation was for the previous key.
+                self.confirmation_dialog = None;
+            }
 
             if key_status == SigningKeyStatus::ManualChoiceOnly {
                 // Only a contract-group key can sign it: the user picks it below.

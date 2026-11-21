@@ -519,6 +519,16 @@ impl ScreenLike for ClaimTokensScreen {
             } else {
                 claim_key_status(identity, self.identity_token_basic_info.contract_id)
             };
+            if self.selected_key.follow_automatic_with_wallet(
+                identity,
+                TransactionType::TokenClaim,
+                self.identity_token_basic_info.contract_id,
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            ) {
+                // A pending confirmation was for the previous key.
+                self.confirmation_dialog = None;
+            }
 
             if key_status == SigningKeyStatus::ManualChoiceOnly {
                 // Only a contract-group key can sign it: the user picks it below.
@@ -1013,6 +1023,38 @@ mod tests {
             task.as_ref(),
             TokenTask::ClaimTokens { signing_key, .. } if signing_key.id() == 2
         ));
+    }
+
+    /// The lower of two expiry-limited keys, chosen automatically, expires
+    /// while the claim confirmation is open: the next frame moves to the
+    /// other key and drops the confirmation, so the expired key never signs.
+    #[test]
+    fn an_automatic_key_expiring_under_the_confirmation_is_not_submitted() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        screen.identity = Some(identity_holding(&[expired.clone(), live]));
+        screen.selected_key = TokenSigningKey::automatic(Some(expired));
+        screen.open_claim_confirmation();
+        assert!(screen.confirmation_dialog.is_some());
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(2);
+        let screen = harness.state_mut();
+
+        let sent = screen.confirm_claim();
+        assert!(matches!(sent, AppAction::None), "{sent:?}");
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
     }
 
     /// Regression: a refused second claim left Claim enabled with no note, so

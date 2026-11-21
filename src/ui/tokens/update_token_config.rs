@@ -1020,6 +1020,14 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     &self.identity,
                     self.identity_token_info.data_contract.contract.id(),
                 );
+                // The form signs on its button, with no confirmation to reset.
+                self.signing_key.follow_automatic_with_wallet(
+                    &self.identity,
+                    TransactionType::TokenAction,
+                    self.identity_token_info.data_contract.contract.id(),
+                    &mut self.selected_wallet,
+                    &mut self.wallet_open_attempted,
+                );
 
                 if key_status == SigningKeyStatus::ManualChoiceOnly {
                     // Only a contract-group key can sign it: the user picks it below.

@@ -5,10 +5,11 @@ use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dapi_grpc::platform::v0::ResponseMetadata;
-use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 use dash_sdk::query_types::IdentityBalance;
 use dash_sdk::{Error as SdkError, Sdk};
+use platform_wallet::{BlockTime, ManagedIdentity};
 use std::sync::Arc;
 
 use super::BackendTaskSuccessResult;
@@ -36,22 +37,28 @@ impl AppContext {
         // Apply only what was fetched, to the record as stored now: a stale
         // snapshot written back would undo whatever changed while the fetch
         // ran, such as a removed key whose vault secret is already gone.
-        // TODO(platform-wallet): upstream `ManagedIdentity::take_fetched_identity`
-        // takes a fetch at the stored revision or newer and keeps the cached
-        // keys for an older one; use it once `IdentityManager` holds the record.
+        // Upstream's fold keeps raised key limits and, below the stored
+        // revision, the stored keys plus any permanent disable; DET's watermark
+        // still orders the balance.
+        // TODO(platform-wallet): a fetch at the stored revision still takes
+        // reversible key states whole, so a lagging proof can undo one
+        // (dashpay/platform#5542 item 6).
         let qualified_identity_to_update = self.edit_local_qualified_identity_observed(
             &refreshed_identity_id,
             provenance,
             |stored| {
                 match maybe_refreshed_identity {
-                    // Read from before a key was added here: keep that key and
-                    // its revision, take only the balance.
-                    Some(fetched) if fetched.revision() < stored.identity.revision() => {
-                        stored.identity.set_balance(fetched.balance());
-                        stored.status.update(IdentityStatus::Active);
-                    }
                     Some(fetched) => {
-                        stored.identity = fetched;
+                        let mut managed = ManagedIdentity::new(stored.identity.clone(), 0);
+                        managed.take_fetched_identity(
+                            &fetched,
+                            BlockTime::new(
+                                metadata.height,
+                                metadata.core_chain_locked_height,
+                                metadata.time_ms,
+                            ),
+                        );
+                        stored.identity = managed.identity;
                         stored.status.update(IdentityStatus::Active);
                     }
                     None => stored.status.update(IdentityStatus::NotFound),
@@ -159,6 +166,7 @@ impl AppContext {
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
 
     fn context_with_payer(
         dir: &std::path::Path,
@@ -300,6 +308,7 @@ mod concurrent_refresh_tests {
     use crate::context::lock_probe::{LockProbe, LockSite};
     use crate::context::test_staging::{stage_identity_with_vaulted_keys, unlist_identity};
     use crate::model::qualified_identity::PrivateKeyTarget;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
     use std::thread::JoinHandle;
 
     const REACH_LOCK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -461,6 +470,40 @@ mod concurrent_refresh_tests {
             Some(u64::from(id)),
             dash_sdk::dpp::version::PlatformVersion::latest(),
         )
+    }
+
+    /// Two refreshes at one revision can finish out of order: the later one
+    /// to land, answered before a key's limit was raised, keeps the raise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_older_same_revision_refresh_keeps_a_raised_key_limit() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
+        let ctx = &staged.ctx;
+        let mut stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let mut fetched = stored.identity.clone();
+        fetched.add_public_key(random_key(9).with_limits(Some(1_000), None));
+        stored
+            .identity
+            .add_public_key(random_key(9).with_limits(Some(5_000), None));
+        ctx.update_local_qualified_identity(&stored)
+            .expect("the newer refresh is stored");
+        let sdk = sdk_returning(&fetched, 10).await;
+
+        ctx.refresh_identity(&sdk, stored, sender_for(ctx))
+            .await
+            .expect("the refresh succeeds");
+
+        let after = ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let key = after.identity.get_public_key_by_id(9).expect("key 9 kept");
+        assert_eq!(key.total_budget(), Some(5_000));
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     /// A refresh answered at an earlier block than a paid task's balance

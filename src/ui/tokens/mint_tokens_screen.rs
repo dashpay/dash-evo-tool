@@ -273,7 +273,7 @@ impl TokenAction for MintAction {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::qualified_contract::QualifiedContract;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
@@ -283,7 +283,7 @@ mod tests {
     use dash_sdk::dpp::platform_value::BinaryData;
 
     /// Token info whose token sends new tokens to `destination` by default.
-    fn token_info(
+    pub(crate) fn token_info(
         context: &Arc<AppContext>,
         destination: Option<Identifier>,
         allow_choosing: bool,
@@ -316,7 +316,45 @@ mod tests {
         }
     }
 
-    fn signing_key() -> IdentityPublicKey {
+    /// Whether `action` sends a task, and the context its first task was sent
+    /// under, if the screen gave it one.
+    pub(crate) fn sent_request(
+        action: &AppAction,
+    ) -> Option<Option<crate::backend_task::BackendTaskContext>> {
+        match action {
+            AppAction::BackendTask(_) | AppAction::BackendTasks(..) => Some(None),
+            AppAction::BackendTaskWithContext { context, .. } => Some(Some(context.clone())),
+            AppAction::BackendTasksWithContexts(tasks, _) => {
+                Some(tasks.first().map(|(_, context)| context.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Reports an error of a task other than the screen's own, the way
+    /// `AppState` does: first with its context, then as a banner message.
+    pub(crate) fn report_error(
+        screen: &mut impl crate::ui::ScreenLike,
+        context: &crate::backend_task::BackendTaskContext,
+    ) {
+        screen.display_backend_task_error(
+            context,
+            &crate::backend_task::error::TaskError::WalletStateInconsistent,
+        );
+        screen.display_message("The task failed", crate::ui::MessageType::Error);
+    }
+
+    /// A context no screen dispatched, e.g. a background sweep's.
+    pub(crate) fn unrelated_request(
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> crate::backend_task::BackendTaskContext {
+        crate::backend_task::BackendTaskContext::for_dispatch_on(
+            &crate::backend_task::BackendTask::None,
+            network,
+        )
+    }
+
+    pub(crate) fn signing_key() -> IdentityPublicKey {
         IdentityPublicKeyV0 {
             id: 0,
             key_type: KeyType::ECDSA_HASH160,

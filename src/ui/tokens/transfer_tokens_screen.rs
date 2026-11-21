@@ -1,6 +1,7 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -68,6 +69,8 @@ pub struct TransferTokensScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
+    /// The transfer in flight; only its own result or error ends the wait.
+    transfer_request: Option<BackendTaskContext>,
 }
 
 impl TransferTokensScreen {
@@ -131,6 +134,7 @@ impl TransferTokensScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
+            transfer_request: None,
         }
     }
 
@@ -221,6 +225,9 @@ impl TransferTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        if self.transfer_request.is_some() {
+            return AppAction::None;
+        }
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
@@ -286,7 +293,7 @@ impl TransferTokensScreen {
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
 
-        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+        let (action, request) = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::TransferTokens {
                 sending_identity: identity,
                 recipient_id: receiver_id,
@@ -297,6 +304,9 @@ impl TransferTokensScreen {
                 public_note: self.public_note.clone(),
             },
         )))
+        .with_dispatch_contexts(self.app_context.network);
+        self.transfer_request = request;
+        action
     }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
         crate::ui::helpers::show_success_screen_with_info(
@@ -320,9 +330,17 @@ impl ScreenLike for TransferTokensScreen {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.transfer_request.as_ref() == Some(context) {
+            self.transfer_request = None;
+        }
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        if self.transfer_request.is_none()
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.transfer_tokens_status = TransferTokensStatus::Error;
         }
@@ -331,6 +349,7 @@ impl ScreenLike for TransferTokensScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
         {
+            self.transfer_request = None;
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
@@ -602,11 +621,15 @@ impl ScreenLike for TransferTokensScreen {
 
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
+                let in_flight = self.transfer_request.is_some();
                 let ready = self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
-                    && has_enough_balance;
-                let hover_text = if !has_enough_balance {
+                    && has_enough_balance
+                    && !in_flight;
+                let hover_text = if in_flight {
+                    "Wait for the current transfer to finish.".to_string()
+                } else if !has_enough_balance {
                     format!(
                         "Insufficient identity balance for fee (need at least {})",
                         format_credits_as_dash(estimated_fee)
@@ -687,5 +710,82 @@ impl ScreenLike for TransferTokensScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_contract::InsertTokensToo;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    /// A transfer is irreversible, so a second confirmation while the first
+    /// is in flight must not send it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_transfer_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let contract = context.dpns_contract();
+        context
+            .insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
+            .unwrap();
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: contract.id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &context);
+        screen.identity = Some(identity);
+        screen.selected_key = Some(
+            IdentityPublicKeyV0 {
+                id: 0,
+                key_type: KeyType::ECDSA_HASH160,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::CRITICAL,
+                read_only: false,
+                data: BinaryData::new(vec![1; 20]),
+                disabled_at: None,
+                contract_bounds: None,
+            }
+            .into(),
+        );
+        screen.amount = Some(Amount::new(5, 0));
+        screen.receiver_identity_id = Identifier::from([5; 32]).to_string(Encoding::Base58);
+
+        use crate::ui::tokens::mint_tokens_screen::tests::{
+            report_error, sent_request, unrelated_request,
+        };
+        let request = sent_request(&screen.confirmation_ok()).expect("the transfer is sent");
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_none(),
+            "a second confirmation while waiting must not send it again"
+        );
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_none(),
+            "another task's error does not end the wait"
+        );
+        report_error(&mut screen, &request.expect("the transfer's own context"));
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_some(),
+            "a failed transfer can be sent again"
+        );
     }
 }

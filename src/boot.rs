@@ -1014,17 +1014,16 @@ mod tests {
     /// so a restart while the window failure dialog is up is not refused.
     #[test]
     fn release_frees_the_vault() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store(tmp.path()).expect("create keyless vault");
-        let mut startup = with_data_dir(tmp.path(), || {
-            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
-        });
+        let Some(dir) = in_data_dir_child(keyless_vault) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir.clone()));
         assert!(startup.persist_window(), "the vault opened and is held");
 
         startup.release();
 
         assert!(startup.error().is_none());
-        AppContext::open_secret_store(tmp.path()).expect("the vault is free after release");
+        AppContext::open_secret_store(&dir).expect("the vault is free after release");
     }
 
     /// Each data folder step gets its own plain message; paths and I/O

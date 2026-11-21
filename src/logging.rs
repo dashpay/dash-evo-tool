@@ -36,7 +36,7 @@ pub fn sensitive_target_cap() -> Targets {
 }
 
 /// Duplicate of the real terminal stderr (fd 2), saved before it is redirected
-/// to the log file. Lets [`report_startup_failure_to_terminal`] surface a
+/// to the log file. Lets [`report_startup_failure`] surface a
 /// user-facing notice on the terminal even while fd 2 points at the log file.
 /// `-1` means no handle was preserved (capture skipped or `dup` failed).
 #[cfg(unix)]
@@ -592,7 +592,7 @@ fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::error::Err
 /// terminal stderr (fd 2 is redirected to the log file during a normal run),
 /// which may be /dev/null for a launch without a terminal, and appends it to
 /// the open log file. Never panics; write errors are ignored.
-pub fn report_startup_failure_to_terminal(causes: &[&dyn std::error::Error]) {
+pub fn report_startup_failure(causes: &[&dyn std::error::Error]) {
     let log_paths: Vec<PathBuf> = log_file_path().into_iter().collect();
     let message = startup_failure_message(&log_paths, causes);
     write_to_terminal(message.as_bytes());

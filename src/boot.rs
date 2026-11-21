@@ -308,7 +308,7 @@ impl eframe::App for BootApp {
 
 /// Name `failure` on the terminal and exit with `main`'s failure status.
 fn report_failure_and_exit(failure: &StartupFailure) -> ! {
-    crate::logging::report_startup_failure_to_terminal(&[&FailureNotice(failure)]);
+    crate::logging::report_startup_failure(&[&FailureNotice(failure)]);
     std::process::exit(1)
 }
 

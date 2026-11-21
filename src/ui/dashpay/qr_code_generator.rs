@@ -115,6 +115,8 @@ impl QRCodeGeneratorScreen {
         };
 
         let identity_id = identity.identity.id();
+        // The code shown may no longer be valid; only the new one is shown.
+        self.generated_qr_data = None;
         self.qr_request.dispatch_with(
             BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
                 identity: identity.clone(),
@@ -441,6 +443,35 @@ mod tests {
         assert_eq!(screen.generated_qr_data, None, "a superseded request");
         screen.display_backend_task_result(&for_second, qr_result("second"));
         assert_eq!(screen.generated_qr_data.as_deref(), Some("second"));
+    }
+
+    /// Regression: a regeneration that failed left the previous code and its
+    /// Copy control on screen, although the code may no longer be valid (for
+    /// example, its name was transferred since).
+    #[test]
+    fn a_failed_regeneration_leaves_no_earlier_code_on_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = QRCodeGeneratorScreen::new(context);
+        screen.selected_identity = Some(bare_user_identity(
+            Identifier::new([1; 32]),
+            Network::Testnet,
+        ));
+        let first = dispatch_context(screen.generate_qr_code());
+        screen.display_backend_task_result(&first, qr_result("first"));
+        assert_eq!(screen.generated_qr_data.as_deref(), Some("first"));
+
+        let again = dispatch_context(screen.generate_qr_code());
+        let refused = TaskError::ContactQrBuildFailed {
+            source: Arc::new(
+                platform_wallet::error::PlatformWalletError::InvalidIdentityData(
+                    "no DPNS name".to_string(),
+                ),
+            ),
+        };
+        screen.display_backend_task_error(&again, &refused);
+
+        assert_eq!(screen.generated_qr_data, None);
     }
 
     /// Regression: hydration lists every loaded wallet with an identity, and

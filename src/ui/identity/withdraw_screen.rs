@@ -186,15 +186,16 @@ impl WithdrawalScreen {
         }
 
         ui.horizontal(|ui| {
-            ui.label("Address:");
+            let address_label = ui.label("Address:");
 
             let hint = if self.app_context.network == Network::Mainnet {
                 "Enter Core address (X.../7...)"
             } else {
                 "Enter Core address (y.../8...)"
             };
-            let response =
-                ui.add(styled_text_edit_singleline(&mut self.withdrawal_address).hint_text(hint));
+            let response = ui
+                .add(styled_text_edit_singleline(&mut self.withdrawal_address).hint_text(hint))
+                .labelled_by(address_label.id);
 
             // Validate address when it changes
             if response.changed() {

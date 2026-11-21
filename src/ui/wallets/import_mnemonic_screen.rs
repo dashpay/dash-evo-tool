@@ -369,7 +369,7 @@ impl ImportMnemonicScreen {
         ui.vertical_centered(|ui| {
             // Select the seed phrase length
             ui.horizontal(|ui| {
-                ui.label("Seed Phrase Length:");
+                let length_label = ui.label("Seed Phrase Length:");
 
                 ComboBox::from_label("")
                     .selected_text(self.selected_seed_phrase_length.to_string())
@@ -382,7 +382,9 @@ impl ImportMnemonicScreen {
                                 length.to_string(),
                             );
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(length_label.id);
             });
 
             ui.add_space(10.0);
@@ -413,6 +415,9 @@ impl ImportMnemonicScreen {
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
                             );
+                            let word_number = i + 1;
+                            let response = response
+                                .accessible_name(format!("Recovery phrase word {word_number}"));
 
                             if response.changed() {
                                 // Update the seed_phrase_words[i]
@@ -636,8 +641,9 @@ impl ScreenLike for ImportMnemonicScreen {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Optional Password:");
+                        let label = ui.label("Optional Password:");
                         let pw_response = self.password_input.show(ui);
+                        pw_response.response.labelled_by(label.id);
                         if pw_response.changed {
                             if !self.password_input.is_empty() {
                                 let estimate = zxcvbn(self.password_input.text(), &[]);

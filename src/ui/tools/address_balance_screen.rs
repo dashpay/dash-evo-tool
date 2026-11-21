@@ -66,14 +66,14 @@ impl AddressBalanceScreen {
         ui.heading("Platform Address Balance Lookup");
         ui.add_space(10.0);
 
-        ui.label("Enter a Platform address (dash1... or tdash1...):");
+        let address_label = ui.label("Enter a Platform address (dash1... or tdash1...):");
         ui.add_space(5.0);
 
         let text_edit = styled_text_edit_singleline(&mut self.address_input)
             .hint_text("dash1... or tdash1...")
             .desired_width(500.0);
 
-        let response = ui.add(text_edit);
+        let response = ui.add(text_edit).labelled_by(address_label.id);
 
         // Submit on Enter key
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {

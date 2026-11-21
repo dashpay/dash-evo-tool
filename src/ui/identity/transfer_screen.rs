@@ -233,7 +233,7 @@ impl TransferScreen {
 
     fn render_platform_address_input(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label("Platform Address:");
+            let label = ui.label("Platform Address:");
             ui.add_space(5.0);
             ui.add(
                 styled_text_edit_singleline(&mut self.platform_address_input)
@@ -247,7 +247,8 @@ impl TransferScreen {
                         },
                     )
                     .desired_width(400.0),
-            );
+            )
+            .labelled_by(label.id);
         });
     }
 

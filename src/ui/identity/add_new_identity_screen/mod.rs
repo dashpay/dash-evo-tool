@@ -711,7 +711,9 @@ impl AddNewIdentityScreen {
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
-            });
+            })
+            .response
+            .accessible_name("Funding method");
     }
 
     /// Return the deposit chooser to its initial state so the user is never
@@ -1868,7 +1870,7 @@ mod funding_method_tests {
     use crate::model::amount::DASH_DECIMAL_PLACES;
     use crate::ui::Screen;
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid};
 
     fn different_asset_lock_inputs(seed_byte: u8) -> AssetLockInputState {
         AssetLockInputState::from_inputs([(
@@ -1943,7 +1945,7 @@ mod funding_method_tests {
             FundingMethod::UsePlatformAddress;
         screen.user_chose_funding_method = true;
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

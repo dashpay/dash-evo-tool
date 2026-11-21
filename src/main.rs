@@ -7,13 +7,26 @@ use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
 use crate::logging::{
     capture_stderr_to_file, install_alt_signal_stack, install_fatal_signal_handler,
-    report_startup_failure_to_terminal,
+    install_panic_hook, report_startup_failure_to_terminal,
 };
 
 fn main() -> eframe::Result<()> {
+    // First, so a panic in environment setup, before the logger exists, does
+    // not reach the default hook, which prints the formatted panic message.
+    install_panic_hook();
     // Single owner of dir/env/logger setup; runs again inside `BootApp` boot,
     // where the logger's `Once` guard makes the repeat a no-op.
-    let app_data_dir = prepare_environment().expect("Failed to prepare app environment");
+    // A failure here comes before the logger exists, so the terminal is the
+    // only place to name its cause; the I/O error carries no secrets.
+    let app_data_dir = match prepare_environment() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!(
+                "Dash Evo Tool could not prepare its data folder: {error}. Check that the folder exists, is a directory and is writable, then start the app again."
+            );
+            std::process::exit(1);
+        }
+    };
     // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio
@@ -26,7 +39,7 @@ fn main() -> eframe::Result<()> {
         "Starting dash-evo-tool"
     );
     check_cpu_compatibility();
-    // Initialize the Tokio runtime
+    // Initialize the multi-threaded Tokio runtime shared by all backend tasks
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
         .thread_stack_size(SDK_THREAD_STACK_SIZE)

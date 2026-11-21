@@ -300,9 +300,10 @@ impl DocumentActionScreen {
 
     /// The document ID input of Purchase and Replace, where the fetched
     /// document belongs to the ID shown.
-    fn fetched_document_id_input(&mut self, ui: &mut Ui) {
+    fn fetched_document_id_input(&mut self, ui: &mut Ui, label_id: egui::Id) {
         if ui
             .add(styled_text_edit_singleline(&mut self.document_id_input))
+            .labelled_by(label_id)
             .changed()
         {
             self.document_id_changed();
@@ -505,8 +506,9 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let label = ui.label("Document ID:");
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input))
+                .labelled_by(label.id);
         });
 
         ui.add_space(10.0);
@@ -587,7 +589,7 @@ impl DocumentActionScreen {
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
                             ui.set_min_width(400.0);
-                            ui.label("Document JSON:");
+                            let json_label = ui.label("Document JSON:");
                             if let Ok(json) = serde_json::to_string_pretty(doc) {
                                 ui.add(
                                     styled_text_edit_multiline(&mut json.clone())
@@ -595,7 +597,8 @@ impl DocumentActionScreen {
                                         .desired_rows(10)
                                         .desired_width(380.0)
                                         .interactive(false),
-                                );
+                                )
+                                .labelled_by(json_label.id);
                             } else {
                                 ui.label("Failed to serialize document.");
                             }
@@ -635,8 +638,8 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            self.fetched_document_id_input(ui);
+            let label = ui.label("Document ID:");
+            self.fetched_document_id_input(ui, label.id);
         });
 
         // Add fetch button
@@ -690,8 +693,8 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            self.fetched_document_id_input(ui);
+            let label = ui.label("Document ID:");
+            self.fetched_document_id_input(ui, label.id);
 
             if self.fetch_button(ui, "Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
@@ -766,13 +769,15 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let label = ui.label("Document ID:");
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input))
+                .labelled_by(label.id);
         });
 
         ui.horizontal(|ui| {
-            ui.label("Price (credits):");
-            ui.add(styled_text_edit_singleline(&mut self.price_input));
+            let label = ui.label("Price (credits):");
+            ui.add(styled_text_edit_singleline(&mut self.price_input))
+                .labelled_by(label.id);
         });
 
         ui.add_space(10.0);
@@ -787,13 +792,15 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
+            let label = ui.label("Document ID:");
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input))
+                .labelled_by(label.id);
         });
 
         ui.horizontal(|ui| {
-            ui.label("Recipient Identity:");
-            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input));
+            let label = ui.label("Recipient Identity:");
+            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input))
+                .labelled_by(label.id);
         });
 
         ui.add_space(10.0);
@@ -821,7 +828,7 @@ impl DocumentActionScreen {
                     } else {
                         format!("{}:", prop_name)
                     };
-                    ui.label(label);
+                    let label_id = ui.label(label).id;
                     match &schema.property_type {
                         DocumentPropertyType::U128
                         | DocumentPropertyType::I128
@@ -840,7 +847,8 @@ impl DocumentActionScreen {
                                     .hint_text("integer")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::F64 => {
                             let dark_mode = ui.style().visuals.dark_mode;
@@ -849,7 +857,8 @@ impl DocumentActionScreen {
                                     .hint_text("floating-point")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::String(size) => {
                             let dark_mode = ui.style().visuals.dark_mode;
@@ -862,7 +871,8 @@ impl DocumentActionScreen {
                                 } else {
                                     text_edit
                                 }
-                            });
+                            })
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::ByteArray(_size) => {
                             let dark_mode = ui.style().visuals.dark_mode;
@@ -871,7 +881,8 @@ impl DocumentActionScreen {
                                     .hint_text("hex or base64")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::Identifier
                         | DocumentPropertyType::IdentifierWithReference(_) => {
@@ -881,14 +892,19 @@ impl DocumentActionScreen {
                                     .hint_text("base58 identifier")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::Boolean => {
                             let mut checked = matches!(
                                 val.to_ascii_lowercase().as_str(),
                                 "true" | "1" | "yes" | "on"
                             );
-                            if ui.checkbox(&mut checked, "").changed() {
+                            if ui
+                                .checkbox(&mut checked, "")
+                                .labelled_by(label_id)
+                                .changed()
+                            {
                                 *val = checked.to_string();
                             }
                         }
@@ -899,7 +915,8 @@ impl DocumentActionScreen {
                                     .hint_text("unix-ms")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::TypedArray(_) => {
                             ui.label(UNEDITABLE_FIELD_NOTICE);
@@ -913,7 +930,8 @@ impl DocumentActionScreen {
                                     .hint_text("JSON value")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                     }
                     ui.end_row();
@@ -2509,7 +2527,7 @@ mod tests {
                     screen.broadcast_status = BroadcastStatus::Fetching;
                 }
 
-                let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+                let mut harness = Harness::builder()
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2582,7 +2600,7 @@ mod tests {
                 screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
                 screen.broadcast_status = status;
 
-                let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+                let mut harness = Harness::builder()
                     .with_size(egui::vec2(1200.0, 800.0))
                     .build_ui_state(
                         |ui, screen: &mut DocumentActionScreen| {
@@ -2683,7 +2701,7 @@ mod tests {
         screen.original_doc = Some(DocumentV0::default().into());
         screen.field_inputs.insert("label".into(), "old".into());
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {
@@ -2727,7 +2745,7 @@ mod tests {
         screen.identities_map =
             HashMap::from([(alice.identity.id(), alice), (bob.identity.id(), bob)]);
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {

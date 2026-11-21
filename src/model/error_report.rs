@@ -201,7 +201,7 @@ pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironm
              The app data folder holds my wallet keys. \
              Do not suggest deleting or resetting the app data folder. \
              Never suggest moving or deleting its secrets folder. \
-             If the message lists steps, explain those steps instead of suggesting others. \
+             If the message lists steps, start with those steps, and do not suggest moving or deleting any other files. \
              Never ask me for my recovery phrase, private keys or passwords.\n\n\
              Background you can read:\n\
              - Dash Evo Tool user docs: https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/\n\
@@ -563,7 +563,7 @@ mod tests {
 
     /// The question tells the assistant never to ask for wallet secrets, never
     /// to suggest deleting or resetting the data folder or touching its secrets
-    /// folder, and to explain the message's own steps rather than add others.
+    /// folder, and to start with the message's own steps without moving or deleting other files.
     #[test]
     fn question_forbids_asking_for_secrets_and_deleting_wallet_data() {
         let report = ErrorReport::new("Message.", "Details");
@@ -572,7 +572,7 @@ mod tests {
             "Never ask me for my recovery phrase, private keys or passwords.",
             "Do not suggest deleting or resetting the app data folder.",
             "Never suggest moving or deleting its secrets folder.",
-            "If the message lists steps, explain those steps instead of suggesting others.",
+            "If the message lists steps, start with those steps, and do not suggest moving or deleting any other files.",
         ] {
             assert!(question.contains(part), "{part} missing:\n{question}");
         }

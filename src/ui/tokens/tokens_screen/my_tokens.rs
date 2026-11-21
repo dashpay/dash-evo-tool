@@ -850,7 +850,7 @@ impl TokensScreen {
                     action |= self.render_purchase_action(itb, dark_mode, blocked, ui);
                 }
                 TokenRowAction::SetPrice => {
-                    if ui.button("Set Price").clicked() {
+                    if token_action_button(ui, "Set Price", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::SetTokenPriceScreen(SetTokenPriceScreen::new(info, app_context))
                         });
@@ -1306,9 +1306,28 @@ mod tests {
         actions: IdentityTokenAvailableActions,
         range: Range<usize>,
     ) -> Vec<String> {
+        rendered_actions(actions, range, None)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect()
+    }
+
+    /// The buttons `render_actions` draws for `actions` within `range`, in
+    /// order, with whether each is enabled, for an identity whose token
+    /// actions have `availability`.
+    fn rendered_actions(
+        actions: IdentityTokenAvailableActions,
+        range: Range<usize>,
+        availability: Option<crate::model::token::TokenActionAvailability>,
+    ) -> Vec<(String, bool)> {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        if let Some(availability) = availability {
+            screen
+                .token_action_availability
+                .insert(Identifier::from([1; 32]), availability);
+        }
         let token_id = Identifier::from([42; 32]);
         let token_configuration: dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration =
             TokenConfigurationV0::default_most_restrictive().into();
@@ -1347,8 +1366,40 @@ mod tests {
         use egui_kittest::kittest::NodeT;
         harness
             .query_all_by_role(egui::accesskit::Role::Button)
-            .filter_map(|button| button.accesskit_node().label())
+            .filter_map(|button| {
+                let node = button.accesskit_node();
+                Some((node.label()?, !node.is_disabled()))
+            })
             .collect()
+    }
+
+    /// While the identity's wallet is not open, every transaction button of
+    /// its row is disabled; viewing claims sends nothing and stays enabled.
+    #[test]
+    fn every_token_transaction_button_waits_for_the_identitys_wallet() {
+        let all = IdentityTokenAvailableActions {
+            can_claim: true,
+            can_estimate: false,
+            can_mint: true,
+            can_burn: true,
+            can_freeze: true,
+            can_unfreeze: true,
+            can_destroy: true,
+            can_do_emergency_action: true,
+            can_maybe_purchase: false,
+            can_set_price: true,
+            can_transfer: true,
+            can_update_config: true,
+        };
+        let shown = rendered_actions(
+            all,
+            0..128,
+            Some(crate::model::token::TokenActionAvailability::WalletNotOpen),
+        );
+        assert_eq!(shown.len(), 12, "{shown:?}");
+        for (label, enabled) in shown {
+            assert_eq!(enabled, label == "View Claims", "{label}");
+        }
     }
 
     /// Regression: Pause and Resume took a position only when shown, so with

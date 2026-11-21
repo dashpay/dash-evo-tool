@@ -59,6 +59,34 @@ async fn standalone_storage_status_does_not_initialize_a_profile() {
     );
 }
 
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_tool_call_reports_the_startup_cause() {
+    use crate::config::{ConfigError, EnvFileError};
+    use crate::mcp::server::DashMcpService;
+    use crate::mcp::tools::{EmptyParams, network::NetworkTool};
+    use rmcp::handler::server::router::tool::AsyncTool;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A malformed first line stops dotenvy before it sets any variable.
+    std::fs::write(
+        dir.path().join(".env"),
+        "MAINNET_core_host=\"unterminated\n",
+    )
+    .expect("write .env");
+    let _override = DataDirOverride::new(dir.path());
+    let error = NetworkTool::invoke(&DashMcpService::new_lazy(), EmptyParams {})
+        .await
+        .err()
+        .expect("startup fails on the malformed .env");
+
+    let cause = ConfigError::InvalidEnvFile {
+        source: EnvFileError::Other,
+    }
+    .to_string();
+    assert!(error.to_string().contains(&cause), "got: {error}");
+}
+
 #[cfg(feature = "mcp")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identity_list_reports_only_the_persisted_wallet_binding() {

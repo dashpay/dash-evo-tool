@@ -32,3 +32,28 @@ fn environment_setup_failure_names_its_cause_on_stderr() {
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert!(!stderr.contains("<redacted"), "{stderr}");
 }
+
+/// When no window can open, a launch without a terminal (stderr to
+/// /dev/null) and with logging filtered off must still leave the cause in
+/// the log file.
+#[cfg(target_os = "linux")]
+#[test]
+fn window_failure_is_written_to_the_log_file() {
+    let data_dir = tempfile::tempdir().expect("temp dir");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_dash-evo-tool"))
+        .env("DASH_EVO_DATA_DIR", data_dir.path())
+        .env("XDG_DATA_HOME", data_dir.path())
+        .env("RUST_LOG", "off")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WAYLAND_SOCKET")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .expect("run the GUI binary");
+    let log = std::fs::read_to_string(data_dir.path().join("det.log")).expect("read det.log");
+
+    assert!(!output.status.success(), "start-up must fail:\n{log}");
+    assert!(log.contains("failed to start"), "{log}");
+    assert!(log.contains("Cause:"), "{log}");
+}

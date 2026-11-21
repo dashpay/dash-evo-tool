@@ -98,8 +98,15 @@ impl QRCodeGeneratorScreen {
             .as_ref()
             .and_then(|identity| qr_wallet(&self.app_context, identity));
         self.wallet_open_attempted = false;
-        self.generated_qr_data = None;
+        self.clear_code();
         self.qr_request.clear();
+    }
+
+    /// Drop the shown code and the image drawn from it: the code carries a
+    /// key, so none is kept once it is off screen.
+    fn clear_code(&mut self) {
+        self.generated_qr_data = None;
+        self.qr_code = None;
     }
 
     /// Dispatch the auto-accept QR build to the backend, which resolves the key
@@ -115,14 +122,12 @@ impl QRCodeGeneratorScreen {
         };
 
         let identity_id = identity.identity.id();
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
+            identity: identity.clone(),
+        }));
         // The code shown may no longer be valid; only the new one is shown.
-        self.generated_qr_data = None;
-        self.qr_request.dispatch_with(
-            BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
-                identity: identity.clone(),
-            })),
-            identity_id,
-        )
+        self.clear_code();
+        self.qr_request.dispatch_with(task, identity_id)
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -230,7 +235,7 @@ impl QRCodeGeneratorScreen {
 
                         if self.generated_qr_data.is_some()
                             && ui.button("Clear").clicked() {
-                                self.generated_qr_data = None;
+                                self.clear_code();
                             }
                     });
                 }
@@ -472,6 +477,35 @@ mod tests {
         screen.display_backend_task_error(&again, &refused);
 
         assert_eq!(screen.generated_qr_data, None);
+    }
+
+    /// The image keeps the code it last drew, a bearer key, so dropping the
+    /// shown code on regeneration or an identity change drops the image too.
+    #[test]
+    fn a_dropped_code_leaves_no_cached_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = QRCodeGeneratorScreen::new(context);
+        screen.selected_identity = Some(bare_user_identity(
+            Identifier::new([1; 32]),
+            Network::Testnet,
+        ));
+        let drawn = || {
+            let mut image = QrCodeImage::new();
+            let mut output = egui::Context::default().run_ui(Default::default(), |ui| {
+                image.show(ui, "dash:?du=alice&dapk=key");
+            });
+            output.textures_delta.clear();
+            Some(image)
+        };
+
+        screen.qr_code = drawn();
+        let _ = screen.generate_qr_code();
+        assert_eq!(screen.qr_code.as_ref().and_then(QrCodeImage::value), None);
+
+        screen.qr_code = drawn();
+        screen.identity_changed();
+        assert_eq!(screen.qr_code.as_ref().and_then(QrCodeImage::value), None);
     }
 
     /// Regression: hydration lists every loaded wallet with an identity, and

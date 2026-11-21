@@ -1363,6 +1363,84 @@ fn token_subnav_labels_stay_on_one_line() {
     });
 }
 
+/// The send confirmation keeps Tab off the form behind it, and confirming it
+/// dispatches the amount and recipient it shows, even if the form behind it
+/// is edited while it is open.
+#[test]
+fn the_send_confirmation_dispatches_what_it_shows() {
+    use dash_evo_tool::backend_task::BackendTask;
+    use dash_evo_tool::backend_task::tokens::TokenTask;
+    use dash_evo_tool::model::amount::Amount;
+    use dash_evo_tool::ui::tokens::transfer_tokens_screen::{SEND_LABEL, send_question};
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use egui::accesskit::Role;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.harness.state_mut().test_capture_dispatches();
+        let mut sender = f.info.identity.clone();
+        sender.identity.set_balance(1_000_000_000);
+        f.app_context
+            .update_local_qualified_identity(&sender)
+            .expect("fund the sender");
+        let shown = Identifier::from([0x55; 32]);
+        let other = Identifier::from([0x66; 32]).to_string(Encoding::Base58);
+        f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
+        f.fill_text_input(0, "1");
+        f.fill_text_input(1, &shown.to_string(Encoding::Base58));
+        f.click_button(SEND_LABEL);
+        let amount = Amount::new(100_000_000, 8).with_unit_name(SMOKE_TOKEN);
+        let question = send_question(&amount, &shown.to_string(Encoding::Base58));
+        assert!(f.harness.query_by_label(&question).is_some());
+
+        // The dialog has no text field, so any focused one is behind it.
+        for _ in 0..60 {
+            f.harness.key_press(egui::Key::Tab);
+            f.harness.run_steps(1);
+            assert!(
+                !f.harness
+                    .query_all_by_role(Role::TextInput)
+                    .any(|node| node.accesskit_node().is_focused()),
+                "Tab reaches a field behind the confirmation"
+            );
+        }
+        for (label, text) in [("Amount:", "2"), ("Identity ID", other.as_str())] {
+            f.harness
+                .query_all_by_role_and_label(Role::TextInput, label)
+                .next()
+                .unwrap_or_else(|| panic!("no {label:?} field"))
+                .set_text_value_accesskit(text);
+            f.harness.run_steps(3);
+        }
+        assert!(
+            f.harness.query_by_label(&question).is_some(),
+            "the confirmation still shows what it was opened for"
+        );
+        f.click_button(SEND_LABEL);
+
+        let dispatched: Vec<_> = f
+            .harness
+            .state()
+            .test_captured_dispatches()
+            .iter()
+            .filter_map(|(task, _)| match task {
+                BackendTask::TokenTask(task) => match task.as_ref() {
+                    TokenTask::TransferTokens {
+                        recipient_id,
+                        amount,
+                        ..
+                    } => Some((*recipient_id, *amount)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dispatched, vec![(shown, 100_000_000)]);
+    });
+}
+
 /// The send screen asks in Send wording, and its success line names the
 /// amount and recipient that were confirmed, even if the recipient field is
 /// edited while the send runs.

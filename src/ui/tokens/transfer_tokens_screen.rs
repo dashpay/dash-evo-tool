@@ -86,7 +86,8 @@ pub struct TransferTokensScreen {
     transfer_tokens_status: TransferTokensStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
-    confirmation_dialog: Option<ConfirmationDialog>,
+    /// The open send confirmation and the send it was opened for.
+    confirmation_dialog: Option<PendingSend>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -97,6 +98,16 @@ pub struct TransferTokensScreen {
     /// The amount and recipient of the send in flight, as confirmed; the form
     /// stays editable, so the success line must not read it.
     sent: Option<(Amount, String)>,
+}
+
+/// An open send confirmation and the send it names: the amount and recipient
+/// are read and checked when the dialog opens, and that send is dispatched on
+/// confirm.
+struct PendingSend {
+    dialog: ConfirmationDialog,
+    amount: Amount,
+    recipient_id: Identifier,
+    recipient: String,
 }
 
 impl TransferTokensScreen {
@@ -228,43 +239,20 @@ impl TransferTokensScreen {
         self.amount.clone().unwrap_or(Amount::new(0, 0))
     }
 
-    fn send_confirmation(&self) -> ConfirmationDialog {
-        let msg = send_question(&self.amount_or_zero(), &self.receiver_identity_id);
-        ConfirmationDialog::new(CONFIRM_SEND_TITLE, msg)
-            .confirm_text(Some(SEND_LABEL))
-            .cancel_text(Some("Cancel"))
-    }
-
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let dialog = self.send_confirmation();
-        let confirmation_dialog = self.confirmation_dialog.get_or_insert(dialog);
-
-        let response = confirmation_dialog.show(ui);
-        match response.inner.dialog_response {
-            Some(ConfirmationStatus::Confirmed) => {
-                self.confirmation_dialog = None;
-                self.confirmation_ok()
-            }
-            Some(ConfirmationStatus::Canceled) => {
-                self.confirmation_dialog = None;
-                AppAction::None
-            }
-            None => AppAction::None,
-        }
-    }
-
-    fn confirmation_ok(&mut self) -> AppAction {
-        if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
+    /// Ask the user to confirm the send in the form. The amount and recipient
+    /// are captured now and the dialog blocks the form behind it, so what the
+    /// user confirms is what is sent.
+    fn open_send_confirmation(&mut self) {
+        let Some(amount) = self.amount.clone().filter(|amount| amount.value() > 0) else {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Invalid amount",
                 MessageType::Error,
             );
-            return AppAction::None;
-        }
-
-        let Ok(receiver_id) = Identifier::from_string_try_encodings(
+            return;
+        };
+        let Ok(recipient_id) = Identifier::from_string_try_encodings(
             &self.receiver_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
@@ -277,9 +265,41 @@ impl TransferTokensScreen {
                 "Invalid receiver",
                 MessageType::Error,
             );
+            return;
+        };
+        let recipient = self.receiver_identity_id.clone();
+        let dialog =
+            ConfirmationDialog::new(CONFIRM_SEND_TITLE, send_question(&amount, &recipient))
+                .confirm_text(Some(SEND_LABEL))
+                .cancel_text(Some("Cancel"))
+                .blocks_input(true);
+        self.confirmation_dialog = Some(PendingSend {
+            dialog,
+            amount,
+            recipient_id,
+            recipient,
+        });
+    }
+
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.as_mut() else {
             return AppAction::None;
         };
+        match pending.dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirmation_dialog = None;
+                AppAction::None
+            }
+            None => AppAction::None,
+        }
+    }
 
+    /// The user confirmed: send what the confirmation was opened for.
+    fn confirmation_ok(&mut self) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.take() else {
+            return AppAction::None;
+        };
         // Validate signing key before transitioning to waiting state
         let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
         else {
@@ -311,10 +331,10 @@ impl TransferTokensScreen {
         };
 
         self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
-        self.sent = Some((self.amount_or_zero(), self.receiver_identity_id.clone()));
+        self.sent = Some((pending.amount.clone(), pending.recipient));
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
-            sending_text(&self.amount_or_zero()),
+            sending_text(&pending.amount),
             MessageType::Info,
         );
         handle.with_elapsed();
@@ -323,8 +343,8 @@ impl TransferTokensScreen {
         AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::TransferTokens {
                 sending_identity: identity,
-                recipient_id: receiver_id,
-                amount: self.amount_or_zero().value(),
+                recipient_id: pending.recipient_id,
+                amount: pending.amount.value(),
                 data_contract,
                 token_position: self.identity_token_balance.token_position,
                 signing_key,
@@ -670,7 +690,7 @@ impl ScreenLike for TransferTokensScreen {
                             MessageType::Error,
                         );
                     } else {
-                        self.confirmation_dialog = Some(self.send_confirmation());
+                        self.open_send_confirmation();
                     }
                 }
 

@@ -74,6 +74,11 @@ pub enum TokenTask {
         prepared: Box<crate::model::token_creator::registration::PreparedRegistration>,
     },
     CheckTokenCreation,
+    /// Save the receipt of a creation Platform already confirmed, from that
+    /// proven record and without reading the network.
+    SaveConfirmedTokenCreation {
+        record: Box<crate::model::token_creator::registration::RegistrationRecord>,
+    },
 
     RegisterTokenContract {
         identity: QualifiedIdentity,
@@ -274,6 +279,9 @@ impl AppContext {
                 self.submit_token_creation(sdk, *prepared).await
             }
             TokenTask::CheckTokenCreation => self.check_token_creation(sdk).await,
+            TokenTask::SaveConfirmedTokenCreation { record } => {
+                self.save_confirmed_token_creation(*record)
+            }
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,

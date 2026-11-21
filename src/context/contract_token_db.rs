@@ -581,6 +581,51 @@ impl AppContext {
         Ok(())
     }
 
+    /// Whether a token entry is stored for `token_id`, readable or not.
+    pub(crate) fn has_token_entry(
+        &self,
+        token_id: &Identifier,
+    ) -> std::result::Result<bool, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredToken>(DetScope::Global, &token_key(token_id))
+            .map_err(token_err)?
+            .is_some())
+    }
+
+    /// Stores a token entry this build cannot decode.
+    #[cfg(test)]
+    pub(crate) fn put_unreadable_token_entry_for_test(
+        &self,
+        token_id: &Identifier,
+        contract_id: &Identifier,
+    ) {
+        let stored = StoredToken {
+            config_bytes: vec![0xff; 4],
+            alias: "Unreadable".into(),
+            data_contract_id: contract_id.to_buffer(),
+            position: 0,
+        };
+        self.det_kv()
+            .unwrap()
+            .put(DetScope::Global, &token_key(token_id), &stored)
+            .unwrap();
+    }
+
+    /// Stores a contract entry this build cannot decode.
+    #[cfg(test)]
+    pub(crate) fn put_unreadable_contract_entry_for_test(&self, contract_id: &Identifier) {
+        let stored = StoredContract {
+            contract_bytes: vec![0xff; 4],
+            alias: None,
+        };
+        self.wallet_backend()
+            .unwrap()
+            .kv()
+            .put(DetScope::Global, &contract_key(contract_id), &stored)
+            .unwrap();
+    }
+
     /// Read the canonical [`TokenConfiguration`] stored at
     /// `det:token:<token_id>`, decoded with the pre-C7 bincode layout.
     pub fn get_token_config_for_id(

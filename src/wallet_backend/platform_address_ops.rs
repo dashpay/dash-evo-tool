@@ -284,7 +284,7 @@ impl WalletBackend {
     /// poisoned or inconsistent wallet map refuses the spend without a
     /// passphrase prompt. `None` when platform-wallet has not registered the
     /// wallet yet: [`Self::resolve_or_register_wallet`] then registers it.
-    async fn resolve_paying_wallet(
+    pub(crate) async fn resolve_paying_wallet(
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<Option<Arc<platform_wallet::PlatformWallet>>, TaskError> {
@@ -317,30 +317,24 @@ impl WalletBackend {
 
     /// Make the DET-owned inputs of a spend submitted outside platform-wallet
     /// (address-funded identity registration) reconcilable upstream before
-    /// it is broadcast, as the spends above do. The outcome decides where the
-    /// spend's proof is recorded: a wallet platform-wallet does not hold has
-    /// nothing to prepare, and its proof updates DET's view alone. Any other
-    /// lookup failure refuses the spend before it is broadcast.
+    /// it is broadcast, as the spends above do, inside its seed session:
+    /// `resolved` comes from [`Self::resolve_paying_wallet`] before the
+    /// session, and a wallet platform-wallet has not registered yet is
+    /// registered with `seed` first, so the spend's proof settles upstream.
     pub(crate) async fn prepare_platform_address_slots(
         &self,
         seed_hash: &WalletSeedHash,
+        resolved: Option<Arc<platform_wallet::PlatformWallet>>,
+        seed: &[u8; 64],
         path_index: &PlatformPathIndex,
         addresses: impl IntoIterator<Item = PlatformAddress>,
     ) -> Result<PreparedPlatformSpend, TaskError> {
-        match self.resolve_wallet(seed_hash).await {
-            Ok(wallet) => {
-                self.ensure_platform_address_slots(&wallet, path_index, addresses)
-                    .await?;
-                Ok(PreparedPlatformSpend(Some(wallet)))
-            }
-            Err(TaskError::WalletNotLoaded { .. } | TaskError::WalletLockedNotLoaded { .. }) => {
-                tracing::debug!(
-                    "platform-wallet does not hold the paying wallet; no slots to prepare"
-                );
-                Ok(PreparedPlatformSpend(None))
-            }
-            Err(error) => Err(error),
-        }
+        let wallet = self
+            .resolve_or_register_wallet(seed_hash, resolved, seed)
+            .await?;
+        self.ensure_platform_address_slots(&wallet, path_index, addresses)
+            .await?;
+        Ok(PreparedPlatformSpend(Some(wallet)))
     }
 }
 
@@ -675,15 +669,21 @@ mod tests {
     /// A wallet DET holds, with its seed in the vault, that platform-wallet
     /// has not registered yet: a fresh wallet whose registration is still
     /// running, or a migrated protected wallet before unlock.
-    /// With a `password`, the wallet is protected and closed DET-side.
+    /// Without a `password` the seed is an unprotected vault entry; with one,
+    /// the wallet is protected, closed DET-side, and its seed sealed with it.
     async fn wallet_not_registered_upstream(
         ctx: &Arc<AppContext>,
-        password: Option<&crate::model::secret::Secret>,
+        password: Option<&str>,
     ) -> (WalletSeedHash, PlatformPathIndex, PlatformAddress) {
         let seed = crate::test_support::keys::seed();
-        let mut wallet =
-            Wallet::new_from_seed(seed, Network::Testnet, Some("payer".to_string()), password)
-                .expect("build wallet");
+        let wallet_password = password.map(crate::model::secret::Secret::new);
+        let mut wallet = Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("payer".to_string()),
+            wallet_password.as_ref(),
+        )
+        .expect("build wallet");
         let address = wallet
             .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
             .expect("platform address");
@@ -697,10 +697,15 @@ mod tests {
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
         let backend = ctx.wallet_backend().expect("wired backend");
-        backend
-            .wallet_seeds()
-            .set_raw(&seed_hash, &seed)
-            .expect("seed in the vault");
+        match password {
+            Some(password) => backend.wallet_seeds().set_protected(
+                &seed_hash,
+                &seed,
+                &platform_wallet_storage::secrets::SecretString::new(password),
+            ),
+            None => backend.wallet_seeds().set_raw(&seed_hash, &seed),
+        }
+        .expect("seed in the vault");
         assert!(!backend.is_wallet_registered(&seed_hash), "precondition");
         (seed_hash, path_index, owned)
     }
@@ -763,15 +768,22 @@ mod tests {
     }
 
     /// A protected wallet DET holds closed (`WalletLockedNotLoaded` before the
-    /// spend) is registered with the seed its session opens.
+    /// spend) is registered with the seed its session opens, behind the one
+    /// passphrase prompt that session asks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn transfer_from_a_locked_wallet_not_registered_upstream_registers_it() {
+        use crate::wallet_backend::secret_prompt::SecretPrompt;
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        const PASSWORD: &str = "locked-wallet-marker";
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(PASSWORD)]));
+        ctx.install_secret_prompt(Arc::clone(&prompt) as Arc<dyn SecretPrompt>);
+        let ctx = crate::context::test_support::wire_wallet_backend(ctx).await;
         let backend = ctx.wallet_backend().expect("wired backend");
-        let password = crate::model::secret::Secret::new("locked-wallet-marker");
         let (seed_hash, path_index, owned) =
-            wallet_not_registered_upstream(&ctx, Some(&password)).await;
+            wallet_not_registered_upstream(&ctx, Some(PASSWORD)).await;
         assert!(matches!(
             backend.resolve_wallet(&seed_hash).await,
             Err(TaskError::WalletLockedNotLoaded { .. })
@@ -787,6 +799,7 @@ mod tests {
             )
             .await;
         assert_spend_registered_the_wallet(&backend, &seed_hash, result);
+        assert_eq!(prompt.ask_count(), 1, "one passphrase prompt");
     }
 
     /// The identity top-up, which the MCP tool also reaches, likewise.
@@ -884,10 +897,9 @@ mod tests {
         );
     }
 
-    /// A wallet whose platform-wallet mapping is published only after its
-    /// slots were prepared keeps the proof of a spend: preparing found nothing
-    /// to extend, so the proof goes to DET's view instead of a second lookup
-    /// that would reconcile against a pool missing the spent slot.
+    /// A spend prepared for DET's view alone keeps its proof there even when
+    /// the platform-wallet mapping appears before the proof is handled: no
+    /// second lookup reconciles against a pool missing the spent slot.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spend_proof_follows_the_prepared_outcome_when_the_mapping_appears_late() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -907,7 +919,6 @@ mod tests {
         }
         let spent = issued.expect("slot 20");
         let funding = PlatformAddress::try_from(spent.clone()).expect("p2pkh");
-        let path_index = PlatformPathIndex::from_wallet(&wallet, Network::Testnet);
         // DET holds the wallet; no upstream registration starts on its own,
         // so the call below is the mapping's only publisher.
         let seed_hash = wallet.seed_hash();
@@ -915,11 +926,7 @@ mod tests {
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::clone(&wallet_arc));
 
-        let prepared = backend
-            .prepare_platform_address_slots(&seed_hash, &path_index, [funding])
-            .await
-            .expect("an unmapped wallet has nothing to prepare");
-        assert!(prepared.0.is_none(), "the proof goes to DET's view alone");
+        let prepared = PreparedPlatformSpend(None);
         backend
             .register_wallet_from_seed(&seed_hash, &seed, Some(0))
             .await
@@ -943,17 +950,15 @@ mod tests {
         );
     }
 
-    /// A poisoned wallet map is not an unloaded wallet: preparing refuses
-    /// before anything is broadcast.
+    /// A poisoned wallet map is not an unloaded wallet: the spend is refused
+    /// before its seed session, so before anything is broadcast.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn preparing_slots_refuses_a_poisoned_wallet_map() {
         let dir = tempfile::tempdir().expect("temp dir");
         let ctx = wired_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
-        let (seed_hash, wallet_arc, owned) =
+        let (seed_hash, _, _) =
             wallet_with_platform_address(&ctx, rand::random::<[u8; 64]>()).await;
-        let path_index =
-            PlatformPathIndex::from_wallet(&wallet_arc.read().expect("wallet"), Network::Testnet);
         let poisoner = Arc::clone(&backend);
         let _ = std::thread::spawn(move || {
             let _guard = poisoner.inner.id_map.write().expect("id map");
@@ -961,9 +966,7 @@ mod tests {
         })
         .join();
 
-        let prepared = backend
-            .prepare_platform_address_slots(&seed_hash, &path_index, [owned])
-            .await;
+        let prepared = backend.resolve_paying_wallet(&seed_hash).await;
         assert!(
             matches!(prepared, Err(TaskError::LockPoisoned { .. })),
             "{prepared:?}"

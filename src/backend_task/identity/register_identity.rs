@@ -334,12 +334,10 @@ impl AppContext {
         let network = self.network;
         let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
         let backend = self.wallet_backend()?;
-        let prepared = backend
-            .prepare_platform_address_slots(&wallet_seed_hash, &path_index, inputs.keys().copied())
-            .await?;
+        let resolved = backend.resolve_paying_wallet(&wallet_seed_hash).await?;
 
         // Send to Platform using address funding and wait for response
-        let put_result = backend
+        let (prepared, put_result) = backend
             .secret_access()
             .with_secret_session(
                 &SecretScope::HdSeed {
@@ -348,8 +346,17 @@ impl AppContext {
                 async |session| {
                     let plaintext = session.plaintext();
                     let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                    let prepared = backend
+                        .prepare_platform_address_slots(
+                            &wallet_seed_hash,
+                            resolved,
+                            seed,
+                            &path_index,
+                            inputs.keys().copied(),
+                        )
+                        .await?;
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
-                    Ok(identity
+                    let put_result = identity
                         .put_with_address_funding(
                             &sdk,
                             inputs,
@@ -358,7 +365,8 @@ impl AppContext {
                             &signer,
                             None,
                         )
-                        .await)
+                        .await;
+                    Ok((prepared, put_result))
                 },
             )
             .await?;
@@ -460,8 +468,19 @@ mod tests {
     /// proof afterwards debits it upstream (where Shield reads it) too.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registration_prepares_its_funding_slots_before_broadcast() {
+        registration_settles_its_funding_slot_upstream(true).await;
+    }
+
+    /// A wallet DET holds that platform-wallet has not registered yet (fresh,
+    /// or a migrated protected wallet before unlock) is registered by the
+    /// identity registration itself, so its spend settles upstream too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_from_a_wallet_not_registered_upstream_registers_it() {
+        registration_settles_its_funding_slot_upstream(false).await;
+    }
+
+    async fn registration_settles_its_funding_slot_upstream(registered_upstream: bool) {
         use crate::model::wallet::Wallet;
-        use crate::model::wallet::birth_height::WalletOrigin;
 
         let dir = tempfile::tempdir().expect("temp dir");
         // Nothing reaches a network: the SDK refuses the registration after
@@ -480,14 +499,23 @@ mod tests {
             );
         }
         let funding = PlatformAddress::try_from(issued.expect("slot 20")).expect("p2pkh");
-        let (seed_hash, wallet_arc) = ctx
-            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
-            .expect("register wallet with the context");
+        // DET holds the wallet and its seed; no upstream registration starts
+        // on its own.
+        let seed_hash = wallet.seed_hash();
+        let wallet_arc = std::sync::Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, std::sync::Arc::clone(&wallet_arc));
         let backend = ctx.wallet_backend().expect("wired backend");
         backend
-            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
-            .await
-            .expect("register wallet with the upstream manager");
+            .wallet_seeds()
+            .set_raw(&seed_hash, &seed)
+            .expect("seed in the vault");
+        if registered_upstream {
+            backend
+                .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+                .await
+                .expect("register wallet with the upstream manager");
+        }
 
         let path_index = crate::wallet_backend::PlatformPathIndex::from_wallet(
             &wallet_arc.read().expect("wallet lock"),
@@ -518,8 +546,13 @@ mod tests {
         .into_iter()
         .collect();
         // Preparing nothing more returns the registration's handle as is.
+        let resolved = backend
+            .resolve_paying_wallet(&seed_hash)
+            .await
+            .expect("wallet map");
+        assert!(resolved.is_some(), "platform-wallet holds the wallet");
         let entries = backend
-            .prepare_platform_address_slots(&seed_hash, &path_index, [])
+            .prepare_platform_address_slots(&seed_hash, resolved, &seed, &path_index, [])
             .await
             .expect("platform-wallet holds the wallet")
             .reconcile(&proof, 600, "test registration")

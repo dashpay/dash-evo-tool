@@ -721,14 +721,18 @@ mod tests {
         let spent = issued.expect("slot 20");
         let funding = PlatformAddress::try_from(spent.clone()).expect("p2pkh");
         let path_index = PlatformPathIndex::from_wallet(&wallet, Network::Testnet);
-        let (seed_hash, wallet_arc) = ctx
-            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
-            .expect("register wallet with the context");
+        // DET holds the wallet; no upstream registration starts on its own,
+        // so the call below is the mapping's only publisher.
+        let seed_hash = wallet.seed_hash();
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet_arc));
 
         let prepared = backend
             .prepare_platform_address_slots(&seed_hash, &path_index, [funding])
             .await
             .expect("an unmapped wallet has nothing to prepare");
+        assert!(prepared.0.is_none(), "the proof goes to DET's view alone");
         backend
             .register_wallet_from_seed(&seed_hash, &seed, Some(0))
             .await
@@ -773,7 +777,10 @@ mod tests {
         let prepared = backend
             .prepare_platform_address_slots(&seed_hash, &path_index, [owned])
             .await;
-        assert!(prepared.is_err(), "{prepared:?}");
+        assert!(
+            matches!(prepared, Err(TaskError::LockPoisoned { .. })),
+            "{prepared:?}"
+        );
     }
 
     fn infos(entries: &[(PlatformAddress, Credits, u32)]) -> AddressInfos {

@@ -8774,6 +8774,43 @@ mod tests {
         assert!(!identity_chip_enabled(&mut screen));
     }
 
+    /// Pay from › Identity with several identities shows the identity
+    /// picker; the harness's accessibility check needs it named.
+    #[test]
+    fn the_paying_identity_picker_is_named_for_screen_readers() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.identities_by_wallet = Some(BTreeMap::from([(
+            seed_hash,
+            vec![bound_identity(), sender_holding_a_transfer_key()],
+        )]));
+        screen.form.choose_pay_from(
+            PayFrom::Identity,
+            crate::model::send_route::PayFromKind::Identity,
+        );
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        assert!(
+            harness
+                .get_all_by_role(egui::accesskit::Role::ComboBox)
+                .any(|node| {
+                    egui_kittest::kittest::NodeT::accesskit_node(&node)
+                        .label()
+                        .as_deref()
+                        == Some("Identity")
+                }),
+            "the identity picker is shown and named by its label"
+        );
+    }
+
     /// The private balance is not spent while the Shielded tab pauses
     /// spending: the chip says why, an explicit choice resolves to no source
     /// and Auto passes over it (spec §3.1, §4.1; SND-016).

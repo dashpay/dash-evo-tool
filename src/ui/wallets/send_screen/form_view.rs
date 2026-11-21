@@ -563,7 +563,7 @@ impl WalletSendScreen {
         };
         let mut picked = None;
         ui.horizontal(|ui| {
-            ui.label("Identity");
+            let label = ui.label("Identity");
             egui::ComboBox::from_id_salt(id_salt)
                 .selected_text(
                     chosen
@@ -578,7 +578,9 @@ impl WalletSendScreen {
                             picked = Some(identity.identity.id());
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
         });
         picked
     }

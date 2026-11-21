@@ -980,11 +980,22 @@ fn power_user_gets_no_recipient_field_when_the_token_forbids_choosing() {
         f.show(Screen::MintTokensScreen(screen));
         f.harness.get_by_label("Recipient:");
 
-        let rules = f.info.token_config.distribution_rules_mut();
-        rules.set_minting_allow_choosing_destination(false);
-        rules.set_new_tokens_destination_identity(Some(Identifier::from(
-            rand::random::<[u8; 32]>(),
-        )));
+        // The mint follows the contract it is signed with; keep the token
+        // registry's copy in step with it.
+        let destination = Identifier::from(rand::random::<[u8; 32]>());
+        let dash_sdk::platform::DataContract::V1(contract) = &mut f.info.data_contract.contract
+        else {
+            panic!("a version 1 contract");
+        };
+        let signed = contract
+            .tokens
+            .get_mut(&0)
+            .expect("the token's configuration");
+        for config in [signed, &mut f.info.token_config] {
+            let rules = config.distribution_rules_mut();
+            rules.set_minting_allow_choosing_destination(false);
+            rules.set_new_tokens_destination_identity(Some(destination));
+        }
 
         for role in [UserRole::Power, UserRole::Developer] {
             f.app_context.set_user_role(role);

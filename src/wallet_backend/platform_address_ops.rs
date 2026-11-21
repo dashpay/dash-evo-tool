@@ -144,13 +144,6 @@ impl WalletBackend {
         outputs: BTreeMap<PlatformAddress, Credits>,
         fee_strategy: AddressFundsFeeStrategy,
     ) -> Result<Vec<PlatformAddressEntry>, TaskError> {
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        self.ensure_platform_address_slots(
-            &wallet,
-            path_index,
-            inputs.keys().chain(outputs.keys()).copied(),
-        )
-        .await?;
         let scope = Self::hd_scope(seed_hash);
         let changeset = self
             .inner
@@ -158,6 +151,13 @@ impl WalletBackend {
             .with_secret_session(&scope, async |session| {
                 let plaintext = session.plaintext();
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let wallet = self.resolve_or_register_wallet(seed_hash, seed).await?;
+                self.ensure_platform_address_slots(
+                    &wallet,
+                    path_index,
+                    inputs.keys().chain(outputs.keys()).copied(),
+                )
+                .await?;
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 wallet
                     .platform()
@@ -194,7 +194,6 @@ impl WalletBackend {
         core_fee_per_byte: u32,
         fee_strategy: AddressFundsFeeStrategy,
     ) -> Result<Vec<PlatformAddressEntry>, TaskError> {
-        let wallet = self.resolve_wallet(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         let changeset = self
             .inner
@@ -202,6 +201,7 @@ impl WalletBackend {
             .with_secret_session(&scope, async |session| {
                 let plaintext = session.plaintext();
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let wallet = self.resolve_or_register_wallet(seed_hash, seed).await?;
                 let path_index = prepare_path_index(seed)?;
                 self.ensure_platform_address_slots(&wallet, &path_index, inputs.keys().copied())
                     .await?;
@@ -243,32 +243,52 @@ impl WalletBackend {
     ) -> Result<(Credits, u64, Vec<PlatformAddressEntry>), TaskError> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
-        // Resolve before the secret session so an unregistered wallet fails
-        // fast without a passphrase prompt. The same handle reconciles after
-        // the broadcast, so nothing after a successful top-up can fail.
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        self.ensure_platform_address_slots(&wallet, path_index, inputs.keys().copied())
-            .await?;
         let sdk = self.sdk().clone();
         let scope = Self::hd_scope(seed_hash);
         // TODO(upstream): switch to
         // `PlatformWallet::top_up_from_addresses` once it accepts identities
         // the paying wallet does not manage and keeps the typed SDK error.
-        let (address_infos, new_balance, proof_height) = self
+        // The handle resolved before the broadcast reconciles after it, so
+        // nothing after a successful top-up can fail.
+        let (wallet, (address_infos, new_balance, proof_height)) = self
             .inner
             .secret_access
             .with_secret_session(&scope, async |session| {
                 let plaintext = session.plaintext();
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let wallet = self.resolve_or_register_wallet(seed_hash, seed).await?;
+                self.ensure_platform_address_slots(&wallet, path_index, inputs.keys().copied())
+                    .await?;
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
-                identity
+                let outcome = identity
                     .top_up_from_addresses(&sdk, inputs, &signer, None)
                     .await
-                    .map_err(map_top_up_sdk_error)
+                    .map_err(map_top_up_sdk_error)?;
+                Ok((wallet, outcome))
             })
             .await?;
         let entries = reconcile_on(&wallet, &address_infos, proof_height, "identity top-up").await;
         Ok((new_balance, proof_height, entries))
+    }
+
+    /// The platform-wallet handle for a spend from a wallet DET holds. One
+    /// platform-wallet has not registered yet (a fresh wallet whose
+    /// registration is still running, or a migrated protected wallet before
+    /// unlock) is registered now with the `seed` the spend signs with,
+    /// joining a registration already in flight. Any other lookup failure
+    /// refuses the spend before it is broadcast.
+    async fn resolve_or_register_wallet(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+    ) -> Result<Arc<platform_wallet::PlatformWallet>, TaskError> {
+        match self.resolve_wallet(seed_hash).await {
+            Err(TaskError::WalletNotLoaded { .. } | TaskError::WalletLockedNotLoaded { .. }) => {
+                self.ensure_upstream_registered(seed_hash, seed).await?;
+                self.resolve_wallet(seed_hash).await
+            }
+            resolved => resolved,
+        }
     }
 
     /// Make the DET-owned inputs of a spend submitted outside platform-wallet
@@ -626,6 +646,98 @@ mod tests {
             .await
             .expect("register wallet with the upstream manager");
         (seed_hash, wallet_arc, platform_address)
+    }
+
+    /// A wallet DET holds, with its seed in the vault, that platform-wallet
+    /// has not registered yet: a fresh wallet whose registration is still
+    /// running, or a migrated protected wallet before unlock.
+    async fn wallet_not_registered_upstream(
+        ctx: &Arc<AppContext>,
+    ) -> (WalletSeedHash, PlatformPathIndex, PlatformAddress) {
+        let seed = crate::test_support::keys::seed();
+        let mut wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("payer".to_string()), None)
+                .expect("build wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let owned = PlatformAddress::try_from(address).expect("p2pkh address");
+        let path_index = PlatformPathIndex::from_wallet(&wallet, Network::Testnet);
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let backend = ctx.wallet_backend().expect("wired backend");
+        backend
+            .wallet_seeds()
+            .set_raw(&seed_hash, &seed)
+            .expect("seed in the vault");
+        assert!(!backend.is_wallet_registered(&seed_hash), "precondition");
+        (seed_hash, path_index, owned)
+    }
+
+    fn assert_spend_registered_the_wallet<T: std::fmt::Debug>(
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+        result: Result<T, TaskError>,
+    ) {
+        assert!(
+            !matches!(
+                result,
+                Err(TaskError::WalletNotLoaded { .. } | TaskError::WalletLockedNotLoaded { .. })
+            ),
+            "the spend must not refuse a wallet DET holds: {result:?}"
+        );
+        assert!(
+            backend.is_wallet_registered(seed_hash),
+            "the spend registers the wallet with the seed it signs with"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transfer_from_a_wallet_not_registered_upstream_registers_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let backend = ctx.wallet_backend().expect("wired backend");
+        let (seed_hash, path_index, owned) = wallet_not_registered_upstream(&ctx).await;
+
+        let result = backend
+            .transfer_platform_address_credits(
+                &seed_hash,
+                &path_index,
+                BTreeMap::from([(owned, 1_000_000)]),
+                BTreeMap::from([(PlatformAddress::P2pkh([0x99; 20]), 1_000_000)]),
+                vec![dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep::DeductFromInput(0)],
+            )
+            .await;
+        assert_spend_registered_the_wallet(&backend, &seed_hash, result);
+    }
+
+    /// The identity top-up, which the MCP tool also reaches, likewise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn top_up_from_a_wallet_not_registered_upstream_registers_it() {
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let backend = ctx.wallet_backend().expect("wired backend");
+        let (seed_hash, path_index, owned) = wallet_not_registered_upstream(&ctx).await;
+        let identity = Identity::create_basic_identity(
+            dash_sdk::platform::Identifier::from([0x07; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity");
+
+        let result = backend
+            .top_up_identity_from_platform_addresses(
+                &seed_hash,
+                &path_index,
+                &identity,
+                BTreeMap::from([(owned, 1_000_000)]),
+            )
+            .await;
+        assert_spend_registered_the_wallet(&backend, &seed_hash, result);
     }
 
     #[tokio::test]

@@ -1177,7 +1177,8 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        self.tokens_state.record_error(context, error);
+        self.tokens_state
+            .record_error(context, error, crate::utils::time::now_ms());
         self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
             && !self.is_own_contact_info_dispatch(context);
         // Wrapped errors retain the unreadable-details confirmation flow.
@@ -1968,6 +1969,26 @@ mod tests {
             ])),
             "a deadline failure must be retried"
         );
+    }
+
+    /// A network switch drops the Tokens tab state, but list controls not
+    /// yet written (a filter still being typed) are written first.
+    #[test]
+    fn a_network_switch_saves_unsaved_token_list_controls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.tokens_state.prefs(&context);
+        hub.tokens_state
+            .edit_prefs(crate::model::token::IdentityTokensViewPrefs {
+                filter: "cof".into(),
+                ..Default::default()
+            });
+        hub.reset_for_context_change();
+        assert_eq!(context.identity_tokens_view_prefs().filter, "cof");
     }
 
     /// On an updated install the hub sends the Usernames card's check of the

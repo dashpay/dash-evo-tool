@@ -7,7 +7,7 @@
 use super::token_copy::*;
 use super::tokens_tab::{
     DETAIL_MONOGRAM_SIZE, RowContext, manage_action, open_stop_tracking_dialog,
-    paint_token_monogram, refresh_block_reason, render_row_status,
+    paint_token_monogram, render_row_status,
 };
 use crate::app::AppAction;
 use crate::context::AppContext;
@@ -31,7 +31,10 @@ pub fn render(
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
     let context = RowContext::new(app_context, identity);
-    if ui.link(BACK_LABEL).clicked() {
+    // The glyph is decoration; the accessible name is the label alone.
+    let back = ui.link(format!("‹ {BACK_LABEL}"));
+    back.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, BACK_LABEL));
+    if back.clicked() {
         state.detail = None;
     }
     ui.add_space(Spacing::SM);
@@ -157,7 +160,7 @@ pub fn render(
                         .disabled_tooltip(if reloading.is_some() {
                             RELOADING_DETAILS
                         } else {
-                            DISABLED_NOT_SYNCED
+                            context.block_reason
                         })
                         .clicked()
                     {
@@ -172,7 +175,7 @@ pub fn render(
                             context.synced && !refreshing,
                             ComponentStyles::secondary_button(CHECK_NOW_LABEL, dark),
                         )
-                        .disabled_tooltip(refresh_block_reason(context.synced))
+                        .disabled_tooltip(context.block_reason)
                         .clicked()
                     {
                         action |= state.check_pair_action(app_context, row.pair());

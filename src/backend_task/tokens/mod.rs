@@ -111,6 +111,9 @@ pub enum TokenTask {
         params: Box<TokenContractParams>,
     },
     QueryMyTokenBalances,
+    /// [`Self::QueryMyTokenBalances`] after a token operation that already
+    /// published its proof-derived balance. Its failure is not reported.
+    RefreshBalancesAfterOperation,
     /// Track these `(identity, token)` balances again after a "stop tracking":
     /// forget every dismissal, then refresh the identities' balances in one
     /// pass under the app-wide refresh guard.
@@ -323,7 +326,9 @@ impl AppContext {
                 .await
                 .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
             }
-            TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
+            TokenTask::QueryMyTokenBalances | TokenTask::RefreshBalancesAfterOperation => {
+                self.query_my_token_balances(sdk, sender).await
+            }
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
@@ -905,7 +910,7 @@ mod tests {
             error,
             TaskError::TokenBalanceRefreshTimeout { .. }
         ));
-        assert!(error.to_string().contains("refresh the Tokens screen"));
+        assert!(error.to_string().contains("refresh the balances"));
     }
 
     #[tokio::test]

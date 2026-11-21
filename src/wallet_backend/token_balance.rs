@@ -60,6 +60,19 @@ pub(super) fn refreshed_between(
         .collect()
 }
 
+/// Start a pass after the second of the latest stamp in `started`: upstream
+/// stamps in whole seconds, so a pass ending in that second would look unread.
+pub(super) async fn after_latest_stamp_second(started: &SyncStamps) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    if let Some(latest) = started.values().max()
+        && *latest >= now.as_secs()
+    {
+        tokio::time::sleep(std::time::Duration::from_secs(latest + 1).saturating_sub(now)).await;
+    }
+}
+
 /// DET-typed, lock-free token-balance snapshot. Maps each *synced* identity
 /// to its per-token balances. Cheap to clone-share via the enclosing `Arc`.
 #[derive(Debug, Clone, Default)]
@@ -155,21 +168,38 @@ impl TokenBalanceStore {
         (before, read.await)
     }
 
-    /// Replace the snapshot after explicit refresh. A local write stays until
-    /// a pass that started after it reads its identity: keep the ones that
-    /// landed after this network read started, and every one whose identity
-    /// is not in `refreshed`.
+    /// Replace the snapshot after explicit refresh. An identity the pass did
+    /// not read keeps its published balances, never upstream's placeholders.
+    /// A local write stays until a pass that started after it reads a new
+    /// value for its pair: keep the ones that landed after this network read
+    /// started, every one whose identity is not in `refreshed`, and every one
+    /// whose upstream value the pass left as it was in `pre_pass` (a node
+    /// behind the transaction still answers with the old balance).
     pub(super) fn replace(
         &self,
         incoming: TokenBalanceSnapshot,
+        pre_pass: &TokenBalanceSnapshot,
         before: &TokenBalanceSnapshot,
         refreshed: &BTreeSet<Identifier>,
     ) {
         self.snapshot.rcu(|current| {
             let mut next = incoming.clone();
+            for identity_id in incoming.identities.keys() {
+                if !refreshed.contains(identity_id) {
+                    match current.identities.get(identity_id) {
+                        Some(published) => next.identities.insert(*identity_id, published.clone()),
+                        None => next.identities.remove(identity_id),
+                    };
+                }
+            }
             for (&pair, marker) in &current.local_writes {
-                if current.locally_written_since(before, pair) || !refreshed.contains(&pair.0) {
-                    let (identity_id, token_id) = pair;
+                let (identity_id, token_id) = pair;
+                let unchanged =
+                    pre_pass.get(&identity_id, &token_id) == incoming.get(&identity_id, &token_id);
+                if current.locally_written_since(before, pair)
+                    || !refreshed.contains(&identity_id)
+                    || unchanged
+                {
                     next.set(identity_id, token_id, current.get(&identity_id, &token_id));
                     next.local_writes.insert(pair, Arc::clone(marker));
                 }
@@ -354,7 +384,12 @@ mod tests {
             .await;
         let refreshed = backend.token_balances().get(&identity_id, &token_id);
         backend.shutdown().await;
-        assert_eq!(outcome, Ok(()));
+        assert_eq!(
+            outcome,
+            Err(super::super::TokenBalanceSyncError::NotRead(vec![
+                identity_id
+            ]))
+        );
         assert_eq!(refreshed, Some(20));
     }
 
@@ -364,8 +399,70 @@ mod tests {
         let store = TokenBalanceStore::new();
         let synced = TokenBalanceStore::snapshot_from(synced);
         let refreshed = synced.identities.keys().copied().collect();
-        store.replace(synced, &store.load(), &refreshed);
+        store.replace(synced, &Default::default(), &store.load(), &refreshed);
         store
+    }
+
+    fn snapshot(identity: Identifier, balances: &[(Identifier, u64)]) -> TokenBalanceSnapshot {
+        TokenBalanceStore::snapshot_from([(identity, balances.iter().copied().collect())])
+    }
+
+    /// A pass that reads a new value for the pair replaces a local write made
+    /// before it, so later transfers show up.
+    #[test]
+    fn a_pass_that_read_a_new_balance_replaces_an_earlier_local_write() {
+        let (identity, token) = (id(1), id(2));
+        let store = store_with([(identity, BTreeMap::from([(token, 5)]))]);
+        store.apply(identity, token, 20);
+        store.replace(
+            snapshot(identity, &[(token, 25)]),
+            &snapshot(identity, &[(token, 5)]),
+            &store.load(),
+            &BTreeSet::from([identity]),
+        );
+        assert_eq!(store.load().get(&identity, &token), Some(25));
+        assert!(store.load().local_writes.is_empty());
+    }
+
+    /// A node a block behind the transaction answers with the balance from
+    /// before it; the proof-derived balance stays.
+    #[test]
+    fn a_pass_that_read_the_old_balance_again_keeps_an_earlier_local_write() {
+        let (identity, token) = (id(1), id(2));
+        let store = store_with([(identity, BTreeMap::from([(token, 5)]))]);
+        store.apply(identity, token, 20);
+        store.replace(
+            snapshot(identity, &[(token, 5)]),
+            &snapshot(identity, &[(token, 5)]),
+            &store.load(),
+            &BTreeSet::from([identity]),
+        );
+        assert_eq!(store.load().get(&identity, &token), Some(20));
+    }
+
+    /// An identity the pass did not read keeps what was published: upstream's
+    /// placeholder zero for a newly watched token is never shown.
+    #[test]
+    fn an_unread_identity_keeps_its_published_balances() {
+        let (identity, token, added) = (id(1), id(2), id(3));
+        let store = store_with([(identity, BTreeMap::from([(token, 5)]))]);
+        let upstream = snapshot(identity, &[(token, 7), (added, 0)]);
+        store.replace(upstream.clone(), &upstream, &store.load(), &BTreeSet::new());
+        assert_eq!(store.load().get(&identity, &token), Some(5));
+        assert_eq!(store.load().get(&identity, &added), None);
+    }
+
+    #[test]
+    fn refreshed_between_names_the_identities_whose_stamp_moved() {
+        let (same, newer, new, gone) = (id(1), id(2), id(3), id(4));
+        let started = SyncStamps::from([(same, 10), (newer, 10), (gone, 10)]);
+        let finished = SyncStamps::from([(same, 10), (newer, 11), (new, 5)]);
+        assert_eq!(
+            refreshed_between(&started, &finished),
+            BTreeSet::from([newer, new])
+        );
+        let never_read = SyncStamps::from([(new, 0)]);
+        assert!(refreshed_between(&SyncStamps::new(), &never_read).is_empty());
     }
 
     /// A local write that lands while upstream is read is newer than the
@@ -380,7 +477,12 @@ mod tests {
         let (before, _) = store
             .load_with(async { store.apply(identity, token, 20) })
             .await;
-        store.replace(fetched, &before, &BTreeSet::from([identity]));
+        store.replace(
+            fetched,
+            &Default::default(),
+            &before,
+            &BTreeSet::from([identity]),
+        );
         assert_eq!(store.load().get(&identity, &token), Some(20));
     }
 
@@ -466,6 +568,7 @@ mod tests {
         let view = UpstreamTokenBalances::new(&store);
         store.replace(
             TokenBalanceStore::snapshot_from([(id(1), BTreeMap::from([(id(2), 99)]))]),
+            &Default::default(),
             &store.load(),
             &BTreeSet::from([id(1)]),
         );

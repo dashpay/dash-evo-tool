@@ -50,6 +50,7 @@ pub const STATUS_ADD_KEY: &str = "Add a key to this identity to send or claim to
 
 // Why a control is disabled.
 pub const DISABLED_NOT_SYNCED: &str = "Available after sync finishes.";
+pub const DISABLED_NOT_CONNECTED: &str = "Available after you connect to the network.";
 
 // Empty, first-load and failure states.
 pub const EMPTY_HEADING: &str = "No tokens yet";
@@ -58,14 +59,11 @@ pub const DISMISSED_HEADING: &str = "Nothing tracked for this identity";
 pub const FIRST_LOAD: &str =
     "Checking balances for the first time. This usually takes a few seconds.";
 pub const FOOTNOTE: &str = "Select Refresh to check balances again. A token you don't see here can be added with Add a token.";
-pub const ERROR_REFRESH_FAILED: &str =
-    "Token balances couldn't be updated. Check your internet connection and try again.";
-pub const ERROR_REFRESH_SLOW: &str =
-    "Updating token balances is taking longer than usual. Try again in a moment.";
-pub const ERROR_REFRESH_DISCONNECTED: &str = "Token balances weren't updated because the network connection stopped. Connect again, then try again. If this happens again, disconnect, wait a moment, and connect again.";
 
 // Detail page.
-pub const BACK_LABEL: &str = "‹ Back to tokens";
+pub const BACK_LABEL: &str = "Back to Tokens";
+/// Accessible name of the breadcrumb's Tokens link, which stays on this identity.
+pub const TOKEN_LIST_CRUMB_NAME: &str = "Tokens of this identity";
 pub const ABOUT_HEADING: &str = "About this token";
 pub const TOKEN_ID_LABEL: &str = "Token ID";
 pub const CONTRACT_LABEL: &str = "Contract";
@@ -182,12 +180,10 @@ mod tests {
         STATUS_REWARDS,
         STATUS_ADD_KEY,
         DISABLED_NOT_SYNCED,
+        DISABLED_NOT_CONNECTED,
         EMPTY_BODY,
         FIRST_LOAD,
         FOOTNOTE,
-        ERROR_REFRESH_FAILED,
-        ERROR_REFRESH_SLOW,
-        ERROR_REFRESH_DISCONNECTED,
         CAN_BE_SENT_YES,
         CAN_BE_SENT_NO,
         REWARDS_OVER_TIME,
@@ -226,6 +222,7 @@ mod tests {
         EMPTY_HEADING,
         DISMISSED_HEADING,
         BACK_LABEL,
+        TOKEN_LIST_CRUMB_NAME,
         ABOUT_HEADING,
         TOKEN_ID_LABEL,
         CONTRACT_LABEL,

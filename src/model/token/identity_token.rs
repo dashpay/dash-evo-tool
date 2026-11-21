@@ -329,9 +329,9 @@ pub fn is_perpetual_distribution_recipient(
 }
 
 /// The registry name of a token as shown to the user: control, bidi and
-/// invisible format characters removed, so a look-alike name cannot hide its difference or
-/// reorder the text around it. A name with nothing left falls back to the
-/// shortened token ID.
+/// invisible characters removed, so hidden characters cannot reorder or pad
+/// it. Look-alike letters stay; the token ID tells such names apart. A name
+/// with nothing left falls back to the shortened token ID.
 pub fn token_display_name(name: &str, token_id: &Identifier) -> String {
     let cleaned = crate::model::identity_name::clean_display_text(name);
     if cleaned.is_empty() {

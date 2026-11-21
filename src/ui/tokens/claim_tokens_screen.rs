@@ -327,7 +327,7 @@ impl ClaimTokensScreen {
                     signing_key,
                     public_note: self.public_note.clone(),
                 })),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
             ],
             BackendTasksExecutionMode::Sequential,
         );

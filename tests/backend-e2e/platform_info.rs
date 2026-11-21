@@ -47,7 +47,7 @@ async fn test_pi001_current_epoch_is_fetched_live() {
         "• Epoch Index:",
         "• Start Height:",
         "• Start Core Height:",
-        "(Fee multiplier cache updated:",
+        "Fee estimates use a multiplier of",
     ] {
         assert!(text.contains(field), "expected {field} in: {text}");
     }

@@ -668,13 +668,12 @@ impl AppContext {
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
                 match self.refresh_current_epoch(sdk).await {
                     Ok(epoch_info) => {
-                        let fee_multiplier = epoch_info.fee_multiplier_permille();
-
                         let mut formatted =
                             format_extended_epoch_info(epoch_info, self.network, true);
+                        // A newer epoch cached meanwhile keeps its multiplier.
+                        let fee_multiplier = self.fee_multiplier_permille() as f64 / 1000.0;
                         formatted.push_str(&format!(
-                            "\n\n(Fee multiplier cache updated: {}x)",
-                            fee_multiplier as f64 / 1000.0
+                            "\n\nFee estimates use a multiplier of {fee_multiplier}x."
                         ));
                         append_newer_protocol_advisory(
                             &mut formatted,
@@ -1199,6 +1198,64 @@ mod tests {
 
         ctx.set_fee_multiplier_from(&epoch(8, 2_500));
         assert_eq!(ctx.fee_multiplier_permille(), 2_500);
+    }
+
+    /// The epoch report states the multiplier fee estimates use, which is the
+    /// newer cached one when the fetched epoch is older.
+    #[tokio::test]
+    async fn epoch_report_shows_the_fee_multiplier_the_cache_kept() {
+        use dash_sdk::dpp::block::epoch::EpochIndex;
+        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+        use dash_sdk::platform::{LimitQuery, types::epoch::EpochQuery};
+        use dash_sdk::query_types::ExtendedEpochInfos;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_initial_version(PlatformVersion::get(14).expect("PV14"))
+            .build()
+            .expect("mock sdk");
+        let epoch = ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+            index: 0,
+            first_block_time: 0,
+            first_block_height: 0,
+            first_core_block_height: 0,
+            fee_multiplier_permille: 1_500,
+            protocol_version: 14,
+        });
+        let query = |limit| LimitQuery {
+            query: EpochQuery::genesis(),
+            limit: Some(limit),
+            start_info: None,
+        };
+        sdk.mock()
+            .expect_fetch(query(1), Some(epoch.clone()))
+            .await
+            .expect("probe expectation");
+        let epochs: ExtendedEpochInfos = [(0, Some(epoch))].into_iter().collect();
+        sdk.mock()
+            .expect_fetch_many::<EpochIndex, ExtendedEpochInfo, _, ExtendedEpochInfos>(
+                query(2),
+                Some(epochs),
+            )
+            .await
+            .expect("confirmation expectation");
+        ctx.set_epoch_fee_multiplier_permille(5, 2_000);
+
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("epoch report");
+
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("the epoch report is a text result");
+        };
+        assert!(
+            text.contains("Fee estimates use a multiplier of 2x."),
+            "{text}"
+        );
+        assert_eq!(ctx.fee_multiplier_permille(), 2_000);
     }
 
     /// A failed withdrawal keeps its credits locked, so the history says so

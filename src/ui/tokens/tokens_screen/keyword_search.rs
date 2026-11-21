@@ -214,18 +214,7 @@ impl TokensScreen {
                             row.col(|ui| {
                                 // Example "Add" button
                                 if ui.button("More Info").clicked() {
-                                    // Show more info about the token
-                                    self.selected_contract_id = Some(contract.data_contract_id);
-                                    // Set loading state to true
-                                    self.contract_details_loading = true;
-                                    // Clear previous data
-                                    self.selected_contract_description = None;
-                                    self.selected_token_infos.clear();
-                                    action = AppAction::BackendTask(BackendTask::ContractTask(
-                                        Box::new(ContractTask::FetchContractsWithDescriptions(
-                                            vec![contract.data_contract_id],
-                                        )),
-                                    ));
+                                    action = self.open_contract(contract.data_contract_id);
                                 }
                             });
                         });
@@ -234,5 +223,19 @@ impl TokensScreen {
         });
 
         action
+    }
+
+    /// Shows the details of `contract_id` and returns the request that loads them.
+    pub(crate) fn open_contract(
+        &mut self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> AppAction {
+        self.selected_contract_id = Some(contract_id);
+        self.contract_details_loading = true;
+        self.selected_contract_description = None;
+        self.selected_token_infos.clear();
+        AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+            ContractTask::FetchContractsWithDescriptions(vec![contract_id]),
+        )))
     }
 }

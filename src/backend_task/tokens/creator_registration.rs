@@ -751,7 +751,7 @@ mod tests {
     ) -> QualifiedIdentity {
         use crate::model::qualified_identity::PrivateKeyTarget;
         use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
-        use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let mut owner = crate::context::test_support::user_identity_with_signing_key(
             Identifier::from([seed; 32]),
             context.network,

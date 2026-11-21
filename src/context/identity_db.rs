@@ -2519,6 +2519,13 @@ pub(crate) mod test_staging {
             .expect("remove from the roster");
     }
 
+    /// Fail the next save of a top-up history.
+    pub(crate) fn fail_next_top_up_save(ctx: &Arc<AppContext>) {
+        let store = ctx.det_kv().unwrap().failing_store();
+        store.fail_next_puts_containing(TOP_UPS_KEY, 1);
+        ctx.set_det_kv_override_for_test(DetKv::from_store(store));
+    }
+
     /// Fail the top-up deletion after the identity has been delisted and its blob deleted.
     pub(crate) fn fail_removals_after_delisting(ctx: &Arc<AppContext>) {
         let store = ctx.det_kv().unwrap().failing_store();

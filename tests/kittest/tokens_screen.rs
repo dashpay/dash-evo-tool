@@ -1422,3 +1422,61 @@ fn the_send_screen_reports_the_confirmed_recipient() {
         assert!(f.harness.query_by_label_contains("Transfer").is_none());
     });
 }
+
+/// Burn, Claim and Purchase run a balance refresh after the operation. Once
+/// the operation is reported done, an error from that refresh must not turn
+/// the screen back into its form, which invites a second, paid operation.
+#[test]
+fn a_completed_token_operation_stays_done_when_its_refresh_fails() {
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    use dash_evo_tool::ui::MessageType;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        let info = f.info.clone();
+        let basic = IdentityTokenBasicInfo {
+            token_id: info.token_id,
+            token_alias: info.token_alias.clone(),
+            identity_id: info.identity.identity.id(),
+            contract_id: f.balance.data_contract_id,
+            token_position: 0,
+        };
+        let fee = FeeResult::estimated_only(0);
+        let cases = [
+            (
+                ScreenType::BurnTokensScreen(info.clone()).create_screen(&f.app_context),
+                BackendTaskSuccessResult::BurnedTokens(fee.clone()),
+            ),
+            (
+                Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                    basic,
+                    info.data_contract.clone(),
+                    info.token_config.clone(),
+                    &f.app_context,
+                )),
+                BackendTaskSuccessResult::ClaimedTokens(fee.clone()),
+            ),
+            (
+                ScreenType::PurchaseTokenScreen(info.clone()).create_screen(&f.app_context),
+                BackendTaskSuccessResult::PurchasedTokens(fee.clone()),
+            ),
+        ];
+        for (screen, done) in cases {
+            f.show(screen);
+            let screen = f
+                .harness
+                .state_mut()
+                .screen_stack
+                .last_mut()
+                .expect("screen");
+            screen.display_task_result(done);
+            screen.display_message("The balance refresh failed.", MessageType::Error);
+            f.harness.run_steps(3);
+            assert!(
+                f.harness.query_by_label("Back to Tokens").is_some(),
+                "the success screen stays after a failed refresh"
+            );
+        }
+    });
+}

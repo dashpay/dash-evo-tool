@@ -185,11 +185,7 @@ impl AppContext {
     /// these tasks, so the gate lives here rather than in each screen: a
     /// proof-verifying read sent earlier fails and gets the queried node banned.
     fn ensure_token_balance_reads_allowed(&self) -> Result<(), TaskError> {
-        // No backend yet means its chain sync has not started either.
-        let backend = self
-            .wallet_backend()
-            .map_err(|_| TaskError::MasternodeListSyncPending)?;
-        backend
+        self.wallet_backend()?
             .admit_token_balance_read()
             .map_err(token_balance_sync_task_error)
     }
@@ -256,7 +252,6 @@ impl AppContext {
 
 fn token_balance_sync_task_error(error: TokenBalanceSyncError) -> TaskError {
     match error {
-        TokenBalanceSyncError::OtherPassStillRunning => TaskError::TokenBalanceSyncStillRunning,
         TokenBalanceSyncError::SyncStopped => TaskError::TokenBalanceRefreshDisconnected,
         TokenBalanceSyncError::MasternodesNotReady => TaskError::MasternodeListSyncPending,
     }
@@ -422,6 +417,10 @@ mod tests {
     #[tokio::test]
     async fn balance_reads_are_refused_until_the_masternode_list_is_synced() {
         let f = fixture().await;
+        f.ctx
+            .wallet_backend()
+            .expect("wired backend")
+            .mark_started_for_test();
         let (alpha, beta) = tokens(&f.ctx);
         let identity = ident(10);
         f.ctx
@@ -462,6 +461,8 @@ mod tests {
         let refused = |result: Result<BackendTaskSuccessResult, TaskError>| {
             matches!(result, Err(TaskError::MasternodeListSyncPending))
         };
+        let backend = f.ctx.wallet_backend().expect("wired backend");
+        backend.mark_started_for_test();
         f.ctx.connection_status().set_masternodes_ready(true);
         assert!(refused(
             f.ctx.query_my_token_balances(&sdk, f.sender.clone()).await
@@ -472,7 +473,6 @@ mod tests {
                 .await
         ));
 
-        let backend = f.ctx.wallet_backend().expect("wired backend");
         backend.mark_masternodes_ready_for_test();
         assert!(matches!(
             f.ctx.query_my_token_balances(&sdk, f.sender.clone()).await,
@@ -480,8 +480,30 @@ mod tests {
         ));
 
         backend.stop_in_place().await;
-        assert!(refused(
-            f.ctx.query_my_token_balances(&sdk, f.sender.clone()).await
+        assert!(matches!(
+            f.ctx.query_my_token_balances(&sdk, f.sender.clone()).await,
+            Err(TaskError::TokenBalanceRefreshDisconnected)
+        ));
+    }
+
+    /// Waiting does not help a read refused while disconnected or before the
+    /// wallet backend is wired, so neither says the network is syncing.
+    #[tokio::test]
+    async fn a_refused_read_names_why_when_waiting_would_not_help() {
+        let f = fixture().await;
+        let sdk = f.ctx.sdk();
+        assert!(matches!(
+            f.ctx.query_my_token_balances(&sdk, f.sender.clone()).await,
+            Err(TaskError::TokenBalanceRefreshDisconnected)
+        ));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unwired = crate::context::test_support::test_app_context(dir.path());
+        assert!(matches!(
+            unwired
+                .query_my_token_balances(&unwired.sdk(), f.sender.clone())
+                .await,
+            Err(TaskError::WalletBackendNotYetWired)
         ));
     }
 

@@ -164,10 +164,8 @@ impl Drop for ProvisionOverlapGuard<'_> {
 /// Why a requested token-balance sync ended without a fresh pass.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TokenBalanceSyncError {
-    /// Upstream's background pass held its single-flight slot, so no pass
-    /// that sees the newly registered watch lists could run.
-    OtherPassStillRunning,
-    /// Chain sync stopped, so upstream may have skipped the pass.
+    /// Chain sync is not running or stopped during the call, so upstream may
+    /// have skipped the pass.
     SyncStopped,
     /// This backend's masternode list has not synced, so a proof-verifying
     /// read would fail and get the queried node banned.
@@ -209,16 +207,20 @@ impl TokenSyncAdmission {
     }
 }
 
-/// Run one upstream token-balance pass unless upstream's own pass holds the
-/// single-flight slot, or a DET stop closes identity sync around the call.
+/// How often a refresh checks whether upstream's own pass has finished.
+const UPSTREAM_PASS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Run one upstream token-balance pass that sees the current watch lists,
+/// first waiting out any pass upstream's own loop is running, unless a DET
+/// stop closes identity sync around the call. The caller bounds the wait.
 async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
     mut is_syncing: IsSyncing,
-    sync_now: SyncNow,
+    mut sync_now: SyncNow,
     admission: &TokenSyncAdmission,
 ) -> Result<(), TokenBalanceSyncError>
 where
     IsSyncing: FnMut() -> bool,
-    SyncNow: FnOnce() -> SyncFuture,
+    SyncNow: FnMut() -> SyncFuture,
     SyncFuture: std::future::Future<Output = ()>,
 {
     let admitted = admission.current();
@@ -226,18 +228,20 @@ where
         return Err(TokenBalanceSyncError::SyncStopped);
     }
     // TODO(upstream): `IdentitySyncManager::sync_now()` should report whether
-    // it ran; before/after `is_syncing()` samples are racy, and a call skipped
-    // by a quiesce looks like a finished pass, so `admission` covers DET's stops.
-    if is_syncing() {
-        return Err(TokenBalanceSyncError::OtherPassStillRunning);
-    }
-    sync_now().await;
-    if admission.current() != admitted {
-        Err(TokenBalanceSyncError::SyncStopped)
-    } else if is_syncing() {
-        Err(TokenBalanceSyncError::OtherPassStillRunning)
-    } else {
-        Ok(())
+    // it ran; a busy `is_syncing()` after the call may mean another pass took
+    // the slot first, so the call is repeated. A call skipped by a quiesce
+    // looks like a finished pass, so `admission` covers DET's stops.
+    loop {
+        while is_syncing() {
+            tokio::time::sleep(UPSTREAM_PASS_POLL).await;
+        }
+        sync_now().await;
+        if admission.current() != admitted {
+            return Err(TokenBalanceSyncError::SyncStopped);
+        }
+        if !is_syncing() {
+            return Ok(());
+        }
     }
 }
 
@@ -2204,9 +2208,8 @@ impl WalletBackend {
                 "Platform address sync did not drain during disconnect; it stays inactive until a later stop drains it"
             );
         }
-        if self.inner.pwm.identity_sync_arc().quiesce().await {
-            self.inner.token_sync_admission.reopen();
-        } else {
+        let identity_sync_drained = self.inner.pwm.identity_sync_arc().quiesce().await;
+        if !identity_sync_drained {
             tracing::warn!(
                 "Identity sync did not drain during disconnect; it stays inactive until a later stop drains it"
             );
@@ -2219,6 +2222,11 @@ impl WalletBackend {
         // 3. Re-arm the DET start gates for the next start() on this backend.
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
+        // Reopen only now, so a refresh admitted from here on sees this
+        // backend as not started rather than reading mid-disconnect.
+        if identity_sync_drained {
+            self.inner.token_sync_admission.reopen();
+        }
     }
 
     /// Whether this backend's own sync session takes a token balance read now:
@@ -2228,10 +2236,24 @@ impl WalletBackend {
         if self.inner.token_sync_admission.current() & 1 == 1 {
             Err(TokenBalanceSyncError::SyncStopped)
         } else if !self.inner.coordinator_gate.masternodes_ready() {
-            Err(TokenBalanceSyncError::MasternodesNotReady)
+            Err(if self.is_started() {
+                TokenBalanceSyncError::MasternodesNotReady
+            } else {
+                TokenBalanceSyncError::SyncStopped
+            })
         } else {
             Ok(())
         }
+    }
+
+    /// Mark chain sync as started, as [`Self::start`] does.
+    #[cfg(test)]
+    pub(crate) fn mark_started_for_test(&self) {
+        self.inner
+            .start_latch
+            .flight()
+            .begun
+            .store(true, Ordering::SeqCst);
     }
 
     /// Report this backend's masternode list as synced, as its event bridge does.
@@ -3254,9 +3276,9 @@ impl WalletBackend {
         self.inner.token_balances.remove(identity_id, token_id);
     }
 
-    /// Set the watch lists, run one upstream pass, and republish DET's
-    /// snapshot. Fails instead of reporting stale balances when upstream's own
-    /// pass holds its slot or a stop closes identity sync during the call.
+    /// Set the watch lists, run one upstream pass (after any pass upstream is
+    /// already running), and republish DET's snapshot. Fails instead of
+    /// reporting stale balances when a stop closes identity sync during the call.
     pub(crate) async fn sync_token_balances_now(
         &self,
         watch_sets: Vec<(
@@ -3271,16 +3293,25 @@ impl WalletBackend {
         }
         let (before, synced) = store
             .load_with(async {
+                let (_, started) = TokenBalanceStore::read_upstream(identity_sync).await;
                 run_token_balance_sync_if_idle(
                     || identity_sync.is_syncing(),
                     || identity_sync.sync_now(),
                     &self.inner.token_sync_admission,
                 )
                 .await?;
-                Ok(TokenBalanceStore::read_upstream(identity_sync).await)
+                let (incoming, finished) = TokenBalanceStore::read_upstream(identity_sync).await;
+                Ok((
+                    incoming,
+                    token_balance::refreshed_between(&started, &finished),
+                ))
             })
             .await;
-        store.replace(synced?, &before);
+        let (incoming, refreshed) = synced?;
+        // TODO(upstream): `sync_now()` should report which identities it read;
+        // the per-identity stamp has one-second resolution, so a pass ending
+        // in the same second as the one before counts as not having read them.
+        store.replace(incoming, &before, &refreshed);
         Ok(())
     }
 
@@ -4492,17 +4523,22 @@ mod tests {
         }
     }
 
+    /// A refresh that meets upstream's own pass, before or right after its
+    /// call, waits for that pass and then runs one that sees its watch lists.
     #[tokio::test]
-    async fn token_balance_sync_reports_an_already_running_upstream_pass() {
-        let sync_called = std::cell::Cell::new(false);
+    async fn token_balance_sync_waits_out_a_running_upstream_pass() {
+        // `is_syncing` samples in order: busy, idle, then busy right after the
+        // first call (another pass took the slot), idle, idle after the second.
+        let busy = std::cell::RefCell::new(vec![true, false, true, false, false].into_iter());
+        let sync_calls = std::cell::Cell::new(0);
         let outcome = run_token_balance_sync_if_idle(
-            || true,
-            || async { sync_called.set(true) },
+            || busy.borrow_mut().next().unwrap_or(false),
+            || async { sync_calls.set(sync_calls.get() + 1) },
             &TokenSyncAdmission::default(),
         )
         .await;
-        assert_eq!(outcome, Err(TokenBalanceSyncError::OtherPassStillRunning));
-        assert!(!sync_called.get());
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(sync_calls.get(), 2);
     }
 
     /// A disconnect that closes upstream's gate during the call skips the

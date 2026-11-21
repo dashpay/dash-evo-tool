@@ -31,7 +31,7 @@
 //! [`get`]: UpstreamTokenBalances::get
 //! [`list`]: UpstreamTokenBalances::list
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -43,6 +43,22 @@ use platform_wallet_storage::SqlitePersister;
 /// [`TokenBalanceSnapshot::identities`] means the identity has completed at
 /// least one sync pass; an unsynced identity is simply absent.
 type IdentityBalances = BTreeMap<Identifier, u64>;
+
+/// When upstream last completed a pass per identity, in Unix seconds.
+pub(super) type SyncStamps = BTreeMap<Identifier, u64>;
+
+/// The identities an upstream pass that ran between `started` and `finished`
+/// read. Upstream leaves an identity's stamp alone when its read fails.
+pub(super) fn refreshed_between(
+    started: &SyncStamps,
+    finished: &SyncStamps,
+) -> BTreeSet<Identifier> {
+    finished
+        .iter()
+        .filter(|(identity_id, at)| **at > started.get(*identity_id).copied().unwrap_or(0))
+        .map(|(identity_id, _)| *identity_id)
+        .collect()
+}
 
 /// DET-typed, lock-free token-balance snapshot. Maps each *synced* identity
 /// to its per-token balances. Cheap to clone-share via the enclosing `Arc`.
@@ -139,13 +155,20 @@ impl TokenBalanceStore {
         (before, read.await)
     }
 
-    /// Replace the snapshot after explicit refresh. Keep local writes that
-    /// landed after this network read started.
-    pub(super) fn replace(&self, incoming: TokenBalanceSnapshot, before: &TokenBalanceSnapshot) {
+    /// Replace the snapshot after explicit refresh. A local write stays until
+    /// a pass that started after it reads its identity: keep the ones that
+    /// landed after this network read started, and every one whose identity
+    /// is not in `refreshed`.
+    pub(super) fn replace(
+        &self,
+        incoming: TokenBalanceSnapshot,
+        before: &TokenBalanceSnapshot,
+        refreshed: &BTreeSet<Identifier>,
+    ) {
         self.snapshot.rcu(|current| {
             let mut next = incoming.clone();
             for (&pair, marker) in &current.local_writes {
-                if current.locally_written_since(before, pair) {
+                if current.locally_written_since(before, pair) || !refreshed.contains(&pair.0) {
                     let (identity_id, token_id) = pair;
                     next.set(identity_id, token_id, current.get(&identity_id, &token_id));
                     next.local_writes.insert(pair, Arc::clone(marker));
@@ -167,11 +190,17 @@ impl TokenBalanceStore {
         }
     }
 
-    /// Read the upstream cache and expose only its DET-facing balance fields.
+    /// Read the upstream cache: its DET-facing balance fields and when each
+    /// identity was last read.
     pub(super) async fn read_upstream(
         sync: &IdentitySyncManager<SqlitePersister>,
-    ) -> TokenBalanceSnapshot {
-        Self::snapshot_from(sync.all_state().await.into_values().filter_map(|state| {
+    ) -> (TokenBalanceSnapshot, SyncStamps) {
+        let state = sync.all_state().await;
+        let stamps = state
+            .values()
+            .map(|state| (state.identity_id, state.last_sync_unix))
+            .collect();
+        let snapshot = Self::snapshot_from(state.into_values().filter_map(|state| {
             if state.last_sync_unix == 0 {
                 return None;
             }
@@ -181,7 +210,8 @@ impl TokenBalanceStore {
                 .map(|info| (info.token_id, info.balance))
                 .collect();
             Some((state.identity_id, balances))
-        }))
+        }));
+        (snapshot, stamps)
     }
 
     /// Surgically set one `(identity, token)` balance in the published
@@ -292,11 +322,49 @@ mod tests {
         assert_eq!(refreshed, Some(20));
     }
 
+    /// A transaction's proof-derived balance stays until an upstream pass
+    /// that ran after it reads the pair: a refresh whose read fails does not
+    /// bring back the balance from before the transaction.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_refresh_keeps_an_earlier_local_write() {
+        use crate::context::test_support::test_app_context_for_network;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let directory = tempfile::tempdir().expect("app data directory");
+        let network = Network::Regtest;
+        let ctx = test_app_context_for_network(directory.path(), network);
+        let (identity_id, token_id) = (id(1), id(2));
+        // No expected query: every balance read fails.
+        let sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_network(network)
+            .build()
+            .expect("mock Platform SDK");
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, ctx.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        backend.mark_masternodes_ready_for_test();
+
+        backend.apply_known_token_balance(identity_id, token_id, 20);
+        let outcome = backend
+            .sync_token_balances_now(vec![(identity_id, vec![token_id])])
+            .await;
+        let refreshed = backend.token_balances().get(&identity_id, &token_id);
+        backend.shutdown().await;
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(refreshed, Some(20));
+    }
+
     fn store_with(
         synced: impl IntoIterator<Item = (Identifier, IdentityBalances)>,
     ) -> TokenBalanceStore {
         let store = TokenBalanceStore::new();
-        store.replace(TokenBalanceStore::snapshot_from(synced), &store.load());
+        let synced = TokenBalanceStore::snapshot_from(synced);
+        let refreshed = synced.identities.keys().copied().collect();
+        store.replace(synced, &store.load(), &refreshed);
         store
     }
 
@@ -312,7 +380,7 @@ mod tests {
         let (before, _) = store
             .load_with(async { store.apply(identity, token, 20) })
             .await;
-        store.replace(fetched, &before);
+        store.replace(fetched, &before, &BTreeSet::from([identity]));
         assert_eq!(store.load().get(&identity, &token), Some(20));
     }
 
@@ -399,6 +467,7 @@ mod tests {
         store.replace(
             TokenBalanceStore::snapshot_from([(id(1), BTreeMap::from([(id(2), 99)]))]),
             &store.load(),
+            &BTreeSet::from([id(1)]),
         );
         // The pre-publish view still sees nothing.
         assert_eq!(view.get(&id(1), &id(2)), None);

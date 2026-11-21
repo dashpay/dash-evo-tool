@@ -2084,11 +2084,6 @@ pub enum TaskError {
     )]
     TokenBalanceRefreshInProgress,
 
-    /// Upstream's background balance sync held its single slot, so no pass
-    /// that sees the requested tokens could run.
-    #[error("A background balance check is still running. Try again in a minute.")]
-    TokenBalanceSyncStillRunning,
-
     /// The network connection stopped during a token-balance refresh, so no
     /// fresh balances were fetched.
     #[error(

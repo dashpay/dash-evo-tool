@@ -389,7 +389,11 @@ impl ScreenLike for PurchaseTokenScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the operation is done, an error can only come from the
+        // balance refresh that follows it; the operation stays reported done.
+        if matches!(message_type, MessageType::Error | MessageType::Warning)
+            && self.status != PurchaseTokensStatus::Complete
+        {
             self.refresh_banner.take_and_clear();
             self.status = PurchaseTokensStatus::Error;
         }

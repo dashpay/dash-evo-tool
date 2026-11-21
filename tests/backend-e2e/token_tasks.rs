@@ -119,26 +119,75 @@ async fn tc_046_query_my_token_balances() {
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_047_query_identity_token_balance() {
+async fn tc_047_track_token_balances_again() {
+    use dash_sdk::dpp::balances::credits::TokenAmount;
+    use dash_sdk::platform::FetchMany;
+    use dash_sdk::platform::tokens::identity_token_balances::{
+        IdentityTokenBalances, IdentityTokenBalancesQuery,
+    };
+
     let ctx = harness::ctx().await;
     let si = shared_identity().await;
     let st = shared_token().await;
+    let identity_id = si.qualified_identity.identity.id();
+    // Hold a balance, so the restored pair has one to publish.
+    token_helpers::mint_tokens(
+        &ctx.app_context,
+        &si.qualified_identity,
+        &st.data_contract,
+        st.token_position,
+        &si.signing_key,
+        1,
+    )
+    .await;
 
     let iti = IdentityTokenIdentifier {
-        identity_id: si.qualified_identity.identity.id(),
+        identity_id,
         token_id: st.token_id,
     };
+    run_task(
+        &ctx.app_context,
+        BackendTask::TokenTask(Box::new(TokenTask::StopTrackingTokenBalance(iti))),
+    )
+    .await
+    .expect("TC-047: StopTrackingTokenBalance failed");
 
     let task = BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![iti])));
     let result = run_task(&ctx.app_context, task)
         .await
         .expect("TC-047: TrackTokenBalancesAgain failed");
-
     assert!(
         matches!(result, BackendTaskSuccessResult::FetchedTokenBalances),
         "TC-047: expected FetchedTokenBalances, got: {:?}",
         result
     );
+
+    let untracked = ctx
+        .app_context
+        .untracked_token_balances()
+        .expect("TC-047: read dismissals");
+    assert!(!untracked.contains(&iti), "TC-047: tracking is restored");
+    let published = ctx
+        .app_context
+        .wallet_backend()
+        .expect("TC-047: wallet backend")
+        .token_balances()
+        .get(&identity_id, &st.token_id);
+    let on_platform: IdentityTokenBalances = TokenAmount::fetch_many(
+        &ctx.app_context.sdk(),
+        IdentityTokenBalancesQuery {
+            identity_id,
+            token_ids: vec![st.token_id],
+        },
+    )
+    .await
+    .expect("TC-047: read the balance from Platform");
+    let on_platform = on_platform.get(&st.token_id).copied().flatten();
+    assert!(
+        on_platform.is_some(),
+        "TC-047: the identity holds the token"
+    );
+    assert_eq!(published, on_platform, "TC-047: the balance is published");
 }
 
 // ---------------------------------------------------------------------------

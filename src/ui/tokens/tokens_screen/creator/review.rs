@@ -104,7 +104,16 @@ impl TokensScreen {
                     )
                     .clicked()
                 {
-                    action = self.begin_workspace_task(TokenTask::CheckTokenCreation);
+                    // A confirmed record is already proven; saving it needs no network read.
+                    action = self.begin_workspace_task(
+                        if record.status == RegistrationStatus::Confirmed {
+                            TokenTask::SaveConfirmedTokenCreation {
+                                record: Box::new(record.clone()),
+                            }
+                        } else {
+                            TokenTask::CheckTokenCreation
+                        },
+                    );
                 }
                 if let Ok(contract) = record.contract() {
                     use dash_sdk::dpp::data_contract::associated_token::{
@@ -647,17 +656,27 @@ mod tests {
         (screen, record)
     }
 
-    fn render_review(screen: TokensScreen) -> egui_kittest::Harness<'static, TokensScreen> {
+    fn render_review(
+        screen: TokensScreen,
+    ) -> (
+        egui_kittest::Harness<'static, TokensScreen>,
+        std::rc::Rc<std::cell::RefCell<Vec<AppAction>>>,
+    ) {
+        let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = actions.clone();
         let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1000.0, 1600.0))
             .build_ui_state(
-                |ui, screen: &mut TokensScreen| {
-                    screen.render_workspace_review(ui);
+                move |ui, screen: &mut TokensScreen| {
+                    let action = screen.render_workspace_review(ui);
+                    if !matches!(action, AppAction::None) {
+                        seen.borrow_mut().push(action);
+                    }
                 },
                 screen,
             );
         harness.run();
-        harness
+        (harness, actions)
     }
 
     /// A failed retry must not hide a creation Platform already confirmed.
@@ -670,12 +689,42 @@ mod tests {
         let request = BackendTaskContext::for_dispatch_on(&BackendTask::None, context.network);
         screen.creator_workspace.pending = Some(request.clone());
         screen.workspace_error(&request, &TaskError::TokenCreatorChanged);
-        let harness = render_review(screen);
+        let (harness, _) = render_review(screen);
         assert!(harness.query_by_label("Token created").is_some());
         assert!(
             harness
                 .query_by_label_contains(&record.token_id.to_string(Encoding::Base58))
                 .is_some()
+        );
+    }
+
+    /// The retry of a confirmed creation's local save sends the proven record,
+    /// so it never needs the network.
+    #[test]
+    fn restoring_a_confirmed_receipt_sends_the_proven_record() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (screen, record) = confirmed_but_unsaved(&context);
+        let (mut harness, actions) = render_review(screen);
+        harness
+            .get_by_label("Restore local receipt · no payment")
+            .click();
+        harness.run_steps(2);
+        let sent = actions.borrow();
+        let tasks: Vec<&BackendTask> =
+            sent.iter()
+                .filter_map(|action| match action {
+                    AppAction::BackendTask(task)
+                    | AppAction::BackendTaskWithContext { task, .. } => Some(task),
+                    _ => None,
+                })
+                .collect();
+        assert!(
+            matches!(tasks.as_slice(), [BackendTask::TokenTask(task)]
+                if matches!(task.as_ref(), TokenTask::SaveConfirmedTokenCreation { record: sent }
+                    if **sent == record)),
+            "{tasks:?}"
         );
     }
 }

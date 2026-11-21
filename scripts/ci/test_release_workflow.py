@@ -8,6 +8,13 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+RELEASE_FILES = (
+    "dash-evo-tool-linux-arm64.zip",
+    "dash-evo-tool-linux-x86_64.zip",
+    "dash-evo-tool-macos-arm64.dmg",
+    "dash-evo-tool-macos-x86_64.dmg",
+    "dash-evo-tool-windows.zip",
+)
 
 
 def workflow(name):
@@ -69,6 +76,46 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for target in ("missing.icns", ".."):
             with self.subTest(target=target):
                 self.assertNotEqual(self.bundle_check(link_icon_to(target)), 0)
+
+    def release_files_check(self, mutate=None):
+        publisher = workflow("release.yml")["jobs"]["release"]
+        script = next(
+            step["run"]
+            for step in publisher["steps"]
+            if step["name"] == "Check the downloaded release files"
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            dist = Path(scratch) / "dist"
+            dist.mkdir()
+            for name in RELEASE_FILES:
+                (dist / name).write_text("release test artifact")
+            if mutate:
+                mutate(dist)
+            return subprocess.run(
+                ["bash", "-c", script], cwd=scratch, capture_output=True
+            ).returncode
+
+    def test_only_the_expected_release_files_can_be_published(self):
+        self.assertEqual(self.release_files_check(), 0)
+
+        def replace_with_symlink(dist):
+            (dist / RELEASE_FILES[0]).unlink()
+            (dist / RELEASE_FILES[0]).symlink_to("/etc/hostname")
+
+        def replace_with_directory(dist):
+            (dist / RELEASE_FILES[1]).unlink()
+            (dist / RELEASE_FILES[1]).mkdir()
+            (dist / RELEASE_FILES[1] / "inner").write_text("x")
+
+        for name, mutate in (
+            ("extra file", lambda dist: (dist / "extra.zip").write_text("x")),
+            ("missing file", lambda dist: (dist / RELEASE_FILES[2]).unlink()),
+            ("empty file", lambda dist: (dist / RELEASE_FILES[3]).write_text("")),
+            ("symlink", replace_with_symlink),
+            ("directory", replace_with_directory),
+        ):
+            with self.subTest(name):
+                self.assertNotEqual(self.release_files_check(mutate), 0)
 
     def test_publisher_extracts_artifacts_outside_its_policy_checkout(self):
         job = workflow("release.yml")["jobs"]["release"]

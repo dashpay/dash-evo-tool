@@ -219,8 +219,23 @@ impl AppContext {
                 self.insert_contract_if_not_exists(
                     &data_contract,
                     alias.as_deref(),
-                    insert_tokens_too,
+                    insert_tokens_too.clone(),
                 )?;
+                // An explicit import restores tracking only for the imported tokens.
+                for position in data_contract.tokens().keys() {
+                    let imported = match &insert_tokens_too {
+                        InsertTokensToo::AllTokensShouldBeAdded => true,
+                        InsertTokensToo::NoTokensShouldBeAdded => false,
+                        InsertTokensToo::SomeTokensShouldBeAdded(positions) => {
+                            positions.contains(position)
+                        }
+                    };
+                    if imported && let Some(token_id) = data_contract.token_id(*position) {
+                        self.clear_untracked_token(&token_id)?;
+                    }
+                }
+                self.notify_cache_changed(super::CacheDomain::Tokens, &sender)
+                    .await;
                 Ok(BackendTaskSuccessResult::SavedContract)
             }
         }

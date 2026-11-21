@@ -2453,9 +2453,16 @@ impl TokensScreen {
         self.document_schemas_error = None;
     }
 
-    fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
-        // Check if token is already added
-        if self.all_known_tokens.contains_key(&token_info.token_id) {
+    fn add_token_to_tracked_tokens(
+        &mut self,
+        token_info: TokenInfo,
+    ) -> Result<AppAction, TaskError> {
+        let dismissed = self.app_context.untracked_token_balances()?;
+        if self.all_known_tokens.contains_key(&token_info.token_id)
+            && !dismissed
+                .iter()
+                .any(|pair| pair.token_id == token_info.token_id)
+        {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Token already in My Tokens",

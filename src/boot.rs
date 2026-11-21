@@ -326,8 +326,15 @@ impl eframe::App for BootApp {
     }
 
     fn on_exit(&mut self) {
-        if let BootApp::Running(app) = self {
-            app.on_exit();
+        match self {
+            BootApp::Running(app) => app.on_exit(),
+            // eframe calls this on every exit, but after the macOS menu Quit it
+            // never returns to `main`: report and exit with `main`'s status here.
+            BootApp::Failed(failure) => {
+                crate::logging::report_startup_failure_to_terminal(&[&FailureNotice(failure)]);
+                std::process::exit(1);
+            }
+            BootApp::Unlocking(_) => {}
         }
     }
 }
@@ -351,6 +358,23 @@ pub fn show_window_failure_dialog() {
         );
     }
 }
+
+/// A shown startup failure as a terminal cause: its message and details.
+struct FailureNotice<'a>(&'a StartupFailure);
+
+impl std::fmt::Display for FailureNotice<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.report().message())
+    }
+}
+
+impl std::fmt::Debug for FailureNotice<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.report().details())
+    }
+}
+
+impl std::error::Error for FailureNotice<'_> {}
 
 /// The boot steps that need no window: data folder, database and the seed
 /// vault open. `main` runs them before the window opens, so a failure here,
@@ -742,6 +766,31 @@ mod tests {
             .status()
             .expect("run child");
         assert!(status.success(), "child failed: {status}");
+    }
+
+    /// Leaving the failure dialog by any route, the macOS menu Quit included
+    /// (eframe never returns to `main` there), exits with a failure status and
+    /// names the cause on the terminal.
+    #[test]
+    fn exit_from_failure_dialog_reports_failure() {
+        const CHILD_ENV: &str = "DET_FAILED_BOOT_EXIT_CHILD";
+        const MARKER: &str = "failed-boot-exit-marker";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let mut app =
+                BootApp::failed(&std::io::Error::other(MARKER), &StartupOutcome::default());
+            eframe::App::on_exit(&mut app);
+            return;
+        }
+        let test_name = std::thread::current().name().expect("test name").to_owned();
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run child");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("failed to start"), "{stderr}");
+        assert!(stderr.contains(MARKER), "{stderr}");
     }
 
     /// Runs `f` with `DASH_EVO_DATA_DIR` set to `dir`, serialized with every

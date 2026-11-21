@@ -713,13 +713,19 @@ mod tests {
         )
         .expect("dangling .env symlink");
         let test_name = std::thread::current().name().expect("test name").to_owned();
-        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
             .env("DASH_EVO_DATA_DIR", dir.path())
-            .status()
+            .output()
             .expect("run child");
-        assert!(status.success(), "child failed: {status}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "child failed:\n{stdout}{stderr}");
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
+        );
     }
 
     /// The exit `on_exit` takes after the macOS menu Quit, where eframe never
@@ -770,6 +776,11 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{stderr}");
         assert!(!stderr.contains("failed to start"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
+        );
     }
 
     /// The legacy vault prompt holds no vault lock, so it saves no egui memory

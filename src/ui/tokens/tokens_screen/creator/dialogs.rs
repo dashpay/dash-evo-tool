@@ -128,7 +128,11 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
                 checkbox(ui,"Allow the administrator to remove all action performers","flags.0",&mut rule.allow_disable_action,&mut state.help);
                 checkbox(ui,"Allow the administrator to remove all rule administrators","flags.1",&mut rule.allow_remove_administrator,&mut state.help);
                 checkbox(ui,"Allow the administrator to replace itself","flags.2",&mut rule.allow_replace_administrator,&mut state.help);
-                ui.small("An action with no current performer may still be enabled later when a rule administrator remains.");
+                if kind == RuleKind::Recurring {
+                    ui.small("The recurring distribution itself cannot be enabled or changed after creation, even if a performer is appointed later.");
+                } else {
+                    ui.small("An action with no current performer may still be enabled later when a rule administrator remains.");
+                }
                 if rule.allow_remove_administrator && !rule.allow_replace_administrator {
                     ui.small("Removing all rule administrators also needs the administrator to be allowed to replace itself.");
                 }
@@ -337,6 +341,32 @@ mod tests {
                     "{key}: {text}"
                 );
             }
+        }
+    }
+
+    /// The rule editor must not suggest a recurring distribution can start
+    /// later: appointing a performer cannot change it after creation.
+    #[test]
+    fn recurring_rule_editor_never_promises_a_later_change() {
+        use egui_kittest::kittest::Queryable;
+        let later = "may still be enabled later";
+        for (kind, expected) in [(RuleKind::Mint, true), (RuleKind::Recurring, false)] {
+            let mut state = CreatorWorkspace::default();
+            state.draft.permissions.get_mut(kind).administrator = ActorDraft::Owner;
+            state.rule_editor = Some(kind);
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(900.0, 1200.0))
+                .build_ui_state(
+                    |ui, state: &mut CreatorWorkspace| show(&ui.ctx().clone(), state),
+                    state,
+                );
+            harness.run();
+            assert_eq!(
+                harness.query_by_label_contains(later).is_some(),
+                expected,
+                "{}",
+                kind.label()
+            );
         }
     }
 

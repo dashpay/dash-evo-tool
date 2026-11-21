@@ -52,7 +52,7 @@ impl WalletBackend {
         use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 
         let mut required = Vec::new();
-        let mut account_ends = BTreeMap::<u32, u32>::new();
+        let mut account_highest = BTreeMap::<u32, u32>::new();
         for address in addresses {
             let Some(path) = path_index.path_for(&address) else {
                 continue; // Foreign outputs are not this wallet's slots.
@@ -69,13 +69,10 @@ impl WalletBackend {
             else {
                 return Err(TaskError::WalletStateInconsistent);
             };
-            let end = index
-                .checked_add(1)
-                .ok_or(TaskError::WalletStateInconsistent)?;
-            account_ends
+            account_highest
                 .entry(*account)
-                .and_modify(|current| *current = (*current).max(end))
-                .or_insert(end);
+                .and_modify(|current| *current = (*current).max(*index))
+                .or_insert(*index);
             required.push((address, *account, *index));
         }
         if required.is_empty() {
@@ -88,7 +85,7 @@ impl WalletBackend {
         let (public_wallet, info) = manager
             .get_wallet_mut_and_info_mut(&wallet.wallet_id())
             .ok_or(TaskError::WalletStateInconsistent)?;
-        for (account_index, end) in account_ends {
+        for (account_index, highest) in account_highest {
             let key = PlatformPaymentAccountKey {
                 account: account_index,
                 key_class: 0,
@@ -103,18 +100,10 @@ impl WalletBackend {
                 .core_wallet
                 .platform_payment_managed_account_at_index_mut(account_index)
                 .ok_or(TaskError::WalletStateInconsistent)?;
-            let generated_end = match account.addresses.highest_generated {
-                Some(index) => index
-                    .checked_add(1)
-                    .ok_or(TaskError::WalletStateInconsistent)?,
-                None => 0,
-            };
-            if end > generated_end {
-                account
-                    .addresses
-                    .generate_addresses(end - generated_end, &KeySource::Public(xpub), true)
-                    .map_err(|source| TaskError::PlatformAddressPoolPreparationFailed { source })?;
-            }
+            account
+                .addresses
+                .generate_up_to(highest, &KeySource::Public(xpub))
+                .map_err(|source| TaskError::PlatformAddressPoolPreparationFailed { source })?;
         }
         for (expected, account_index, index) in required {
             let generated = info
@@ -230,9 +219,10 @@ impl WalletBackend {
         Ok(changeset_platform_entries(&changeset))
     }
 
-    /// Top up `identity` from this wallet's Platform addresses. Returns the
-    /// identity's new balance, the height of the proof carrying it and what
-    /// platform-wallet committed for the paying addresses.
+    /// Top up `identity` from this wallet's Platform addresses through `sdk`,
+    /// the SDK the task was dispatched with. Returns the identity's new
+    /// balance, the height of the proof carrying it and what platform-wallet
+    /// committed for the paying addresses.
     ///
     /// The SDK submits the top-up; platform-wallet's public
     /// `reconcile_address_infos` then records the spent balances, pinned at
@@ -242,6 +232,7 @@ impl WalletBackend {
     /// the paying wallet, and it flattens SDK failures into a string.
     pub(crate) async fn top_up_identity_from_platform_addresses(
         &self,
+        sdk: &dash_sdk::Sdk,
         seed_hash: &WalletSeedHash,
         path_index: &PlatformPathIndex,
         identity: &dash_sdk::platform::Identity,
@@ -249,7 +240,6 @@ impl WalletBackend {
     ) -> Result<(Credits, u64, Vec<PlatformAddressEntry>), TaskError> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
-        let sdk = self.sdk().clone();
         let resolved = self.resolve_paying_wallet(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         // TODO(upstream): switch to
@@ -270,7 +260,7 @@ impl WalletBackend {
                     .await?;
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 let outcome = identity
-                    .top_up_from_addresses(&sdk, inputs, &signer, None)
+                    .top_up_from_addresses(sdk, inputs, &signer, None)
                     .await
                     .map_err(map_top_up_sdk_error)?;
                 Ok((wallet, outcome))
@@ -873,6 +863,7 @@ mod tests {
 
         let result = backend
             .top_up_identity_from_platform_addresses(
+                &ctx.sdk.load(),
                 &seed_hash,
                 &path_index,
                 &identity,

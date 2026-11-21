@@ -817,9 +817,7 @@ impl WalletSendScreen {
     }
 
     fn parse_amount_to_credits(input: &str) -> Result<Credits, String> {
-        let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
-        let duffs = amount.dash_to_duffs()?;
-        Ok(duffs as Credits * 1000)
+        Ok(Amount::parse(input, DASH_DECIMAL_PLACES)?.value())
     }
 
     /// Detect address kind from the address string.
@@ -9191,6 +9189,25 @@ mod tests {
         screen.sync_route();
         assert!(screen.route_requests().iter().any(is_core_quote));
         assert_eq!(screen.requote_on_registration, None);
+    }
+
+    /// Recipient rows keep a Platform amount to the credit: 11 decimals
+    /// are not cut to whole duffs.
+    #[test]
+    fn recipient_row_amounts_keep_every_credit() {
+        assert_eq!(
+            WalletSendScreen::parse_amount_to_credits("1.00000000001"),
+            Ok(100_000_000_001)
+        );
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(21), "0.00000000123".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(22),
+            amount: "0.00000000001".to_string(),
+        };
+        assert_eq!(screen.requested_credits(), Some(124));
     }
 
     /// Only the answer to the awaited quote request can ask for an unlock.

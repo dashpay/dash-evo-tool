@@ -20,8 +20,8 @@
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
 use platform_wallet_storage::secrets::{SecretStore, SecretString};
@@ -179,9 +179,15 @@ impl BootApp {
         outcome: &StartupOutcome,
     ) -> Result<Self, BootError> {
         match decision {
-            BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
-                ctx, db, data_dir, store,
-            )?))),
+            BootDecision::Ready(store) => {
+                // Held until the app runs: if building it fails, the failure
+                // window still saves into the profile, so no other launch may
+                // start writing that profile meanwhile.
+                outcome.hold_vault(Arc::clone(&store));
+                let app = AppState::new_inner(ctx, db, data_dir, store)?;
+                outcome.release_vault();
+                Ok(BootApp::Running(Box::new(app)))
+            }
             BootDecision::Unlock => {
                 tracing::warn!(
                     "Seed vault is protected by a passphrase from an earlier version; \
@@ -448,18 +454,46 @@ impl Startup {
 }
 
 /// Whether startup failed, shared with `main` so the process can exit with a
-/// failure code after the user closes the failure dialog.
-#[derive(Debug, Clone, Default)]
-pub struct StartupOutcome(Arc<AtomicBool>);
+/// failure code after the user closes the failure dialog. Also keeps the vault
+/// of a failed boot open until `main` drops it.
+#[derive(Clone, Default)]
+pub struct StartupOutcome {
+    failed: Arc<AtomicBool>,
+    held_vault: Arc<Mutex<Option<Arc<SecretStore>>>>,
+}
 
 impl StartupOutcome {
     fn mark_failed(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.failed.store(true, Ordering::Relaxed);
     }
 
     /// Whether the app entered [`BootApp::Failed`].
     pub fn failed(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.failed.load(Ordering::Relaxed)
+    }
+
+    /// Keep `vault`, and so its lock, open until [`Self::release_vault`] or the
+    /// end of startup.
+    fn hold_vault(&self, vault: Arc<SecretStore>) {
+        *self
+            .held_vault
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(vault);
+    }
+
+    fn release_vault(&self) {
+        self.held_vault
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+}
+
+impl std::fmt::Debug for StartupOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartupOutcome")
+            .field("failed", &self.failed())
+            .finish_non_exhaustive()
     }
 }
 
@@ -815,6 +849,32 @@ mod tests {
             startup.error().is_some(),
             "the error stays for the terminal notice"
         );
+    }
+
+    /// A failure while building the app after a successful preparation keeps
+    /// the vault held until startup ends: the failure window still saves into
+    /// the profile, so no other launch may start writing it meanwhile.
+    #[test]
+    fn failure_after_preparation_keeps_the_vault_held() {
+        let setup = |dir: &std::path::Path| {
+            keyless_vault(dir);
+            std::fs::create_dir(crate::wallet_backend::app_database_path(dir))
+                .expect("block the app database");
+        };
+        let Some(dir) = in_data_dir_child(setup) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir.clone()));
+        assert!(startup.persist_window());
+        let outcome = StartupOutcome::default();
+        let app = startup.boot(egui::Context::default(), &outcome);
+        assert!(matches!(app, BootApp::Failed(_)));
+        assert!(
+            AppContext::open_secret_store(&dir).is_err(),
+            "another launch must find the vault held"
+        );
+        drop((app, outcome));
+        AppContext::open_secret_store(&dir).expect("the vault is released when startup ends");
     }
 
     /// A data folder that could not be prepared shows the failure dialog and

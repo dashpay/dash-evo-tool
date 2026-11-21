@@ -279,10 +279,11 @@ impl eframe::App for BootApp {
         }
     }
 
-    /// The failure dialog saves nothing: with no data folder, eframe's storage
-    /// is the system default folder, outside the one the user chose.
+    /// Only the running app saves egui memory. The failure dialog may have no
+    /// data folder (eframe then uses the system default folder), and the
+    /// legacy vault prompt holds no lock on the profile another launch shares.
     fn persist_egui_memory(&self) -> bool {
-        !matches!(self, BootApp::Failed(_))
+        matches!(self, BootApp::Running(_))
     }
 
     fn on_exit(&mut self) {
@@ -715,6 +716,21 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(0), "{stderr}");
         assert!(!stderr.contains("failed to start"), "{stderr}");
+    }
+
+    /// The legacy vault prompt holds no vault lock, so it saves no egui memory
+    /// into a profile another launch may share.
+    #[test]
+    fn legacy_vault_prompt_does_not_persist_egui_memory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+            .expect("create passphrase vault");
+        let mut startup = with_data_dir(tmp.path(), || {
+            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
+        });
+        let app = startup.boot(egui::Context::default(), &StartupOutcome::default());
+        assert!(matches!(app, BootApp::Unlocking(_)));
+        assert!(!eframe::App::persist_egui_memory(&app));
     }
 
     /// Runs `f` with `DASH_EVO_DATA_DIR` set to `dir`, serialized with every

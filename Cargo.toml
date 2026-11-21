@@ -6,6 +6,11 @@ edition = "2024"
 default-run = "dash-evo-tool"
 rust-version = "1.99"
 
+[package.metadata.cargo-machete]
+# `dpp` is never named in code; it turns on dpp's `validation` feature for the
+# dpp instance dash-sdk re-exports.
+ignored = ["dpp"]
+
 [dependencies]
 tokio-util = { version = "0.7.20" }
 bip39 = { version = "2.2.2", features = ["all-languages", "rand", "zeroize"] }

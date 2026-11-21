@@ -54,6 +54,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -71,7 +72,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use system_contracts::{SystemContracts, SystemContractsCache};
 
 use crate::model::settings::AppSettings;
@@ -324,9 +325,10 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
-    /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
-    /// Updated when epoch info is fetched from Platform
-    fee_multiplier_permille: AtomicU64,
+    /// Cached fee multiplier permille (1000 = 1x, 2000 = 2x) with the index of
+    /// the proved epoch it came from (`None` until one arrives); kept together
+    /// so an older epoch never replaces a newer one's multiplier.
+    fee_multiplier: Mutex<(Option<EpochIndex>, u64)>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -668,9 +670,10 @@ impl AppContext {
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
-            fee_multiplier_permille: AtomicU64::new(
+            fee_multiplier: Mutex::new((
+                None,
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
-            ),
+            )),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -868,13 +871,37 @@ impl AppContext {
 
     /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
     pub fn fee_multiplier_permille(&self) -> u64 {
-        self.fee_multiplier_permille.load(Ordering::Relaxed)
+        self.fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
     }
 
-    /// Update the cached fee multiplier from epoch info
+    /// Set the cached fee multiplier without an epoch; the next proved epoch replaces it.
     pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
-        self.fee_multiplier_permille
-            .store(multiplier, Ordering::Relaxed);
+        *self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (None, multiplier);
+    }
+
+    /// Cache the fee multiplier of proved epoch `epoch_index` unless a newer
+    /// epoch's multiplier is already cached.
+    pub(crate) fn set_epoch_fee_multiplier_permille(
+        &self,
+        epoch_index: EpochIndex,
+        multiplier: u64,
+    ) {
+        let mut cached = self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .0
+            .is_none_or(|cached_index| epoch_index >= cached_index)
+        {
+            *cached = (Some(epoch_index), multiplier);
+        }
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.

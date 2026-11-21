@@ -600,17 +600,18 @@ impl AppContext {
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
-        // No epoch ordering here: an older epoch can only come from a node
-        // behind the chain, and the SDK refuses a proved response more than
-        // `metadata_height_tolerance` blocks (1 by default) below the highest
-        // it has seen (`StaleNodeError::Height`), then bans that DAPI address.
+        // Concurrent fetches, possibly through different SDK instances, can
+        // finish out of order; the cache keeps the newest epoch's multiplier.
         self.set_fee_multiplier_from(&epoch_info);
         Ok(epoch_info)
     }
 
-    /// Sets the fee multiplier cache from a proved epoch.
+    /// Sets the fee multiplier cache from a proved epoch unless a newer one is cached.
     fn set_fee_multiplier_from(&self, epoch_info: &ExtendedEpochInfo) {
-        self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
+        self.set_epoch_fee_multiplier_permille(
+            epoch_info.index(),
+            epoch_info.fee_multiplier_permille(),
+        );
     }
 
     /// Schedule a best-effort check only within a running, quorum-ready session.
@@ -1172,6 +1173,32 @@ mod tests {
         }));
 
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
+    }
+
+    /// A proved epoch older than the cached one, e.g. from a probe that was
+    /// still in flight, never replaces the newer epoch's fee multiplier.
+    #[test]
+    fn an_older_epoch_after_a_newer_one_keeps_the_newer_fee_multiplier() {
+        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let epoch = |index, fee_multiplier_permille| {
+            ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+                index,
+                first_block_time: 0,
+                first_block_height: 0,
+                first_core_block_height: 0,
+                fee_multiplier_permille,
+                protocol_version: 14,
+            })
+        };
+
+        ctx.set_fee_multiplier_from(&epoch(8, 2_000));
+        ctx.set_fee_multiplier_from(&epoch(7, 1_500));
+        assert_eq!(ctx.fee_multiplier_permille(), 2_000);
+
+        ctx.set_fee_multiplier_from(&epoch(8, 2_500));
+        assert_eq!(ctx.fee_multiplier_permille(), 2_500);
     }
 
     /// A failed withdrawal keeps its credits locked, so the history says so

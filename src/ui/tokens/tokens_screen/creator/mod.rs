@@ -433,17 +433,12 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
         ui.strong("Powers and consequences");
         for kind in RuleKind::ALL {
             let rule = state.draft.permissions.get(kind);
-            if rule.performer != ActorDraft::NoOne
-                || rule.administrator != ActorDraft::NoOne
-                || !rule.permanently_disabled()
-            {
+            if !rule.is_fixed() {
                 ui.label(kind.label());
                 ui.small(format!("Performer: {}", rule.performer.label()));
                 ui.small(format!("Administrator: {}", rule.administrator.label()));
-                if rule.allow_disable_action
-                    || rule.allow_remove_administrator
-                    || rule.allow_replace_administrator
-                {
+                // Allowances only bind an administrator; without one nothing can change.
+                if rule.administrator != ActorDraft::NoOne {
                     ui.small("Later changes are allowed. Review the rule's three allowances.");
                 }
             }
@@ -453,7 +448,7 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             .permissions
             .rules
             .iter()
-            .all(|rule| rule.permanently_disabled())
+            .all(|rule| rule.is_fixed())
         {
             ui.label("All 13 action rules are permanently disabled.");
         }
@@ -465,4 +460,88 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
 
 fn on_off(enabled: bool) -> &'static str {
     if enabled { "On" } else { "Off" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::token_creator::rules::RuleBundle;
+    use crate::ui::state::token_creator::RuleFilter;
+    use egui_kittest::kittest::Queryable;
+
+    /// Every rule has neither performer nor administrator; Mint keeps an
+    /// allowance that nobody can ever use.
+    fn locked_workspace() -> CreatorWorkspace {
+        let mut state = CreatorWorkspace::default();
+        state.draft.permissions = RuleBundle::default();
+        state
+            .draft
+            .permissions
+            .get_mut(RuleKind::Mint)
+            .allow_disable_action = true;
+        state
+    }
+
+    fn render(
+        state: CreatorWorkspace,
+        show: fn(&mut Ui, &mut CreatorWorkspace),
+    ) -> egui_kittest::Harness<'static, CreatorWorkspace> {
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 4000.0))
+            .build_ui_state(
+                move |ui, state: &mut CreatorWorkspace| show(ui, state),
+                state,
+            );
+        harness.run();
+        harness
+    }
+
+    fn supply_section(ui: &mut Ui, state: &mut CreatorWorkspace) {
+        supply::show(ui, state, dash_sdk::dpp::version::PlatformVersion::latest());
+    }
+
+    /// Allowances bind only an administrator, so a rule with neither performer
+    /// nor administrator is permanent whatever its allowances.
+    #[test]
+    fn rules_without_performer_or_administrator_read_as_permanent() {
+        let summary = render(locked_workspace(), summary);
+        assert!(
+            summary
+                .query_by_label_contains("Later changes are allowed")
+                .is_none()
+        );
+        assert!(
+            summary
+                .query_by_label("All 13 action rules are permanently disabled.")
+                .is_some()
+        );
+
+        let supply = render(locked_workspace(), supply_section);
+        assert_eq!(
+            supply
+                .query_all_by_label("Permanently disabled by this configuration.")
+                .count(),
+            13
+        );
+        let mut changeable = locked_workspace();
+        changeable.rule_filter = RuleFilter::Changeable;
+        let supply = render(changeable, supply_section);
+        assert!(supply.query_by_label("Edit rule").is_none());
+    }
+
+    /// The Supply card shows the removal permission the network will apply,
+    /// as Review does: removal also needs the replace allowance.
+    #[test]
+    fn supply_card_shows_the_effective_administrator_removal() {
+        let mut state = locked_workspace();
+        let mint = state.draft.permissions.get_mut(RuleKind::Mint);
+        mint.administrator = ActorDraft::Owner;
+        mint.allow_remove_administrator = true;
+        let supply = render(state, supply_section);
+        assert!(
+            supply
+                .query_by_label_contains("Remove administrator: allowed")
+                .is_none()
+        );
+    }
 }

@@ -454,11 +454,6 @@ mod tests {
         let context = crate::context::test_support::test_app_context(dir.path());
         let destination = Identifier::from([5; 32]);
         let info = token_info(&context, Some(destination), true);
-        let ctx = TokenActionCtx {
-            info: &info,
-            app_context: &context,
-            is_group_signing: true,
-        };
         let mut action = MintAction::new(&info, &context);
         assert_eq!(
             action.proposed_recipient_text(),
@@ -473,11 +468,6 @@ mod tests {
         );
 
         let without_destination = token_info(&context, None, true);
-        let ctx = TokenActionCtx {
-            info: &without_destination,
-            app_context: &context,
-            is_group_signing: true,
-        };
         let action = MintAction::new(&without_destination, &context);
         assert_eq!(
             action.proposed_recipient_text(),

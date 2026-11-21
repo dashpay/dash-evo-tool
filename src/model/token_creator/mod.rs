@@ -132,6 +132,25 @@ impl DraftError {
             },
         )
     }
+    /// Names the private document type whose entries are too small, and the
+    /// size they need; other refusals stay generic.
+    pub fn private_documents(source: ProtocolError) -> Self {
+        let issue = match source {
+            ProtocolError::PrivateDocumentEntrySizeTooSmall {
+                ref document_type_name,
+                minimum_entry_size,
+                ..
+            } => DraftIssue::PrivateEntrySize {
+                document_type: document_type_name.clone(),
+                minimum: minimum_entry_size,
+                source: Box::new(source),
+            },
+            source => DraftIssue::Protocol {
+                source: Box::new(source),
+            },
+        };
+        Self::new(Section::Documents, "Document types", issue)
+    }
     /// Reports the first typed protocol validation cause.
     pub fn consensus(section: Section, field: &'static str, errors: Vec<ConsensusError>) -> Self {
         Self::new(
@@ -233,6 +252,15 @@ pub enum DraftIssue {
     DocumentsSize,
     #[error("These settings are not accepted. Check the indicated field and adjust its values.")]
     InvalidConfiguration,
+    #[error(
+        "The private document type {document_type} needs entries of at least {minimum} bytes. Set its entrySize to {minimum} or more."
+    )]
+    PrivateEntrySize {
+        document_type: String,
+        minimum: u32,
+        #[source]
+        source: Box<ProtocolError>,
+    },
     #[error("These settings could not be checked. Check the indicated field and try again.")]
     Protocol {
         #[source]

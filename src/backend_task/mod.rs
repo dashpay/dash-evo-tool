@@ -370,6 +370,7 @@ impl BackendTask {
                 } => &identity_token_info.identity,
                 TokenTask::PrepareTokenCreation { .. }
                 | TokenTask::CheckTokenCreation
+                | TokenTask::SaveConfirmedTokenCreation { .. }
                 | TokenTask::QueryMyTokenBalances
                 | TokenTask::QueryIdentityTokenBalance(_)
                 | TokenTask::StopTrackingTokenBalance(_)

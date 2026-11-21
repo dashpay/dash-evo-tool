@@ -361,8 +361,9 @@ fn map_top_up_sdk_error(e: dash_sdk::Error) -> TaskError {
 /// `Sdk` errors get the regular [`TaskError::from`] classification, the same
 /// one these flows used when they called the SDK directly. Upstream promotes
 /// a nonce rejection out of the SDK error, so it gets its own variant. The
-/// rest go through the exhaustive [`identity_op_error_kind`] buckets, so an
-/// unconfirmed broadcast never lands in an envelope that advises a retry.
+/// rest go through the shared asset-lock refusal mapping, then the exhaustive
+/// [`identity_op_error_kind`] buckets, so an unconfirmed broadcast never lands
+/// in an envelope that advises a retry.
 fn map_platform_address_spend_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     use platform_wallet::error::PlatformWalletError as P;
     match e {
@@ -370,31 +371,24 @@ fn map_platform_address_spend_error(e: platform_wallet::error::PlatformWalletErr
         nonce @ P::AddressNonceMismatch { .. } => TaskError::PlatformAddressNonceMismatch {
             source: Box::new(nonce),
         },
-        other => match identity_op_error_kind(&other) {
-            IdentityOpErrorKind::TooManyInputs { count, max } => {
-                TaskError::AssetLockTransferTooManyInputs {
-                    count,
-                    max,
-                    source: Box::new(other),
+        other => {
+            super::payments::map_asset_lock_refusal_or(other, |other| match identity_op_error_kind(
+                &other,
+            ) {
+                IdentityOpErrorKind::ConfirmationUnknown => {
+                    TaskError::TransactionConfirmationUnknown {
+                        txid: None,
+                        source: Box::new(other),
+                    }
                 }
-            }
-            IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-                TaskError::AssetLockFundsAwaitingConfirmation {
-                    waiting,
-                    source: Some(Box::new(other)),
-                }
-            }
-            IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
-                txid: None,
-                source: Box::new(other),
-            },
-            IdentityOpErrorKind::Rejected
-            | IdentityOpErrorKind::FinalityTimeout
-            | IdentityOpErrorKind::NotManaged
-            | IdentityOpErrorKind::Other => TaskError::WalletBackend {
-                source: Arc::new(other),
-            },
-        },
+                IdentityOpErrorKind::Rejected
+                | IdentityOpErrorKind::FinalityTimeout
+                | IdentityOpErrorKind::NotManaged
+                | IdentityOpErrorKind::Other => TaskError::WalletBackend {
+                    source: Arc::new(other),
+                },
+            })
+        }
     }
 }
 

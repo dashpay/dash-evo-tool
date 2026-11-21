@@ -158,36 +158,61 @@ class RemoteTagTests(unittest.TestCase):
             with self.assertRaises(ReleaseSourceError):
                 verify_remote_tag("owner/repo", "v1.0.0", "b" * 40)
 
+    def github(self, releases=None, list_code=0):
+        """Fake gh: the tag endpoint never returns drafts, as on GitHub."""
+
+        def run(command, **_kwargs):
+            endpoint = command[-1]
+            if "/git/ref/tags/" in endpoint:
+                return self.reply({"object": {"type": "commit", "sha": "b" * 40}})
+            if "/releases/tags/" in endpoint:
+                tag = endpoint.rsplit("/", 1)[1]
+                published = [
+                    r
+                    for r in releases or []
+                    if r["tag_name"] == tag and r["draft"] is False
+                ]
+                if published:
+                    return self.reply(published[0])
+                return self.reply({"status": "404"}, 1)
+            if endpoint.endswith("/releases?per_page=100"):
+                if list_code:
+                    return self.reply({"status": "500"}, list_code)
+                return self.reply([releases or [], []])
+            raise AssertionError(f"unexpected gh call: {command}")
+
+        return patch("release_source.subprocess.run", side_effect=run)
+
+    def release(self, draft=True, body="<!-- weekly-version: test -->", tag="v1.0.0"):
+        return {"tag_name": tag, "draft": draft, "body": body}
+
     def test_cleanup_refuses_published_or_unrecognized_releases(self):
-        for release in (
-            {"draft": False, "body": "<!-- weekly-version: test -->"},
-            {"draft": True, "body": "official draft"},
+        for releases in (
+            [self.release(draft=False)],
+            [self.release(body="official draft")],
+            [self.release(), self.release()],
         ):
-            replies = [
-                self.reply({"object": {"type": "commit", "sha": "b" * 40}}),
-                self.reply(release),
-            ]
-            with patch("release_source.subprocess.run", side_effect=replies):
+            with self.subTest(releases=releases), self.github(releases):
                 with self.assertRaises(ReleaseSourceError):
                     cleanup_plan("owner/repo", "v1.0.0", "b" * 40)
 
-    def test_cleanup_can_delete_only_its_draft_or_an_orphaned_tag(self):
-        for release, expected in (
-            (
-                self.reply({"draft": True, "body": "<!-- weekly-version: test -->"}),
+    def test_cleanup_finds_its_draft_although_the_tag_lookup_returns_404(self):
+        with self.github([self.release(tag="v0.9.0", draft=False), self.release()]):
+            self.assertEqual(
+                cleanup_plan("owner/repo", "v1.0.0", "b" * 40)["delete_release"],
                 "true",
-            ),
-            (self.reply({"status": "404"}, 1), "false"),
-        ):
-            replies = [
-                self.reply({"object": {"type": "commit", "sha": "b" * 40}}),
-                release,
-            ]
-            with patch("release_source.subprocess.run", side_effect=replies):
-                self.assertEqual(
-                    cleanup_plan("owner/repo", "v1.0.0", "b" * 40)["delete_release"],
-                    expected,
-                )
+            )
+
+    def test_cleanup_deletes_only_the_tag_when_no_release_uses_it(self):
+        with self.github([self.release(tag="v0.9.0", draft=False)]):
+            self.assertEqual(
+                cleanup_plan("owner/repo", "v1.0.0", "b" * 40)["delete_release"],
+                "false",
+            )
+
+    def test_cleanup_fails_closed_when_releases_cannot_be_listed(self):
+        with self.github(list_code=1), self.assertRaises(ReleaseSourceError):
+            cleanup_plan("owner/repo", "v1.0.0", "b" * 40)
 
 
 if __name__ == "__main__":

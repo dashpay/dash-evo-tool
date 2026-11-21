@@ -137,13 +137,49 @@ def verify_remote_tag(repository, tag, expected_sha, allow_missing=False):
     raise ReleaseSourceError("Too many nested annotated release tags.")
 
 
+def releases_with_tag(repository, tag):
+    # The releases/tags/{tag} endpoint never returns drafts; only the list does.
+    reply = subprocess.run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "--paginate",
+            "--slurp",
+            f"repos/{repository}/releases?per_page=100",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    if reply.returncode:
+        raise ReleaseSourceError("The releases could not be listed.")
+    try:
+        pages = json.loads(reply.stdout)
+    except json.JSONDecodeError as error:
+        raise ReleaseSourceError(
+            "GitHub did not return a usable release list."
+        ) from error
+    if not isinstance(pages, list) or not all(
+        isinstance(page, list) and all(isinstance(item, dict) for item in page)
+        for page in pages
+    ):
+        raise ReleaseSourceError("GitHub returned an invalid release list.")
+    return [item for page in pages for item in page if item.get("tag_name") == tag]
+
+
 def cleanup_plan(repository, tag, expected_sha):
     verify_remote_tag(repository, tag, expected_sha)
-    release = github_object(
-        f"repos/{repository}/releases/tags/{tag}", allow_missing=True
-    )
-    if release is None:
+    releases = releases_with_tag(repository, tag)
+    if not releases:
         return {"delete_release": "false"}
+    if len(releases) > 1:
+        raise ReleaseSourceError(
+            "Refusing to delete one of several releases with this tag."
+        )
+    release = releases[0]
     if release.get("draft") is not True:
         raise ReleaseSourceError("Refusing to delete an already-published release.")
     body = release.get("body") or ""

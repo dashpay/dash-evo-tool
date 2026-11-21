@@ -270,10 +270,10 @@ pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs, filter_sho
 }
 
 /// Whether Home shows its Tokens card: only when the identity holds a token
-/// or has something to claim.
-pub fn home_card_shows(rows: &[TokenRow]) -> bool {
+/// or has something to claim; a view-only identity can claim nothing.
+pub fn home_card_shows(rows: &[TokenRow], view_only: bool) -> bool {
     rows.iter()
-        .any(|row| row.holds_some() || row.open_once_claim().is_some())
+        .any(|row| row.holds_some() || (!view_only && row.open_once_claim().is_some()))
 }
 
 /// Whether an arrival refresh is due: on arrival, when no refresh finished
@@ -1413,20 +1413,27 @@ mod tests {
 
     #[test]
     fn home_card_needs_a_balance_or_a_claim() {
-        assert!(!home_card_shows(&[]));
-        assert!(!home_card_shows(&[
-            row("Zero", Some(0)),
-            row("Checking", None)
-        ]));
-        assert!(home_card_shows(&[
-            row("Zero", Some(0)),
-            row("Held", Some(1))
-        ]));
-        assert!(home_card_shows(&[once_only(row("Air", Some(0)), None)]));
-        assert!(!home_card_shows(&[with_recurring_rewards(row(
-            "Future",
-            Some(0)
-        ))]));
+        assert!(!home_card_shows(&[], false));
+        assert!(!home_card_shows(
+            &[row("Zero", Some(0)), row("Checking", None)],
+            false
+        ));
+        assert!(home_card_shows(
+            &[row("Zero", Some(0)), row("Held", Some(1))],
+            false
+        ));
+        assert!(home_card_shows(
+            &[once_only(row("Air", Some(0)), None)],
+            false
+        ));
+        assert!(
+            !home_card_shows(&[once_only(row("Air", Some(0)), None)], true),
+            "a view-only identity cannot take the claim"
+        );
+        assert!(!home_card_shows(
+            &[with_recurring_rewards(row("Future", Some(0)))],
+            false
+        ));
     }
 
     #[test]
@@ -1460,7 +1467,7 @@ mod tests {
         let both = with_recurring_rewards(once_only(row("Both", Some(5)), Some(1_700_000_000_000)));
         assert!(both.open_once_claim().is_none());
         assert_eq!(row_status(&both, false), RowStatus::RewardsMayBeWaiting);
-        assert!(home_card_shows(std::slice::from_ref(&both)));
+        assert!(home_card_shows(std::slice::from_ref(&both), false));
         let open = with_recurring_rewards(once_only(row("Both", Some(5)), None));
         assert_eq!(
             row_status(&open, false),

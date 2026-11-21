@@ -7,6 +7,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::token::TokenListSort;
 use crate::ui::ScreenType;
@@ -422,7 +423,8 @@ fn render_tokens_card(
     } else {
         render_failure(ui, app_context, tokens)
     };
-    if !home_card_shows(&rows) {
+    let view_only = identity.private_keys.is_empty();
+    if !home_card_shows(&rows, view_only) {
         return (action, HomeOutcome::None);
     }
     let mut outcome = HomeOutcome::None;
@@ -431,6 +433,7 @@ fn render_tokens_card(
     sort_rows(&mut held, TokenListSort::BalanceHighToLow);
     let claimable: Vec<_> = rows
         .iter()
+        .filter(|_| !view_only)
         .filter_map(|row| row.open_once_claim().map(|claim| (row, claim)))
         .collect();
     let pending_claims = claimable.len();
@@ -445,10 +448,20 @@ fn render_tokens_card(
         });
         for row in held.iter().take(TOKENS_CARD_ROWS) {
             ui.horizontal(|ui| {
+                // A chain name can copy another's, so the ID tells them
+                // apart and the amount carries no unit taken from the name.
                 ui.label(row.name());
+                ui.label(
+                    RichText::new(shorten_id(&row.token_id_base58()))
+                        .small()
+                        .monospace()
+                        .color(DashColors::text_secondary(dark)),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(balance) = row.balance() {
-                        ui.label(RichText::new(row.amount(balance).to_string()).monospace());
+                        ui.label(
+                            RichText::new(row.amount(balance).to_string_without_unit()).monospace(),
+                        );
                     }
                 });
             });

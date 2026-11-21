@@ -169,6 +169,13 @@ fn is_pair_check(task: &TokenTask) -> bool {
     matches!(task, TokenTask::TrackTokenBalancesAgain(pairs) if pairs.len() == 1)
 }
 
+/// The shortened Base58 form the hub shows beside a token name.
+fn short_id(token: Identifier) -> String {
+    dash_evo_tool::model::identity_name::shorten_id(
+        &token.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+    )
+}
+
 /// Part of the timeout error's text, which the failed refresh shows inline.
 const TIMEOUT_TEXT: &str = "the network took too long to respond";
 
@@ -1542,7 +1549,11 @@ fn hub_token_regression_missing_contract_keeps_balance_and_reloads_details() {
         set_balance(&ctx, Identifier::from([0xFF; 32]), token, 9_900);
 
         let home = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
-        assert!(home.query_by_label("1.25 Coffee").is_some());
+        // The card shows the amount without the token's own name as its
+        // unit, and the short token ID beside the name.
+        assert!(home.query_by_label("1.25").is_some());
+        assert!(home.query_by_label("1.25 Coffee").is_none());
+        assert!(home.query_by_label(&short_id(token)).is_some());
         let mut hub = mount_tokens_tab(&ctx);
         assert!(hub.query_by_label("1.25 Coffee").is_some());
         assert!(hub.query_by_label("3 Tea").is_some());
@@ -1886,11 +1897,11 @@ fn the_home_card_shows_only_with_a_balance_or_a_claim() {
                 .is_some()
         );
         assert!(
-            hub.query_by_label("1250 DashCoffee").is_some(),
+            hub.query_by_label("1250").is_some(),
             "the card lists what the identity holds"
         );
         assert!(
-            hub.query_by_label("0 Grit").is_none(),
+            hub.query_by_label("Grit").is_none(),
             "zero balances are not worth a glance"
         );
         hub.get_by_label(token_copy::SEE_ALL_TOKENS_LABEL).click();
@@ -1962,7 +1973,7 @@ fn home_asks_for_balances_on_a_fresh_launch_and_then_shows_the_card() {
         );
         hub.run_steps(2);
         assert!(
-            hub.query_by_label("1250 DashCoffee").is_some(),
+            hub.query_by_label("1250").is_some(),
             "the card appears once the refresh brought a balance"
         );
     });
@@ -1998,7 +2009,7 @@ fn a_failed_refresh_on_home_explains_itself_and_retries_once_per_click() {
         );
         hub.run_steps(6);
         assert!(
-            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+            hub.query_by_label(&TaskError::NoIdentitiesFound.to_string())
                 .is_some(),
             "the card cannot appear, so Home must say why"
         );
@@ -2027,11 +2038,11 @@ fn a_failed_refresh_on_home_explains_itself_and_retries_once_per_click() {
         );
         hub.run_steps(2);
         assert!(
-            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+            hub.query_by_label(&TaskError::NoIdentitiesFound.to_string())
                 .is_none(),
             "a success clears the notice"
         );
-        assert!(hub.query_by_label("1250 DashCoffee").is_some());
+        assert!(hub.query_by_label("1250").is_some());
     });
 }
 
@@ -2060,7 +2071,7 @@ fn a_failed_refresh_on_home_can_be_dismissed() {
         hub.get_by_label(token_copy::DISMISS_LABEL).click();
         hub.run_steps(4);
         assert!(
-            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+            hub.query_by_label(&TaskError::NoIdentitiesFound.to_string())
                 .is_none()
         );
         assert_eq!(balance_refreshes(&hub).len(), 1, "dismissing sends nothing");
@@ -2144,7 +2155,7 @@ fn hub_token_regression_scheduled_recipients_do_not_promise_home_claims() {
                 domain: dash_evo_tool::backend_task::CacheDomain::Tokens,
             });
         home.run_steps(3);
-        assert!(home.query_by_label("1 Future").is_some());
+        assert!(home.query_by_label("Future").is_some());
         assert!(
             home.query_by_label(&token_copy::pending_claims_text(2))
                 .is_none()
@@ -2195,6 +2206,38 @@ fn the_home_card_shows_a_claim_as_information() {
         );
         assert!(hub.query_by_label("Claim").is_none());
         assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Home);
+    });
+}
+
+/// A view-only identity cannot claim, so a claim alone earns it no card.
+#[test]
+fn the_home_card_offers_no_claim_to_a_view_only_identity() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let auth = key(1, Purpose::AUTHENTICATION);
+        let identity = seed_identity_with_id(&app_context, 0xDC, vec![auth], vec![]);
+        let mut airdrop = token_config("AirDrop", false);
+        let TokenDistributionRules::V0(rules) = airdrop.distribution_rules().clone() else {
+            panic!("presets are version 0");
+        };
+        airdrop.set_distribution_rules(distribution_rules_with_once_per_identity(rules, Some(100)));
+        let tokens = seed_contract(
+            &app_context,
+            0xC5,
+            Identifier::from([0xEE; 32]),
+            vec![airdrop],
+        );
+        set_balance(&app_context, identity, tokens[0], 0);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none()
+        );
+        assert!(hub.query_by_label_contains("You can claim").is_none());
     });
 }
 

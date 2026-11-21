@@ -650,6 +650,11 @@ mod tests {
     use crate::model::error_report::GENERIC_STARTUP_FAILURE;
     use crate::wallet_backend::single_key::open_secret_store;
 
+    /// A passphrase generated at run time for vaults a test only needs sealed.
+    fn throwaway_passphrase() -> SecretString {
+        SecretString::new(hex::encode(crate::test_support::keys::secret_bytes()))
+    }
+
     /// A non-passphrase failure while unlocking shows the dialog instead of
     /// closing the window.
     #[test]
@@ -840,7 +845,7 @@ mod tests {
     }
 
     fn passphrase_vault(dir: &std::path::Path) {
-        AppContext::open_secret_store_with_passphrase(dir, SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(dir, throwaway_passphrase())
             .expect("create passphrase vault");
     }
 
@@ -1027,7 +1032,7 @@ mod tests {
     #[test]
     fn classify_open_unlock_for_passphrase_vault() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), throwaway_passphrase())
             .expect("create passphrase vault");
 
         let decision = classify_open(tmp.path()).expect("classify");
@@ -1062,7 +1067,7 @@ mod tests {
     fn keyless_open_of_passphrase_vault_is_the_gated_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), throwaway_passphrase())
             .expect("create passphrase vault");
 
         let err = open_secret_store(&vault).expect_err("keyless open must fail");

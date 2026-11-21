@@ -1970,7 +1970,9 @@ mod tests {
         let keyless = AppContext::open_secret_store(&data_dir).err();
         let keyed = AppContext::open_secret_store_with_passphrase(
             &data_dir,
-            platform_wallet_storage::secrets::SecretString::new("legacy-pass"),
+            platform_wallet_storage::secrets::SecretString::new(hex::encode(
+                crate::test_support::keys::secret_bytes(),
+            )),
         )
         .err();
 

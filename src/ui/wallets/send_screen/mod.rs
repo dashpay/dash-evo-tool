@@ -1227,8 +1227,8 @@ impl WalletSendScreen {
             return;
         }
 
-        let failed =
-            self.asset_lock_balance.is_failed(&seed_hash) && !self.awaits_registration(&seed_hash);
+        let awaits_registration = self.awaits_registration(&seed_hash);
+        let failed = self.asset_lock_balance.is_failed(&seed_hash) && !awaits_registration;
         let loading = self.asset_lock_max_amount(&seed_hash).is_err();
         if self.asset_lock_balance.is_busy(&seed_hash) {
             ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
@@ -1242,6 +1242,7 @@ impl WalletSendScreen {
             ui.label("The amount shown is safe but may be lower than your full available amount.");
         }
         if self.asset_lock_balance.should_offer_retry(&seed_hash)
+            && !awaits_registration
             && ui.button("Retry available amount check").clicked()
         {
             self.asset_lock_balance.invalidate_one(&seed_hash);
@@ -8981,6 +8982,97 @@ mod tests {
             screen.missing_step(),
             Some("Checking the available amount…")
         );
+    }
+
+    /// A funded screen whose password-protected wallet is locked, paying
+    /// from an explicit Core source.
+    fn locked_core_send_screen() -> (WalletSendScreen, tempfile::TempDir) {
+        let (ctx, temp_dir) = offline_ctx();
+        // Generated per run: no wallet secret is ever committed.
+        let password =
+            crate::model::secret::Secret::new(format!("{:032x}", rand::random::<u128>()));
+        let mut wallet = Wallet::new_from_seed(
+            crate::test_support::keys::seed(),
+            Network::Testnet,
+            Some("Locked".to_string()),
+            Some(&password),
+        )
+        .expect("wallet from seed");
+        wallet.wallet_seed.close();
+        let mut screen = WalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
+        let address = testnet_core_address(9);
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 200_000_000,
+            core_addresses: vec![(address, 200_000_000)],
+            platform: vec![],
+            shielded_credits: 0,
+        });
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        let mut amount_input = WalletSendScreen::new_amount_input();
+        amount_input.set_value(Amount::new_dash(0.5));
+        screen.amount_input = Some(amount_input);
+        (screen, temp_dir)
+    }
+
+    fn form_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    /// The asset-lock quote of a locked wallet offers the unlock; once
+    /// unlocked, it reads as checking while the wallet registers, with no
+    /// Retry, as the Core send quote does.
+    #[test]
+    fn the_asset_lock_quote_offers_the_unlock_then_checks_without_retry() {
+        let (mut screen, _temp_dir) = locked_core_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.typed_destination = Some(platform_destination());
+        screen.sync_route();
+        let task = screen
+            .request_asset_lock_max_amount_for(
+                &SourceSelection::CoreWallet,
+                Some(AddressKind::Platform),
+            )
+            .expect("an asset-lock quote request");
+        screen.display_backend_task_error(
+            &BackendTaskContext::from(&task),
+            &TaskError::WalletLockedNotLoaded {
+                wallet_label: "Locked".to_string(),
+            },
+        );
+        let mut harness = form_harness(screen);
+        let retry = |harness: &Harness<'static, WalletSendScreen>| {
+            harness
+                .query_by_label("Retry available amount check")
+                .is_some()
+        };
+        assert!(
+            harness
+                .query_by_label_contains("to check the available amount.")
+                .is_some()
+        );
+        assert!(!retry(&harness), "Retry would fail the same way");
+
+        // What a successful unlock leaves behind.
+        harness.state_mut().quote_needs_unlock = None;
+        harness.state_mut().requote_on_registration = Some(seed_hash);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("Checking the available amount…")
+                .is_some()
+        );
+        assert!(!retry(&harness), "no Retry while the wallet registers");
     }
 
     /// Only the answer to the awaited quote request can ask for an unlock.

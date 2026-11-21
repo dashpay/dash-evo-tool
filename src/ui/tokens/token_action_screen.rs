@@ -522,6 +522,20 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 &self.common.identity_token_info.identity,
                 self.common.identity_token_info.data_contract.contract.id(),
             );
+            if self.common.selected_key.follow_automatic(
+                &self.common.identity_token_info.identity,
+                TransactionType::TokenAction,
+                self.common.identity_token_info.data_contract.contract.id(),
+            ) {
+                crate::ui::identity::sync_signing_wallet(
+                    Some(&self.common.identity_token_info.identity),
+                    self.common.selected_key.as_ref(),
+                    &mut self.common.selected_wallet,
+                    &mut self.common.wallet_open_attempted,
+                );
+                // A pending confirmation was for the previous key.
+                self.common.confirmation_dialog = None;
+            }
             if key_status == SigningKeyStatus::ManualChoiceOnly {
                 // Only a contract-group key can sign it: the user picks it below.
                 self.common.show_advanced_options = true;
@@ -910,5 +924,94 @@ mod tests {
                 Some(2)
             );
         }
+    }
+
+    /// The lower of two expiry-limited keys, chosen automatically with its
+    /// wallet, expires while the confirmation is open: it is never submitted.
+    /// The form moves to the other key and its wallet without a refresh, and
+    /// asks for confirmation again.
+    #[test]
+    fn an_automatic_key_expiring_under_the_confirmation_is_not_submitted() {
+        use crate::backend_task::{BackendTask, tokens::TokenTask};
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use egui_kittest::kittest::Queryable;
+        use std::cell::RefCell;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        let mut identity = identity_holding(&[expired.clone(), live]);
+        let wallet = crate::model::wallet::test_support::open_wallet_on(
+            crate::test_support::keys::labelled_seed("token_expiry_wallet", 0),
+        );
+        let wallet_hash = wallet.seed_hash();
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, wallet_hash);
+        let wallet = Arc::new(RwLock::new(wallet));
+        identity
+            .associated_wallets
+            .insert(wallet_hash, wallet.clone());
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        config
+            .distribution_rules
+            .set_new_tokens_destination_identity(Some(Identifier::from([9; 32])));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: config.into(),
+            token_position: 0,
+        };
+        let screen = MintTokensScreen::new(info, &context);
+        let submitted = RefCell::new(Vec::new());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    if let AppAction::BackendTask(BackendTask::TokenTask(task)) = screen.ui(ui)
+                        && let TokenTask::MintTokens { signing_key, .. } = *task
+                    {
+                        submitted.borrow_mut().push(signing_key.id());
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        let amount_field = "Amount to Mint:";
+        let text_input = egui::accesskit::Role::TextInput;
+        harness
+            .get_by_role_and_label(text_input, amount_field)
+            .focus();
+        harness.run();
+        harness
+            .get_by_role_and_label(text_input, amount_field)
+            .type_text("5");
+        harness.run();
+        // Key 1 and its wallet were the automatic choice when the user asked
+        // to mint; the key has expired since.
+        let common = &mut harness.state_mut().common;
+        common.selected_key = super::super::TokenSigningKey::automatic(Some(expired));
+        common.selected_wallet = Some(wallet);
+        common.wallet_open_attempted = true;
+        common.confirmation_dialog = Some(
+            ConfirmationDialog::new("Confirm Mint", "Mint the tokens?")
+                .confirm_text(Some("Confirm pending mint")),
+        );
+        harness.run_steps(4);
+        if let Some(confirm) = harness.query_by_label("Confirm pending mint") {
+            confirm.click();
+            harness.run_steps(4);
+        }
+
+        assert_eq!(*submitted.borrow(), Vec::<u32>::new());
+        let common = &harness.state().common;
+        assert_eq!(common.selected_key.as_ref().map(|key| key.id()), Some(2));
+        assert!(common.selected_wallet.is_none(), "key 2 needs no wallet");
     }
 }

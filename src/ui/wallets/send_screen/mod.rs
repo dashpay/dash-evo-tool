@@ -349,6 +349,12 @@ pub struct WalletSendScreen {
     unlock_target: Option<Arc<RwLock<Wallet>>>,
     /// Send was pressed on a locked wallet: confirm once it is unlocked.
     unlock_then_send: bool,
+    /// A wallet whose Max quote was refused because only unlocking it
+    /// registers it with the wallet backend.
+    quote_needs_unlock: Option<WalletSeedHash>,
+    /// A wallet unlocked for its quotes: they are asked again once the
+    /// backend has registered it.
+    requote_on_registration: Option<WalletSeedHash>,
     wallet_open_attempted: bool,
 }
 
@@ -513,6 +519,8 @@ impl WalletSendScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             unlock_target: None,
             unlock_then_send: false,
+            quote_needs_unlock: None,
+            requote_on_registration: None,
             wallet_open_attempted: false,
         }
     }
@@ -3445,8 +3453,8 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Answers the Core send quote with `error`, replacing any quote
-    /// request still in flight.
+    /// Answers the Core send quote with `error` the way the app delivers a
+    /// failed task, replacing any quote request still in flight.
     pub fn mark_core_send_error_for_test(&mut self, error: &TaskError) {
         let Some((seed_hash, kind, revision)) =
             self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
@@ -3454,12 +3462,11 @@ impl WalletSendScreen {
             return;
         };
         self.spend_limits.invalidate();
-        if let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) = self
+        if let Some(task) = self
             .spend_limits
             .ensure_requested(seed_hash, kind, revision)
         {
-            self.spend_limits
-                .mark_request_error(seed_hash, kind, request_id, error);
+            self.display_backend_task_error(&BackendTaskContext::from(&task), error);
         }
     }
 
@@ -4173,6 +4180,13 @@ impl ScreenLike for WalletSendScreen {
                 WalletUnlockResult::Unlocked => {
                     // A receiving address may now be derived.
                     self.unlock_target = None;
+                    // Quotes refused while locked are asked again now, and
+                    // once more when the backend has registered the wallet.
+                    if let Some(seed_hash) = self.quote_needs_unlock.take() {
+                        self.requote_on_registration = Some(seed_hash);
+                        self.asset_lock_balance.invalidate();
+                        self.spend_limits.invalidate();
+                    }
                     if std::mem::take(&mut self.unlock_then_send) {
                         self.sync_route();
                         match self.prepare_send() {
@@ -4298,6 +4312,17 @@ impl ScreenLike for WalletSendScreen {
         if let Some((seed_hash, kind, request_id)) = context.spend_limit_request() {
             self.spend_limits
                 .mark_request_error(seed_hash, kind, request_id, error);
+        }
+        let quoted_wallet = context
+            .asset_lock_max_amount_request()
+            .map(|(seed_hash, ..)| seed_hash)
+            .or(context
+                .spend_limit_request()
+                .map(|(seed_hash, ..)| seed_hash));
+        if let Some(seed_hash) = quoted_wallet
+            && matches!(error, TaskError::WalletLockedNotLoaded { .. })
+        {
+            self.quote_needs_unlock = Some(seed_hash);
         }
     }
 

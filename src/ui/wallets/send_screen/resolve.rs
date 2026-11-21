@@ -1036,6 +1036,16 @@ impl WalletSendScreen {
     /// Requests this frame's resolution needs: Max quotes and own receiving
     /// addresses.
     pub(super) fn route_requests(&mut self) -> Vec<BackendTask> {
+        if let Some(seed_hash) = self.requote_on_registration
+            && self
+                .app_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
+        {
+            self.requote_on_registration = None;
+            self.asset_lock_balance.invalidate();
+            self.spend_limits.invalidate();
+        }
         let destination = self.destination_kind();
         let mut tasks = Vec::new();
         for source in self.route.quote_sources.clone() {

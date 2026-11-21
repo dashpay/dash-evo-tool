@@ -437,19 +437,7 @@ impl WalletSendScreen {
                         "Auto: another transaction from {wallet} is still in progress. Wait for it to finish, or choose a balance under Pay from."
                     ),
                 ),
-                AutoMax::QuoteFailed { kind } => {
-                    status_line(
-                        ui,
-                        format!(
-                            "Auto: the available amount in {source} could not be checked.",
-                            source = kind_label(kind)
-                        ),
-                    );
-                    if ui.button("Retry available amount check").clicked() {
-                        self.asset_lock_balance.invalidate();
-                        self.spend_limits.invalidate();
-                    }
-                }
+                AutoMax::QuoteFailed { kind } => self.render_auto_quote_failed(ui, kind),
                 AutoMax::NoFunds => {
                     status_line(ui, format!("Auto: {wallet} has no funds to send."))
                 }
@@ -482,19 +470,7 @@ impl WalletSendScreen {
                 ),
             },
             Some(AutoSource::Checking { .. }) => status_line(ui, "Auto: checking balances…"),
-            Some(AutoSource::QuoteFailed { kind }) => {
-                status_line(
-                    ui,
-                    format!(
-                        "Auto: the available amount in {source} could not be checked.",
-                        source = kind_label(kind)
-                    ),
-                );
-                if ui.button("Retry available amount check").clicked() {
-                    self.asset_lock_balance.invalidate();
-                    self.spend_limits.invalidate();
-                }
-            }
+            Some(AutoSource::QuoteFailed { kind }) => self.render_auto_quote_failed(ui, kind),
             Some(AutoSource::Preview { .. }) | None => status_line(
                 ui,
                 "Auto: picks a balance once you enter who you're paying.",
@@ -529,6 +505,39 @@ impl WalletSendScreen {
             Some(AutoSource::NoFunds) => {
                 status_line(ui, format!("Auto: {wallet} has no funds to send."))
             }
+        }
+    }
+
+    /// Auto's line for a balance whose quote failed, with the way out: unlock
+    /// a wallet the backend registers only once unlocked, else retry.
+    fn render_auto_quote_failed(&mut self, ui: &mut Ui, kind: PayFromKind) {
+        let locked = self
+            .quote_needs_unlock
+            .is_some_and(|seed_hash| Some(seed_hash) == self.selected_wallet_seed_hash)
+            && self
+                .selected_wallet
+                .as_ref()
+                .is_some_and(wallet_needs_unlock);
+        if locked {
+            let wallet = self.paying_wallet_name();
+            status_line(ui, format!("Auto: unlock {wallet} to check its balances."));
+            if ui.button("Unlock").clicked() {
+                self.unlock_target = self.selected_wallet.clone();
+                self.unlock_then_send = false;
+                self.wallet_unlock_popup.open();
+            }
+            return;
+        }
+        status_line(
+            ui,
+            format!(
+                "Auto: the available amount in {source} could not be checked.",
+                source = kind_label(kind)
+            ),
+        );
+        if ui.button("Retry available amount check").clicked() {
+            self.asset_lock_balance.invalidate();
+            self.spend_limits.invalidate();
         }
     }
 

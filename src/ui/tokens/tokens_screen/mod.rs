@@ -4074,7 +4074,7 @@ mod tests {
         token_creator_ui.enable_once_per_identity_distribution = true;
         token_creator_ui.once_per_identity_amount_input = "250".to_string();
 
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        assert_eq!(app_context.protocol_version_info().verified_version, None);
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");
@@ -4197,7 +4197,7 @@ mod tests {
 
         token_creator_ui.transferable_input = false;
 
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        assert_eq!(app_context.protocol_version_info().verified_version, None);
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");

@@ -11,13 +11,13 @@ use crate::model::send_route::{
     resolve_destination_auto, resolve_source_auto, route_refusal, ticked_source_refusal,
 };
 use crate::model::spend_limit::CoreSendShortfall;
-
-/// How long the quotes of a wallet just unlocked wait for its registration
-/// before their failure shows again with Retry.
-pub(super) const REGISTRATION_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::state::own_receive_addresses::OwnAddressKind;
 use crate::ui::state::send_form::{PayFrom, ToMode};
+
+/// How long the quotes and receiving address of a wallet just unlocked wait
+/// for its registration; a quote failure then shows again with Retry.
+pub(super) const REGISTRATION_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whether a Max figure is known, still being quoted, or failed to quote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -94,6 +94,9 @@ pub struct TransferTokensScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
+    /// The amount and recipient of the send in flight, as confirmed; the form
+    /// stays editable, so the success line must not read it.
+    sent: Option<(Amount, String)>,
 }
 
 impl TransferTokensScreen {
@@ -157,6 +160,7 @@ impl TransferTokensScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
+            sent: None,
         }
     }
 
@@ -307,6 +311,7 @@ impl TransferTokensScreen {
         };
 
         self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
+        self.sent = Some((self.amount_or_zero(), self.receiver_identity_id.clone()));
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             sending_text(&self.amount_or_zero()),
@@ -328,10 +333,14 @@ impl TransferTokensScreen {
         )))
     }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let (amount, recipient) = self
+            .sent
+            .clone()
+            .unwrap_or_else(|| (self.amount_or_zero(), self.receiver_identity_id.clone()));
         crate::ui::helpers::show_success_screen_with_info(
             ui,
-            sent_text(&self.amount_or_zero(), &self.receiver_identity_id),
-            vec![("Back to tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            sent_text(&amount, &recipient),
+            vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
             None,
         )
     }

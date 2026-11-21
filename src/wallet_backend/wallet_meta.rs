@@ -248,7 +248,7 @@ fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
 mod tests {
     use super::*;
 
-    use dash_sdk::dpp::dashcore::base58;
+    use dash_sdk::dpp::platform_value::string_encoding::{Encoding, decode as decode_string};
 
     use crate::wallet_backend::DetScope;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
@@ -471,7 +471,7 @@ mod tests {
         let key = key_for(Network::Mainnet, &seed);
         assert!(key.starts_with("mainnet:wallet_meta:"));
         let suffix = key.trim_start_matches("mainnet:wallet_meta:");
-        let decoded = base58::decode(suffix).expect("base58 decodes");
+        let decoded = decode_string(suffix, Encoding::Base58).expect("base58 decodes");
         assert_eq!(decoded.as_slice(), seed.as_slice());
     }
 

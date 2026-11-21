@@ -42,7 +42,7 @@ use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
 use crate::model::wallet::single_key::SingleKeyHash;
-use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
+use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
@@ -352,31 +352,12 @@ pub struct AppContext {
     /// removed wallet's address. Must never be written from the frame loop
     /// (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
     pub(crate) shielded_addresses: Arc<Mutex<std::collections::HashMap<WalletSeedHash, String>>>,
-    /// Frame-safe platform-address balance snapshot (duffs, summed across owned addresses).
-    ///
-    /// Written by `on_platform_address_sync_completed` in [`EventBridge`] after each
-    /// coordinator pass; read synchronously in the frame loop via
-    /// [`Self::platform_balance_duffs`].
-    ///
-    /// **Cold-start behaviour:** seeded at boot by [`Self::warm_start_platform_addresses`]
-    /// from the persisted upstream `platform_addresses` rows (clean per-wallet owned
-    /// state — no orphan-inflation risk), so the total renders immediately and
-    /// network-independently; the first coordinator pass then overwrites it.
-    ///
-    /// **Wallet-removal behaviour (accepted):** removing a wallet does NOT
-    /// evict its entry from this map (consistent with `shielded_balances` — the
-    /// same known gap). The stale value is never displayed because
-    /// removed wallets are not iterated in the UI; this is a memory leak, not a display
-    /// bug. A future cleanup pass should mirror `SnapshotStore::forget_wallet`.
-    ///
-    /// Must never be written from the frame loop (Nagatha ruling).
-    pub(crate) platform_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
     /// Frame-safe `(last_sync_timestamp, sync_height)` snapshot keyed by
     /// `WalletSeedHash`, written by the coordinator's platform-address sync pass
-    /// (the same pass that fills `platform_balances`) and read each frame via
-    /// [`AppContext::platform_sync_info`] to drive the "Addresses synced" label.
-    /// Shares `platform_balances`' wallet-removal leak (accepted, QA-B-004) and
-    /// must never be written from the frame loop.
+    /// and read each frame via [`AppContext::platform_sync_info`] to drive the
+    /// "Addresses synced" label. Removing a wallet does not evict its entry
+    /// (accepted leak; never displayed). Must never be written from
+    /// the frame loop.
     pub(crate) platform_sync_cursors:
         Arc<Mutex<std::collections::HashMap<WalletSeedHash, (u64, u64)>>>,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
@@ -673,7 +654,6 @@ impl AppContext {
             ),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_sync_cursors: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
@@ -925,19 +905,23 @@ impl AppContext {
             .and_then(|map| map.get(seed_hash).cloned())
     }
 
-    /// Synchronous read of the frame-safe platform-address balance for `seed_hash`.
+    /// The wallet's Platform-address balance in **duffs**
+    /// ([`crate::model::wallet::Wallet::platform_balance_duffs`]): the
+    /// height-pinned figures of its owned platform-payment addresses, so the
+    /// total always equals the per-address view. `0` for a wallet not loaded
+    /// or never synced.
     ///
-    /// Returns the total platform balance in **duffs**, summed across all OWNED platform
-    /// payment addresses for the wallet.  Returns `0` if no sync has completed yet.
-    ///
-    /// This is the **read side** of the coordinator-push snapshot; the write side is
-    /// `on_platform_address_sync_completed` in [`EventBridge`]. Safe to call from
-    /// the egui frame loop — no blocking I/O, no async (Nagatha ruling).
+    /// Written off the frame loop by the coordinator pass in [`EventBridge`],
+    /// spends ([`Self::apply_platform_address_spend`]) and refreshes; read
+    /// under the wallet's read lock, which writers hold only for in-memory
+    /// map updates, so it is safe to call every frame. A caller already
+    /// holding that wallet's guard reads the guard instead: a second read of
+    /// a std `RwLock` waits behind a queued writer that waits for the first.
     pub fn platform_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
-        self.platform_balances
-            .lock()
-            .ok()
-            .and_then(|map| map.get(seed_hash).copied())
+        use crate::wallet_backend::poison::RwLockRecover;
+        self.wallet_context()
+            .hd_wallet(seed_hash)
+            .map(|wallet| wallet.read_recover().platform_balance_duffs(self.network))
             .unwrap_or(0)
     }
 
@@ -968,80 +952,54 @@ impl AppContext {
         }
     }
 
-    /// Shared per-address seeding loop for the platform-address maps.
-    ///
-    /// For each `(seed_hash, entries)` batch, converts every raw 20-byte P2PKH
-    /// hash to a canonical address, hands it to `write_info` (the caller picks
-    /// overwrite vs seed-if-absent semantics), and registers the address for
-    /// signing — the exact DIP-17 index when known, the bounded
-    /// reverse-derivation scan otherwise. Without the signer registration a
-    /// balance is visible yet unwithdrawable.
-    ///
-    /// Each wallet write lock is held briefly for a pure `BTreeMap` update — no
-    /// I/O, no network, no await — matching the codebase's frame-loop write
-    /// pattern.
-    fn seed_platform_address_entries<'a, I, W>(&self, batches: I, write_info: W)
-    where
-        I: IntoIterator<Item = (&'a WalletSeedHash, &'a [PlatformAddressEntry])>,
-        W: Fn(&mut Wallet, dash_sdk::dpp::dashcore::Address, u64, u32),
-    {
-        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
-        let network = self.network;
-        let wallets = self.wallet_context().wallets();
-        for (seed_hash, entries) in batches {
-            if let Some(wallet_arc) = wallets.get(seed_hash)
-                && let Ok(mut wallet) = wallet_arc.write()
-            {
-                for entry in entries {
-                    let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
-                    let canonical = Wallet::canonical_address(&addr, network);
-                    write_info(&mut wallet, canonical.clone(), entry.balance, entry.nonce);
-                    match entry.index {
-                        Some(index) => wallet.register_platform_payment_address(
-                            &canonical,
-                            entry.account,
-                            index,
-                            network,
-                        ),
-                        None => {
-                            wallet.reconcile_platform_address(&canonical, network);
-                        }
-                    }
-                }
-            }
+    /// Show a Platform-address spend at once: the per-address entries
+    /// platform-wallet committed, applied by height pin so no older result
+    /// can undo it. The wallet total is derived from the same figures.
+    pub(crate) fn apply_platform_address_spend(
+        &self,
+        seed_hash: WalletSeedHash,
+        entries: Vec<PlatformAddressEntry>,
+    ) {
+        use crate::wallet_backend::poison::RwLockRecover;
+        if let Some(wallet) = self.wallet_context().hd_wallet(&seed_hash) {
+            wallet
+                .write_recover()
+                .apply_platform_address_entries(&entries, self.network);
         }
     }
 
-    /// Populate each wallet's `platform_address_info` from a coordinator-push batch.
-    ///
-    /// Called by `AppState` when a [`BackendTaskSuccessResult::PlatformAddressSyncPushed`]
-    /// result arrives. Overwrites each address's cached info via
-    /// [`Wallet::set_platform_address_info`], keeping the per-address tab
-    /// consistent with the coordinator-push total balance without requiring a
-    /// manual Refresh on cold start.
-    pub fn apply_platform_address_push(&self, updates: PlatformAddressUpdates) {
-        self.seed_platform_address_entries(
-            updates
-                .iter()
-                .map(|(seed_hash, entries)| (seed_hash, entries.as_slice())),
-            |wallet, address, balance, nonce| {
-                wallet.set_platform_address_info(address, balance, nonce)
-            },
-        );
+    /// Show a spend submitted straight through the SDK (address-funded
+    /// identity registration) like one platform-wallet sent: its proof is
+    /// reconciled in the platform-wallet `prepared` for it at
+    /// `proof_height`, then the committed entries go through
+    /// [`Self::apply_platform_address_spend`]. Runs after a successful
+    /// broadcast, so it never fails.
+    pub(crate) async fn record_platform_address_spend_proof(
+        &self,
+        seed_hash: WalletSeedHash,
+        prepared: &crate::wallet_backend::PreparedPlatformSpend,
+        address_infos: &dash_sdk::query_types::AddressInfos,
+        proof_height: u64,
+        context: &'static str,
+    ) {
+        let entries = prepared
+            .reconcile(address_infos, proof_height, context)
+            .await;
+        self.apply_platform_address_spend(seed_hash, entries);
     }
 
     /// Warm-start the platform-address UI from persisted upstream state.
     ///
     /// Runs once at boot, after the wallet backend is wired and before the
-    /// coordinator's first (network) pass. Seeds the per-address tab
-    /// (`platform_address_info`), the frame-safe total balance
-    /// (`platform_balances`), and the "Addresses synced" cursor
-    /// (`platform_sync_cursors`) so the whole platform section renders the
-    /// last-synced snapshot immediately — network-independent, with no
-    /// "never synced" gap on an offline cold boot. Each map is seeded with
-    /// `or_insert`, so a live coordinator push that already landed wins.
+    /// coordinator's first (network) pass. Seeds the per-address figures
+    /// (`platform_address_info`, which the wallet total is derived from) and
+    /// the "Addresses synced" cursor (`platform_sync_cursors`), so the whole
+    /// platform section renders the last-synced snapshot immediately —
+    /// network-independent, with no "never synced" gap on an offline cold
+    /// boot. Both are seeded insert-if-absent, so a live figure that already
+    /// landed wins.
     pub(crate) fn warm_start_platform_addresses(&self) {
-        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use crate::wallet_backend::poison::RwLockRecover;
         let Ok(backend) = self.wallet_backend() else {
             return;
         };
@@ -1050,25 +1008,11 @@ impl AppContext {
             return;
         }
 
-        // Seed the per-address tab with an insert-if-absent write so a live
-        // push that somehow landed first is never clobbered by staler persisted
-        // data (the balance and cursor maps below use the same `or_insert` guard).
-        self.seed_platform_address_entries(
-            seeds
-                .iter()
-                .filter(|(_, e, _)| !e.is_empty())
-                .map(|(seed_hash, entries, _)| (seed_hash, entries.as_slice())),
-            |wallet, address, balance, nonce| {
-                wallet.seed_platform_address_info(address, balance, nonce)
-            },
-        );
-
-        if let Ok(mut balances) = self.platform_balances.lock() {
-            for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
-                let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
-                balances
-                    .entry(*seed_hash)
-                    .or_insert(total_credits / CREDITS_PER_DUFF);
+        for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
+            if let Some(wallet) = self.wallet_context().hd_wallet(seed_hash) {
+                wallet
+                    .write_recover()
+                    .seed_platform_address_entries(entries, self.network);
             }
         }
 
@@ -1977,6 +1921,160 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ordering: a coordinator pass that started before a spend but is
+    /// applied after it must not bring back the pre-spend balance, in the
+    /// address figure or the wallet total.
+    #[test]
+    fn a_pass_older_than_a_spend_does_not_undo_it() {
+        use crate::model::wallet::{PlatformAddressEntry, Wallet};
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = rand::random::<[u8; 64]>();
+        let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let dash_sdk::dpp::address_funds::PlatformAddress::P2pkh(hash) =
+            dash_sdk::dpp::address_funds::PlatformAddress::try_from(address).expect("p2pkh")
+        else {
+            panic!("p2pkh address expected");
+        };
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        let entry = |balance: u64, nonce: u32, as_of_height: u64| PlatformAddressEntry {
+            hash,
+            balance,
+            nonce,
+            account: 0,
+            index: Some(0),
+            as_of_height,
+        };
+
+        ctx.apply_platform_address_spend(seed_hash, vec![entry(41_000, 3, 500)]);
+        assert_eq!(
+            ctx.platform_balance_duffs(&seed_hash),
+            41,
+            "the total follows the spend"
+        );
+
+        // The bridge applies the entries of a pass started before the spend.
+        wallet
+            .write()
+            .expect("wallet")
+            .apply_platform_address_entries(&[entry(80_000, 2, 400)], Network::Testnet);
+
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 41);
+        let address = PlatformP2PKHAddress::new(hash).to_address(Network::Testnet);
+        let wallet = wallet.read().expect("wallet");
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("address info");
+        assert_eq!((info.balance, info.nonce), (41_000, 3));
+    }
+
+    /// A spend still reaches the wallet when its lock was poisoned by an
+    /// earlier panic, as a coordinator pass does.
+    #[test]
+    fn a_spend_reaches_a_wallet_with_a_poisoned_lock() {
+        use crate::model::wallet::{PlatformAddressEntry, Wallet};
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = crate::test_support::keys::seed();
+        let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let dash_sdk::dpp::address_funds::PlatformAddress::P2pkh(hash) =
+            dash_sdk::dpp::address_funds::PlatformAddress::try_from(address).expect("p2pkh")
+        else {
+            panic!("p2pkh address expected");
+        };
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        let poisoner = Arc::clone(&wallet);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.write().expect("wallet");
+            panic!("poison the wallet lock");
+        })
+        .join();
+        assert!(wallet.is_poisoned());
+
+        ctx.apply_platform_address_spend(
+            seed_hash,
+            vec![PlatformAddressEntry {
+                hash,
+                balance: 41_000,
+                nonce: 3,
+                account: 0,
+                index: Some(0),
+                as_of_height: 500,
+            }],
+        );
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 41);
+    }
+
+    /// Two spends completing out of order: the older result arriving last
+    /// changes neither the address nor the wallet total.
+    #[test]
+    fn an_older_spend_applied_last_does_not_undo_a_newer_one() {
+        use crate::model::wallet::{PlatformAddressEntry, Wallet};
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = rand::random::<[u8; 64]>();
+        let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let dash_sdk::dpp::address_funds::PlatformAddress::P2pkh(hash) =
+            dash_sdk::dpp::address_funds::PlatformAddress::try_from(address.clone())
+                .expect("p2pkh")
+        else {
+            panic!("p2pkh address expected");
+        };
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        let spend = |balance: u64, nonce: u32, as_of_height: u64| {
+            vec![PlatformAddressEntry {
+                hash,
+                balance,
+                nonce,
+                account: 0,
+                index: Some(0),
+                as_of_height,
+            }]
+        };
+
+        ctx.apply_platform_address_spend(seed_hash, spend(30_000, 4, 600));
+        ctx.apply_platform_address_spend(seed_hash, spend(41_000, 3, 500));
+
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
+        ctx.apply_platform_address_spend(seed_hash, spend(80_000, 3, 600));
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
+        wallet
+            .write()
+            .expect("wallet")
+            .apply_platform_address_entries(&spend(80_000, 3, 600), Network::Testnet);
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
+        let wallet = wallet.read().expect("wallet");
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("address info");
+        assert_eq!((info.balance, info.nonce), (30_000, 4));
+    }
 
     /// Regression: a connection rebuild gave the app a new SDK while the
     /// wallet backend kept the one it was built with, so wallet operations

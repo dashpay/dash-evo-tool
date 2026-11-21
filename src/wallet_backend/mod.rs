@@ -49,6 +49,7 @@ mod loader;
 mod payments;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
+mod platform_address_ops;
 pub mod platform_compatibility;
 pub(crate) mod poison;
 pub mod secret_access;
@@ -88,6 +89,7 @@ pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
+pub(crate) use platform_address_ops::PreparedPlatformSpend;
 pub use secret_access::{
     PromptMeta, SecretAccess, SecretLease, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
 };
@@ -649,13 +651,12 @@ impl WalletBackend {
                 // The shielded sync-completed callback writes per-wallet balances
                 // into AppContext's frame-safe snapshot.
                 shielded_balances: Arc::clone(&ctx.shielded_balances),
-                // Platform-address push writer: the platform address sync-completed
-                // callback writes per-wallet owned-only balances into AppContext's
-                // frame-safe snapshot.
-                platform_balances: Arc::clone(&ctx.platform_balances),
-                // ...and the matching `(timestamp, height)` sync-cursor snapshot that
-                // drives the "Addresses synced" status label.
+                // The platform address sync-completed callback writes the
+                // `(timestamp, height)` sync cursor that drives the "Addresses
+                // synced" status label...
                 platform_sync_cursors: Arc::clone(&ctx.platform_sync_cursors),
+                // ...and the per-address figures of this context's own wallets.
+                wallet_context: Arc::clone(ctx.wallet_context()),
             },
         ));
 
@@ -2221,6 +2222,7 @@ impl WalletBackend {
                                 // found address absent from the bimap should not
                                 // happen) falls back to reverse-derivation.
                                 index: account_state.addresses().get_by_right(p2pkh).copied(),
+                                as_of_height: funds.as_of_height,
                             }
                         })
                     })
@@ -4746,6 +4748,7 @@ mod tests {
             nonce,
             account: 0,
             index: Some(0),
+            as_of_height: 0,
         };
         let per_wallet: Vec<(WalletId, Vec<PlatformAddressEntry>, u64, u64)> = vec![
             (funded, vec![entry([0xAAu8; 20], 500, 7)], 1_700, 900),

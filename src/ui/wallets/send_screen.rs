@@ -4877,7 +4877,6 @@ impl WalletSendScreen {
             BackendTaskSuccessResult::GeneratedReceiveAddress { .. }
                 | BackendTaskSuccessResult::GeneratedPlatformReceiveAddress { .. }
                 | BackendTaskSuccessResult::PlatformAddressBalances { .. }
-                | BackendTaskSuccessResult::PlatformAddressSyncPushed { .. }
                 | BackendTaskSuccessResult::RefreshedWallet { .. }
                 | BackendTaskSuccessResult::RefreshedIdentity(_)
                 | BackendTaskSuccessResult::LoadedIdentity(_)
@@ -5392,7 +5391,11 @@ mod tests {
         let mainnet = Address::new(Network::Mainnet, testnet.payload().clone());
         let other = testnet_core_address(12);
         let empty = testnet_core_address(13);
-        let entry = |balance, nonce| PlatformAddressInfo { balance, nonce };
+        let entry = |balance, nonce| PlatformAddressInfo {
+            balance,
+            nonce,
+            as_of_height: 0,
+        };
         let platform = |address: &Address| {
             PlatformAddress::try_from(address.clone()).expect("platform address")
         };
@@ -5418,7 +5421,11 @@ mod tests {
     #[test]
     fn platform_balances_revision_follows_the_funded_balances() {
         let funded_address = testnet_core_address(14);
-        let entry = |balance, nonce| PlatformAddressInfo { balance, nonce };
+        let entry = |balance, nonce| PlatformAddressInfo {
+            balance,
+            nonce,
+            as_of_height: 0,
+        };
         let revision = |info: &BTreeMap<Address, PlatformAddressInfo>| {
             platform_balances_revision(funded_platform_addresses(info))
         };

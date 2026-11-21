@@ -313,6 +313,13 @@ pub enum TaskError {
         source: dash_sdk::dpp::key_wallet::Error,
     },
 
+    /// Preparing a public Platform payment address pool failed before signing.
+    #[error("Your wallet addresses could not be prepared. Refresh the wallet and try again.")]
+    PlatformAddressPoolPreparationFailed {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
+
     /// Provisioning an identity-funding account (the registration account or a
     /// per-identity top-up account) failed while deriving its key or
     /// registering it with the wallet. The technical cause lives in `Debug`
@@ -2280,6 +2287,18 @@ pub enum TaskError {
         "Funding the platform address was rejected by the network. Your funds are safe and saved as a funding lock. Wait a minute, then try funding from your existing asset lock."
     )]
     PlatformAddressFundRejected {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Platform rejected a Platform-address transfer, withdrawal or identity
+    /// top-up because an input address's nonce was stale. Upstream promotes
+    /// the rejection to `PlatformWalletError::AddressNonceMismatch` before it
+    /// reaches DET. The transition did not run, so sending again is safe.
+    #[error(
+        "Your Platform address balances changed while this payment was being prepared. Refresh the wallet, then send it again."
+    )]
+    PlatformAddressNonceMismatch {
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
     },

@@ -10,15 +10,12 @@ use dash_evo_tool::app::{AppState, TaskResult};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use std::sync::{Arc, RwLock};
 
 type App = Harness<'static, AppState>;
 
@@ -1203,88 +1200,6 @@ fn a_late_contest_refresh_after_returning_to_a_network_leaves_the_new_refresh_ru
             );
         });
     }
-}
-
-/// Load the HD wallet grown from `seed` on `app_context`'s network. The same
-/// wallet is loaded on every network it is used on, so a push naming its seed
-/// finds a copy on each.
-fn insert_wallet(app_context: &AppContext, seed: [u8; 64]) -> WalletSeedHash {
-    use dash_evo_tool::model::wallet::Wallet;
-    let wallet =
-        Wallet::new_from_seed(seed, app_context.network(), None, None).expect("wallet fixture");
-    let seed_hash = wallet.seed_hash();
-    app_context
-        .wallet_context()
-        .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
-    seed_hash
-}
-
-/// The platform-address balances cached on the wallet `seed_hash` of
-/// `app_context`'s network.
-fn platform_balances(app_context: &AppContext, seed_hash: WalletSeedHash) -> Vec<u64> {
-    let wallets = app_context.wallet_context().wallets();
-    let wallet = wallets
-        .get(&seed_hash)
-        .expect("the wallet is loaded")
-        .read()
-        .expect("wallet lock");
-    wallet
-        .platform_address_info
-        .values()
-        .map(|info| info.balance)
-        .collect()
-}
-
-/// A platform-address balance push the previous network's wallet backend
-/// sends after a switch lands in that network's wallet and leaves the same
-/// wallet on the new network alone.
-#[test]
-fn a_balance_push_from_the_previous_network_updates_only_that_networks_wallet() {
-    use dash_evo_tool::model::wallet::PlatformAddressEntry;
-    in_app(|| {
-        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
-        let previous = harness.state().current_app_context().clone();
-        let seed = dash_evo_tool::test_support::keys::seed();
-        let seed_hash = insert_wallet(&previous, seed);
-        switch_network(&mut harness);
-        let current = harness.state().current_app_context().clone();
-        assert_eq!(
-            insert_wallet(&current, seed),
-            seed_hash,
-            "one wallet, loaded on both networks"
-        );
-
-        deliver(
-            &mut harness,
-            TaskResult::Success {
-                context: BackendTaskContext::WalletSync {
-                    network: previous.network(),
-                },
-                result: Box::new(BackendTaskSuccessResult::PlatformAddressSyncPushed {
-                    updates: vec![(
-                        seed_hash,
-                        vec![PlatformAddressEntry {
-                            hash: [0x77; 20],
-                            balance: 1_234,
-                            nonce: 1,
-                            account: 0,
-                            index: None,
-                        }],
-                    )],
-                }),
-            },
-        );
-
-        assert_eq!(
-            platform_balances(&previous, seed_hash),
-            vec![1_234],
-            "the push lands in the wallet of the network that synced"
-        );
-        assert!(
-            platform_balances(&current, seed_hash).is_empty(),
-            "the same wallet on the new network is left alone"
-        );
-    });
 }
 
 /// A user identity on `network`, enough for Add Funds to open on it.

@@ -84,16 +84,28 @@ mod tests {
         (wallet.seed_hash(), Arc::new(RwLock::new(wallet)))
     }
 
+    /// One owned Platform address holding `duffs`.
+    fn platform_entry(duffs: u64) -> crate::model::wallet::PlatformAddressEntry {
+        crate::model::wallet::PlatformAddressEntry {
+            hash: [0x51; 20],
+            balance: duffs * dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF,
+            nonce: 1,
+            account: 0,
+            index: Some(0),
+            as_of_height: 1,
+        }
+    }
+
     #[test]
     fn entries_carry_each_wallets_name_and_pushed_balances() {
         let dir = tempfile::tempdir().expect("temp dir");
         let ctx = test_app_context(dir.path());
         let (seed_hash, wallet) = hd_wallet(0x11, "Main");
+        wallet
+            .write()
+            .expect("wallet")
+            .apply_platform_address_entries(&[platform_entry(300)], Network::Testnet);
         ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
-        ctx.platform_balances
-            .lock()
-            .expect("platform balances")
-            .insert(seed_hash, 300);
         ctx.shielded_balances
             .lock()
             .expect("shielded balances")

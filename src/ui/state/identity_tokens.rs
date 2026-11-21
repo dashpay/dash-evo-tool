@@ -1333,6 +1333,19 @@ mod tests {
         );
     }
 
+    /// Upstream's own pass outlasting the wait is a failure the tab shows,
+    /// not a refusal it retries quietly in a loop.
+    #[test]
+    fn a_long_upstream_pass_fails_the_refresh_instead_of_retrying() {
+        let mut state = IdentityTokensState::default();
+        let error = TaskError::TokenBalanceRefreshTookTooLong;
+        let context = dispatched(state.dispatch_refresh(Vec::new()));
+        assert!(!state.should_suppress_error(&context, &error));
+        state.record_error(&context, &error, 0);
+        assert!(!state.retry_owed);
+        assert!(state.refresh_failure().is_some());
+    }
+
     /// A refresh that could not read the selected identity is a failure: no
     /// "Last updated", and unknown balances could not be checked.
     #[test]

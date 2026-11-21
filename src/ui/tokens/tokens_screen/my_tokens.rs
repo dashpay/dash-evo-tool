@@ -460,7 +460,7 @@ impl TokensScreen {
                                     ordering.then_with(|| left.identity_id.cmp(&right.identity_id))
                                 });
                                 for itb in &detail_list {
-                                    body.row(30.0, |mut row| {
+                                    body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                                         row.col(|ui| {
                                             ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
                                         });
@@ -888,7 +888,7 @@ impl TokensScreen {
 
         if is_loading {
             // Show loading spinner
-            ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+            ui.add(egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)));
         } else if has_pricing_data {
             // Check if identity has enough credits for at least one token
             let has_credits = self
@@ -983,26 +983,29 @@ impl TokensScreen {
                             description,
                             ..
                         } = token_info;
-                        body.row(30.0, |mut row| {
+                        body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                             row.col(|ui| {
-                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                    // By making the label into a button or using `ui.selectable_label`,
-                                    // we can respond to clicks.
-                                    if ui.button(token_name).clicked() {
-                                        self.selected_token = Some(*token_id);
-                                        // Check if we need to fetch pricing data for this token
-                                        if !self.token_pricing_data.contains_key(token_id) {
-                                            // Mark as loading
-                                            self.pricing_loading_state.insert(*token_id, true);
-                                            // Trigger backend task to fetch pricing
-                                            action = AppAction::BackendTask(
-                                                BackendTask::TokenTask(Box::new(
-                                                    TokenTask::QueryTokenPricing(*token_id),
-                                                )),
-                                            );
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        // By making the label into a button or using `ui.selectable_label`,
+                                        // we can respond to clicks.
+                                        if ui.button(token_name).clicked() {
+                                            self.selected_token = Some(*token_id);
+                                            // Check if we need to fetch pricing data for this token
+                                            if !self.token_pricing_data.contains_key(token_id) {
+                                                // Mark as loading
+                                                self.pricing_loading_state.insert(*token_id, true);
+                                                // Trigger backend task to fetch pricing
+                                                action = AppAction::BackendTask(
+                                                    BackendTask::TokenTask(Box::new(
+                                                        TokenTask::QueryTokenPricing(*token_id),
+                                                    )),
+                                                );
+                                            }
                                         }
-                                    }
-                                });
+                                    },
+                                );
                             });
                             row.col(|ui| short_id_cell(ui, *token_id, false));
                             row.col(|ui| {

@@ -202,7 +202,7 @@ pub fn passphrase_modal(
 
             if let Some(error) = config.error {
                 ui.add_space(8.0);
-                ui.colored_label(DashColors::ERROR, error);
+                ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), error);
             }
 
             ui.add_space(12.0);

@@ -170,7 +170,7 @@ impl<'a> Avatar<'a> {
         ui.add(
             egui::Spinner::new()
                 .size(self.size)
-                .color(DashColors::DASH_BLUE),
+                .color(DashColors::info_color(ui.visuals().dark_mode)),
         );
     }
 }

@@ -1,5 +1,6 @@
 //! Date-and-time input in the user's local time zone, for scheduling deferred work.
 
+use crate::ui::components::styled::styled_text_edit_singleline;
 use std::sync::Arc;
 
 use chrono::{DateTime, Local, Timelike, Utc};
@@ -172,7 +173,7 @@ impl Component for LocalScheduleInput {
             let caption = ui.label(self.label());
             let mut changed = ui
                 .add(
-                    egui::TextEdit::singleline(&mut self.date)
+                    styled_text_edit_singleline(&mut self.date)
                         .desired_width(DATE_FIELD_WIDTH)
                         .hint_text(DATE_HINT_TEXT),
                 )

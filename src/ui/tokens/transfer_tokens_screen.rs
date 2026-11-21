@@ -13,6 +13,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -414,7 +415,7 @@ impl ScreenLike for TransferTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        let central_panel_action = island_central_panel(ui, |ui| {
+        let render_transfer = |ui: &mut egui::Ui| {
             let dark_mode = ui.style().visuals.dark_mode;
 
             // Show the success screen if the transfer was successful
@@ -567,7 +568,7 @@ impl ScreenLike for TransferTokensScreen {
                     );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
+                    if ui.add(styled_text_edit_singleline(&mut txt)).changed() {
                         self.public_note = Some(txt);
                     }
                 });
@@ -671,8 +672,10 @@ impl ScreenLike for TransferTokensScreen {
             }
 
             AppAction::None
+        };
+        action |= island_central_panel(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, render_transfer).inner
         });
-        action |= central_panel_action;
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()

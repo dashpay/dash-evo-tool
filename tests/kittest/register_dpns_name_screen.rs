@@ -73,6 +73,9 @@ fn dpns_overlay_names_the_username_and_asks_to_keep_the_app_open() {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(420.0, 360.0))
             .build_ui(|ui| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 ProgressOverlay::render_global(ui.ctx(), false);
             });
 
@@ -130,6 +133,9 @@ fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: 
         });
 
         let mut harness = Harness::builder().build_ui(move |ui| {
+            if !crate::support::prepare_app_theme(ui) {
+                return;
+            }
             screen.ui(ui);
         });
         harness.run();

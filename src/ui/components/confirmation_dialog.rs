@@ -229,7 +229,7 @@ impl ConfirmationDialog {
                     );
                     ui.add_space(6.0);
                     ui.add(
-                        styled_text_edit_singleline(&mut self.confirmation_input, dark_mode)
+                        styled_text_edit_singleline(&mut self.confirmation_input)
                             .desired_width(f32::INFINITY),
                     );
                     ui.add_space(20.0);

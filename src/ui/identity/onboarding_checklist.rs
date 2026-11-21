@@ -421,7 +421,7 @@ impl OnboardingChecklist {
                         egui::Label::new(
                             RichText::new(step.action_label())
                                 .small()
-                                .color(DashColors::DASH_BLUE)
+                                .color(DashColors::info_color(ui.visuals().dark_mode))
                                 .underline(),
                         )
                         .sense(Sense::click()),

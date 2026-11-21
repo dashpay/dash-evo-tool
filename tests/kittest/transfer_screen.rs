@@ -59,6 +59,9 @@ fn the_no_transfer_key_branch_routes_to_the_keys_list() {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 900.0))
             .build_ui(move |ui| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 let act = screen.ui(ui);
                 if act != AppAction::None {
                     *capture.borrow_mut() = act;
@@ -86,6 +89,66 @@ fn the_no_transfer_key_branch_routes_to_the_keys_list() {
                 AppAction::AddScreen(Screen::KeysScreen(_))
             ),
             "the signpost must open the keys list, where a stranded key can be restored"
+        );
+    });
+}
+
+/// With a transfer key loaded, a Platform Address destination and the advanced
+/// options open, the Transfer action scrolls into view in an 800×600 window.
+#[test]
+fn the_transfer_action_is_reachable_in_a_small_window() {
+    use dash_sdk::dpp::identity::Purpose;
+    use egui::accesskit::Role;
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let transfer = crate::withdraw_screen::key(1, Purpose::TRANSFER);
+        let identity = crate::withdraw_screen::build_identity(
+            &app_context,
+            IdentityType::User,
+            vec![transfer.clone()],
+            vec![transfer],
+        );
+        let mut screen = TransferScreen::new(identity, &app_context);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
+                screen.ui(ui);
+            });
+        harness.run_steps(3);
+        harness.get_by_label("Show Advanced Options").click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Platform Address")
+            .click();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label("4. Select the key to sign the transaction with")
+                .is_some(),
+            "precondition: the populated form with advanced options is shown"
+        );
+
+        harness.hover_at(harness.get_by_label("Transfer Funds").rect().center());
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Unknown,
+            delta: egui::vec2(0.0, -2000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.run_steps(12);
+        // The breadcrumb is also a "Transfer" button; the action is the lower one.
+        let action = harness
+            .query_all_by_role_and_label(Role::Button, "Transfer")
+            .map(|node| node.rect())
+            .max_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the Transfer action");
+        assert!(
+            action.bottom() <= 600.0,
+            "the Transfer button ({action:?}) must scroll into the 800×600 window"
         );
     });
 }

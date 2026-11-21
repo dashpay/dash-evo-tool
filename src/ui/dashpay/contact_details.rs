@@ -14,6 +14,7 @@ use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscree
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::theme::DashColors;
@@ -21,7 +22,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Color32, RichText, ScrollArea, Ui};
 use std::sync::Arc;
 
 const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
@@ -378,7 +379,7 @@ impl ContactDetailsScreen {
                         ui.horizontal(|ui| {
                             ui.label("Nickname:");
                             ui.add(
-                                TextEdit::singleline(&mut self.edit_nickname)
+                                styled_text_edit_singleline(&mut self.edit_nickname)
                                     .hint_text("Optional nickname for this contact"),
                             );
                         });
@@ -386,7 +387,7 @@ impl ContactDetailsScreen {
                         ui.horizontal(|ui| {
                             ui.label("Note:");
                             ui.add(
-                                TextEdit::multiline(&mut self.edit_note)
+                                styled_text_edit_multiline(&mut self.edit_note)
                                     .hint_text("Private notes about this contact")
                                     .desired_rows(3),
                             );
@@ -451,9 +452,16 @@ impl ContactDetailsScreen {
                             ui.horizontal(|ui| {
                                 // Direction indicator
                                 if payment.is_incoming {
-                                    ui.label(RichText::new("⬇").color(DashColors::SUCCESS));
+                                    ui.label(
+                                        RichText::new("⬇").color(DashColors::success_color(
+                                            ui.visuals().dark_mode,
+                                        )),
+                                    );
                                 } else {
-                                    ui.label(RichText::new("⬆").color(DashColors::ERROR));
+                                    ui.label(
+                                        RichText::new("⬆")
+                                            .color(DashColors::error_color(ui.visuals().dark_mode)),
+                                    );
                                 }
 
                                 ui.vertical(|ui| {
@@ -462,13 +470,17 @@ impl ContactDetailsScreen {
                                         let amount_str = format_duffs_as_dash(payment.amount);
                                         if payment.is_incoming {
                                             ui.label(
-                                                RichText::new(format!("+{}", amount_str))
-                                                    .color(DashColors::SUCCESS),
+                                                RichText::new(format!("+{}", amount_str)).color(
+                                                    DashColors::success_color(
+                                                        ui.visuals().dark_mode,
+                                                    ),
+                                                ),
                                             );
                                         } else {
                                             ui.label(
-                                                RichText::new(format!("-{}", amount_str))
-                                                    .color(DashColors::ERROR),
+                                                RichText::new(format!("-{}", amount_str)).color(
+                                                    DashColors::error_color(ui.visuals().dark_mode),
+                                                ),
                                             );
                                         }
 

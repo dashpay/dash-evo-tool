@@ -13,6 +13,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -25,7 +26,7 @@ use crate::ui::theme::{DashColors, Typography};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 const CONTACT_REQUEST_INFO_TEXT: &str = "About Contact Requests:\n\n\
@@ -362,7 +363,10 @@ impl ScreenLike for AddContactScreen {
             if matches!(self.status, ContactRequestStatus::Sending) {
                 ui.horizontal(|ui| {
                     let dark_mode = ui.style().visuals.dark_mode;
-                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                    ui.add(
+                        egui::widgets::Spinner::default()
+                            .color(DashColors::info_color(ui.visuals().dark_mode)),
+                    );
                     ui.label(
                         RichText::new("Sending contact request...")
                             .color(DashColors::text_primary(dark_mode)),
@@ -375,7 +379,7 @@ impl ScreenLike for AddContactScreen {
             if let ContactRequestStatus::Error(ref err) = self.status {
                 let dark_mode = ui.style().visuals.dark_mode;
                 let error_color = if dark_mode {
-                    DashColors::ERROR
+                    DashColors::error_color(ui.visuals().dark_mode)
                 } else {
                     egui::Color32::DARK_RED
                 };
@@ -450,7 +454,7 @@ impl ScreenLike for AddContactScreen {
                                     .color(DashColors::text_primary(dark_mode)),
                             );
                             ui.add(
-                                TextEdit::singleline(&mut self.username_or_id)
+                                styled_text_edit_singleline(&mut self.username_or_id)
                                     .hint_text("e.g., alice.dash or identity ID")
                                     .desired_width(350.0),
                             );
@@ -462,7 +466,7 @@ impl ScreenLike for AddContactScreen {
                                     .color(DashColors::text_primary(dark_mode)),
                             );
                             ui.add(
-                                TextEdit::singleline(&mut self.account_label)
+                                styled_text_edit_singleline(&mut self.account_label)
                                     .hint_text("e.g., Friend, Family, Business Partner")
                                     .desired_width(350.0),
                             );

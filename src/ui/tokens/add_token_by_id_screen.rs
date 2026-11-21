@@ -1,3 +1,4 @@
+use crate::ui::components::styled::styled_text_edit_singleline;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -77,7 +78,9 @@ impl AddTokenByIdScreen {
 
         ui.horizontal(|ui| {
             ui.label("Contract or Token ID:");
-            ui.text_edit_singleline(&mut self.contract_or_token_id_input);
+            ui.add(styled_text_edit_singleline(
+                &mut self.contract_or_token_id_input,
+            ));
         });
 
         ui.add_space(10.0);

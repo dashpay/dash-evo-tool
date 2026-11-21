@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_multiline;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
@@ -10,7 +11,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::platform_serialization::PLATFORM_BINCODE_CONFIG;
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
-use eframe::egui::{self, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, ScrollArea, Ui};
 use egui::Color32;
 use std::sync::Arc;
 
@@ -82,7 +83,7 @@ impl ProofVisualizerScreen {
         ui.add_space(5.0);
         let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
-            TextEdit::multiline(&mut self.input_data)
+            styled_text_edit_multiline(&mut self.input_data)
                 .desired_rows(6)
                 .desired_width(ui.available_width())
                 .text_color(DashColors::text_primary(dark_mode))
@@ -109,7 +110,7 @@ impl ProofVisualizerScreen {
                 ui.add_space(5.0);
                 let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
-                    TextEdit::multiline(&mut json.clone())
+                    styled_text_edit_multiline(&mut json.clone())
                         .desired_rows(10)
                         .desired_width(ui.available_width())
                         .text_color(DashColors::text_primary(dark_mode))
@@ -122,7 +123,7 @@ impl ProofVisualizerScreen {
                 ui.add_space(5.0);
                 let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
-                    TextEdit::multiline(&mut error.clone())
+                    styled_text_edit_multiline(&mut error.clone())
                         .desired_rows(10)
                         .desired_width(ui.available_width())
                         .text_color(DashColors::text_primary(dark_mode))

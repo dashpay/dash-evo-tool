@@ -12,6 +12,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{
@@ -372,7 +373,7 @@ impl AddExistingIdentityScreen {
                     label
                 })
                 .inner;
-                ui.text_edit_singleline(&mut self.identity_id_input)
+                ui.add(styled_text_edit_singleline(&mut self.identity_id_input))
                     .labelled_by(id_label.id);
                 ui.end_row();
 
@@ -605,7 +606,7 @@ impl AddExistingIdentityScreen {
 
             ui.horizontal(|ui| {
                 let label = ui.label(identity_index_label);
-                ui.text_edit_singleline(&mut self.identity_index_input)
+                ui.add(styled_text_edit_singleline(&mut self.identity_index_input))
                     .labelled_by(label.id);
             });
 
@@ -737,7 +738,7 @@ impl AddExistingIdentityScreen {
             .show(ui, |ui| {
                 let username_label = ui.label("Username:");
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.dpns_name_input)
+                    ui.add(styled_text_edit_singleline(&mut self.dpns_name_input))
                         .labelled_by(username_label.id);
                     ui.label(".dash");
                 });

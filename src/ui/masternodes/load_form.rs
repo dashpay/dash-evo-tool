@@ -2,6 +2,7 @@
 //! three optional V/O/P keys, and an optional at-load encryption password
 //! (FR-8). No auto-derive: masternode keys never live in a wallet's HD tree.
 
+use crate::ui::components::styled::styled_text_edit_singleline;
 use bip39::rand::prelude::IteratorRandom;
 use bip39::rand::thread_rng;
 
@@ -328,7 +329,7 @@ impl MasternodeLoadForm {
                     .color(DashColors::text_primary(dark_mode)),
             );
             let response = ui.add(
-                egui::TextEdit::singleline(&mut self.pro_tx_hash_input)
+                styled_text_edit_singleline(&mut self.pro_tx_hash_input)
                     .hint_text("Enter the node's ProTxHash. You can find it in your masternode configuration.")
                     .desired_width(f32::INFINITY),
             );
@@ -354,7 +355,7 @@ impl MasternodeLoadForm {
                     .color(DashColors::text_primary(dark_mode)),
             );
             ui.add(
-                egui::TextEdit::singleline(&mut self.alias_input)
+                styled_text_edit_singleline(&mut self.alias_input)
                     .hint_text(
                         "An alias helps you recognize this node inside Dash Evo Tool. It is not \
                          saved to the Dash network.",

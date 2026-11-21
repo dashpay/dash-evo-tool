@@ -3,7 +3,7 @@
 //! Renders the three top-level tabs — `Home`, `Contacts`, `Profile`
 //! — as a single-row, selectable button strip that sits directly beneath the
 //! identity summary on every hub tab. The selected tab uses the project's
-//! `DashColors::DASH_BLUE` accent fill; unselected tabs use the transparent /
+//! theme-aware selected fill; unselected tabs use the transparent /
 //! border-light treatment shared with the existing subscreen chooser panels.
 //!
 //! This component is **not** a replacement for the per-section chooser panels
@@ -115,14 +115,14 @@ impl IdentityHubTabBar {
                 let button = if is_selected {
                     egui::Button::new(
                         RichText::new(label)
-                            .color(DashColors::WHITE)
+                            .color(DashColors::info_color(dark_mode))
                             .size(Typography::SCALE_SM)
                             .strong(),
                     )
-                    .fill(DashColors::DASH_BLUE)
+                    .fill(DashColors::selected(dark_mode))
                     .stroke(Stroke::NONE)
                     .corner_radius(CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(Vec2::new(self.min_button_width, 32.0))
+                    .min_size(Vec2::new(self.min_button_width, Spacing::CONTROL_HEIGHT))
                 } else {
                     egui::Button::new(
                         RichText::new(label)
@@ -132,7 +132,7 @@ impl IdentityHubTabBar {
                     .fill(egui::Color32::TRANSPARENT)
                     .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
                     .corner_radius(CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(Vec2::new(self.min_button_width, 32.0))
+                    .min_size(Vec2::new(self.min_button_width, Spacing::CONTROL_HEIGHT))
                 };
 
                 let clicked = ui

@@ -12,6 +12,7 @@
 //! Backed by TC-SK-004 (valid WIF accepted), TC-SK-005 (invalid WIF
 //! inline error), TC-SK-007 (mask + reveal toggle, ARIA), TC-A11Y-005.
 
+use crate::ui::components::styled::styled_text_edit_singleline;
 use dash_sdk::dpp::dashcore::Network;
 use eframe::egui::{self, Context, RichText, Ui};
 use zeroize::Zeroizing;
@@ -265,7 +266,7 @@ impl ImportSingleKeyDialog {
             }
             ui.label("Hint (optional)");
             ui.add(
-                egui::TextEdit::singleline(&mut self.hint_input)
+                styled_text_edit_singleline(&mut self.hint_input)
                     .hint_text("Shown next to the unlock prompt")
                     .char_limit(MAX_WALLET_ALIAS_CHARS),
             );

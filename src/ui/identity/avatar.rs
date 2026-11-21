@@ -93,7 +93,7 @@ pub fn paint_abstract_avatar(ui: &mut Ui, diameter: f32) -> Response {
         Align2::CENTER_CENTER,
         HeroIdentityKind::User.type_glyph(),
         glyph_font,
-        DashColors::DASH_BLUE,
+        DashColors::info_color(ui.visuals().dark_mode),
     );
 
     resp

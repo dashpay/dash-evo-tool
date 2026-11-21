@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::ui::components::styled::styled_text_edit_singleline;
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::avatar::Avatar;
@@ -376,7 +377,9 @@ impl ContactsList {
                 ui.horizontal(|ui| {
                     ui.set_min_height(40.0);
                     ui.label("Search:");
-                    ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(200.0));
+                    ui.add(
+                        styled_text_edit_singleline(&mut self.search_query).desired_width(200.0),
+                    );
                     if ui.button("Clear").clicked() {
                         self.search_query.clear();
                     }
@@ -498,7 +501,10 @@ impl ContactsList {
         // Loading indicator
         if self.loading {
             ui.horizontal(|ui| {
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
                 ui.label("Loading contacts...");
             });
             return action;

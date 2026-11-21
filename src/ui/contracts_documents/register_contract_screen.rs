@@ -9,6 +9,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -24,7 +25,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
+use eframe::egui::{self, Color32, Frame, Margin};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
@@ -167,7 +168,7 @@ impl RegisterDataContractScreen {
     fn ui_input_field(&mut self, ui: &mut egui::Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
-            TextEdit::multiline(&mut self.contract_json_input)
+            styled_text_edit_multiline(&mut self.contract_json_input)
                 .desired_rows(12)
                 .desired_width(ui.available_width())
                 .text_color(DashColors::text_primary(dark_mode))
@@ -547,7 +548,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 // Input for the alias
                 ui.heading("2. Contract alias for DET (optional)");
                 ui.add_space(5.0);
-                ui.text_edit_singleline(&mut self.contract_alias_input);
+                ui.add(styled_text_edit_singleline(&mut self.contract_alias_input));
 
                 ui.add_space(10.0);
                 ui.separator();

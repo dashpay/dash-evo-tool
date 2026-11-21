@@ -106,6 +106,9 @@ fn mount(screen: RegisterDpnsNameScreen) -> Harness<'static, RegisterDpnsNameScr
         .with_size(egui::vec2(1280.0, 900.0))
         .build_ui_state(
             |ui, screen: &mut RegisterDpnsNameScreen| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 screen.ui(ui);
             },
             screen,
@@ -353,6 +356,9 @@ fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsStat
         .with_size(egui::vec2(1400.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut SettingsState| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 let action = state.0.render(
                     ui,
                     &app_context,
@@ -497,6 +503,9 @@ fn mount_request(
         .with_size(egui::vec2(1280.0, 1200.0))
         .build_ui_state(
             |ui, screen: &mut UsernameRequestScreen| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 screen.ui(ui);
             },
             screen,
@@ -644,6 +653,9 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
         .with_size(egui::vec2(1280.0, 1200.0))
         .build_ui_state(
             move |ui, state: &mut HomeHarnessState| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 let mut pending = Vec::new();
                 let Some(identity) = app_context.resolve_selected_identity() else {
                     return;

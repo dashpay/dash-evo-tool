@@ -1,9 +1,10 @@
 use crate::model::amount::Amount;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::balances::credits::MAX_CREDITS;
 use dash_sdk::dpp::fee::Credits;
-use egui::{Color32, InnerResponse, Response, TextEdit, Ui, WidgetText};
+use egui::{Color32, InnerResponse, Response, Ui, WidgetText};
 
 /// Response from the amount input widget
 #[derive(Clone)]
@@ -340,7 +341,7 @@ impl AmountInput {
                 // Show label if provided
                 let label_id = self.label.as_ref().map(|label| ui.label(label.clone()).id);
                 // Create the text edit widget
-                let mut text_edit = TextEdit::singleline(&mut self.amount_str);
+                let mut text_edit = styled_text_edit_singleline(&mut self.amount_str);
 
                 if let Some(hint) = &self.hint_text {
                     // Use RichText with gray color for proper hint text styling

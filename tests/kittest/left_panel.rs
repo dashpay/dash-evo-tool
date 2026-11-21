@@ -16,7 +16,12 @@ fn nav_label_hover_shows_pointer_cursor() {
         let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
         harness.run();
 
+        harness
+            .get_by_role_and_label(Role::Label, "Settings")
+            .scroll_to_me();
+        harness.run();
         let label = harness.get_by_role_and_label(Role::Label, "Settings");
+        assert!(harness.ctx.content_rect().contains_rect(label.rect()));
         label.hover();
         harness.run();
 

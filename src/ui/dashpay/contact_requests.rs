@@ -488,7 +488,7 @@ impl ContactRequests {
         if let Some(err) = &self.error {
             let dark_mode = ui.style().visuals.dark_mode;
             let error_color = if dark_mode {
-                DashColors::ERROR
+                DashColors::error_color(ui.visuals().dark_mode)
             } else {
                 egui::Color32::DARK_RED
             };
@@ -559,7 +559,10 @@ impl ContactRequests {
                 // Loading indicator
                 if self.loading {
                     ui.horizontal(|ui| {
-                        ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                        ui.add(
+                            egui::widgets::Spinner::default()
+                                .color(DashColors::info_color(ui.visuals().dark_mode)),
+                        );
                         ui.label("Loading...");
                     });
                 } else {
@@ -742,7 +745,10 @@ impl ContactRequests {
                 // Loading indicator
                 if self.loading {
                     ui.horizontal(|ui| {
-                        ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                        ui.add(
+                            egui::widgets::Spinner::default()
+                                .color(DashColors::info_color(ui.visuals().dark_mode)),
+                        );
                         ui.label("Loading...");
                     });
                 } else {

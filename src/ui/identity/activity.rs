@@ -125,7 +125,7 @@ fn legacy_payments_link(ui: &mut Ui) -> AppAction {
             egui::Label::new(
                 RichText::new("Open DashPay Payments")
                     .underline()
-                    .color(DashColors::DASH_BLUE),
+                    .color(DashColors::info_color(ui.visuals().dark_mode)),
             )
             .sense(Sense::click()),
         )

@@ -10,6 +10,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -19,7 +20,7 @@ use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
@@ -238,7 +239,7 @@ impl QRCodeGeneratorScreen {
                                 crate::ui::helpers::info_icon_button(ui, ACCOUNT_INDEX_INFO_TEXT);
                             });
                             ui.add(
-                                TextEdit::singleline(&mut self.account_index)
+                                styled_text_edit_singleline(&mut self.account_index)
                                     .hint_text("0")
                                     .desired_width(100.0),
                             );
@@ -250,7 +251,7 @@ impl QRCodeGeneratorScreen {
                             );
                             ui.horizontal(|ui| {
                                 ui.add(
-                                    TextEdit::singleline(&mut self.validity_hours)
+                                    styled_text_edit_singleline(&mut self.validity_hours)
                                         .hint_text("24")
                                         .desired_width(100.0),
                                 );

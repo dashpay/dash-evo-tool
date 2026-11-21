@@ -12,6 +12,7 @@
 //! [`RestoreSingleKeyResponse::confirmed`] on the frame the user submits.
 //! The parent owns the actual restore call and the post-restore refresh.
 
+use crate::ui::components::styled::styled_text_edit_singleline;
 use eframe::egui::{self, Context, RichText, Ui};
 use zeroize::Zeroizing;
 
@@ -213,7 +214,7 @@ impl RestoreSingleKeyDialog {
             }
             ui.label("Hint (optional)");
             ui.add(
-                egui::TextEdit::singleline(&mut self.hint_input)
+                styled_text_edit_singleline(&mut self.hint_input)
                     .hint_text("Shown next to the unlock prompt")
                     .char_limit(HINT_MAX_CHARS),
             );

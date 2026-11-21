@@ -99,6 +99,7 @@ pub fn render_header(
                         egui::vec2(ui.available_width(), username_action_size.y),
                         egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                         |ui| {
+                            ui.spacing_mut().interact_size = username_action_size;
                             ui.spacing_mut().button_padding = egui::vec2(Spacing::XS, Spacing::XXS);
                             if names.is_empty()
                                 && let Some(request) =
@@ -148,6 +149,7 @@ pub fn render_header(
                         egui::vec2(ui.available_width(), username_action_size.y),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
+                            ui.spacing_mut().interact_size = username_action_size;
                             ui.spacing_mut().button_padding = egui::vec2(Spacing::XS, Spacing::XXS);
                             ui.label(
                                 RichText::new(shorten_id(&full_id))

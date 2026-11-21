@@ -214,7 +214,8 @@ impl AppContext {
     /// Store what a finished top-up changed: its `(index, duffs)` history
     /// entry, when it has one, and the balance `topped_up` carries. The top-up
     /// already happened, so a failed save is only logged; it never reads as a
-    /// failed top-up the user might repeat.
+    /// failed top-up the user might repeat. An identity removed meanwhile gets
+    /// no history entry, as its record gets no write.
     fn store_finished_top_up(
         &self,
         mut topped_up: QualifiedIdentity,
@@ -225,7 +226,21 @@ impl AppContext {
             topped_up.top_ups.insert(index, amount);
             let id = topped_up.identity.id();
             let entry = std::collections::BTreeMap::from([(index, amount)]);
-            if let Err(error) = self.save_top_ups(&id, &entry) {
+            // Under the record guard, so a removal cannot land between the
+            // roster check and the save.
+            let lock = self.identity_record_lock(id);
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let saved = match self.is_identity_listed(&id) {
+                Ok(false) => {
+                    tracing::debug!(identity_id = %id, "Top-up history not stored: the identity was removed while its top-up ran");
+                    Ok(())
+                }
+                Ok(true) => self.save_top_ups(&id, &entry),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = saved {
                 tracing::warn!(identity_id = %id, ?error, "Top-up history could not be stored locally after a finished top-up");
             }
         }
@@ -336,10 +351,40 @@ mod tests {
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
-    /// An identity removed while its top-up ran keeps none of the history its
-    /// removal deleted: only the finished top-up's own entry is saved.
+    /// A listed identity's finished top-up adds its entry to the stored history.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_finished_top_up_does_not_restore_a_removed_identitys_history() {
+    async fn a_finished_top_up_adds_its_entry_to_a_listed_identitys_history() {
+        use crate::context::test_staging::stored_top_ups;
+        use std::collections::BTreeMap;
+
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        staged
+            .ctx
+            .save_top_ups(&staged.id, &BTreeMap::from([(1, 10_000)]))
+            .unwrap();
+        let topped_up = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+
+        staged.ctx.store_finished_top_up(
+            topped_up,
+            Some((3, 50_000)),
+            BalanceProvenance::ObservedAt(7),
+        );
+
+        assert_eq!(
+            stored_top_ups(&staged.ctx, &staged.id),
+            Some(BTreeMap::from([(1, 10_000), (3, 50_000)]))
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity removed while its top-up ran gets no history back: neither
+    /// the entries its removal deleted nor the finished top-up's own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_top_up_stores_no_history_for_a_removed_identity() {
         use crate::context::test_staging::stored_top_ups;
         use std::collections::BTreeMap;
 
@@ -365,10 +410,7 @@ mod tests {
             BalanceProvenance::ObservedAt(7),
         );
 
-        assert_eq!(
-            stored_top_ups(&staged.ctx, &staged.id),
-            Some(BTreeMap::from([(3, 50_000)]))
-        );
+        assert_eq!(stored_top_ups(&staged.ctx, &staged.id), None);
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 

@@ -199,7 +199,9 @@ pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironm
              Technical details (paths redacted):\n{details}\n\n\
              Please explain in simple terms what is wrong and give me step-by-step instructions to fix it on my system. \
              The app data folder holds my wallet keys. \
-             Do not suggest deleting, resetting or moving the app data folder or any file in it. \
+             Do not suggest deleting or resetting the app data folder. \
+             Never suggest moving or deleting its secrets folder. \
+             If the message lists steps, explain those steps instead of suggesting others. \
              Never ask me for my recovery phrase, private keys or passwords.\n\n\
              Background you can read:\n\
              - Dash Evo Tool user docs: https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/\n\
@@ -558,15 +560,18 @@ mod tests {
         assert!(question.contains("<redacted>"), "{question}");
     }
 
-    /// The question tells the assistant never to ask for wallet secrets and never
-    /// to suggest deleting or resetting the data folder that holds the keys.
+    /// The question tells the assistant never to ask for wallet secrets, never
+    /// to suggest deleting or resetting the data folder or touching its secrets
+    /// folder, and to explain the message's own steps rather than add others.
     #[test]
     fn question_forbids_asking_for_secrets_and_deleting_wallet_data() {
         let report = ErrorReport::new("Message.", "Details");
         let question = ai_question(&report, STARTUP_SITUATION, &environment());
         for part in [
             "Never ask me for my recovery phrase, private keys or passwords.",
-            "Do not suggest deleting, resetting or moving the app data folder or any file in it",
+            "Do not suggest deleting or resetting the app data folder.",
+            "Never suggest moving or deleting its secrets folder.",
+            "If the message lists steps, explain those steps instead of suggesting others.",
         ] {
             assert!(question.contains(part), "{part} missing:\n{question}");
         }

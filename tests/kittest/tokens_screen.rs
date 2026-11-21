@@ -683,7 +683,7 @@ fn assert_intact_layout(
     use egui::accesskit::Role;
     const MAX_GAP: f32 = 120.0;
     let height = harness.ctx.content_rect().height();
-    let mut nodes: Vec<(egui::Rect, Role)> = harness
+    let mut nodes: Vec<(egui::Rect, Role, egui::Rect)> = harness
         .query_all_by_label_contains("")
         .filter(|node| {
             // The creator's seven-step row deliberately scrolls horizontally. Its selected
@@ -697,15 +697,25 @@ fn assert_intact_layout(
                             == Some(format!("{}  {}", index + 1, section.label()).as_str())
                     })
         })
-        .map(|node| (node.rect(), node.accesskit_node().role()))
-        .filter(|(rect, _)| {
+        .map(|node| {
+            // SAFETY: the value is an egui `Id` that egui itself gave to AccessKit.
+            let id =
+                unsafe { egui::Id::from_high_entropy_bits(node.accesskit_node().locate().0.0) };
+            // The part left after clipping, which a scroll area limits to its view.
+            let visible = harness
+                .ctx
+                .read_response(id)
+                .map_or(node.rect(), |response| response.interact_rect);
+            (node.rect(), node.accesskit_node().role(), visible)
+        })
+        .filter(|(rect, _, _)| {
             rect.left() >= content_left && rect.top() >= 100.0 && rect.bottom() <= height
         })
         .collect();
     assert!(!nodes.is_empty(), "{screen}: the central panel is empty");
     nodes.sort_by(|a, b| a.0.top().total_cmp(&b.0.top()));
     let mut bottom = nodes[0].0.bottom();
-    for (rect, _) in &nodes[1..] {
+    for (rect, _, _) in &nodes[1..] {
         let gap = rect.top() - bottom;
         assert!(
             gap <= MAX_GAP,
@@ -713,27 +723,28 @@ fn assert_intact_layout(
         );
         bottom = bottom.max(rect.bottom());
     }
-    let controls: Vec<egui::Rect> = nodes
+    let controls: Vec<(egui::Rect, egui::Rect)> = nodes
         .iter()
-        .filter(|(_, role)| {
+        .filter(|(_, role, _)| {
             matches!(
                 role,
                 Role::Button | Role::CheckBox | Role::RadioButton | Role::ComboBox
             )
         })
-        .map(|(rect, _)| *rect)
+        .map(|(rect, _, visible)| (*rect, *visible))
         .collect();
     // The central panel's island ends 30px before the window edge (panel
     // margin plus the island's inner margin); anything further right is clipped.
     let visible_right = harness.ctx.content_rect().width() - 30.0;
-    for control in &controls {
+    for (control, _) in &controls {
         assert!(
             control.right() <= visible_right + 0.5,
             "{screen}: a control at {control:?} is cut off past x={visible_right}"
         );
     }
-    for (i, a) in controls.iter().enumerate() {
-        for b in &controls[i + 1..] {
+    // Compare what is visible: a scroll area clips the controls scrolled out of view.
+    for (i, (_, a)) in controls.iter().enumerate() {
+        for (_, b) in &controls[i + 1..] {
             let overlap = a.intersect(*b);
             assert!(
                 overlap.width() <= 2.0 || overlap.height() <= 2.0,
@@ -903,6 +914,13 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         f.harness.run_steps(5);
         f.harness.get_by_label(SMOKE_TOKEN);
 
+        // A banner, such as a late error from an earlier screen's request,
+        // shortens the panel: the editors must scroll, not overlap.
+        dash_evo_tool::ui::components::MessageBanner::set_global(
+            f.app_context.egui_ctx(),
+            "Could not load token pricing. Check your connection and try again.",
+            dash_evo_tool::ui::MessageType::Error,
+        );
         for (name, root) in [
             ("Search Tokens", RootScreenType::RootScreenTokenSearch),
             ("Token Creator", RootScreenType::RootScreenTokenCreator),

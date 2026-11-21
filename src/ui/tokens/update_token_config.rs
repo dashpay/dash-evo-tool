@@ -921,7 +921,9 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // After the update's own outcome, a later error changes nothing.
         if self.update_request.is_none()
+            && self.update_status != UpdateTokenConfigStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
             self.refresh_banner.take_and_clear();
@@ -1365,5 +1367,24 @@ mod in_flight_tests {
             2,
             "a failed update can be sent again"
         );
+    }
+
+    /// An error that arrives after the update went through, such as a
+    /// background task's, must not replace the success screen.
+    #[test]
+    fn a_completed_config_update_stays_complete_when_another_task_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = UpdateTokenConfigScreen::new(token_info(&context, None, false), &context);
+        screen.display_task_result(BackendTaskSuccessResult::UpdatedTokenConfig(
+            "Max supply".into(),
+            FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.update_status == UpdateTokenConfigStatus::Complete);
     }
 }

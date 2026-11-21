@@ -338,7 +338,9 @@ impl ScreenLike for TransferTokensScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // After the transfer's own outcome, a later error changes nothing.
         if self.transfer_request.is_none()
+            && self.transfer_tokens_status != TransferTokensStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
             self.refresh_banner.take_and_clear();
@@ -787,5 +789,31 @@ mod tests {
             sent_request(&screen.confirmation_ok()).is_some(),
             "a failed transfer can be sent again"
         );
+    }
+
+    /// An error that arrives after the transfer went through, such as a
+    /// background task's, must not replace the success screen.
+    #[test]
+    fn a_completed_transfer_stays_complete_when_another_task_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: Identifier::from([3; 32]),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: Identifier::from([6; 32]),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &context);
+        screen.display_task_result(BackendTaskSuccessResult::TransferredTokens(FeeResult {
+            estimated_fee: 1,
+            actual_fee: Some(1),
+        }));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.transfer_tokens_status == TransferTokensStatus::Complete);
     }
 }

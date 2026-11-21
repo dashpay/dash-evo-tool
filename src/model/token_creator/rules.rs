@@ -168,15 +168,6 @@ pub struct RuleDraft {
 }
 
 impl RuleDraft {
-    /// A conservative permanent restriction with no actor, administrator or change allowance.
-    pub fn permanently_disabled(&self) -> bool {
-        self.performer == ActorDraft::NoOne
-            && self.administrator == ActorDraft::NoOne
-            && !self.allow_disable_action
-            && !self.allow_remove_administrator
-            && !self.allow_replace_administrator
-    }
-
     /// Whether the rule can never change after signing: nobody performs the action and
     /// no administrator can appoint a performer. The allowances only bind an administrator.
     pub fn is_fixed(&self) -> bool {
@@ -358,7 +349,7 @@ mod tests {
             administrator: ActorDraft::Owner,
             ..Default::default()
         };
-        assert!(!rule.permanently_disabled());
+        assert!(!rule.is_fixed());
     }
 
     #[test]

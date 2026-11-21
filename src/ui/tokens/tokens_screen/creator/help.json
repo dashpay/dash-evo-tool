@@ -272,7 +272,7 @@
   "rule.recurring": {
     "title": "Change recurring distribution",
     "body": "This authority is recorded with the token, but the current network does not support enabling, changing or disabling recurring distribution after creation. It can still change who holds this authority if its allowances permit.",
-    "example": "If the owner retains this power, recurring rewards could be enabled after creation.",
+    "example": "The owner can hold this authority, but recurring rewards must be configured before the token is created.",
     "scene": "44"
   },
   "rule.destination": {

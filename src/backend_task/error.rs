@@ -731,12 +731,13 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
-    /// A pinned-PR wallet database could not be upgraded without losing data.
-    #[error(transparent)]
-    PlatformDatabaseUpgrade {
-        #[from]
-        source: crate::wallet_backend::platform_compatibility::UpgradeError,
-    },
+    /// The wallet database was written by a test build pinned to an unreleased
+    /// storage layout. Only that release line's last build can still convert
+    /// it, so the user must run it once; this build never changes the file.
+    #[error(
+        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that version, open every network where you have a wallet and wait until each one finishes syncing. Then return to this version."
+    )]
+    WalletDataNeedsUpgradeRelease { database: std::path::PathBuf },
 
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.
@@ -4036,9 +4037,7 @@ impl TaskError {
     }
 
     /// File permissions or a read-only disk blocked the migration. Uses the
-    /// shared [`StorageFailure`] policy, so it matches the staged-upgrade
-    /// `UpgradeError::AccessDenied` classification for SQLite codes and OS
-    /// error kinds alike.
+    /// shared [`StorageFailure`] policy for SQLite codes and OS error kinds alike.
     fn wallet_storage_error_is_access_denied(
         source: &platform_wallet_storage::WalletStorageError,
     ) -> bool {

@@ -277,3 +277,39 @@ fn quit_button_requests_quit() {
 
     assert!(quit.get());
 }
+
+/// An app database only an earlier release can upgrade is refused at boot, and
+/// the startup dialog shows that error's own message, which names the release.
+#[test]
+fn pinned_pr_app_database_shows_upgrade_release_message() {
+    with_isolated_data_dir(|| {
+        let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
+        dash_evo_tool::app_dir::ensure_data_dir_exists(&data_dir).expect("data dir");
+        let app_db = data_dir.join("det-app.sqlite");
+        dash_evo_tool::wallet_backend::platform_compatibility::seed_pinned_pr_history(&app_db)
+            .expect("seed pinned-PR history");
+        let before = std::fs::read(&app_db).expect("read app database");
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_eframe(|cc| BootApp::new(cc.egui_ctx.clone(), StartupOutcome::default()));
+        harness.run_steps(3);
+
+        let BootApp::Failed(failure) = harness.state() else {
+            panic!("a pinned-PR app database must fail the boot");
+        };
+        let expected = TaskError::WalletDataNeedsUpgradeRelease {
+            database: app_db.clone(),
+        }
+        .to_string();
+        assert_eq!(failure.report().message(), expected);
+        assert!(harness.query_by_label(&expected).is_some());
+        assert_eq!(
+            std::fs::read(&app_db).expect("read app database"),
+            before,
+            "the refused database must be left unchanged"
+        );
+    });
+}

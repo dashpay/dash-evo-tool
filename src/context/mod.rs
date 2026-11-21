@@ -2081,39 +2081,6 @@ mod tests {
         assert!(uris[0].contains("10.0.0.9"), "{uris:?}");
     }
 
-    #[test]
-    fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {
-        use crate::wallet_backend::DetScope;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("det-app.sqlite");
-        let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute_batch(include_str!(
-            "../wallet_backend/platform_compatibility/fixtures/67d4ef3.sql"
-        ))
-        .unwrap();
-        let preference = "saved preference".to_owned();
-        let mut encoded = vec![1];
-        encoded.extend(
-            bincode::serde::encode_to_vec(&preference, bincode::config::standard()).unwrap(),
-        );
-        db.execute(
-            "INSERT INTO meta_global (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["det:test:preference", encoded],
-        )
-        .unwrap();
-        drop(db);
-
-        for _ in 0..2 {
-            let kv = AppContext::open_app_kv(dir.path()).unwrap();
-            assert_eq!(
-                kv.get::<String>(DetScope::Global, "det:test:preference")
-                    .unwrap(),
-                Some(preference.clone())
-            );
-        }
-    }
-
     /// Before any proven response, a context builds, validates and signs at
     /// the lowest protocol version its network still runs (upstream's
     /// per-network minimum): 13 on mainnet, not an older table.

@@ -303,6 +303,9 @@ fn run_scenario(
     let data_db = data_dir.join(DATA_DB);
     let app_db = data_dir.join(APP_DB);
     let network_db = data_dir.join(assertions::network_db_name(network));
+    if fixture.expect.upgrade_release_required {
+        return check_upgrade_release_refusal(&staged, &data_dir, options);
+    }
 
     let before = assertions::schema_snapshot(&data_db, &scratch, "before")?;
     let starting_version = before.as_ref().and_then(|snapshot| snapshot.version);
@@ -460,6 +463,29 @@ fn run_scenario(
         println!("    address derivation skipped (needs a synced chain)");
     }
 
+    Ok(())
+}
+
+/// A fixture only an earlier release can upgrade: every boot is refused with
+/// that release named, and no wallet store or backup is created or changed.
+fn check_upgrade_release_refusal(
+    staged: &stage::StagedFixture,
+    data_dir: &Path,
+    options: &Options,
+) -> Result<(), String> {
+    let stores = assertions::wallet_store_bytes(data_dir)?;
+    let backups = assertions::backup_files(data_dir)?;
+    let cli = cli::DetCli::new(staged)?;
+    for label in ["the first boot", "the second boot"] {
+        let run = cli.wallets_list(options.boot_timeout)?;
+        assertions::check_needs_upgrade_release(&run, label)?;
+        if assertions::wallet_store_bytes(data_dir)? != stores {
+            return Err(format!("{label} changed a wallet store"));
+        }
+        if assertions::backup_files(data_dir)? != backups {
+            return Err(format!("{label} created a backup"));
+        }
+    }
     Ok(())
 }
 

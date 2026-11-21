@@ -122,6 +122,48 @@ pub fn check_needs_desktop(run: &CliRun, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The release `WalletDataNeedsUpgradeRelease` names; det-cli prints the
+/// error's message when it cannot open the wallet data.
+const UPGRADE_RELEASE_MARKER: &str = "v1.0.0-weekly.20261117";
+
+/// A boot refused because only an earlier release can upgrade the wallet data.
+pub fn check_needs_upgrade_release(run: &CliRun, label: &str) -> Result<(), String> {
+    if run.succeeded() {
+        return Err(format!(
+            "{label} completed, but the fixture's wallet data needs {UPGRADE_RELEASE_MARKER} first\n{}",
+            run.report()
+        ));
+    }
+    let named =
+        run.stdout.contains(UPGRADE_RELEASE_MARKER) || run.stderr.contains(UPGRADE_RELEASE_MARKER);
+    if run.timed_out || !named {
+        return Err(format!(
+            "{label} failed, but without naming {UPGRADE_RELEASE_MARKER}\n{}",
+            run.report()
+        ));
+    }
+    Ok(())
+}
+
+/// Bytes of every wallet store and its write-ahead log (`det-*.sqlite`,
+/// `det-*.sqlite-wal`) in `data_dir`. The `-shm` index holds no data.
+pub fn wallet_store_bytes(data_dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let entries = fs::read_dir(data_dir)
+        .map_err(|e| format!("could not read {}: {e}", data_dir.display()))?;
+    let mut stores = BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("could not walk {}: {e}", data_dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("det-") && (name.ends_with(".sqlite") || name.ends_with(".sqlite-wal"))
+        {
+            let bytes = fs::read(entry.path())
+                .map_err(|e| format!("could not read {}: {e}", entry.path().display()))?;
+            stores.insert(name, bytes);
+        }
+    }
+    Ok(stores)
+}
+
 /// `data.db`'s schema as it can be compared across a boot: the version the
 /// ladder records, every schema object, and the committed rows including WAL data.
 #[derive(Debug, PartialEq, Eq)]

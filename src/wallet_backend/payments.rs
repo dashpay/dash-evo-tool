@@ -1607,9 +1607,12 @@ fn map_core_finalize_error(
     }
 }
 
-/// Classify an asset-lock build or resume refusal without losing its source.
-pub(super) fn map_asset_lock_error(
+/// Classify the wallet's refusals to build an asset lock without losing their
+/// source, handing every other error to `other`. Every flow that builds a lock
+/// maps these two refusals here.
+pub(super) fn map_asset_lock_refusal_or(
     source: platform_wallet::error::PlatformWalletError,
+    other: impl FnOnce(platform_wallet::error::PlatformWalletError) -> TaskError,
 ) -> TaskError {
     match source {
         platform_wallet::error::PlatformWalletError::AssetLockTooManyInputs { count, max } => {
@@ -1627,6 +1630,15 @@ pub(super) fn map_asset_lock_error(
                 source: Some(Box::new(source)),
             }
         }
+        unrefused => other(unrefused),
+    }
+}
+
+/// Classify an asset-lock build or resume refusal without losing its source.
+pub(super) fn map_asset_lock_error(
+    source: platform_wallet::error::PlatformWalletError,
+) -> TaskError {
+    map_asset_lock_refusal_or(source, |source| match source {
         // A tracked lock's transaction may already be on the network. The
         // generic envelope below says to retry; this outcome says to check.
         // No id is returned here, so there is nothing to watch.
@@ -1639,7 +1651,7 @@ pub(super) fn map_asset_lock_error(
         other => TaskError::WalletBackend {
             source: Arc::new(other),
         },
-    }
+    })
 }
 
 /// Classify a broadcast failure from the payment path. Pure — unit-testable.

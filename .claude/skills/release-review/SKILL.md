@@ -103,7 +103,7 @@ restoring the wallet from the mnemonic fixture, discovering or importing the ide
 needs, and — if the scenario needs it — linking a masternode or seeding legacy-migration state. Do
 this explicitly and record it as setup, not as part of the scenario's own measured procedure. Unless
 the scenario tests the import itself, provision Testnet and the mnemonic wallet before launch with
-`.claude/skills/visual-diff/scripts/provision-wallet.sh` (needs the `det-cli` from the same release zip
+`.claude/skills/visual-diff/scripts/provision-wallet.sh` (needs a `det-cli` built from the same commit
 as the GUI under test).
 
 **Confirmed false-alarm trap**: precisely because the network selector has no reliable default,

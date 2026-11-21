@@ -207,6 +207,14 @@ fn prepare_tool_call(
         mnemonic::take_stdin_flag(&mut params).map_err(|e| password::describe(&e))?;
     let mut arguments = help::parse_params(&params).map_err(|e| e.to_string())?;
     password::reject_inline_password(&arguments).map_err(|e| password::describe(&e))?;
+    // In-process the router is the server: a name it does not list is a typo,
+    // reported as one before any secret is read.
+    if http_addr.is_none()
+        && (mnemonic_from_stdin || password_source.is_some())
+        && !help::in_process_tool_exists(&mcp_name)
+    {
+        return Err(help::unknown_tool_message(tool_name));
+    }
     if mnemonic_from_stdin {
         mnemonic::check_stdin_request(
             tool_name,
@@ -335,6 +343,15 @@ mod tests {
     /// cache, so a cold or stale cache cannot let a secret through.
     #[test]
     fn a_secret_for_a_tool_that_does_not_take_it_is_refused_before_reading() {
+        for secret_flag in ["--mnemonic-stdin", "--password-stdin"] {
+            let typo = call(&["core-wallet-imprt", secret_flag, "network=testnet"], None);
+            assert_eq!(
+                typo.expect_err("misspelled tool"),
+                "Unknown tool 'core-wallet-imprt'. Run 'det-cli tools' to refresh the command list.",
+                "{secret_flag}"
+            );
+        }
+
         let no_phrase = call(
             &["core-wallets-list", "--mnemonic-stdin", "network=testnet"],
             None,

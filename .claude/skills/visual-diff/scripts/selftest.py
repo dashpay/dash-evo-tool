@@ -286,5 +286,87 @@ class ProvisionWallet(unittest.TestCase):
         self.assertEqual(self.provision("./det-cli", "--version"), "alpha bravo")
 
 
+# Window 42 has the focus until the SWITCH_AT-th getactivewindow call, then
+# window 99, which belongs to no process. `type` appends its input to typed.
+FAKE_XDOTOOL = """#!/bin/sh
+n=$(cat "$STATE/calls" 2>/dev/null || echo 0)
+case "$1" in
+  getactivewindow)
+    n=$((n + 1)); echo "$n" >"$STATE/calls"
+    wid=42; [ -n "$SWITCH_AT" ] && [ "$n" -ge "$SWITCH_AT" ] && wid=99
+    if [ "$2" = getwindowpid ]; then [ "$wid" = 42 ] && echo "$FOCUS_PID"; else echo "$wid"; fi ;;
+  getwindowpid) [ "$2" = 42 ] && echo "$FOCUS_PID" ;;
+  type) cat >>"$STATE/typed" ;;
+esac
+"""
+
+
+class TypeSecret(unittest.TestCase):
+    """type-secret.sh types only into a window of a dash-evo-tool process, and
+    stops when the focus leaves it. A fake xdotool stands in for the display."""
+
+    VALUE = "alpha bravo"
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        bin_dir = os.path.join(self.dir, "bin")
+        os.mkdir(bin_dir)
+        self.write(os.path.join(bin_dir, "xdotool"), FAKE_XDOTOOL)
+        # Its process name (comm) is the script's file name: dash-evo-tool.
+        gui = os.path.join(self.dir, "dash-evo-tool")
+        self.write(gui, "#!/bin/sh\nread -r _\n")
+        self.gui = subprocess.Popen([gui], stdin=subprocess.PIPE)
+        self.addCleanup(self.gui.wait)
+        self.addCleanup(self.gui.stdin.close)
+        self.path = f"{bin_dir}:/usr/bin:/bin"
+
+    def write(self, path, text):
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, 0o700)
+
+    def type_secret(self, focus_pid, *args, env_file="test.env", switch_at=""):
+        with open(os.path.join(self.dir, env_file), "w") as f:
+            f.write(f"E2E_WALLET_MNEMONIC={self.VALUE}\n")
+        r = subprocess.run(
+            [os.path.join(HERE, "type-secret.sh"), "--env-file", env_file, "E2E_WALLET_MNEMONIC", *args],
+            cwd=self.dir,
+            env={
+                "PATH": self.path,
+                "DISPLAY": ":fake",
+                "STATE": self.dir,
+                "FOCUS_PID": focus_pid,
+                "SWITCH_AT": str(switch_at),
+            },
+            capture_output=True,
+            text=True,
+        )
+        typed = os.path.join(self.dir, "typed")
+        if not os.path.exists(typed):
+            return r.returncode, ""
+        with open(typed) as f:
+            return r.returncode, f.read()
+
+    def test_the_value_is_typed_into_the_gui_under_test(self):
+        self.assertEqual(self.type_secret(str(self.gui.pid)), (0, self.VALUE))
+        os.unlink(os.path.join(self.dir, "typed"))
+        self.assertEqual(self.type_secret(str(self.gui.pid), "2"), (0, "bravo"))
+
+    def test_a_window_of_another_program_gets_nothing(self):
+        self.assertEqual(self.type_secret(str(os.getpid())), (1, ""))
+
+    def test_a_window_without_a_process_gets_nothing(self):
+        self.assertEqual(self.type_secret(""), (1, ""))
+
+    def test_typing_stops_when_the_focus_moves(self):
+        code, typed = self.type_secret(str(self.gui.pid), switch_at=4)
+        self.assertEqual(code, 1)
+        self.assertTrue(self.VALUE.startswith(typed) and len(typed) < len(self.VALUE), repr(typed))
+
+    def test_an_option_shaped_env_file_is_read_as_a_file(self):
+        self.assertEqual(self.type_secret(str(self.gui.pid), env_file="--version"), (0, self.VALUE))
+
+
 if __name__ == "__main__":
     unittest.main()

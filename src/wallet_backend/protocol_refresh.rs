@@ -14,6 +14,9 @@ use tokio_util::sync::CancellationToken;
 /// Upper bound, in health ticks, on the wait before retrying a failed read.
 const MAX_RETRY_TICKS: u32 = 32;
 
+/// Healthy, idle health ticks before the metadata is read again.
+const PERIODIC_REFRESH_TICKS: u32 = 600;
+
 /// Coalesced metadata refreshes admitted only during the active SPV session.
 #[derive(Default)]
 pub(super) struct ProtocolRefresh {
@@ -123,6 +126,7 @@ impl ProtocolRefresh {
             let mut first_healthy_waiting = false;
             let mut retry_backoff = 0u32;
             let mut retry_in = 0u32;
+            let mut idle_ticks = 0u32;
             loop {
                 let event = tokio::select! {
                     biased;
@@ -176,12 +180,19 @@ impl ProtocolRefresh {
                             retry_in -= 1;
                             pending |= retry_in == 0;
                         }
+                        // Endpoint eligibility can outlast a Platform outage
+                        // and upgrade, so a healthy session also re-reads.
+                        if healthy && current.is_none() {
+                            idle_ticks = idle_ticks.saturating_add(1);
+                            pending |= idle_ticks >= PERIODIC_REFRESH_TICKS;
+                        }
                         previously_healthy = healthy;
                         has_synced |= healthy;
                     }
                 }
                 if pending && current.is_none() && worker_ready.masternodes_ready() {
                     pending = false;
+                    idle_ticks = 0;
                     current = Some(Box::pin(refresh()));
                 }
             }
@@ -377,6 +388,15 @@ mod tests {
         healthy: Arc<AtomicBool>,
         responses: impl IntoIterator<Item = bool>,
     ) -> tokio::sync::mpsc::UnboundedReceiver<char> {
+        start_scripted_every(probe, healthy, responses, Duration::from_millis(10))
+    }
+
+    fn start_scripted_every(
+        probe: &ProtocolRefresh,
+        healthy: Arc<AtomicBool>,
+        responses: impl IntoIterator<Item = bool>,
+        period: Duration,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<char> {
         let ready = Arc::new(CoordinatorGate::default());
         ready.on_masternodes_ready();
         let (events, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -404,7 +424,7 @@ mod tests {
                         .expect("scripted response"),
                 )
             },
-            Duration::from_millis(10),
+            period,
         );
         rx
     }
@@ -445,6 +465,31 @@ mod tests {
             1,
             "success resets the backoff"
         );
+        probe.stop().await;
+    }
+
+    /// A healthy session re-reads the metadata periodically, so a network
+    /// change with no health or eligibility edge is still observed.
+    #[tokio::test]
+    async fn protocol_refresh_rereads_periodically_while_healthy() {
+        let probe = ProtocolRefresh::default();
+        let healthy = Arc::new(AtomicBool::new(true));
+        let mut rx = start_scripted_every(
+            &probe,
+            healthy,
+            [true, true, true],
+            Duration::from_millis(1),
+        );
+        assert!(probe.queue());
+        assert_eq!(next(&mut rx).await, 'c');
+        for _ in 0..2 {
+            let mut checks = 0;
+            while next(&mut rx).await == 'h' {
+                checks += 1;
+                assert!(checks <= PERIODIC_REFRESH_TICKS, "no periodic re-read");
+            }
+            assert_eq!(checks, PERIODIC_REFRESH_TICKS);
+        }
         probe.stop().await;
     }
 

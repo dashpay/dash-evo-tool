@@ -177,6 +177,27 @@ pub enum WalletTransactionHistoryError {
     RowsSkipped { skipped_rows: usize },
 }
 
+/// An identity save that landed, but that the wallet store could not confirm
+/// as belonging to no wallet. Reported to whoever asked for the save.
+#[derive(Debug, Clone, Error)]
+pub enum IdentitySaveWarning {
+    /// The record kept the wallet link it already had; the wallet store's
+    /// own error says why.
+    #[error("{source}")]
+    WalletLinkKept {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+    /// The record was already wallet-free and was rewritten as such.
+    #[error(
+        "An identity was saved, but this device's wallet data does not yet confirm that it belongs to no wallet. Restart the application to complete the update."
+    )]
+    WalletFreeUnconfirmed {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+}
+
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
 /// Shared, so one stopped task batch can report it for each of its tasks.
 #[derive(Clone)]

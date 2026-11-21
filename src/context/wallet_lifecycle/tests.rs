@@ -5987,6 +5987,32 @@ async fn a_mirror_read_failure_keeps_the_wallet_link_of_a_wallet_owned_row() {
     backend.shutdown().await;
 }
 
+/// A save no requester reports for tells the GUI user that the record kept
+/// its wallet link, in the wallet store's own words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_wallet_link_warns_the_user() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
+    let owned = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+
+    backend.set_unowned_read_test_failure(true);
+    ctx.insert_local_qualified_identity(&owned, &None)
+        .expect("re-insert with no wallet info");
+    backend.set_unowned_read_test_failure(false);
+
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    assert_eq!(banner_texts.len(), 1, "{banner_texts:?}");
+
+    backend.shutdown().await;
+}
+
 /// The same unverified mirror, with no earlier wallet link to fall back on:
 /// there is nothing to keep, so the mutation is refused outright rather than
 /// committing the wallet-less claim upstream contradicts. Nothing is

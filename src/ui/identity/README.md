@@ -12,7 +12,8 @@ Promote a widget to `src/ui/components/` only if a second, non-hub consumer appe
 | `home.rs` | Shared summary and Home (send · receive · top up · setup · payments · contacts) |
 | `contacts.rs` | Contacts tab (gated / populated shell, contact detail pane with private note) |
 | `tokens_tab.rs` | Tokens tab (this identity's tracked tokens: balances · rewards · check · stop tracking; state in `ui/state/identity_tokens.rs`) |
-| `token_copy.rs` | Every user-facing string of the Tokens tab, with the complete-sentence / no-jargon test |
+| `token_detail.rs` | Token detail page inside the Tokens tab (facts in plain words, copyable IDs, Manage, Stop tracking) |
+| `token_copy.rs` | Every user-facing string of the token surfaces (tab, detail), with the complete-sentence / no-jargon test |
 | `activity.rs` | Hidden activity shell (retained for internal links) |
 | `settings.rs` | Profile tab (social profile · usernames · advanced) |
 | `onboarding.rs` | Onboarding empty state |

@@ -2770,7 +2770,13 @@ impl ScreenLike for TokensScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
-        self.selected_token = None;
+        // Another screen may have asked for a token to open on arrival; any
+        // other Tokens subscreen clears the request so it cannot go stale.
+        let staged = self.app_context.take_pending_token_selection();
+        self.selected_token = match self.tokens_subscreen {
+            TokensSubscreen::MyTokens => staged,
+            _ => None,
+        };
         self.should_reset_collapsing_states = true;
 
         self.all_known_tokens = self
@@ -4785,6 +4791,33 @@ mod tests {
         let unlocked = confirmation(true, None, false);
         assert!(!unlocked.contains("WARNING"));
         assert!(!unlocked.contains("marketplace"));
+    }
+
+    /// The pending token selection is a one-shot courier: My Tokens opens on
+    /// it, and arriving on any other Tokens subscreen discards it, so a stale
+    /// request can never open a token later.
+    #[test]
+    fn a_pending_token_selection_is_taken_on_arrival_by_every_tokens_subscreen() {
+        use crate::ui::ScreenLike;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let token_id = dash_sdk::platform::Identifier::from([5; 32]);
+
+        context.set_pending_token_selection(token_id);
+        let mut my_tokens = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        my_tokens.refresh_on_arrival();
+        assert_eq!(my_tokens.selected_token, Some(token_id));
+        assert_eq!(context.take_pending_token_selection(), None);
+
+        context.set_pending_token_selection(token_id);
+        let mut search = TokensScreen::new(&context, TokensSubscreen::SearchTokens);
+        search.refresh_on_arrival();
+        assert_eq!(search.selected_token, None, "Search opens no token");
+        assert_eq!(
+            context.take_pending_token_selection(),
+            None,
+            "the request is consumed, not left for a later My Tokens visit"
+        );
     }
 
     /// Both modes name the preset first and then a setting the network does not

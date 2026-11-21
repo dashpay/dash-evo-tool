@@ -361,6 +361,8 @@ impl IdentityHubScreen {
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
         self.settings_tab = SettingsTab::new();
+        // A filter still being typed is written before the state is dropped.
+        self.tokens_state.save_prefs(&self.app_context);
         self.tokens_state = IdentityTokensState::default();
         self.profile_cache.reset();
         self.selection.clear_picker_override();
@@ -409,6 +411,9 @@ impl IdentityHubScreen {
 
     /// Select a different tab (used by tab-bar click handling + in-screen deep links).
     pub fn select_tab(&mut self, tab: IdentityHubTab) {
+        if self.selected_tab != tab {
+            self.tokens_state.detail = None;
+        }
         self.selected_tab = tab;
     }
 
@@ -531,6 +536,10 @@ impl IdentityHubScreen {
     fn apply_breadcrumb_effect(&mut self, effect: BreadcrumbEffect) -> AppAction {
         match effect {
             BreadcrumbEffect::None => AppAction::None,
+            BreadcrumbEffect::TokenList => {
+                self.tokens_state.detail = None;
+                AppAction::None
+            }
             BreadcrumbEffect::OpenPicker => {
                 self.open_picker();
                 AppAction::None
@@ -638,27 +647,6 @@ impl ScreenLike for IdentityHubScreen {
         let ctx = &ctx;
         let mut action = AppAction::None;
 
-        // Top panel hosts the three-segment breadcrumb switcher on every
-        // landing. The switcher is a pure component returning a typed effect;
-        // the hub applies it below.
-        let app_context = self.app_context.clone();
-        let selection = &mut self.selection;
-        let mut breadcrumb_effect = BreadcrumbEffect::None;
-        action |= add_top_panel_with_breadcrumb(
-            ui,
-            &self.app_context,
-            |ui| {
-                breadcrumb_effect = breadcrumb_switcher::render(ui, &app_context, selection);
-                AppAction::None
-            },
-            vec![(
-                "Add",
-                DesiredAppAction::Menu(breadcrumb_switcher::add_identity_menu_items()),
-            )],
-        );
-
-        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
-
         // Resolve the surface: onboarding (no identities) / picker (choose one)
         // / home (the resolved active identity). `landing()` keeps the
         // load-error banner behaviour and a last-known-good fallback.
@@ -715,6 +703,48 @@ impl ScreenLike for IdentityHubScreen {
             )
         };
 
+        // Share the resolved identity with the breadcrumb, header, and active tab.
+        let selected = if view == HubView::Home {
+            self.app_context.resolve_selected_identity()
+        } else {
+            None
+        };
+
+        // Top panel hosts the three-segment breadcrumb switcher on every
+        // landing. The switcher is a pure component returning a typed effect;
+        // the hub applies it below.
+        let app_context = self.app_context.clone();
+        let token_detail_name = if self.selected_tab == IdentityHubTab::Tokens {
+            selected.as_ref().and_then(|identity| {
+                self.tokens_state
+                    .detail_name(identity.identity.id())
+                    .map(str::to_owned)
+            })
+        } else {
+            None
+        };
+        let selection = &mut self.selection;
+        let mut breadcrumb_effect = BreadcrumbEffect::None;
+        action |= add_top_panel_with_breadcrumb(
+            ui,
+            &self.app_context,
+            |ui| {
+                breadcrumb_effect = breadcrumb_switcher::render(
+                    ui,
+                    &app_context,
+                    selection,
+                    token_detail_name.as_deref(),
+                );
+                AppAction::None
+            },
+            vec![(
+                "Add",
+                DesiredAppAction::Menu(breadcrumb_switcher::add_identity_menu_items()),
+            )],
+        );
+
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
+
         let mut picked_identity: Option<String> = None;
         // The tab whose content this frame rendered, if the hub shows one.
         let mut rendered_tab: Option<IdentityHubTab> = None;
@@ -734,8 +764,6 @@ impl ScreenLike for IdentityHubScreen {
                     Some(&mut picked_identity),
                 ),
                 HubView::Home => {
-                    // One roster read per frame serves the header and every tab.
-                    let selected = self.app_context.resolve_selected_identity();
                     // Share the island's available width across the header and
                     // tabs; each tab handles its own responsive columns.
                     let inner = ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -753,7 +781,7 @@ impl ScreenLike for IdentityHubScreen {
                         if let Some(tab) =
                             super::home::apply_outcome(&mut self.home_state, header_outcome)
                         {
-                            self.selected_tab = tab;
+                            self.select_tab(tab);
                             self.settings_tab.focus_section(header_outcome);
                         }
                         ui.add_space(16.0);
@@ -766,10 +794,15 @@ impl ScreenLike for IdentityHubScreen {
                                 // so the incoming tab re-dispatches once.
                                 self.contacts_state.reset();
                             }
-                            self.selected_tab = clicked;
+                            self.select_tab(clicked);
                         }
                         ui.add_space(16.0);
                         rendered_tab = Some(self.selected_tab);
+                        if self.selected_tab != IdentityHubTab::Tokens {
+                            // List controls not yet written when the tab is
+                            // left are written now rather than lost.
+                            self.tokens_state.save_prefs(&self.app_context);
+                        }
                         let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
                                 let (home_action, outcome) = match &selected {
@@ -795,7 +828,7 @@ impl ScreenLike for IdentityHubScreen {
                                     } else if next_tab != self.selected_tab {
                                         self.contacts_state.reset();
                                     }
-                                    self.selected_tab = next_tab;
+                                    self.select_tab(next_tab);
                                     self.settings_tab.focus_section(outcome);
                                 }
                                 home_action
@@ -1926,6 +1959,26 @@ mod tests {
             ])),
             "a deadline failure must be retried"
         );
+    }
+
+    /// A network switch drops the Tokens tab state, but list controls not
+    /// yet written (a filter still being typed) are written first.
+    #[test]
+    fn a_network_switch_saves_unsaved_token_list_controls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.tokens_state.prefs(&context);
+        hub.tokens_state
+            .edit_prefs(crate::model::token::IdentityTokensViewPrefs {
+                filter: "cof".into(),
+                ..Default::default()
+            });
+        hub.reset_for_context_change();
+        assert_eq!(context.identity_tokens_view_prefs().filter, "cof");
     }
 
     /// On an updated install the hub sends the Usernames card's check of the

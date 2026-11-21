@@ -28,6 +28,8 @@ use crate::model::wallet::WalletSeedHash;
 pub enum BreadcrumbEffect {
     /// No interaction this frame.
     None,
+    /// Return from a token detail to the selected identity's token list.
+    TokenList,
     /// The `Identities` crumb was clicked — open the picker.
     OpenPicker,
     /// Select a wallet, or show all identities with `None`.
@@ -114,13 +116,36 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     selection: &mut HubSelection,
+    token_detail_name: Option<&str>,
 ) -> BreadcrumbEffect {
-    map_effect(global_nav_switcher::render(
-        ui,
-        app_context,
-        &hub_spec(),
-        selection,
-    ))
+    ui.horizontal(|ui| {
+        let mut effect = map_effect(global_nav_switcher::render(
+            ui,
+            app_context,
+            &hub_spec(),
+            selection,
+        ));
+        if let Some(name) = token_detail_name {
+            let color = crate::ui::theme::DashColors::text_secondary(ui.visuals().dark_mode);
+            ui.label(egui::RichText::new("›").color(color));
+            let crumb = ui.link(super::tabs::IdentityHubTab::Tokens.label());
+            // Three controls read "Tokens"; this one names its destination.
+            crumb.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Link,
+                    true,
+                    super::token_copy::TOKEN_LIST_CRUMB_NAME,
+                )
+            });
+            if crumb.clicked() {
+                effect = BreadcrumbEffect::TokenList;
+            }
+            ui.label(egui::RichText::new("›").color(color));
+            ui.label(name);
+        }
+        effect
+    })
+    .inner
 }
 
 #[cfg(test)]

@@ -10,9 +10,8 @@ Scope: README §10 Phase 0, Phase 1, Phase 2. **Phase 3 is out of scope**
 **As built (user decision, TOK-021):** the hub offers no Send or Claim and
 the Tokens tab has no count badge; the row status lines say where to claim
 (Tokens › My Tokens). Hub sending and claiming are follow-up work. Items
-marked *dropped* below record that decision. The Phase 1 tab ships first;
-the token detail page, the Manage link and filter/sort (P2.2, P2.3) ship
-in a follow-up change, and the Home card (P2.1) after it.
+marked *dropped* below record that decision. The Home card (P2.1) ships in
+a follow-up change.
 
 ## User decisions (README §11)
 
@@ -42,7 +41,7 @@ Each item needs code + a test (unit or kittest) unless marked *(no test)*.
 - [x] P1.7 Actions disabled until `masternodes_ready()` with reason "Available after sync finishes."
 - [ ] P1.8 *Dropped:* Send → `TransferTokensScreen` from the row.
 - [ ] P1.9 *Dropped:* Claim → `ClaimTokensScreen` from the row; the status line names Tokens › My Tokens instead.
-- [x] P1.10 ••• menu: Check balance now · Copy token ID · Stop tracking (Token details and Manage come with P2.2).
+- [x] P1.10 ••• menu: Check balance now · Token details · Copy token ID · Stop tracking · Manage in Tokens screen (Q3 rule only).
 - [x] P1.11 Stop tracking via `ConfirmationDialog`; dispatches `StopTrackingTokenBalance(pair)`.
 - [x] P1.12 Add a token menu: Find by name (Tokens › Search) · Add by ID (`AddTokenById`).
 - [x] P1.13 Empty states: no tokens tracked; all dismissed ("Track tokens again"); first load (spinner + text); stale after error (inline banner, rows kept, Try again).
@@ -54,8 +53,8 @@ Each item needs code + a test (unit or kittest) unless marked *(no test)*.
 
 ### Phase 2
 - [ ] P2.1 Home Tokens card, shown iff any balance > 0 OR a claim is pending (Q5), without Claim (several claims show a count); "See all tokens" opens the Tokens tab.
-- [ ] P2.2 Token detail page (row click / "Token details"): facts in plain words, copyable IDs, Manage (Q3 rule; opens Tokens › My Tokens on that token through the pending-token-selection courier), Stop tracking. *Dropped:* Send/Claim.
-- [ ] P2.3 Many-token controls: filter by name/symbol and sort; remembered per device together with hide-zero.
+- [x] P2.2 Token detail page (row click / "Token details"): facts in plain words, copyable IDs, Manage (Q3 rule; opens Tokens › My Tokens on that token through the pending-token-selection courier), Stop tracking. *Dropped:* Send/Claim.
+- [x] P2.3 Many-token controls: filter by name/symbol and sort; remembered per device together with hide-zero.
 
 ### Cross-cutting
 - [x] X.1 All copy from wireframes T9, with Q2/Q4 changes; i18n-ready complete sentences, no jargon (AGENTS.md error rules), technical detail only via `with_details`.
@@ -71,11 +70,13 @@ otherwise. Each is intentional.
 
 | # | Deviation / addition |
 |---|---|
-| D-1 | Backend additions beyond "no backend change": `TokenTask::TrackTokenBalancesAgain(Vec<IdentityTokenIdentifier>)` re-tracks the given pairs in one request (a one-pair list is "Check balance now") and takes the refresh guard before clearing the dismissals, so a refusal leaves them untouched; `IdentityTokensViewPrefs` is persisted at the global k/v key `det:identity_tokens_view:v1`. |
+| D-1 | Backend additions beyond "no backend change": `TokenTask::TrackTokenBalancesAgain(Vec<IdentityTokenIdentifier>)` re-tracks the given pairs in one request (a one-pair list is "Check balance now") and takes the refresh guard before clearing the dismissals, so a refusal leaves them untouched; `AppContext::{set,take}_pending_token_selection` is the courier behind "Manage in Tokens screen" (`TokensScreen::refresh_on_arrival` takes it on every Tokens subscreen and selects the token only on My Tokens, so a stale request cannot linger); `IdentityTokensViewPrefs` is persisted at the global k/v key `det:identity_tokens_view:v1`. |
+| D-2 | P0.2's standalone helper was folded into `IdentityTokenAvailableActions::has_admin_permission()`; the hub computes every row's actions once with `in_dev_mode = false` and reads the flag, instead of computing the actions twice. |
 | D-4 | Not built from README §8: folding row actions into ••• under 640 px (the balance and status do stack under the name), the single-key `/` filter shortcut, the "Recently updated" sort (no per-pair update time exists), and T5's "Tracked since" and "Recent activity" (P3). |
-| D-5 | All hub copy lives in `src/ui/identity/token_copy.rs` with one complete-sentence / no-jargon test; "Contract" is allowed as the name of a copyable ID. The hidden count is a complete sentence ("{count} tokens are hidden."), the ▾ glyph is decoration outside the translated label, and "Issued by you" / "Issued by someone else" are whole values. |
+| D-5 | All hub copy lives in `src/ui/identity/token_copy.rs` with one complete-sentence / no-jargon test; "Contract" is allowed as the name of a copyable ID. The header count and the hidden count are complete sentences ("Tracking {count} tokens.", "{count} tokens are hidden."), the ▾ glyph is decoration outside the translated label, and "Issued by you" / "Issued by someone else" are whole values. |
 | D-6 | New theme constants: `DashColors::pill_accent` and `pill_neutral` (the only tints that read at 4.5:1 on their own 12 % fill in both themes); the row badges use them instead of `DASH_BLUE` / `text_secondary`. |
 | D-7 | On-chain token names are sanitized before display through `model::token::token_display_name` (shared `identity_name::clean_display_text`, which drops controls and every Unicode default-ignorable code point — bidi directives, soft hyphen, ZWSP, word joiner, variation selectors, BOM, tag characters — and the blank Hangul and braille fillers, while keeping ZWNJ/ZWJ; look-alike letters stay, and the short token ID beside the name tells them apart); a name with nothing left shows the short token ID. |
+| D-8 | The filter is capped at `IdentityTokensViewPrefs::MAX_FILTER_CHARS` (64); it applies at once but is written to the database when its box loses focus (Enter included), when the Tokens tab is left, or when the identity changes — never per keystroke, never lost; hide-zero and sort are saved as they change. |
 | D-9 | A failed full refresh marks every unknown balance "Couldn't check this balance." with Try again (not "Checking balance…"), and the first-load line shows only while a refresh actually runs. A check or "Track tokens again" refused because a refresh already runs is sent again once that refresh ends. |
 | D-10 | Tokens › My Tokens shares the claim rule: `a_pre_programmed_distribution_is_claimable_only_by_its_recipients` (in `model/token/identity_token.rs`) proves a pre-programmed schedule offers Claim only to the identities it names, and `a_disabled_send_never_calls_an_unknown_balance_zero` proves the disabled Send reason never calls an unchecked balance zero. |
 | D-11 | The inline failure notice is a reusable component, `ui/components/inline_notice.rs` (`InlineNotice`), not a hand-built frame. |

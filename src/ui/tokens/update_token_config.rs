@@ -1,7 +1,8 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -84,6 +85,8 @@ pub struct UpdateTokenConfigScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<crate::ui::components::BannerHandle>,
+    /// The update in flight; only its own result or error ends the wait.
+    update_request: Option<BackendTaskContext>,
 }
 
 impl UpdateTokenConfigScreen {
@@ -137,6 +140,7 @@ impl UpdateTokenConfigScreen {
             group_action_id: None,
             completed_fee_result: None,
             refresh_banner: None,
+            update_request: None,
         }
     }
 
@@ -724,7 +728,7 @@ impl UpdateTokenConfigScreen {
             )
         {
             ui.add_space(20.0);
-            let in_flight = self.update_status == UpdateTokenConfigStatus::Updating;
+            let in_flight = self.update_request.is_some();
             if ComponentStyles::add_primary_button_enabled(ui, !in_flight, &button_text)
                 .disabled_tooltip("Wait for the current update to finish.")
                 .clicked()
@@ -757,8 +761,8 @@ impl UpdateTokenConfigScreen {
                     );
                     handle.with_elapsed();
                     self.refresh_banner = Some(handle);
-                    action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::UpdateTokenConfig {
+                    let (update, request) = AppAction::BackendTask(BackendTask::TokenTask(
+                        Box::new(TokenTask::UpdateTokenConfig {
                             identity_token_info: Box::new(self.identity_token_info.clone()),
                             change_item: self.change_item.clone(),
                             signing_key,
@@ -768,8 +772,11 @@ impl UpdateTokenConfigScreen {
                                 self.public_note.clone()
                             },
                             group_info,
-                        },
-                    )));
+                        }),
+                    ))
+                    .with_dispatch_contexts(self.app_context.network);
+                    self.update_request = request;
+                    action |= update;
                 }
             }
         }
@@ -906,9 +913,17 @@ impl UpdateTokenConfigScreen {
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.update_request.as_ref() == Some(context) {
+            self.update_request = None;
+        }
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        if self.update_request.is_none()
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }
@@ -918,6 +933,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
         if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result) =
             backend_task_success_result
         {
+            self.update_request = None;
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.update_status = UpdateTokenConfigStatus::Complete;
@@ -1296,36 +1312,58 @@ mod in_flight_tests {
         let mut screen = UpdateTokenConfigScreen::new(info, &context);
         screen.signing_key = Some(signing_key());
         screen.change_item = TokenConfigurationChangeItem::MaxSupply(Some(17));
-        let updates = Rc::new(RefCell::new(0));
+        use crate::ui::tokens::mint_tokens_screen::tests::{
+            report_error, sent_request, unrelated_request,
+        };
+        let updates = Rc::new(RefCell::new(Vec::new()));
         let seen = updates.clone();
         let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1400.0))
             .build_ui_state(
                 move |ui, screen: &mut UpdateTokenConfigScreen| {
-                    let sent = match screen.ui(ui) {
-                        AppAction::BackendTask(task) => vec![task],
-                        AppAction::BackendTasks(tasks, _) => tasks,
-                        _ => vec![],
-                    };
-                    *seen.borrow_mut() += sent
-                        .iter()
-                        .filter(|task| {
-                            matches!(task, BackendTask::TokenTask(task)
-                                if matches!(**task, TokenTask::UpdateTokenConfig { .. }))
-                        })
-                        .count();
+                    if let Some(request) = sent_request(&screen.ui(ui)) {
+                        seen.borrow_mut().push(request);
+                    }
                 },
                 screen,
             );
-        harness.run_steps(3);
-        for _ in 0..2 {
+        let click = |harness: &mut egui_kittest::Harness<'_, UpdateTokenConfigScreen>| {
             harness
                 .query_all_by_role_and_label(egui::accesskit::Role::Button, "Update Config")
                 .last()
                 .expect("the Update Config button")
                 .click();
             harness.run_steps(3);
+        };
+        harness.run_steps(3);
+        for _ in 0..2 {
+            click(&mut harness);
         }
-        assert_eq!(*updates.borrow(), 1, "one update while it is in flight");
+        assert_eq!(
+            updates.borrow().len(),
+            1,
+            "one update while it is in flight"
+        );
+
+        report_error(harness.state_mut(), &unrelated_request(context.network));
+        harness.run_steps(2);
+        click(&mut harness);
+        assert_eq!(
+            updates.borrow().len(),
+            1,
+            "another task's error does not end the wait"
+        );
+
+        let request = updates.borrow()[0]
+            .clone()
+            .expect("the update's own context");
+        report_error(harness.state_mut(), &request);
+        harness.run_steps(2);
+        click(&mut harness);
+        assert_eq!(
+            updates.borrow().len(),
+            2,
+            "a failed update can be sent again"
+        );
     }
 }

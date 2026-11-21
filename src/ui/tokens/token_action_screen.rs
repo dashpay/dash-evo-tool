@@ -8,7 +8,8 @@
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -171,6 +172,8 @@ pub struct TokenActionCommon {
     wallet_open_attempted: bool,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
+    /// The action in flight; only its own result or error ends the wait.
+    request: Option<BackendTaskContext>,
     app_context: Arc<AppContext>,
 }
 
@@ -244,6 +247,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 wallet_open_attempted: false,
                 completed_fee_result: None,
                 refresh_banner: None,
+                request: None,
                 app_context: app_context.clone(),
             },
             action,
@@ -394,7 +398,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
     }
 
     fn submit(&mut self) -> AppAction {
-        if self.common.status == TokenActionStatus::WaitingForResult {
+        if self.common.request.is_some() {
             return AppAction::None;
         }
         let Some(signing_key) =
@@ -429,6 +433,9 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 );
                 handle.with_elapsed();
                 self.common.refresh_banner = Some(handle);
+                let (dispatch, request) =
+                    dispatch.with_dispatch_contexts(self.common.app_context.network);
+                self.common.request = request;
                 dispatch
             }
             None => {
@@ -448,8 +455,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.common.request.as_ref() == Some(context) {
+            self.common.request = None;
+        }
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        if self.common.request.is_none()
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.common.refresh_banner.take_and_clear();
             self.common.status = TokenActionStatus::Error;
         }
@@ -457,6 +472,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let Some(fee_result) = A::success_fee(&backend_task_success_result) {
+            self.common.request = None;
             self.common.refresh_banner.take_and_clear();
             self.common.completed_fee_result = Some(fee_result);
             self.common.status = TokenActionStatus::Complete;
@@ -625,7 +641,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 || !button_text.contains("Test")
             {
                 ui.add_space(10.0);
-                let in_flight = self.common.status == TokenActionStatus::WaitingForResult;
+                let in_flight = self.common.request.is_some();
                 let ready = self.action.inputs_ready() && !in_flight;
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
                     .disabled_tooltip(if in_flight {
@@ -686,13 +702,23 @@ mod tests {
         screen.common.selected_key = Some(signing_key());
         screen.action.amount = Some(Amount::from_token(&info, 5));
 
+        use crate::ui::tokens::mint_tokens_screen::tests::{
+            report_error, sent_request, unrelated_request,
+        };
+        let request = sent_request(&screen.submit()).expect("the action is sent");
         assert!(
-            matches!(screen.submit(), AppAction::BackendTask(_)),
-            "the first confirmation sends the action"
-        );
-        assert!(
-            matches!(screen.submit(), AppAction::None),
+            sent_request(&screen.submit()).is_none(),
             "a second confirmation while waiting must not send it again"
+        );
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(
+            sent_request(&screen.submit()).is_none(),
+            "another task's error does not end the wait"
+        );
+        report_error(&mut screen, &request.expect("the action's own context"));
+        assert!(
+            sent_request(&screen.submit()).is_some(),
+            "a failed action can be sent again"
         );
     }
 }

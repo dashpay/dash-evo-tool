@@ -710,6 +710,31 @@ pub enum AppAction {
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
+impl AppAction {
+    /// Gives each task this action sends its own dispatch context, so the
+    /// sending screen can tell their results and errors from any other task's.
+    /// Returns the action and the context of its first task.
+    pub(crate) fn with_dispatch_contexts(
+        self,
+        network: Network,
+    ) -> (Self, Option<BackendTaskContext>) {
+        let (tasks, mode) = match self {
+            AppAction::BackendTask(task) => (vec![task], BackendTasksExecutionMode::Sequential),
+            AppAction::BackendTasks(tasks, mode) => (tasks, mode),
+            other => return (other, None),
+        };
+        let tasks: Vec<_> = tasks
+            .into_iter()
+            .map(|task| {
+                let context = BackendTaskContext::for_dispatch_on(&task, network);
+                (task, context)
+            })
+            .collect();
+        let first = tasks.first().map(|(_, context)| context.clone());
+        (AppAction::BackendTasksWithContexts(tasks, mode), first)
+    }
+}
+
 impl BitOrAssign for AppAction {
     fn bitor_assign(&mut self, rhs: Self) {
         if matches!(rhs, AppAction::None) {

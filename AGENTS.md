@@ -215,7 +215,7 @@ BackendTask variant → AppContext::run_*_task()
 - **Context provider**: `ContextHolder::Shared(ArcSwap)` for HTTP mode (follows GUI network switches), `ContextHolder::Standalone(ArcSwapOption)` for stdio (init on first tool call).
 - **Network safety**: tools accept optional `network` param — request fails if it doesn't match the active network. Exempt: `network_info`, `tool_describe`.
 - **SPV sync**: wallet tools call `resolve::ensure_spv_synced()` before operating — polls SPV status with 1s interval, 10min timeout.
-- **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()`, which calls `app_context.run_backend_task()` with `task_reporter`: the context's frame-loop sender, passing only cache changes; the task's result is returned to the caller.
+- **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()`, which calls `app_context.run_backend_task()` with `task_reporter`: the context's frame-loop sender, passing only cache changes and repaint requests; the task's result is returned to the caller.
 - **Schema quirk**: `schemars` v1 derives bare `true` for `serde_json::Value` fields — some MCP clients reject this. Use `#[schemars(transform)]` to override.
 - **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
 - **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/MCP_TOOL_DEVELOPMENT.md` (checklist for adding new MCP tools).

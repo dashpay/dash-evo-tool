@@ -848,6 +848,13 @@ pub(crate) fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, Mess
 
 #[cfg(test)]
 mod tests {
+    use crate::model::dpns_voting::{
+        DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
+        DpnsVoteTargetStatus,
+    };
+    use crate::ui::MessageType;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::Identifier;
     #[test]
     fn blocker_exhausted_vote_limit_uses_changes_consistently() {
         let copy = super::skipped_reason_line(1, super::SkipReason::NoChangesLeft);
@@ -1079,6 +1086,59 @@ mod tests {
         assert_eq!(
             deadline_line("alice", Some(TimeLeft::Hours(6))),
             "alice.dash ends in 6 hours."
+        );
+    }
+
+    #[test]
+    fn scheduled_vote_clear_feedback_reports_removed_and_retained_counts() {
+        let outcome = |name: &str, disposition| DpnsScheduledVoteClearOutcome {
+            operation_id: None,
+            key: DpnsScheduledVoteKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([name.len() as u8; 32]),
+                contested_name: name.to_owned(),
+            },
+            disposition,
+        };
+        let outcomes = vec![
+            outcome("removed", DpnsScheduledVoteClearDisposition::Cleared),
+            outcome(
+                "queued",
+                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Queued),
+            ),
+            outcome(
+                "submitting",
+                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Submitting),
+            ),
+        ];
+
+        assert_eq!(
+            super::scheduled_vote_clear_feedback(&outcomes),
+            (
+                "Scheduled votes removed: 1. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
+                MessageType::Info,
+            )
+        );
+        assert_eq!(
+            super::scheduled_vote_clear_feedback(&outcomes[..1]),
+            (
+                "Scheduled votes removed: 1.".to_owned(),
+                MessageType::Success,
+            )
+        );
+        assert_eq!(
+            super::scheduled_vote_clear_feedback(&outcomes[1..]),
+            (
+                "No scheduled votes were removed. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
+                MessageType::Info,
+            )
+        );
+        assert_eq!(
+            super::scheduled_vote_clear_feedback(&[]),
+            (
+                "No scheduled votes were removed.".to_owned(),
+                MessageType::Info
+            )
         );
     }
 }

@@ -56,6 +56,17 @@ fn mount_with_raised_gate() -> Harness<'static, AppState> {
     });
     harness.set_size(egui::vec2(800.0, 600.0));
     harness.run_steps(3);
+    // `AppState::new` still spawns the real preparation behind the test gate,
+    // and it publishes on the same migration status the tests drive. Let it
+    // finish first, so a late write of its own cannot land mid-test.
+    poll_until(
+        &mut harness,
+        "the real storage preparation to finish",
+        |state| {
+            let migration = state.current_app_context().migration_status().state();
+            !matches!(*migration, MigrationState::Idle) && !migration.is_in_progress()
+        },
+    );
     harness
 }
 
@@ -147,7 +158,7 @@ fn mount_prepared_app_with_locked_wallet() -> (Harness<'static, AppState>, Walle
     let harness = mount_prepared_app();
     let app_context = harness.state().current_app_context();
     let password = Secret::new("correct password");
-    let seed = [0xA7; 64];
+    let seed = dash_evo_tool::test_support::keys::seed();
     let wallet = Wallet::new_from_seed(
         seed,
         app_context.network(),

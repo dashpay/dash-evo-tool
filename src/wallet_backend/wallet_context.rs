@@ -844,8 +844,9 @@ mod tests {
     /// Same key, different protection: the two runtime handles hash differently.
     fn single_key_pair() -> (ImportedKey, SingleKeyWallet, SingleKeyWallet) {
         let network = dash_sdk::dpp::dashcore::Network::Testnet;
-        let open = SingleKeyWallet::new([7; 32], network, None, None).unwrap();
-        let mut protected = SingleKeyWallet::new([7; 32], network, None, None).unwrap();
+        let secret = crate::test_support::keys::secret_bytes();
+        let open = SingleKeyWallet::new(secret, network, None, None).unwrap();
+        let mut protected = SingleKeyWallet::new(secret, network, None, None).unwrap();
         protected.key_hash = [8; 32];
         let meta = ImportedKey {
             address: open.address.to_string(),

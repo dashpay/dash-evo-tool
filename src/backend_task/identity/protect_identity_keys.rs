@@ -332,12 +332,15 @@ mod tests {
     /// password, and a re-run seals nothing (idempotent).
     #[test]
     fn seal_then_idempotent_rerun() {
+        let secret_a0 = crate::test_support::keys::secret_bytes();
+        let secret_a1 = crate::test_support::keys::secret_bytes();
+        let secret_b0 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x01u8; 32]);
-        view.store(&M, 0, &[0xA0; 32]).unwrap();
-        view.store(&M, 1, &[0xA1; 32]).unwrap();
-        view.store(&V, 0, &[0xB0; 32]).unwrap();
+        view.store(&M, 0, &secret_a0).unwrap();
+        view.store(&M, 1, &secret_a1).unwrap();
+        view.store(&V, 0, &secret_b0).unwrap();
         let keys = key_set(&[(M, 0), (M, 1), (V, 0)]);
         let pw = SecretString::new("one-identity-password");
 
@@ -348,7 +351,7 @@ mod tests {
         }
         assert_eq!(
             *view.get_protected(&M, 1, &pw).unwrap().unwrap(),
-            [0xA1; 32],
+            secret_a1,
             "sealed key round-trips under the password",
         );
 
@@ -360,18 +363,20 @@ mod tests {
     /// nothing (idempotent); the exact bytes survive the round trip.
     #[test]
     fn unseal_then_idempotent_rerun() {
+        let secret_c0 = crate::test_support::keys::secret_bytes();
+        let secret_c1 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x02u8; 32]);
         let pw = SecretString::new("one-identity-password");
-        view.store_protected(&M, 0, &[0xC0; 32], &pw).unwrap();
-        view.store_protected(&M, 1, &[0xC1; 32], &pw).unwrap();
+        view.store_protected(&M, 0, &secret_c0, &pw).unwrap();
+        view.store_protected(&M, 1, &secret_c1, &pw).unwrap();
         let keys = key_set(&[(M, 0), (M, 1)]);
 
         let reverted = unseal_identity_keys(&view, &keys, &pw).unwrap();
         assert_eq!(reverted, 2);
         assert_eq!(view.scheme(&M, 0).unwrap(), SecretScheme::Unprotected);
-        assert_eq!(*view.get(&M, 1).unwrap().unwrap(), [0xC1; 32]);
+        assert_eq!(*view.get(&M, 1).unwrap().unwrap(), secret_c1);
 
         assert_eq!(unseal_identity_keys(&view, &keys, &pw).unwrap(), 0);
     }
@@ -380,12 +385,14 @@ mod tests {
     /// key is downgraded — no partial, silent strip.
     #[test]
     fn unseal_wrong_password_aborts_without_downgrade() {
+        let secret_d0 = crate::test_support::keys::secret_bytes();
+        let secret_d1 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x03u8; 32]);
         let pw = SecretString::new("the-right-password-aa");
-        view.store_protected(&M, 0, &[0xD0; 32], &pw).unwrap();
-        view.store_protected(&M, 1, &[0xD1; 32], &pw).unwrap();
+        view.store_protected(&M, 0, &secret_d0, &pw).unwrap();
+        view.store_protected(&M, 1, &secret_d1, &pw).unwrap();
         let keys = key_set(&[(M, 0), (M, 1)]);
 
         let err = unseal_identity_keys(&view, &keys, &SecretString::new("wrong-password-bbbb"))
@@ -411,6 +418,8 @@ mod tests {
     /// plaintext while key 1 stayed sealed.
     #[test]
     fn unseal_mixed_password_aborts_without_partial_downgrade() {
+        let secret_80 = crate::test_support::keys::secret_bytes();
+        let secret_81 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x08u8; 32]);
@@ -418,8 +427,8 @@ mod tests {
         let pw_b = SecretString::new("password-for-key-one-");
         // (M, 0) sorts before (M, 1): a downgrade-as-you-go loop would reach
         // key 0 first and strip it before failing the password check on key 1.
-        view.store_protected(&M, 0, &[0x80; 32], &pw_a).unwrap();
-        view.store_protected(&M, 1, &[0x81; 32], &pw_b).unwrap();
+        view.store_protected(&M, 0, &secret_80, &pw_a).unwrap();
+        view.store_protected(&M, 1, &secret_81, &pw_b).unwrap();
         let keys = key_set(&[(M, 0), (M, 1)]);
 
         let err = unseal_identity_keys(&view, &keys, &pw_a)
@@ -435,11 +444,11 @@ mod tests {
         // The sealed bytes are intact under each key's original password.
         assert_eq!(
             *view.get_protected(&M, 0, &pw_a).unwrap().unwrap(),
-            [0x80; 32]
+            secret_80
         );
         assert_eq!(
             *view.get_protected(&M, 1, &pw_b).unwrap().unwrap(),
-            [0x81; 32]
+            secret_81
         );
     }
 
@@ -447,27 +456,23 @@ mod tests {
     /// fully-protected state — the same-label upsert never loses a key.
     #[test]
     fn seal_finishes_a_partial_mix() {
+        let secret_e0 = crate::test_support::keys::secret_bytes();
+        let secret_e1 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x04u8; 32]);
         let pw = SecretString::new("one-identity-password");
         // Simulate a crash mid opt-in: key 0 sealed, key 1 still keyless.
-        view.store_protected(&M, 0, &[0xE0; 32], &pw).unwrap();
-        view.store(&M, 1, &[0xE1; 32]).unwrap();
+        view.store_protected(&M, 0, &secret_e0, &pw).unwrap();
+        view.store(&M, 1, &secret_e1).unwrap();
         let keys = key_set(&[(M, 0), (M, 1)]);
 
         let sealed = seal_identity_keys(&view, &keys, &pw).unwrap();
         assert_eq!(sealed, 1, "only the still-keyless key is sealed");
         assert_eq!(view.scheme(&M, 0).unwrap(), SecretScheme::Protected);
         assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Protected);
-        assert_eq!(
-            *view.get_protected(&M, 0, &pw).unwrap().unwrap(),
-            [0xE0; 32]
-        );
-        assert_eq!(
-            *view.get_protected(&M, 1, &pw).unwrap().unwrap(),
-            [0xE1; 32]
-        );
+        assert_eq!(*view.get_protected(&M, 0, &pw).unwrap().unwrap(), secret_e0);
+        assert_eq!(*view.get_protected(&M, 1, &pw).unwrap().unwrap(), secret_e1);
     }
 
     /// One-password invariant: a Mixed-state "Finish protecting" re-run
@@ -478,14 +483,16 @@ mod tests {
     /// under that one password.
     #[test]
     fn seal_rejects_mismatched_password_on_mixed_identity() {
+        let secret_f0 = crate::test_support::keys::secret_bytes();
+        let secret_f1 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x07u8; 32]);
         let original = SecretString::new("the-original-password");
         // Crash mid opt-in: key 0 sealed under the original password, key 1
         // still keyless.
-        view.store_protected(&M, 0, &[0xF0; 32], &original).unwrap();
-        view.store(&M, 1, &[0xF1; 32]).unwrap();
+        view.store_protected(&M, 0, &secret_f0, &original).unwrap();
+        view.store(&M, 1, &secret_f1).unwrap();
         let keys = key_set(&[(M, 0), (M, 1)]);
 
         // A re-run with a DIFFERENT password is rejected before any sealing.
@@ -507,11 +514,11 @@ mod tests {
         assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Protected);
         assert_eq!(
             *view.get_protected(&M, 0, &original).unwrap().unwrap(),
-            [0xF0; 32]
+            secret_f0
         );
         assert_eq!(
             *view.get_protected(&M, 1, &original).unwrap().unwrap(),
-            [0xF1; 32]
+            secret_f1
         );
     }
 
@@ -546,10 +553,11 @@ mod tests {
     /// preserved through seal → unseal.
     #[test]
     fn seal_unseal_round_trip_preserves_bytes() {
+        let secret_5a = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let view = IdentityKeyView::new(&store, [0x06u8; 32]);
-        let raw = Zeroizing::new([0x5Au8; 32]);
+        let raw = Zeroizing::new(secret_5a);
         view.store(&M, 0, &raw).unwrap();
         let keys = key_set(&[(M, 0)]);
         let pw = SecretString::new("round-trip-password-x");
@@ -563,6 +571,7 @@ mod tests {
     /// the startup vault migration leaves behind when its vault write failed or
     /// was skipped, so the key's vault label is `Absent`.
     fn ks_with_resident_clear() -> KeyStorage {
+        let secret_cc = crate::test_support::keys::secret_bytes();
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let k = IdentityPublicKey::random_key(1, Some(1), pv);
@@ -570,7 +579,7 @@ mod tests {
             (M, k.id()),
             (
                 QualifiedIdentityPublicKey::from(k),
-                PrivateKeyData::Clear([0xCC; 32]),
+                PrivateKeyData::Clear(secret_cc),
             ),
         );
         ks
@@ -625,6 +634,8 @@ mod tests {
     /// and `AlwaysClear`) plus one wallet-derived key — the normal opt-in shape
     /// after a fresh import.
     fn qi_clear_pair_plus_wallet_derived() -> QualifiedIdentity {
+        let secret_a0 = crate::test_support::keys::secret_bytes();
+        let secret_b0 = crate::test_support::keys::secret_bytes();
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let a = IdentityPublicKey::random_key(1, Some(1), pv);
@@ -632,7 +643,7 @@ mod tests {
             (M, a.id()),
             (
                 QualifiedIdentityPublicKey::from(a),
-                PrivateKeyData::Clear([0xA0; 32]),
+                PrivateKeyData::Clear(secret_a0),
             ),
         );
         let b = IdentityPublicKey::random_key(2, Some(2), pv);
@@ -640,7 +651,7 @@ mod tests {
             (M, b.id()),
             (
                 QualifiedIdentityPublicKey::from(b),
-                PrivateKeyData::AlwaysClear([0xB0; 32]),
+                PrivateKeyData::AlwaysClear(secret_b0),
             ),
         );
         let derived = IdentityPublicKey::random_key(3, Some(3), pv);

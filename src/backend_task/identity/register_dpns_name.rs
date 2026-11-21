@@ -10,13 +10,17 @@ use crate::{
             DpnsNameValidationResult, DpnsRegistrationOutcome, classify_dpns_registration_outcome,
             normalize_dpns_label, validate_dpns_name,
         },
-        fee_estimation::contest_fee_credits,
+        fee_estimation::{contest_fee_credits, username_name_admission_reserve_credits},
+        identity_balance::{BalanceProvenance, BalanceWatermark},
         qualified_identity::{DPNSNameInfo, QualifiedIdentity},
     },
 };
+use dash_sdk::query_types::IdentityBalance;
 use dash_sdk::{
     Error as SdkError, Sdk,
+    dapi_grpc::platform::v0::ResponseMetadata,
     dpp::{
+        balances::credits::Credits,
         data_contract::accessors::v0::DataContractV0Getters,
         identity::accessors::{IdentityGettersV0, IdentitySettersV0},
         version::PlatformVersion,
@@ -55,14 +59,20 @@ fn broadcast_was_rejected(error: &SdkError) -> bool {
     }
 }
 
-/// The community vote fee the user must have approved for `outcome`.
-fn required_contest_fee(
+/// Whether an approved community vote fee can be right for `outcome`
+/// without asking the network: 0 for a name that opens no vote, at least the
+/// contest's base fund for one that does. The fund to join only ever grows
+/// past the base as requests pile up.
+fn contest_fee_fits_outcome(
+    approved_contest_fee: u64,
     outcome: DpnsRegistrationOutcome,
     platform_version: &PlatformVersion,
-) -> u64 {
+) -> bool {
     match outcome {
-        DpnsRegistrationOutcome::PendingCommunityVote => contest_fee_credits(platform_version),
-        DpnsRegistrationOutcome::Registered => 0,
+        DpnsRegistrationOutcome::PendingCommunityVote => {
+            approved_contest_fee >= contest_fee_credits(platform_version)
+        }
+        DpnsRegistrationOutcome::Registered => approved_contest_fee == 0,
     }
 }
 
@@ -89,8 +99,14 @@ impl BroadcastFailure {
     }
 }
 
+/// What the SDK's registration call proves: the documents, the identity's
+/// balance after the name document (`None` before protocol version 14) and the
+/// response metadata, whose height that balance is a snapshot at.
+type ProvenRegistration = (RegisterDpnsNameResult, Option<Credits>, ResponseMetadata);
+
 /// Broadcast the two registration documents for `label` through `register`,
-/// the SDK's registration call, returning the confirmed name document.
+/// the SDK's registration call, returning the confirmed name document and the
+/// identity's balance its proof carries.
 ///
 /// The SDK reports one error for both documents; it calls back between them,
 /// once the first is confirmed, which is what tells the two failures apart.
@@ -100,10 +116,10 @@ async fn broadcast_name_registration<F, Fut>(
     label: &str,
     approved_contest_fee: u64,
     register: F,
-) -> Result<Document, BroadcastFailure>
+) -> Result<(Document, Option<BalanceWatermark>), BroadcastFailure>
 where
     F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
-    Fut: Future<Output = Result<RegisterDpnsNameResult, SdkError>>,
+    Fut: Future<Output = Result<ProvenRegistration, SdkError>>,
 {
     // Written once by the SDK's callback, read only after its call returns.
     let preorder_confirmed = Arc::new(AtomicBool::new(false));
@@ -118,7 +134,13 @@ where
     };
     register(input)
         .await
-        .map(|registered| registered.domain_document)
+        .map(|(registered, balance, metadata)| {
+            let proven = balance.map(|credits| BalanceWatermark {
+                credits,
+                height: metadata.height,
+            });
+            (registered.domain_document, proven)
+        })
         .map_err(|error| {
             BroadcastFailure::at_stage(preorder_confirmed.load(Ordering::Acquire), error)
         })
@@ -131,7 +153,7 @@ impl AppContext {
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         self.register_dpns_name_through(sdk, input, |registration| {
-            sdk.register_dpns_name(registration)
+            sdk.register_dpns_name_with_owner_balance_and_metadata(registration)
         })
         .await
     }
@@ -146,7 +168,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError>
     where
         F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
-        Fut: Future<Output = Result<RegisterDpnsNameResult, SdkError>>,
+        Fut: Future<Output = Result<ProvenRegistration, SdkError>>,
     {
         let validation = validate_dpns_name(&input.name_input);
         if validation != DpnsNameValidationResult::Valid {
@@ -172,7 +194,7 @@ impl AppContext {
 
         // The approval is checked against the network contract's own contest
         // rule, so it can never cover a different charge than Platform applies.
-        if input.approved_contest_fee != required_contest_fee(outcome, sdk.version()) {
+        if !contest_fee_fits_outcome(input.approved_contest_fee, outcome, sdk.version()) {
             return Err(TaskError::UsernameRegistrationTermsChanged);
         }
 
@@ -185,6 +207,17 @@ impl AppContext {
             return Err(TaskError::UsernameNoLongerAvailable { availability });
         }
         let joined_until = availability.join_deadline();
+        // The fund to join grows with the requests already in the vote; one
+        // stating less is turned away only after its first document was paid
+        // for. Re-quoted here, so the approval matches what joins now.
+        if outcome == DpnsRegistrationOutcome::PendingCommunityVote
+            && input.approved_contest_fee
+                != self
+                    .username_contest_fund_to_join(sdk, &input.name_input)
+                    .await?
+        {
+            return Err(TaskError::UsernameRegistrationTermsChanged);
+        }
 
         let public_key = match input.signing_key_id {
             Some(key_id) => qualified_identity
@@ -197,14 +230,26 @@ impl AppContext {
         }
         .ok_or(TaskError::NoDocumentSigningKey)?;
 
-        let estimated_fee = self.fee_estimator().estimate_username_registration(
+        // The contest fund is charged too, so the settled fee (the whole
+        // balance drop) compares against an estimate that includes it.
+        let estimated_fee = self.fee_estimator().estimate_username_registration_charge(
             input.name_input.chars().count(),
             outcome == DpnsRegistrationOutcome::PendingCommunityVote,
+            input.approved_contest_fee,
         );
-        let balance_before = qualified_identity.identity.balance();
+        // Read from Platform, not the request's copy of the identity: that copy
+        // can predate a payment whose new balance was never read back, and an
+        // optimistic balance would let the first document be paid for.
+        let balance_before = IdentityBalance::fetch(sdk, qualified_identity.identity.id())
+            .await?
+            .ok_or(TaskError::IdentityNotFound)?;
         // Refused here, not by the network: it would take the first document's
-        // fee and only then turn the second document down.
-        let required = estimated_fee.saturating_add(input.approved_contest_fee);
+        // fee and only then turn the second document down. The admission
+        // reserve is held, not charged, but the name document is refused
+        // without it.
+        let admission_reserve =
+            username_name_admission_reserve_credits(domain_document_type, sdk.version());
+        let required = estimated_fee.saturating_add(admission_reserve);
         if balance_before < required {
             return Err(TaskError::UsernameRegistrationBalanceTooLow {
                 available: balance_before,
@@ -212,7 +257,7 @@ impl AppContext {
             });
         }
 
-        let confirmed_at = match broadcast_name_registration(
+        let (confirmed_at, proven_balance) = match broadcast_name_registration(
             &qualified_identity,
             public_key.clone(),
             &input.name_input,
@@ -221,9 +266,13 @@ impl AppContext {
         )
         .await
         {
-            Ok(domain_document) => name_acquired_at(&domain_document),
-            // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
-            // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
+            Ok((domain_document, proven_balance)) => {
+                (name_acquired_at(&domain_document), proven_balance)
+            }
+            // Not rebranded: a preorder conflict never means someone else holds the username.
+            // Before DPNS v3 the preorder's unique index is its random `saltedDomainHash`; from
+            // v3 it is `$ownerId, nameHash`, this identity's own earlier request. Either way the
+            // generic `PlatformEntryConflict` message stays.
             Err(BroadcastFailure::Preorder(error)) => return Err(TaskError::from(*error)),
             Err(BroadcastFailure::Domain(error)) => {
                 self.resolve_failed_domain_broadcast(
@@ -234,7 +283,7 @@ impl AppContext {
                     *error,
                 )
                 .await?;
-                None
+                (None, None)
             }
         };
 
@@ -248,6 +297,7 @@ impl AppContext {
                 balance_before,
                 estimated_fee,
                 confirmed_at,
+                proven_balance,
             )
             .await)
     }
@@ -323,7 +373,10 @@ impl AppContext {
     /// Wrap up a registration whose documents were already broadcast and paid for.
     ///
     /// `confirmed_at` is when the network confirmed the name document; `None`
-    /// when the registration was accepted as sent without one.
+    /// when the registration was accepted as sent without one. `proven_balance`
+    /// is the identity's balance that document's proof carries; without it
+    /// (no confirmed document, or a proof made before protocol version 14) the
+    /// balance is read back from the network.
     ///
     /// Infallible on purpose: the user has paid, so a failed re-read or local
     /// save is logged and the registration still reports success, never inviting
@@ -342,6 +395,7 @@ impl AppContext {
         balance_before: u64,
         estimated_fee: u64,
         confirmed_at: Option<u64>,
+        proven_balance: Option<BalanceWatermark>,
     ) -> BackendTaskSuccessResult {
         // The name request is broadcast and paid for: from here on nothing may
         // report failure, or the user would be invited to pay again.
@@ -356,13 +410,21 @@ impl AppContext {
             );
         }
 
-        let mut refreshed_balance = None;
-        let fee_result = match dash_sdk::platform::Identity::fetch_by_identifier(sdk, identity_id)
-            .await
-        {
-            Ok(Some(refreshed_identity)) => {
-                let actual_fee = balance_before.saturating_sub(refreshed_identity.balance());
-                refreshed_balance = Some(refreshed_identity.balance());
+        let refreshed_balance = match proven_balance {
+            Some(proven) => Some(proven),
+            None => match dash_sdk::platform::Identity::fetch_with_metadata(sdk, identity_id, None)
+                .await
+            {
+                Ok((Some(refreshed_identity), metadata)) => Some(BalanceWatermark {
+                    credits: refreshed_identity.balance(),
+                    height: metadata.height,
+                }),
+                Ok((None, _)) | Err(_) => None,
+            },
+        };
+        let fee_result = match refreshed_balance {
+            Some(refreshed) => {
+                let actual_fee = balance_before.saturating_sub(refreshed.credits);
                 if actual_fee != estimated_fee {
                     tracing::warn!(
                         estimated_fee,
@@ -372,13 +434,17 @@ impl AppContext {
                 }
                 FeeResult::new(estimated_fee, actual_fee)
             }
-            Ok(None) | Err(_) => {
+            None => {
                 tracing::warn!("Identity balance could not be re-read after username registration");
                 FeeResult::estimated_only(estimated_fee)
             }
         };
 
-        if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
+        let id = &identity_id;
+        let provenance = refreshed_balance.map_or(BalanceProvenance::Unobserved, |refreshed| {
+            BalanceProvenance::ObservedAt(refreshed.height)
+        });
+        if let Err(error) = self.edit_local_qualified_identity_observed(id, provenance, |fresh| {
             if outcome == DpnsRegistrationOutcome::Registered
                 && !fresh.dpns_names.iter().any(|known| known.name == name)
             {
@@ -387,8 +453,8 @@ impl AppContext {
                     acquired_at: confirmed_at.unwrap_or_else(crate::utils::time::now_ms),
                 });
             }
-            if let Some(balance) = refreshed_balance {
-                fresh.identity.set_balance(balance);
+            if let Some(refreshed) = refreshed_balance {
+                fresh.identity.set_balance(refreshed.credits);
             }
             let main_username = self.main_username(fresh);
             fresh.initialize_node_alias(None, main_username.as_deref());
@@ -517,6 +583,7 @@ mod tests {
             1_000,
             100,
             None,
+            None,
         )
         .await;
         let saved = ctx
@@ -556,6 +623,7 @@ mod tests {
             1_000,
             100,
             Some(4_242),
+            None,
         )
         .await;
 
@@ -586,23 +654,59 @@ mod tests {
 
     /// An identity that cannot cover both documents, plus the community vote
     /// fee when the name needs one, is refused before anything is broadcast.
+    /// The balance checked is the one Platform reports now, not the one the
+    /// request carries: that copy can predate a payment whose new balance was
+    /// never read back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registration_is_refused_before_broadcast_when_the_balance_cannot_cover_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        let vote_fee = crate::model::fee_estimation::contest_fee_credits(Sdk::new_mock().version());
-        for (label, approved_contest_fee) in [("alice-123", 0), ("alice", vote_fee)] {
+        // A network whose DPNS contract picks the first preorder of a name.
+        let platform_version = PlatformVersion::latest();
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let vote_fee = crate::model::fee_estimation::contest_fee_credits(platform_version);
+        let domain_contract = ctx.dpns_contract();
+        let admission_reserve =
+            crate::model::fee_estimation::username_name_admission_reserve_credits(
+                domain_contract
+                    .document_type_for_name("domain")
+                    .expect("DPNS domain document type"),
+                platform_version,
+            );
+        assert!(
+            admission_reserve > 0,
+            "the DPNS contract under test must pick the first preorder of a name"
+        );
+        // Short by the reserve: the balance covers both fees but not what Platform
+        // holds back before admitting the name document. Short by one credit: just
+        // under everything required.
+        for (label, approved_contest_fee, short_by) in [
+            ("alice-123", 0, admission_reserve),
+            ("alice", vote_fee, admission_reserve),
+            ("alice-123", 0, 1),
+            ("alice", vote_fee, 1),
+        ] {
             let needs_vote = approved_contest_fee > 0;
             let required = ctx
                 .fee_estimator()
                 .estimate_username_registration(label.len(), needs_vote)
-                + approved_contest_fee;
+                + approved_contest_fee
+                + admission_reserve;
             let mut identity = identity_with_signing_key(3);
-            identity.identity.set_balance(required - 1);
-            let mut sdk = Sdk::new_mock();
+            // The stored copy still covers everything; Platform's balance does not.
+            identity.identity.set_balance(required);
+            let mut sdk = mock_sdk();
             expect_domain_lookup(&mut sdk, &ctx, label, false).await;
+            expect_live_balance(&mut sdk, identity.identity.id(), Some(required - short_by)).await;
             if needs_vote {
                 expect_vote_state(&mut sdk, &ctx, label, Contenders::default()).await;
+                expect_contender_count(&mut sdk, &ctx, label, 0).await;
             }
             let broadcast = AtomicBool::new(false);
 
@@ -617,7 +721,7 @@ mod tests {
                     },
                     |_| {
                         broadcast.store(true, Ordering::Release);
-                        async { Err::<RegisterDpnsNameResult, _>(unproven_broadcast_failure()) }
+                        async { Err::<ProvenRegistration, _>(unproven_broadcast_failure()) }
                     },
                 )
                 .await;
@@ -626,7 +730,7 @@ mod tests {
                 matches!(
                     result,
                     Err(TaskError::UsernameRegistrationBalanceTooLow { available, required: needed })
-                        if available == required - 1 && needed == required
+                        if available == required - short_by && needed == required
                 ),
                 "{label}: {result:?}"
             );
@@ -635,6 +739,45 @@ mod tests {
                 "{label}: nothing may be broadcast"
             );
         }
+    }
+
+    /// An identity Platform does not report is refused before anything is
+    /// broadcast, however much the request's copy of it holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_is_refused_before_broadcast_when_platform_reports_no_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut identity = identity_with_signing_key(4);
+        identity.identity.set_balance(u64::MAX / 2);
+        let mut sdk = Sdk::new_mock();
+        expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        expect_live_balance(&mut sdk, identity.identity.id(), None).await;
+        let broadcast = AtomicBool::new(false);
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice-123".to_owned(),
+                    approved_contest_fee: 0,
+                    signing_key_id: Some(1),
+                },
+                |_| {
+                    broadcast.store(true, Ordering::Release);
+                    async { Err::<ProvenRegistration, _>(unproven_broadcast_failure()) }
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::IdentityNotFound)),
+            "{result:?}"
+        );
+        assert!(
+            !broadcast.load(Ordering::Acquire),
+            "nothing may be broadcast"
+        );
     }
 
     /// The date saved for a newly registered name is the one on the name
@@ -658,6 +801,12 @@ mod tests {
         ctx.update_local_qualified_identity(&identity).unwrap();
         let mut sdk = Sdk::new_mock();
         expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        expect_live_balance(
+            &mut sdk,
+            identity.identity.id(),
+            Some(identity.identity.balance()),
+        )
+        .await;
         let mut confirmed = domain_document(id, "alice-123");
         confirmed.set_created_at(Some(4_242));
 
@@ -671,11 +820,15 @@ mod tests {
                     signing_key_id: Some(1),
                 },
                 |_| async move {
-                    Ok(RegisterDpnsNameResult {
-                        preorder_document: confirmed.clone(),
-                        domain_document: confirmed,
-                        full_domain_name: "alice-123.dash".to_owned(),
-                    })
+                    Ok((
+                        RegisterDpnsNameResult {
+                            preorder_document: confirmed.clone(),
+                            domain_document: confirmed,
+                            full_domain_name: "alice-123.dash".to_owned(),
+                        },
+                        Some(1),
+                        ResponseMetadata::default(),
+                    ))
                 },
             )
             .await
@@ -695,6 +848,156 @@ mod tests {
             .map(|n| (n.name.as_str(), n.acquired_at))
             .collect();
         assert_eq!(names, [("alice-123", 4_242)]);
+        assert_eq!(saved.identity.balance(), 1, "the proven balance is stored");
+    }
+
+    /// The balance the name document's proof carries is stored as the
+    /// identity's new balance, and gives the actual fee, with no re-read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_proven_owner_balance_is_stored_without_a_re_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let identity = bare_identity(3);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+
+        // No expectations: a re-read would fail and leave the fee estimated.
+        let result = ctx
+            .finish_username_registration(
+                &Sdk::new_mock(),
+                identity,
+                "alice-123",
+                DpnsRegistrationOutcome::Registered,
+                None,
+                1_000,
+                100,
+                Some(4_242),
+                Some(BalanceWatermark {
+                    credits: 870,
+                    height: 5,
+                }),
+            )
+            .await;
+
+        let BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } = result else {
+            panic!("expected a successful registration, got {result:?}");
+        };
+        assert_eq!(fee_result.actual_fee, Some(130));
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.identity.balance(), 870);
+    }
+
+    /// From protocol version 14 the name document's proof carries the
+    /// identity's balance after the registration: it settles the fee and is
+    /// stored at the proof's height, with no further read of the network.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_takes_the_balance_after_it_from_the_name_documents_proof() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let mut identity = identity_with_signing_key(8);
+        let required = ctx
+            .fee_estimator()
+            .estimate_username_registration("alice-123".len(), false);
+        identity.identity.set_balance(required);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        // No identity expectation: a read-back would fail.
+        let mut sdk = Sdk::new_mock();
+        expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        expect_live_balance(
+            &mut sdk,
+            identity.identity.id(),
+            Some(identity.identity.balance()),
+        )
+        .await;
+        let confirmed = domain_document(id, "alice-123");
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice-123".to_owned(),
+                    approved_contest_fee: 0,
+                    signing_key_id: Some(1),
+                },
+                |_| async move {
+                    Ok((
+                        RegisterDpnsNameResult {
+                            preorder_document: confirmed.clone(),
+                            domain_document: confirmed,
+                            full_domain_name: "alice-123.dash".to_owned(),
+                        },
+                        Some(required - 90),
+                        ResponseMetadata {
+                            height: 77,
+                            ..Default::default()
+                        },
+                    ))
+                },
+            )
+            .await
+            .expect("the registration succeeds");
+
+        let BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } = result else {
+            panic!("expected a registered name, got {result:?}");
+        };
+        assert_eq!(fee_result.actual_fee, Some(90));
+        let mut saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.identity.balance(), required - 90);
+        // Stored at the proof's height: a copy read before it cannot undo it.
+        saved.identity.set_balance(required);
+        ctx.update_local_qualified_identity(&saved).unwrap();
+        let after = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(after.identity.balance(), required - 90);
+    }
+
+    /// A proof made before protocol version 14 carries no balance, so the
+    /// registration reads it back, as it always did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_without_a_proven_balance_reads_it_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let identity = bare_identity(9);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let mut on_network = identity.identity.clone();
+        on_network.set_balance(940);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(id, Some(on_network))
+            .await
+            .expect("identity expectation");
+
+        let result = ctx
+            .finish_username_registration(
+                &sdk,
+                identity,
+                "alice-123",
+                DpnsRegistrationOutcome::Registered,
+                None,
+                1_000,
+                100,
+                None,
+                None,
+            )
+            .await;
+
+        let BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } = result else {
+            panic!("expected a registered name, got {result:?}");
+        };
+        assert_eq!(fee_result.actual_fee, Some(60));
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.identity.balance(), 940);
     }
 
     /// A registration accepted as sent after an error has no confirmed
@@ -719,6 +1022,7 @@ mod tests {
             None,
             1_000,
             100,
+            None,
             None,
         )
         .await;
@@ -815,7 +1119,7 @@ mod tests {
         );
 
         let failure = broadcast_name_registration(&identity, key, "alice-123", 0, |input| {
-            sdk.register_dpns_name(input)
+            sdk.register_dpns_name_with_owner_balance_and_metadata(input)
         })
         .await
         .expect_err("nothing can be broadcast on a mock");
@@ -853,6 +1157,7 @@ mod tests {
                 1_000,
                 200,
                 None,
+                None,
             )
             .await;
         let BackendTaskSuccessResult::RegisteredDpnsName {
@@ -878,6 +1183,7 @@ mod tests {
                 1_000,
                 100,
                 None,
+                None,
             )
             .await;
         assert!(matches!(
@@ -892,7 +1198,7 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(dir.path());
         let sdk = Sdk::new_mock();
         let fee = crate::model::fee_estimation::contest_fee_credits(sdk.version());
-        for (label, approved_contest_fee) in [("alice", 0), ("alice", fee + 1), ("alice-123", fee)]
+        for (label, approved_contest_fee) in [("alice", 0), ("alice", fee - 1), ("alice-123", fee)]
         {
             let result = ctx
                 .register_dpns_name(
@@ -913,19 +1219,169 @@ mod tests {
     }
 
     /// The fee the user must have approved follows the contest rule's verdict:
-    /// a name that opens a vote always requires the fee.
+    /// a name that opens a vote always requires at least the base fund, one
+    /// that opens none requires nothing.
     #[test]
-    fn required_contest_fee_follows_the_contest_rule() {
+    fn contest_fee_fits_outcome_follows_the_contest_rule() {
         let version = PlatformVersion::latest();
         let fee = contest_fee_credits(version);
         assert!(fee > 0);
+        let vote = DpnsRegistrationOutcome::PendingCommunityVote;
+        let plain = DpnsRegistrationOutcome::Registered;
+        assert!(contest_fee_fits_outcome(fee, vote, version));
+        assert!(contest_fee_fits_outcome(fee * 2, vote, version));
+        assert!(!contest_fee_fits_outcome(fee - 1, vote, version));
+        assert!(!contest_fee_fits_outcome(0, vote, version));
+        assert!(contest_fee_fits_outcome(0, plain, version));
+        assert!(!contest_fee_fits_outcome(fee, plain, version));
+    }
+
+    /// Once the vote holds 250 requests the fund to join doubles. A request
+    /// approved at the base fund would be turned away after its first
+    /// document was paid for, so it is refused before anything is sent; one
+    /// approved at the doubled fund passes the fee check and is weighed
+    /// against the balance with it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_requires_the_fund_to_join_a_crowded_vote() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let platform_version = PlatformVersion::latest();
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let base = contest_fee_credits(platform_version);
+        let doubled = base * 2;
+        for (approved_contest_fee, expect_terms_changed) in [(base, true), (doubled, false)] {
+            let mut identity = identity_with_signing_key(5);
+            identity.identity.set_balance(0);
+            let mut sdk = mock_sdk();
+            expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+            expect_live_balance(
+                &mut sdk,
+                identity.identity.id(),
+                Some(identity.identity.balance()),
+            )
+            .await;
+            // The availability page reads no running vote; the count, read
+            // page by page, finds 251 requests.
+            expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
+            expect_contender_count(&mut sdk, &ctx, "alice", 251).await;
+            let broadcast = AtomicBool::new(false);
+
+            let result = ctx
+                .register_dpns_name_through(
+                    &sdk,
+                    RegisterDpnsNameInput {
+                        qualified_identity: identity,
+                        name_input: "alice".to_owned(),
+                        approved_contest_fee,
+                        signing_key_id: Some(1),
+                    },
+                    |_| {
+                        broadcast.store(true, Ordering::Release);
+                        async { Err::<ProvenRegistration, _>(unproven_broadcast_failure()) }
+                    },
+                )
+                .await;
+
+            if expect_terms_changed {
+                assert!(
+                    matches!(result, Err(TaskError::UsernameRegistrationTermsChanged)),
+                    "base fund: {result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(TaskError::UsernameRegistrationBalanceTooLow { required, .. })
+                            if required > doubled
+                    ),
+                    "doubled fund: {result:?}"
+                );
+            }
+            assert!(
+                !broadcast.load(Ordering::Acquire),
+                "nothing may be broadcast"
+            );
+        }
+    }
+
+    /// A contested registration also pays the contest fund, and the settled
+    /// fee compares against the balance drop: the estimate it reports must
+    /// include that fund, or every contested registration "differs".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contested_registration_estimate_includes_the_contest_fund() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let platform_version = PlatformVersion::latest();
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let contest_fund = contest_fee_credits(platform_version);
+        let mut identity = identity_with_signing_key(7);
+        identity.identity.set_balance(u64::MAX / 2);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let mut sdk = mock_sdk();
+        expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+        expect_live_balance(
+            &mut sdk,
+            identity.identity.id(),
+            Some(identity.identity.balance()),
+        )
+        .await;
+        expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
+        expect_contender_count(&mut sdk, &ctx, "alice", 0).await;
+        let submitted = domain_document(id, "alice");
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice".to_owned(),
+                    approved_contest_fee: contest_fund,
+                    signing_key_id: Some(1),
+                },
+                |_| async move {
+                    Ok((
+                        RegisterDpnsNameResult {
+                            preorder_document: submitted.clone(),
+                            domain_document: submitted,
+                            full_domain_name: "alice.dash".to_owned(),
+                        },
+                        None,
+                        ResponseMetadata::default(),
+                    ))
+                },
+            )
+            .await
+            .expect("the registration succeeds");
+
+        let BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        } = result
+        else {
+            panic!("unexpected result: {result:?}");
+        };
+        assert_eq!(outcome, DpnsRegistrationOutcome::PendingCommunityVote);
         assert_eq!(
-            required_contest_fee(DpnsRegistrationOutcome::PendingCommunityVote, version),
-            fee
-        );
-        assert_eq!(
-            required_contest_fee(DpnsRegistrationOutcome::Registered, version),
-            0
+            fee_result.estimated_fee,
+            ctx.fee_estimator()
+                .estimate_username_registration("alice".len(), true)
+                + contest_fund
         );
     }
 
@@ -971,6 +1427,15 @@ mod tests {
             .expect("domain lookup expectation");
     }
 
+    /// Mock the balance Platform reports for `id` now; `None` for an identity
+    /// Platform does not know.
+    async fn expect_live_balance(sdk: &mut Sdk, id: Identifier, balance: Option<u64>) {
+        sdk.mock()
+            .expect_fetch::<IdentityBalance, _>(id, balance)
+            .await
+            .expect("live balance expectation");
+    }
+
     /// Mock the community-vote state for `label`.
     async fn expect_vote_state(sdk: &mut Sdk, ctx: &AppContext, label: &str, state: Contenders) {
         sdk.mock()
@@ -985,13 +1450,166 @@ mod tests {
                         ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
                     allow_include_locked_and_abstaining_vote_tally: true,
                     start_at: None,
-                    limit: None,
+                    // The SDK reads the vote state in pages of this size.
+                    limit: Some(dash_sdk::drive::config::DEFAULT_QUERY_LIMIT),
                     offset: None,
                 },
                 Some(state),
             )
             .await
             .expect("vote state expectation");
+    }
+
+    /// The availability check quotes the fee the review must show: the
+    /// doubled fund for a vote already holding 251 requests, nothing for a
+    /// name that opens no vote.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn availability_check_quotes_the_fund_to_join() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let platform_version = PlatformVersion::latest();
+        let base = contest_fee_credits(platform_version);
+        for (label, contenders, expected) in [("alice", 251, base * 2), ("alice-123", 0, 0)] {
+            let mut sdk = dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk");
+            expect_domain_lookup(&mut sdk, &ctx, label, false).await;
+            if expected > 0 {
+                expect_vote_state(&mut sdk, &ctx, label, Contenders::default()).await;
+                expect_contender_count(&mut sdk, &ctx, label, contenders).await;
+            }
+            let result = ctx
+                .check_username_availability(&sdk, Identifier::from([9; 32]), label.to_owned())
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Ok(BackendTaskSuccessResult::UsernameAvailability { contest_fund, .. })
+                        if contest_fund == expected
+                ),
+                "{label}: {result:?}"
+            );
+        }
+    }
+
+    /// A vote already holding the most requests the network accepts turns a
+    /// new one away whatever it states, after its first document was paid
+    /// for. The live check reports it as full, and registration is refused
+    /// before anything is sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_full_username_vote_is_refused_before_paying() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let platform_version = PlatformVersion::latest();
+        let max_contenders = crate::model::dpns::username_contest_max_contenders(platform_version)
+            .expect("the latest protocol caps a vote");
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let full_vote_sdk = || async {
+            let mut sdk = mock_sdk();
+            expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+            expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
+            expect_contender_count(&mut sdk, &ctx, "alice", max_contenders).await;
+            sdk
+        };
+
+        let check = ctx
+            .check_username_availability(
+                &full_vote_sdk().await,
+                Identifier::from([9; 32]),
+                "alice".to_owned(),
+            )
+            .await;
+        assert!(
+            matches!(
+                check,
+                Ok(BackendTaskSuccessResult::UsernameAvailability {
+                    availability: UsernameAvailability::ContestFull,
+                    contest_fund: 0,
+                    ..
+                })
+            ),
+            "{check:?}"
+        );
+
+        // Whatever the approval states, even the fund for the last open seat.
+        let mut identity = identity_with_signing_key(6);
+        identity.identity.set_balance(u64::MAX / 2);
+        let broadcast = AtomicBool::new(false);
+        let result = ctx
+            .register_dpns_name_through(
+                &full_vote_sdk().await,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice".to_owned(),
+                    approved_contest_fee: contest_fee_credits(platform_version) << 16,
+                    signing_key_id: Some(1),
+                },
+                |_| {
+                    broadcast.store(true, Ordering::Release);
+                    async { Err::<ProvenRegistration, _>(unproven_broadcast_failure()) }
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::UsernameContestFull { max_contenders: max })
+                    if max == max_contenders
+            ),
+            "{result:?}"
+        );
+        assert!(
+            !broadcast.load(Ordering::Acquire),
+            "nothing may be broadcast"
+        );
+    }
+
+    /// Mock the paged count of the requests in the vote on `label`: pages of
+    /// up to 100, each starting after the last request of the one before.
+    async fn expect_contender_count(sdk: &mut Sdk, ctx: &AppContext, label: &str, count: u16) {
+        use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
+        let vote_poll = crate::model::dpns_voting::dpns_vote_poll(
+            &ctx.dpns_contract(),
+            &normalize_dpns_label(label),
+        )
+        .expect("vote poll");
+        let requester = |index: u16| {
+            let mut id = [0x40; 32];
+            id[..2].copy_from_slice(&index.to_be_bytes());
+            Identifier::from(id)
+        };
+        let mut start_at = None;
+        let mut first = 0;
+        loop {
+            let end = count.min(first + DEFAULT_QUERY_LIMIT);
+            let page: Vec<Identifier> = (first..end).map(requester).collect();
+            sdk.mock()
+                .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                    ContestedDocumentVotePollDriveQuery {
+                        vote_poll: vote_poll.clone(),
+                        result_type: ContestedDocumentVotePollDriveQueryResultType::VoteTally,
+                        offset: None,
+                        limit: Some(DEFAULT_QUERY_LIMIT),
+                        start_at,
+                        allow_include_locked_and_abstaining_vote_tally: false,
+                    },
+                    Some(running_vote(&page)),
+                )
+                .await
+                .expect("contender count expectation");
+            if page.len() < usize::from(DEFAULT_QUERY_LIMIT) {
+                break;
+            }
+            start_at = page.last().map(|last| (last.to_buffer(), false));
+            first = end;
+        }
     }
 
     /// A running vote whose requests come from `requesters`.
@@ -1296,6 +1914,7 @@ mod tests {
             Some(join_end),
             1_000,
             200,
+            None,
             None,
         )
         .await;

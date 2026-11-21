@@ -5,6 +5,7 @@ use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFu
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::identity_create_min_funding_duffs;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
 use dash_sdk::dash_spv::Network;
@@ -360,7 +361,7 @@ impl AppContext {
             .await?;
 
         match put_result {
-            Ok((updated_identity, address_infos, _height)) => {
+            Ok((updated_identity, address_infos, height)) => {
                 qualified_identity.identity = updated_identity;
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 
@@ -371,9 +372,12 @@ impl AppContext {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }
 
-                self.insert_local_qualified_identity(
-                    &qualified_identity,
+                // The creation proof's height orders this first balance, so a
+                // later fetch from a lagging node cannot replace it.
+                self.insert_local_qualified_identity_observed(
+                    &mut qualified_identity,
                     &Some((wallet_seed_hash, wallet_identity_index)),
+                    BalanceProvenance::ObservedAt(height),
                 )?;
 
                 {

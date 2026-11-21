@@ -5,6 +5,7 @@ use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMetho
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::identity_topup_min_funding_duffs;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
@@ -152,7 +153,8 @@ impl AppContext {
         let linked_wallet = self
             .stored_identity_wallet_link(&identity_id)?
             .map(|(owner, _)| owner);
-        let new_balance = match resolve_top_up_route(identity_id, linked_wallet, &seed_hash)? {
+        let route = resolve_top_up_route(identity_id, linked_wallet, &seed_hash)?;
+        let (new_balance, provenance) = match route {
             TopUpRoute::OwnIdentity => {
                 // Fail-secure: a wallet-funded top-up of an own identity derives
                 // its asset-lock account from this wallet's HD tree at the
@@ -170,8 +172,13 @@ impl AppContext {
                     .await?
             }
             TopUpRoute::ForeignIdentity => {
-                self.top_up_foreign_identity(sdk, &qualified_identity.identity, &seed_hash, funding)
-                    .await?
+                // TODO(upstream): no `top_up_identity_with_private_key` variant
+                // returns the response metadata, so this balance has no height
+                // (https://github.com/dashpay/platform/issues/5658).
+                let balance = self
+                    .top_up_foreign_identity(sdk, &qualified_identity.identity, &seed_hash, funding)
+                    .await?;
+                (balance, BalanceProvenance::ConfirmedUnordered)
             }
         };
         qualified_identity.identity.set_balance(new_balance);
@@ -197,7 +204,7 @@ impl AppContext {
                 &qualified_identity.top_ups,
             )?;
         }
-        self.update_local_qualified_identity(&qualified_identity)?;
+        self.update_local_qualified_identity_observed(&mut qualified_identity, provenance)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(

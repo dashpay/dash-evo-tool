@@ -33,11 +33,21 @@ fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
     use dash_sdk::dpp::dashcore::{Address, PublicKey};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 
-    let wallet = Wallet::new_from_seed([seed; 64], Network::Testnet, Some(alias.to_string()), None)
-        .expect("wallet from seed");
+    let wallet = Wallet::new_from_seed(
+        dash_evo_tool::test_support::keys::labelled_seed(
+            "kittest::address_input::wallet",
+            seed.into(),
+        ),
+        Network::Testnet,
+        Some(alias.to_string()),
+        None,
+    )
+    .expect("wallet from seed");
 
-    let mut sk_bytes = [1u8; 32];
-    sk_bytes[31] = seed.max(1);
+    let sk_bytes = dash_evo_tool::test_support::keys::labelled_secret(
+        "kittest::address_input::wallet",
+        seed.into(),
+    );
     let sk =
         dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
     let address = Address::p2pkh(&PublicKey::new(sk.public_key()), Network::Testnet);
@@ -281,4 +291,55 @@ fn suggestions_do_not_draw_over_a_blocking_dialog() {
         harness.query_by_label_contains("(dora)").is_none(),
         "the suggestions must not draw over a blocking dialog"
     );
+}
+
+/// Two inputs in one parent keep their popups apart: opening one input's
+/// address-type filter must not open the other's.
+#[test]
+fn sibling_inputs_open_only_their_own_type_filter() {
+    let filter_input = || {
+        AddressInput::new(Network::Testnet)
+            .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
+            .with_type_filter_dropdown(true)
+    };
+    let inputs = Rc::new(RefCell::new((filter_input(), filter_input())));
+    let ui_inputs = Rc::clone(&inputs);
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let mut inputs = ui_inputs.borrow_mut();
+        inputs.0.show(ui);
+        inputs.1.show(ui);
+    });
+    harness.run();
+
+    let first_filter = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the first input's type filter");
+    first_filter.click();
+    harness.run();
+
+    assert_eq!(
+        harness.query_all_by_label("Platform address").count(),
+        1,
+        "only the clicked input's filter may list its options"
+    );
+}
+
+/// Without a label, screen readers still hear a name for the field instead of
+/// only its placeholder; with one, the label names it.
+#[test]
+fn field_has_an_accessible_name_with_or_without_a_label() {
+    let mut unlabelled = AddressInput::new(Network::Testnet);
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let _ = unlabelled.show(ui);
+    });
+    harness.run();
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Address");
+
+    let mut labelled = AddressInput::new(Network::Testnet).with_label("Recipient");
+    let mut harness = Harness::builder().build_ui(move |ui| {
+        let _ = labelled.show(ui);
+    });
+    harness.run();
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Recipient");
 }

@@ -304,7 +304,7 @@ mod tests {
 
     fn sample_non_password_envelope() -> StoredSeedEnvelope {
         StoredSeedEnvelope {
-            encrypted_seed: Zeroizing::new(vec![0x11; 64]),
+            encrypted_seed: Zeroizing::new(crate::test_support::keys::seed().to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -324,15 +324,17 @@ mod tests {
     /// `contains` sees every at-rest form and reports absence otherwise.
     #[test]
     fn contains_sees_raw_protected_and_legacy_forms() {
+        let seed_7 = crate::test_support::keys::seed();
+        let seed_8 = crate::test_support::keys::seed();
         let dir = tempfile::tempdir().expect("tempdir");
         let store = fresh_store(dir.path());
         let view = WalletSeedView::new(&store);
         let (raw, protected, legacy, absent) = ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]);
 
-        view.set_raw(&raw, &[7u8; 64]).expect("raw");
+        view.set_raw(&raw, &seed_7).expect("raw");
         view.set_protected(
             &protected,
-            &[8u8; 64],
+            &seed_8,
             &SecretString::new("correct horse battery staple"),
         )
         .expect("protected");
@@ -527,10 +529,7 @@ mod tests {
         let store = fresh_store(dir.path());
         let view = WalletSeedView::new(&store);
         let seed_hash: WalletSeedHash = [0xB1; 32];
-        let mut seed = [0u8; 64];
-        for (i, b) in seed.iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(9).wrapping_add(1);
-        }
+        let seed = crate::test_support::keys::seed();
 
         view.set_raw(&seed_hash, &seed).expect("set_raw");
         assert_eq!(*view.get_raw(&seed_hash).unwrap().unwrap(), seed);

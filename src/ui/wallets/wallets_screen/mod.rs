@@ -44,6 +44,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::wallet_backend::TransactionHistoryStatus;
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionDirection;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -997,13 +998,19 @@ impl WalletsBalancesScreen {
         }
     }
 
+    /// The row's label comes from the wallet's own classification, not from
+    /// the sign of the amount: a move between the wallet's own accounts or
+    /// into its own Platform keys lowers the Core balance yet is not a
+    /// payment to someone else. A mixing transaction has no label of its own
+    /// and keeps the one its amount gives.
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
-        if tx.is_incoming() {
-            "Received"
-        } else if tx.is_outgoing() {
-            "Sent"
-        } else {
-            "Internal"
+        match tx.direction {
+            TransactionDirection::Incoming => "Received",
+            TransactionDirection::Outgoing => "Sent",
+            TransactionDirection::Internal => "Internal",
+            TransactionDirection::CoinJoin if tx.is_incoming() => "Received",
+            TransactionDirection::CoinJoin if tx.is_outgoing() => "Sent",
+            TransactionDirection::CoinJoin => "Internal",
         }
     }
 
@@ -3100,9 +3107,20 @@ impl ScreenLike for WalletsBalancesScreen {
     fn refresh(&mut self) {
         self.refreshing = false;
         // Re-scan for protected single-key rows still awaiting restore so a
-        // post-migration refresh surfaces (or clears) the restore banner.
+        // user's Refresh surfaces (or clears) the restore banner.
         self.pending_restores_scanned = false;
         self.refresh_on_arrival();
+    }
+
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        // A finished storage update (or a devnet wipe) reports every domain:
+        // the storage it made readable can hold keys awaiting their old
+        // password, so the restore banner re-scans on its next paint.
+        if update.network == self.app_context.network
+            && update.domain == crate::backend_task::CacheDomain::All
+        {
+            self.pending_restores_scanned = false;
+        }
     }
 }
 
@@ -3134,6 +3152,56 @@ mod tests {
             WalletsBalancesScreen::format_transaction_timestamp(1_700_000_000),
             local
         );
+    }
+
+    fn history_row(direction: TransactionDirection, net_amount: i64) -> WalletTransaction {
+        WalletTransaction {
+            txid: dash_sdk::dpp::dashcore::Txid::from([0x7A; 32]),
+            transaction: dash_sdk::dpp::dashcore::Transaction {
+                version: 3,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            timestamp: 0,
+            height: None,
+            block_hash: None,
+            net_amount,
+            direction,
+            fee: None,
+            label: None,
+            is_ours: true,
+            status: TransactionStatus::Unconfirmed,
+        }
+    }
+
+    /// Funding the wallet's own Platform address, or moving funds between its
+    /// own accounts, lowers the Core balance but pays nobody else. The row
+    /// must read "Internal", not "Sent", while the amount keeps its sign.
+    #[test]
+    fn an_internal_move_with_a_negative_amount_is_labelled_internal_not_sent() {
+        let row = history_row(TransactionDirection::Internal, -1_750_000);
+        assert_eq!(
+            WalletsBalancesScreen::transaction_direction_label(&row),
+            "Internal"
+        );
+        let (amount, _) = WalletsBalancesScreen::transaction_amount_display(&row, false);
+        assert!(amount.starts_with('-'), "{amount}");
+
+        for (direction, net_amount, label) in [
+            (TransactionDirection::Incoming, 50_000, "Received"),
+            (TransactionDirection::Outgoing, -50_000, "Sent"),
+            (TransactionDirection::Internal, 0, "Internal"),
+            (TransactionDirection::CoinJoin, -226, "Sent"),
+        ] {
+            assert_eq!(
+                WalletsBalancesScreen::transaction_direction_label(&history_row(
+                    direction, net_amount
+                )),
+                label
+            );
+        }
     }
 
     fn summary(
@@ -3296,8 +3364,16 @@ mod tests {
 
     /// Register an HD wallet derived from a distinct seed, returning its hash.
     fn seed_hd_wallet(ctx: &Arc<AppContext>, seed_byte: u8) -> WalletSeedHash {
-        let wallet =
-            Wallet::new_from_seed([seed_byte; 64], ctx.network(), None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(
+            crate::test_support::keys::labelled_seed(
+                "ui::wallets::wallets_screen::seed_hd_wallet",
+                seed_byte.into(),
+            ),
+            ctx.network(),
+            None,
+            None,
+        )
+        .expect("wallet");
         let seed_hash = wallet.seed_hash();
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
@@ -3416,6 +3492,54 @@ mod tests {
         assert_eq!(screen.selected_wallet_seed_hash(), Some(target));
     }
 
+    /// A storage update finished by a retry makes this network's storage
+    /// readable: the restore banner must offer the imported keys awaiting
+    /// their old password without a manual refresh. A change on another
+    /// network leaves the page's earlier scan alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_storage_update_offers_keys_awaiting_their_old_password() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        let egui_ctx = ctx.egui_ctx().clone();
+        let render = |screen: &mut WalletsBalancesScreen| {
+            egui_ctx
+                .run_ui(Default::default(), |ui| {
+                    screen.render_protected_restore_banner(ui);
+                })
+                .drop_without_applying_deltas();
+        };
+        // While the storage update has not finished, its storage is unreadable.
+        render(&mut screen);
+        assert!(screen.pending_protected_restores.is_empty());
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            egui_ctx.clone(),
+        ))
+        .await
+        .expect("wire wallet backend");
+        crate::database::seed_legacy_protected_key(&ctx.db);
+
+        screen.cached_data_changed(CacheUpdate {
+            network: Network::Mainnet,
+            domain: CacheDomain::All,
+        });
+        render(&mut screen);
+        assert!(screen.pending_protected_restores.is_empty());
+
+        screen.cached_data_changed(CacheUpdate {
+            network: ctx.network,
+            domain: CacheDomain::All,
+        });
+        render(&mut screen);
+        assert_eq!(screen.pending_protected_restores.len(), 1);
+    }
+
     mod wallet_selection_linking {
         use super::super::{WalletsBalancesScreen, resolve_selection_from_store};
         use crate::context::AppContext;
@@ -3449,7 +3573,7 @@ mod tests {
 
         fn seed_hd(ctx: &Arc<AppContext>, seed_byte: u8) -> (WalletSeedHash, Arc<RwLock<Wallet>>) {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("wallets_screen", u64::from(seed_byte)),
                 Network::Testnet,
                 Some(format!("hd-{seed_byte}")),
                 None,
@@ -3465,8 +3589,10 @@ mod tests {
             ctx: &Arc<AppContext>,
             key_byte: u8,
         ) -> (SingleKeyHash, Arc<RwLock<SingleKeyWallet>>) {
-            let mut pk = [1u8; 32];
-            pk[31] = key_byte.max(1);
+            let pk = crate::test_support::keys::labelled_secret(
+                "ui::wallets::wallets_screen::seed_sk",
+                key_byte.into(),
+            );
             let wallet =
                 SingleKeyWallet::new(pk, Network::Testnet, None, Some(format!("sk-{key_byte}")))
                     .expect("sk wallet");
@@ -3544,9 +3670,7 @@ mod tests {
             let ctx = test_app_context(tmp.path());
             let (seed_hash, wallet) = seed_hd(&ctx, 9);
             let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(wallet), None);
-            let minimum = ctx
-                .fee_estimator()
-                .address_funding_min_amount_duffs(true, ctx.sdk_platform_version());
+            let minimum = ctx.fee_estimator().address_funding_min_amount_duffs(true);
 
             screen
                 .asset_lock_cache

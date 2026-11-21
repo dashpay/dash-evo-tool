@@ -158,6 +158,12 @@ pub enum SpendLimitQueryError {
         #[from]
         dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError,
     ),
+    /// The protocol version has no fee formula for the payment.
+    #[error(transparent)]
+    Fee(#[from] Box<dash_sdk::dpp::ProtocolError>),
+    /// The private balance's notes could not be read.
+    #[error(transparent)]
+    ShieldedStore(#[from] platform_wallet::wallet::shielded::FileShieldedStoreError),
 }
 
 /// Why an existing DashPay `contactInfo` payload could not be preserved.

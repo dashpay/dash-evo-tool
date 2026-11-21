@@ -19,7 +19,7 @@ use crate::model::fee_estimation::{
     shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::spend_limit::SpendLimitKind;
+use crate::model::spend_limit::{ShieldedSpendFee, SpendLimitKind};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::{PlatformAddressInfo, Wallet, WalletSeedHash};
 use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
@@ -1071,6 +1071,19 @@ impl WalletSendScreen {
                 seed_hash,
                 self.core_send_limit_kind(),
                 self.app_context.core_send_quote_revision(&seed_hash),
+            )),
+            // A payment in flight reserves notes the balance keeps showing, so
+            // its opening and settling re-key the quote, as balance changes do.
+            (SourceSelection::Shielded(_, balance), Some(destination)) => Some((
+                seed_hash,
+                SpendLimitKind::ShieldedSpend {
+                    fee: ShieldedSpendFee::for_destination(destination)?,
+                },
+                *balance
+                    ^ self
+                        .app_context
+                        .private_spend_quote_revision(&seed_hash)
+                        .rotate_left(32),
             )),
             _ => None,
         }
@@ -5914,6 +5927,111 @@ mod tests {
         );
     }
 
+    /// Note selection takes a private payment's fee on top of the amount,
+    /// so Max from the private balance is the wallet's quote for that kind
+    /// of payment, never the whole balance; until the quote arrives, nothing
+    /// is offered and Auto waits for it.
+    #[test]
+    fn private_balance_max_is_the_wallet_quote_for_the_payment() {
+        const BALANCE_CREDITS: u64 = 300_000_000_000;
+        const QUOTE_CREDITS: u64 = 299_000_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, BALANCE_CREDITS);
+        let destination = ValidatedAddress::Core(testnet_core_address(47));
+        screen.selected_source = Some(source.clone());
+        screen.validated_destination = Some(destination.clone());
+
+        let limits = screen.amount_limits_for(&source, Some(&destination));
+        assert_eq!(limits.max_credits, None, "no Max before the quote");
+        assert_eq!(
+            limits.quote,
+            resolve::QuoteState::Pending,
+            "Auto waits for the quote"
+        );
+
+        let kind = SpendLimitKind::ShieldedSpend {
+            fee: ShieldedSpendFee::Withdrawal,
+        };
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind: asked,
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("a private payment must ask for the wallet's quote");
+        };
+        assert_eq!(asked, kind);
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+
+        let limits = screen.amount_limits_for(&source, Some(&destination));
+        assert_eq!(limits.max_credits, Some(QUOTE_CREDITS));
+        assert_eq!(limits.quote, resolve::QuoteState::Ready);
+    }
+
+    /// Without a usable private quote the balance still bounds the amount:
+    /// while the quote is pending, an amount above the balance is refused;
+    /// a zero quote says the fee is not covered and offers no Max.
+    #[test]
+    fn private_balance_without_a_usable_quote_still_bounds_the_amount() {
+        use crate::model::send_route::PayFromKind;
+        use form_view::AmountProblem;
+        const BALANCE_CREDITS: u64 = 300_000_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, BALANCE_CREDITS);
+        let destination = ValidatedAddress::Core(testnet_core_address(47));
+        screen
+            .form
+            .choose_pay_from(PayFrom::Shielded, PayFromKind::Shielded);
+        screen.selected_source = Some(source.clone());
+        screen.validated_destination = Some(destination.clone());
+        screen.amount = Some(Amount::dash_from_credits(BALANCE_CREDITS + 1));
+        assert_eq!(
+            screen.amount_problem(),
+            Some(AmountProblem::OverMax {
+                kind: PayFromKind::Shielded,
+                max: BALANCE_CREDITS
+            }),
+            "a pending quote still refuses more than the balance"
+        );
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("a private payment must ask for the wallet's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: 0,
+                core_fee: None,
+            })
+        );
+        let limits = screen.amount_limits_for(&source, Some(&destination));
+        assert!(limits.fee_not_covered, "a zero quote cannot cover the fee");
+        assert_eq!(limits.max_credits, None, "no Max is offered");
+        assert_eq!(limits.hint, None, "no fee is promised to be reserved");
+        assert_eq!(screen.amount_problem(), Some(AmountProblem::FeeNotCovered));
+    }
+
     /// The shield planner decides which Platform addresses it may spend, so
     /// Max for a shield from Platform is the planner's quote — never the
     /// balance minus a fee — and nothing is offered before the quote arrives.
@@ -6689,6 +6807,68 @@ mod tests {
         assert_ne!(
             after, before,
             "at the same balances, a quote from before the shield stays stale"
+        );
+    }
+
+    /// A payment from the private balance by another screen or tool reserves
+    /// notes while the displayed balance stays put, so a private Max quoted
+    /// before it is not offered while it runs, nor after it settles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_private_payment_in_flight_makes_the_cached_private_max_stale() {
+        const BALANCE_CREDITS: u64 = 300_000_000_000;
+        const QUOTE_CREDITS: u64 = 299_000_000_000;
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, BALANCE_CREDITS);
+        let destination = ValidatedAddress::Core(testnet_core_address(47));
+        screen.selected_source = Some(source.clone());
+        screen.validated_destination = Some(destination.clone());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(16);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                egui::Context::default(),
+            ))
+            .await
+            .expect("wallet backend");
+        let backend = screen.app_context.wallet_backend().expect("wallet backend");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("a private payment must ask for the wallet's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+        let max = |screen: &WalletSendScreen| {
+            screen
+                .amount_limits_for(&source, Some(&destination))
+                .max_credits
+        };
+        assert_eq!(max(&screen), Some(QUOTE_CREDITS), "precondition: quoted");
+
+        let paying = backend.begin_private_spend(&seed_hash);
+        assert_eq!(
+            max(&screen),
+            None,
+            "a quote from before the payment is stale"
+        );
+        drop(paying);
+        assert_eq!(
+            max(&screen),
+            None,
+            "at the same balance, a quote from before the payment stays stale"
         );
     }
 

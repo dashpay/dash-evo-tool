@@ -1901,6 +1901,14 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// The payment-in-flight part of a private-balance Max quote key; see
+    /// [`crate::wallet_backend::WalletBackend::private_spend_quote_revision`].
+    pub fn private_spend_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.private_spend_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Number of UTXOs in the wallet's display snapshot, in every account.
     /// Sizes the Core fee a wallet deposit is asked to bring on top.
     ///

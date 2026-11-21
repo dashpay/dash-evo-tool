@@ -11,7 +11,8 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::spend_limit::{
-    CoreDestinationScript, CoreSendQuoteFee, CoreSendShortfall, SpendLimitKind, SpendLimitQuote,
+    CoreDestinationScript, CoreSendQuoteFee, CoreSendShortfall, ShieldedSpendFee, SpendLimitKind,
+    SpendLimitQuote,
 };
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -862,6 +863,34 @@ impl WalletBackend {
                     }),
                 }
             }
+            SpendLimitKind::ShieldedSpend { fee } => {
+                use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+                // As for a shield from Platform: the UI keys this quote on the
+                // revision it read before dispatch.
+                self.private_spend_quote_key(seed_hash)?;
+                let coordinator = self.shielded_coordinator_arc().await?;
+                // The account every private payment spends from.
+                let id = SubwalletId {
+                    wallet_id: wallet.wallet_id(),
+                    account_index: 0,
+                };
+                let unspent = coordinator
+                    .store()
+                    .read()
+                    .await
+                    .get_unspent_notes(id)
+                    .map_err(|source| TaskError::SpendLimitQueryFailed {
+                        source: Arc::new(source.into()),
+                    })?;
+                shielded_spend_max(&unspent, fee, self.sdk().version())
+                    .map(|max_credits| SpendLimitQuote {
+                        max_credits,
+                        core_fee: None,
+                    })
+                    .map_err(|source| TaskError::SpendLimitQueryFailed {
+                        source: Arc::new(source.into()),
+                    })
+            }
             SpendLimitKind::ShieldFromPlatform => {
                 // As for a Core send: the UI keys this quote on the revision
                 // it read before dispatch, so a shield opening after this
@@ -1481,6 +1510,52 @@ impl PooledScratch {
         }
         Ok((transaction, fee))
     }
+}
+
+/// The largest amount upstream note selection funds from `unspent` for a
+/// private payment of kind `fee`: the model's Max, confirmed with the
+/// selection a payment runs, or else the largest amount below it that the
+/// selection accepts.
+fn shielded_spend_max(
+    unspent: &[platform_wallet::wallet::shielded::ShieldedNote],
+    fee: ShieldedSpendFee,
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
+    use crate::model::fee_estimation::{SHIELDED_SPEND_MIN_ACTIONS, shielded_spend_max_credits};
+    use platform_wallet::wallet::shielded::note_selection::{
+        ShieldedFeeKind, select_notes_with_fee,
+    };
+    let values: Vec<u64> = unspent.iter().map(|note| note.value).collect();
+    let max = shielded_spend_max_credits(&values, fee, platform_version)?;
+    let fee_kind = match fee {
+        ShieldedSpendFee::Transfer => ShieldedFeeKind::Base,
+        ShieldedSpendFee::Unshield => ShieldedFeeKind::Unshield,
+        ShieldedSpendFee::Withdrawal => ShieldedFeeKind::Withdrawal,
+    };
+    let funds = |amount: u64| {
+        select_notes_with_fee(
+            unspent,
+            amount,
+            SHIELDED_SPEND_MIN_ACTIONS,
+            fee_kind,
+            platform_version,
+        )
+        .is_ok()
+    };
+    if max == 0 || funds(max) {
+        return Ok(max);
+    }
+    // Funding falls with the amount, so a binary search finds the largest.
+    let (mut low, mut high) = (0, max - 1);
+    while low < high {
+        let candidate = low + (high - low).div_ceil(2);
+        if funds(candidate) {
+            low = candidate;
+        } else {
+            high = candidate - 1;
+        }
+    }
+    Ok(low)
 }
 
 /// The largest single payment of at most `upper_duffs` the pooled send
@@ -2190,6 +2265,102 @@ mod tests {
         // Every reservation was released: the coin still funds a real build.
         let (inputs, _) = pooled_build_charge(&wallet, &info, payment_recipient(), PAYMENT_DUFFS);
         assert_eq!(inputs, 1);
+    }
+
+    /// A private-balance Max is the largest amount upstream note selection
+    /// funds for each kind of payment: the Max, and never one credit more.
+    #[test]
+    fn shielded_spend_max_is_the_largest_amount_note_selection_funds() {
+        use crate::model::fee_estimation::SHIELDED_SPEND_MIN_ACTIONS;
+        use crate::model::spend_limit::ShieldedSpendFee;
+        use platform_wallet::wallet::shielded::note_selection::{
+            ShieldedFeeKind, select_notes_with_fee,
+        };
+        let pv = dash_sdk::dpp::version::PlatformVersion::latest();
+        let note_sets: [&[u64]; 4] = [
+            &[5_000_000_000],
+            &[2_000_000_000, 5_000_000_000, 3_000_000_000],
+            &[5_000_000_000, 1, 4_000_000_000],
+            &[1_000],
+        ];
+        for values in note_sets {
+            let notes: Vec<_> = values.iter().copied().map(shielded_note).collect();
+            for (fee, kind) in [
+                (ShieldedSpendFee::Transfer, ShieldedFeeKind::Base),
+                (ShieldedSpendFee::Unshield, ShieldedFeeKind::Unshield),
+                (ShieldedSpendFee::Withdrawal, ShieldedFeeKind::Withdrawal),
+            ] {
+                let funds = |amount| {
+                    select_notes_with_fee(&notes, amount, SHIELDED_SPEND_MIN_ACTIONS, kind, pv)
+                        .is_ok()
+                };
+                let max = super::shielded_spend_max(&notes, fee, pv).expect("fee formula");
+                assert!(max == 0 || funds(max), "{values:?} {fee:?}: Max {max}");
+                assert!(!funds(max + 1), "{values:?} {fee:?}: Max {max} + 1");
+            }
+        }
+    }
+
+    /// An unspent private note worth `value` credits; selection reads only
+    /// its value.
+    fn shielded_note(value: u64) -> platform_wallet::wallet::shielded::ShieldedNote {
+        platform_wallet::wallet::shielded::ShieldedNote {
+            position: 0,
+            cmx: [0; 32],
+            nullifier: rand::random(),
+            block_height: 0,
+            is_spent: false,
+            value,
+            note_data: Vec::new(),
+        }
+    }
+
+    /// Upstream note selection gives up after a few re-selections, so with
+    /// many notes each worth a little more than the fee its action adds it
+    /// cannot reach the model's Max; the quote then falls back to an amount
+    /// the selection funds, at least what the large note alone pays.
+    #[test]
+    fn shielded_spend_max_falls_back_to_what_note_selection_funds() {
+        use crate::model::fee_estimation::{
+            SHIELDED_SPEND_MIN_ACTIONS, shielded_spend_max_credits,
+        };
+        use crate::model::spend_limit::ShieldedSpendFee;
+        use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
+        use platform_wallet::wallet::shielded::note_selection::{
+            ShieldedFeeKind, select_notes_with_fee,
+        };
+        let pv = dash_sdk::dpp::version::PlatformVersion::latest();
+        let fee_of = |actions| compute_minimum_shielded_fee(actions, pv).expect("fee formula");
+        let per_action = fee_of(3) - fee_of(2);
+        const LARGE_NOTE: u64 = 100_000_000_000;
+        let mut values = vec![per_action + per_action / 20; 200];
+        values.push(LARGE_NOTE);
+        let notes: Vec<_> = values.iter().copied().map(shielded_note).collect();
+        let funds = |amount| {
+            select_notes_with_fee(
+                &notes,
+                amount,
+                SHIELDED_SPEND_MIN_ACTIONS,
+                ShieldedFeeKind::Base,
+                pv,
+            )
+            .is_ok()
+        };
+        let model_max = shielded_spend_max_credits(&values, ShieldedSpendFee::Transfer, pv)
+            .expect("fee formula");
+        assert!(
+            !funds(model_max),
+            "precondition: selection gives up before the model's Max {model_max}"
+        );
+
+        let max =
+            super::shielded_spend_max(&notes, ShieldedSpendFee::Transfer, pv).expect("fee formula");
+        assert!(max < model_max, "fallback Max {max}");
+        assert!(funds(max), "the fallback Max {max} is funded");
+        assert!(
+            max >= LARGE_NOTE - fee_of(SHIELDED_SPEND_MIN_ACTIONS),
+            "the fallback Max {max} keeps what the large note alone funds"
+        );
     }
 
     /// Build a payment of `amount` to `recipient` the way the pooled send
@@ -3441,6 +3612,34 @@ mod tests {
         assert!(
             !matches!(settled, Err(TaskError::SpendInProgress)),
             "{settled:?}"
+        );
+    }
+
+    /// A payment from the private balance reserves notes the displayed
+    /// balance keeps showing, so while one is in flight no private Max is
+    /// quoted, and its key moves when the payment opens and when it settles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_private_max_is_quoted_while_a_private_payment_is_in_flight() {
+        let (_dir, _ctx, backend, seed_hash, _platform_wallet) =
+            backend_with_registered_wallet().await;
+        let kind = crate::model::spend_limit::SpendLimitKind::ShieldedSpend {
+            fee: crate::model::spend_limit::ShieldedSpendFee::Transfer,
+        };
+        let idle_key = backend.private_spend_quote_revision(&seed_hash);
+        let idle = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(!matches!(idle, Err(TaskError::SpendInProgress)), "{idle:?}");
+
+        let paying = backend.begin_private_spend(&seed_hash);
+        let busy = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(matches!(busy, Err(TaskError::SpendInProgress)), "{busy:?}");
+        let in_flight_key = backend.private_spend_quote_revision(&seed_hash);
+        assert_ne!(in_flight_key, idle_key, "opening a payment moves the key");
+        drop(paying);
+
+        assert_ne!(
+            backend.private_spend_quote_revision(&seed_hash),
+            in_flight_key,
+            "settling a payment moves the key"
         );
     }
 

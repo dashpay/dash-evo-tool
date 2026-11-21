@@ -1329,7 +1329,12 @@ impl WalletSendScreen {
         {
             return Some(AmountProblem::OverTicked { max: held });
         }
-        match limits.max_credits {
+        // Until the private quote arrives, the balance still bounds the amount.
+        let max_credits = limits.max_credits.or(match source {
+            SourceSelection::Shielded(_, balance) => Some(*balance),
+            _ => None,
+        });
+        match max_credits {
             Some(max) if requested > max => Some(AmountProblem::OverMax {
                 kind: Self::source_kind(source),
                 max,

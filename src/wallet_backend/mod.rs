@@ -513,6 +513,9 @@ struct Inner {
     /// Shields from Platform in flight; keys the shield-from-Platform Max
     /// quote. See [`spend_activity`].
     platform_shield_activity: Arc<spend_activity::SpendActivity>,
+    /// Payments from the private balance in flight; keys the private-balance
+    /// Max quote. See [`spend_activity`].
+    private_spend_activity: Arc<spend_activity::SpendActivity>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -742,6 +745,7 @@ impl WalletBackend {
                 task_result_sender,
                 spend_activity: Arc::default(),
                 platform_shield_activity: Arc::default(),
+                private_spend_activity: Arc::default(),
             }),
         };
 
@@ -2963,6 +2967,29 @@ impl WalletBackend {
             .platform_shield_activity
             .quote_state(seed_hash)
             .key
+    }
+
+    /// The part of the key a private-balance Max quote is made against that
+    /// moves when a payment from `seed_hash`'s private balance opens and when
+    /// it settles: it reserves notes without changing the displayed balance.
+    pub fn private_spend_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.inner.private_spend_activity.quote_state(seed_hash).key
+    }
+
+    /// The key a private-balance Max quote made now for `seed_hash` is valid
+    /// under, or [`TaskError::SpendInProgress`] while a payment from its
+    /// private balance is in flight.
+    fn private_spend_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        self.inner.private_spend_activity.idle_quote_key(seed_hash)
+    }
+
+    /// Mark a payment from `seed_hash`'s private balance in flight for as
+    /// long as the returned guard lives.
+    pub(crate) fn begin_private_spend(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> spend_activity::SpendGuard {
+        self.inner.private_spend_activity.begin(seed_hash)
     }
 
     /// Mark a shield from `seed_hash`'s Platform balance in flight for as

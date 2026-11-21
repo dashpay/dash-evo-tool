@@ -39,7 +39,7 @@ impl WalletBackend {
     /// Returns `ShieldedNotConfigured` when `configure_shielded` was not called
     /// during backend construction (should never happen in practice — it is
     /// called unconditionally in `WalletBackend::new`).
-    async fn shielded_coordinator_arc(
+    pub(super) async fn shielded_coordinator_arc(
         &self,
     ) -> Result<
         std::sync::Arc<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>,
@@ -300,6 +300,8 @@ impl WalletBackend {
         amount: u64,
         memo: [u8; 36],
     ) -> Result<(), TaskError> {
+        // The payment reserves notes the displayed balance keeps showing.
+        let _paying = self.begin_private_spend(seed_hash);
         // coordinator / wallet / prover need no seed, so resolve them before the
         // secret session to trim its front edge and fail fast (ShieldedNotConfigured
         // / WalletNotLoaded) without prompting for a passphrase.
@@ -345,6 +347,8 @@ impl WalletBackend {
         to_platform_addr_bech32m: &str,
         amount: u64,
     ) -> Result<(), TaskError> {
+        // The payment reserves notes the displayed balance keeps showing.
+        let _paying = self.begin_private_spend(seed_hash);
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
@@ -386,6 +390,8 @@ impl WalletBackend {
         amount: u64,
         core_fee_per_byte: u32,
     ) -> Result<(), TaskError> {
+        // The payment reserves notes the displayed balance keeps showing.
+        let _paying = self.begin_private_spend(seed_hash);
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();

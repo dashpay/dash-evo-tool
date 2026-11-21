@@ -590,3 +590,36 @@ fn delete_tree_never_follows_a_symlinked_directory() {
     assert!(!cache.exists());
     assert!(outside.join("keep.dat").exists());
 }
+
+#[test]
+fn token_json_export_guard_reuses_live_file_and_sidecar_protections() {
+    let dir = tempfile::tempdir().unwrap();
+    for path in protected_files(dir.path()) {
+        assert_protected(
+            check_export_destination(&path, dir.path()),
+            "existing application file",
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_protected(
+            check_export_destination(&path, dir.path()),
+            "missing application file",
+        );
+    }
+    assert!(check_export_destination(&dir.path().join("contract.json"), dir.path()).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn token_json_export_guard_refuses_hardlinked_destinations() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("sentinel.txt");
+    let alias = dir.path().join("contract.json");
+    std::fs::write(&target, "original").unwrap();
+    std::fs::hard_link(&target, &alias).unwrap();
+    let error = check_export_destination(&alias, dir.path()).unwrap_err();
+    assert!(matches!(
+        refusal(&error),
+        DeletionRefused::HardLinked { .. }
+    ));
+    assert_eq!(std::fs::read(target).unwrap(), b"original");
+}

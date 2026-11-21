@@ -35,6 +35,13 @@ impl DomainFeedback for TokensFeedback {
             };
             MessageBanner::set_global(feedback.ctx, text, kind).disable_auto_dismiss();
         }
+        if let BackendTaskSuccessResult::TokenContractJsonSaved(path) = result {
+            MessageBanner::set_global(
+                feedback.ctx,
+                format!("Contract JSON saved to {path}.", path = path.display()),
+                MessageType::Success,
+            );
+        }
         Vec::new()
     }
 }

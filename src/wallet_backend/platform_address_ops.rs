@@ -726,8 +726,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn transfer_from_a_wallet_not_registered_upstream_registers_it() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = wired_test_app_context(dir.path()).await;
-        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
         let (seed_hash, path_index, owned) = wallet_not_registered_upstream(&ctx, None).await;
 
@@ -746,8 +745,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn withdrawal_from_a_wallet_not_registered_upstream_registers_it() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = wired_test_app_context(dir.path()).await;
-        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
         let (seed_hash, path_index, owned) = wallet_not_registered_upstream(&ctx, None).await;
 
@@ -769,8 +767,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn transfer_from_a_locked_wallet_not_registered_upstream_registers_it() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = wired_test_app_context(dir.path()).await;
-        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
         let password = crate::model::secret::Secret::new("locked-wallet-marker");
         let (seed_hash, path_index, owned) =
@@ -798,8 +795,7 @@ mod tests {
         use dash_sdk::dpp::identity::Identity;
         use dash_sdk::dpp::version::PlatformVersion;
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = wired_test_app_context(dir.path()).await;
-        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
         let (seed_hash, path_index, owned) = wallet_not_registered_upstream(&ctx, None).await;
         let identity = Identity::create_basic_identity(

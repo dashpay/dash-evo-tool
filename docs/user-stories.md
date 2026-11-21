@@ -1264,6 +1264,7 @@ As a user, I want to claim tokens distributed to me so that they appear in my ba
 
 - View available claims.
 - Claim action transfers tokens to identity.
+- Identities that belong to no wallet in this app, such as evonode identities, can claim too.
 
 ### TOK-012: Set token pricing and purchase tokens [Implemented]
 **Persona:** Jordan
@@ -1347,15 +1348,14 @@ As a token creator, I want to create a token that holders cannot send to other i
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.
 
-### TOK-021: Token transactions need the identity's wallet [Implemented]
-**Persona:** Alex, Jordan
+### TOK-021: Token transactions go through the identity's wallet when it has one [Implemented]
+**Persona:** Alex, Jordan, Priya
 
-As a user, I want to be told up front when an identity cannot send token transactions, so that I do not fill in a form the network step will refuse.
+As a user, I want token transactions to use the wallet that holds my identity, and to be told up front when that wallet is not ready, so that I do not fill in a form the network step will refuse.
 
-- Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) are sent through the wallet in this app that holds the identity.
-- An identity no wallet in this app holds still shows its token balances, rewards and claims; My Tokens marks it "View only" and its transaction buttons are disabled with the reason.
-- Opening a token action screen for such an identity explains what to do (add or import the wallet that holds it) instead of showing the form.
-- When the identity's wallet is known but not loaded yet, the reason asks to unlock the wallet or wait for it to load.
+- Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) of an identity that a wallet in this app holds are sent through that wallet.
+- An identity that no wallet in this app holds (masternode, evonode and key-only identities) sends them signed with its own keys; it needs no wallet.
+- When the identity's wallet is known but not loaded yet, My Tokens marks the identity "View only" with its transaction buttons disabled, and token action screens show the reason (unlock the wallet or wait for it to load) instead of the form.
 
 ## Contracts and Documents (DOC)
 
@@ -1965,6 +1965,7 @@ As a masternode operator, I want to open the key screen for a node, so that I ca
 As an evonode operator, I want to jump to token-reward claiming from the node's detail view, so that I can collect rewards my evonode earned.
 
 - An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
+- The claim is signed with the evonode identity's own keys; no wallet is needed.
 - The action is hidden entirely on a plain Masternode's detail view.
 
 ### MN-010: Keep the Masternodes tab consistent across a network switch [Implemented]

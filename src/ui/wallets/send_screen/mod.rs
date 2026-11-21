@@ -2966,7 +2966,12 @@ impl WalletSendScreen {
                 _ => AdvancedSourceType::Core,
             }
         };
-        let ticked: BTreeMap<String, String> = self.form.ticked_advanced().into_iter().collect();
+        // Ticks and amounts of a hidden Advanced panel do not apply.
+        let ticked: BTreeMap<String, String> = if advanced {
+            self.form.ticked_advanced().into_iter().collect()
+        } else {
+            BTreeMap::new()
+        };
         let network = self.app_context.network;
         match self.advanced_source_type {
             AdvancedSourceType::Core => {
@@ -9208,6 +9213,46 @@ mod tests {
             amount: "0.00000000001".to_string(),
         };
         assert_eq!(screen.requested_credits(), Some(124));
+    }
+
+    /// Amounts typed under a hidden Advanced panel do not limit a Core
+    /// payment to several recipients: each address offers its whole balance.
+    #[test]
+    fn hidden_advanced_amounts_do_not_limit_several_core_recipients() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let funded = testnet_core_address(9).to_string();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Advanced, PayFromKind::Core);
+        screen.form.set_advanced_ticked(&funded, true);
+        screen.form.set_advanced_amount(&funded, "0.1".to_string());
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        screen.sync_explicit_payment();
+
+        let inputs: Vec<(String, String)> = screen
+            .core_inputs
+            .iter()
+            .map(|input| (input.address.to_string(), input.amount.clone()))
+            .collect();
+        assert_eq!(
+            inputs,
+            vec![(
+                funded,
+                Amount::dash_from_duffs(200_000_000).to_string_without_unit()
+            )]
+        );
     }
 
     /// Only the answer to the awaited quote request can ask for an unlock.

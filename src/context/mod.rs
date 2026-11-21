@@ -78,7 +78,8 @@ use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
-pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
+/// Stack budget for SDK proof verification on worker and blocking threads.
+pub const SDK_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
 type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
@@ -1280,10 +1281,9 @@ impl AppContext {
         drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK. The
+        // Rebind the provider to hold the new AppContext reference. The
         // clone shares the provider's state, so binding it binds the one the
-        // context holds.
+        // context and the new SDK hold.
         provider.bind_app_context(self.clone());
 
         Ok(())

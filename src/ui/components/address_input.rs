@@ -479,7 +479,8 @@ impl AddressInput {
         self
     }
 
-    /// Set the label displayed above the input field.
+    /// Set the label displayed above the input field; it also names the field
+    /// for screen readers, which otherwise hear "Address".
     pub fn with_label(mut self, label: impl Into<WidgetText>) -> Self {
         self.label = Some(label.into());
         self
@@ -1024,9 +1025,7 @@ impl AddressInput {
         let hint_text = self.effective_hint_text();
         let resp = ui.vertical(|ui| {
             // Label
-            if let Some(label) = &self.label {
-                ui.label(label.clone());
-            }
+            let label_id = self.label.as_ref().map(|label| ui.label(label.clone()).id);
 
             // Input row
             let text_response = ui
@@ -1054,7 +1053,9 @@ impl AddressInput {
                                         self.selected_type_filter = Some(kind);
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .accessible_name("Address type");
                     }
 
                     // Text input
@@ -1068,7 +1069,11 @@ impl AddressInput {
                     } else {
                         text_edit = text_edit.desired_width(f32::INFINITY);
                     }
-                    ui.add(text_edit)
+                    let response = ui.add(text_edit);
+                    match label_id {
+                        Some(label_id) => response.labelled_by(label_id),
+                        None => response.accessible_name("Address"),
+                    }
                 })
                 .inner;
             if std::mem::take(&mut self.focus_requested) {

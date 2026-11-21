@@ -88,8 +88,11 @@ impl AutoAcceptProofData {
             key_data_base58.ok_or("Missing proof key data in QR code".to_string())?;
 
         // Decode the key data from base58
-        let key_data = dash_sdk::dpp::dashcore::base58::decode(&key_data_base58)
-            .map_err(|e| format!("Invalid base58 key data: {}", e))?;
+        let key_data = dash_sdk::dpp::platform_value::string_encoding::decode(
+            &key_data_base58,
+            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+        )
+        .map_err(|e| format!("Invalid base58 key data: {}", e))?;
 
         // Parse key data format: key_type (1) + timestamp (4) + key_size (1) + key (32-64)
         if key_data.len() < 38 {

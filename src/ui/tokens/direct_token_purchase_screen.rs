@@ -50,6 +50,15 @@ pub enum PurchaseTokensStatus {
     Complete,
 }
 
+/// An open purchase confirmation and the terms it shows: the amount and the
+/// agreed price are fixed when the dialog opens, and exactly those are sent on
+/// confirm, even if a later pricing reply recalculates the price.
+struct PendingPurchase {
+    dialog: ConfirmationDialog,
+    amount: u64,
+    total_agreed_price: Credits,
+}
+
 /// A UI Screen for purchasing tokens from an existing token contract
 pub struct PurchaseTokenScreen {
     pub app_context: Arc<AppContext>,
@@ -65,8 +74,8 @@ pub struct PurchaseTokenScreen {
     calculated_price_credits: Option<Credits>,
     pricing_fetch_attempted: bool,
 
-    /// Screen stuff
-    confirmation_dialog: Option<ConfirmationDialog>,
+    /// The open purchase confirmation and the terms it shows.
+    confirmation_dialog: Option<PendingPurchase>,
     status: PurchaseTokensStatus,
 
     // Wallet fields
@@ -264,75 +273,89 @@ impl PurchaseTokenScreen {
         )
     }
 
-    /// Renders a confirm popup with the final "Are you sure?" step
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let Some(amount) = self.amount_to_purchase_value.as_ref() else {
-            self.status = PurchaseTokensStatus::Error;
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Please enter a valid amount.",
-                MessageType::Error,
-            );
-            self.confirmation_dialog = None;
-            return AppAction::None;
-        };
-
-        let Some(total_price_credits) = self.calculated_price_credits else {
+    /// Opens the purchase confirmation for the amount and price shown now.
+    fn open_purchase_confirmation(&mut self) {
+        let (Some(amount), Some(total_price_credits)) = (
+            self.amount_to_purchase_value.as_ref(),
+            self.calculated_price_credits,
+        ) else {
             self.status = PurchaseTokensStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Cannot calculate total price. Please fetch token pricing first.",
                 MessageType::Error,
             );
-            self.confirmation_dialog = None;
+            return;
+        };
+        let total_price_dash =
+            Amount::new(total_price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+        self.confirmation_dialog = Some(PendingPurchase {
+            dialog: ConfirmationDialog::new(
+                "Confirm Purchase".to_string(),
+                format!(
+                    "Are you sure you want to purchase {} for {} ({} Credits)?",
+                    amount, total_price_dash, total_price_credits
+                ),
+            ),
+            amount: amount.value(),
+            total_agreed_price: total_price_credits,
+        });
+    }
+
+    /// Renders a confirm popup with the final "Are you sure?" step
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.as_mut() else {
             return AppAction::None;
         };
 
-        let Some(dialog) = self.confirmation_dialog.as_mut() else {
-            return AppAction::None;
-        };
-
-        match dialog.show(ui).inner.dialog_response {
-            Some(ConfirmationStatus::Confirmed) => {
-                let Some(signing_key) =
-                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
-                else {
-                    return AppAction::None;
-                };
-
-                self.confirmation_dialog = None;
-                self.status = PurchaseTokensStatus::WaitingForResult;
-                let handle = MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Purchasing tokens...",
-                    MessageType::Info,
-                );
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-
-                AppAction::BackendTasks(
-                    vec![
-                        BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
-                            identity: self.identity_token_info.identity.clone(),
-                            data_contract: Arc::new(
-                                self.identity_token_info.data_contract.contract.clone(),
-                            ),
-                            token_position: self.identity_token_info.token_position,
-                            signing_key,
-                            amount: amount.value(),
-                            total_agreed_price: total_price_credits,
-                        })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                    ],
-                    BackendTasksExecutionMode::Sequential,
-                )
-            }
+        match pending.dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirm_purchase(),
             Some(ConfirmationStatus::Canceled) => {
                 self.confirmation_dialog = None;
                 AppAction::None
             }
             None => AppAction::None,
         }
+    }
+
+    /// The user confirmed: send the purchase the confirmation was opened for.
+    fn confirm_purchase(&mut self) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.as_ref() else {
+            return AppAction::None;
+        };
+        let (amount, total_agreed_price) = (pending.amount, pending.total_agreed_price);
+
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
+            return AppAction::None;
+        };
+
+        self.confirmation_dialog = None;
+        self.status = PurchaseTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Purchasing tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
+
+        AppAction::BackendTasks(
+            vec![
+                BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
+                    identity: self.identity_token_info.identity.clone(),
+                    data_contract: Arc::new(
+                        self.identity_token_info.data_contract.contract.clone(),
+                    ),
+                    token_position: self.identity_token_info.token_position,
+                    signing_key,
+                    amount,
+                    total_agreed_price,
+                })),
+                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            ],
+            BackendTasksExecutionMode::Sequential,
+        )
     }
 
     /// Renders a simple "Success!" screen after completion
@@ -646,29 +669,7 @@ impl ScreenLike for PurchaseTokenScreen {
                     if ComponentStyles::add_primary_button(ui, purchase_text).clicked()
                         && self.confirmation_dialog.is_none()
                     {
-                        if let (Some(amount), Some(total_price_credits)) = (
-                            self.amount_to_purchase_value.as_ref(),
-                            self.calculated_price_credits,
-                        ) {
-                            let total_price_dash =
-                                Amount::new(total_price_credits, DASH_DECIMAL_PLACES)
-                                    .with_unit_name("DASH");
-
-                            self.confirmation_dialog = Some(ConfirmationDialog::new(
-                                "Confirm Purchase".to_string(),
-                                format!(
-                                    "Are you sure you want to purchase {} for {} ({} Credits)?",
-                                    amount, total_price_dash, total_price_credits
-                                ),
-                            ));
-                        } else {
-                            self.status = PurchaseTokensStatus::Error;
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                "Cannot calculate total price. Please fetch token pricing first.",
-                                MessageType::Error,
-                            );
-                        }
+                        self.open_purchase_confirmation();
                     }
                 } else {
                     ComponentStyles::add_primary_button_enabled(ui, false, purchase_text)
@@ -873,5 +874,62 @@ mod tests {
                 .data()
                 .supports_action(egui::accesskit::Action::Click)
         }));
+    }
+
+    /// Regression: Confirm sent the price recalculated from a pricing reply
+    /// that arrived while the dialog was open. Platform charges up to the
+    /// agreed price, so the user could pay more than the dialog showed.
+    #[test]
+    fn confirming_sends_the_price_the_confirmation_showed() {
+        use super::*;
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::model::qualified_contract::QualifiedContract;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::identity::SecurityLevel;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let key = auth_key(1, SecurityLevel::CRITICAL);
+        let info = IdentityTokenInfo {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(std::slice::from_ref(&key)),
+            data_contract: QualifiedContract {
+                contract: ctx.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = PurchaseTokenScreen::new(info, &ctx);
+        screen.selected_key = TokenSigningKey::automatic(Some(key));
+        let pricing = |price| BackendTaskSuccessResult::TokenPricing {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            prices: Some(TokenPricingSchedule::SinglePrice(price)),
+        };
+        screen.amount_to_purchase_value = Some(Amount::new(10, 0));
+        screen.display_task_result(pricing(5));
+        screen.open_purchase_confirmation();
+        assert!(screen.confirmation_dialog.is_some());
+
+        screen.display_task_result(pricing(9));
+        assert_eq!(screen.calculated_price_credits, Some(90));
+
+        let AppAction::BackendTasks(tasks, _) = screen.confirm_purchase() else {
+            panic!("the confirmed purchase is sent");
+        };
+        let Some(BackendTask::TokenTask(task)) = tasks.first() else {
+            panic!("the purchase comes first");
+        };
+        let TokenTask::PurchaseTokens {
+            amount,
+            total_agreed_price,
+            ..
+        } = task.as_ref()
+        else {
+            panic!("a purchase was confirmed");
+        };
+        assert_eq!((*amount, *total_agreed_price), (10, 50));
+        assert!(screen.confirmation_dialog.is_none());
     }
 }

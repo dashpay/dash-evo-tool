@@ -584,15 +584,21 @@ fn startup_failure_message(log_paths: &[PathBuf], causes: &[&dyn std::error::Err
     message
 }
 
-/// Writes a startup-failure notice with `causes` to the real terminal.
+/// Writes a startup-failure notice with `causes` to the real terminal and to
+/// the log file.
 ///
-/// Best-effort and independent of tracing: resolves the log paths, builds the
-/// message, and writes it to the preserved terminal stderr (fd 2 is redirected
-/// to the log file during a normal run). Never panics; write errors are ignored.
+/// Best-effort and independent of tracing, whose filter may drop everything:
+/// resolves the log paths, builds the message, writes it to the preserved
+/// terminal stderr (fd 2 is redirected to the log file during a normal run),
+/// which may be /dev/null for a launch without a terminal, and appends it to
+/// the open log file. Never panics; write errors are ignored.
 pub fn report_startup_failure_to_terminal(causes: &[&dyn std::error::Error]) {
     let log_paths: Vec<PathBuf> = log_file_path().into_iter().collect();
     let message = startup_failure_message(&log_paths, causes);
     write_to_terminal(message.as_bytes());
+    if let Some((_, file)) = LOG_FILE.get() {
+        let _ = (&*file).write_all(message.as_bytes());
+    }
 }
 
 /// Writes `bytes` to the real terminal, best-effort.

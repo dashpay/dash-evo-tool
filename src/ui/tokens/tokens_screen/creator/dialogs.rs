@@ -83,7 +83,7 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
                 rows.push((format!("{} · administrator", kind.label()), before.administrator.label(), after.administrator.label()));
                 for (caption, old, new) in [
                     ("allow disabling action", before.allow_disable_action, after.allow_disable_action),
-                    ("allow removing administrator", before.allow_remove_administrator, after.allow_remove_administrator),
+                    ("allow removing administrator", before.allows_removing_administrators(), after.allows_removing_administrators()),
                     ("allow replacing administrator", before.allow_replace_administrator, after.allow_replace_administrator),
                 ] {
                     rows.push((format!("{} · {caption}", kind.label()), supply::yes(old).into(), supply::yes(new).into()));
@@ -319,6 +319,27 @@ mod tests {
             "https://drive.google.com/drive/folders/1ECWS2d_-OeHXTW-Ur-qFlf_mZzYUIqQ1?usp=sharing"
         );
     }
+    /// Platform rejects every recurring-distribution change after creation.
+    #[test]
+    fn recurring_help_never_promises_a_later_change() {
+        for key in ["recurring", RuleKind::Recurring.help_key()] {
+            let topic = &TOPICS[key];
+            for text in [
+                Some(&topic.body),
+                Some(&topic.example),
+                topic.consequence.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(
+                    !text.contains("could be enabled") && !text.contains("can enable"),
+                    "{key}: {text}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn rule_help_titles_match_the_rule_labels() {
         for kind in RuleKind::ALL {

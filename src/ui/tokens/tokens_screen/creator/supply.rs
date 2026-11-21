@@ -147,12 +147,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             let visible = match state.rule_filter {
                 RuleFilter::All => true,
                 RuleFilter::Enabled => rule.performer != ActorDraft::NoOne,
-                RuleFilter::Changeable => {
-                    rule.administrator != ActorDraft::NoOne
-                        || rule.allow_disable_action
-                        || rule.allow_remove_administrator
-                        || rule.allow_replace_administrator
-                }
+                RuleFilter::Changeable => rule.administrator != ActorDraft::NoOne,
             };
             if !visible {
                 continue;
@@ -170,10 +165,10 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             ui.small(format!(
                 "Disable action: {} · Remove administrator: {} · Replace administrator: {}",
                 yes(rule.allow_disable_action),
-                yes(rule.allow_remove_administrator),
+                yes(rule.allows_removing_administrators()),
                 yes(rule.allow_replace_administrator)
             ));
-            if rule.permanently_disabled() {
+            if rule.is_fixed() {
                 hint(ui, "Permanently disabled by this configuration.");
             }
         }

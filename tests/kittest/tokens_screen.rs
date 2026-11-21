@@ -581,6 +581,54 @@ impl TokenFixture {
         self.harness.run_steps(5);
     }
 
+    /// Replaces the text of the field named `label` and checks that it took.
+    fn set_named_input(&mut self, label: &str, text: &str) {
+        let field = |harness: &Harness<'static, dash_evo_tool::app::AppState>| {
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::TextInput, label)
+                .next()
+                .unwrap_or_else(|| panic!("no {label:?} field"))
+                .accesskit_node()
+                .value()
+        };
+        self.harness
+            .query_all_by_role_and_label(egui::accesskit::Role::TextInput, label)
+            .next()
+            .unwrap_or_else(|| panic!("no {label:?} field"))
+            .set_text_value_accesskit(text);
+        self.harness.run_steps(3);
+        assert_eq!(field(&self.harness).as_deref(), Some(text), "{label:?}");
+    }
+
+    /// The recipient, raw amount and dispatch context of each captured
+    /// token send.
+    fn captured_sends(
+        &self,
+    ) -> Vec<(
+        Identifier,
+        u64,
+        dash_evo_tool::backend_task::BackendTaskContext,
+    )> {
+        use dash_evo_tool::backend_task::BackendTask;
+        use dash_evo_tool::backend_task::tokens::TokenTask;
+        self.harness
+            .state()
+            .test_captured_dispatches()
+            .iter()
+            .filter_map(|(task, context)| match task {
+                BackendTask::TokenTask(task) => match task.as_ref() {
+                    TokenTask::TransferTokens {
+                        recipient_id,
+                        amount,
+                        ..
+                    } => Some((*recipient_id, *amount, context.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
     fn confirmation_open(&self) -> bool {
         self.harness
             .query_all_by_role(egui::accesskit::Role::Window)
@@ -1368,8 +1416,6 @@ fn token_subnav_labels_stay_on_one_line() {
 /// is edited while it is open.
 #[test]
 fn the_send_confirmation_dispatches_what_it_shows() {
-    use dash_evo_tool::backend_task::BackendTask;
-    use dash_evo_tool::backend_task::tokens::TokenTask;
     use dash_evo_tool::model::amount::Amount;
     use dash_evo_tool::ui::tokens::transfer_tokens_screen::{SEND_LABEL, send_question};
     use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
@@ -1388,8 +1434,8 @@ fn the_send_confirmation_dispatches_what_it_shows() {
         let shown = Identifier::from([0x55; 32]);
         let other = Identifier::from([0x66; 32]).to_string(Encoding::Base58);
         f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
-        f.fill_text_input(0, "1");
-        f.fill_text_input(1, &shown.to_string(Encoding::Base58));
+        f.set_named_input("Amount:", "1");
+        f.set_named_input("Identity ID", &shown.to_string(Encoding::Base58));
         f.click_button(SEND_LABEL);
         let amount = Amount::new(100_000_000, 8).with_unit_name(SMOKE_TOKEN);
         let question = send_question(&amount, &shown.to_string(Encoding::Base58));
@@ -1420,24 +1466,12 @@ fn the_send_confirmation_dispatches_what_it_shows() {
         );
         f.click_button(SEND_LABEL);
 
-        let dispatched: Vec<_> = f
-            .harness
-            .state()
-            .test_captured_dispatches()
-            .iter()
-            .filter_map(|(task, _)| match task {
-                BackendTask::TokenTask(task) => match task.as_ref() {
-                    TokenTask::TransferTokens {
-                        recipient_id,
-                        amount,
-                        ..
-                    } => Some((*recipient_id, *amount)),
-                    _ => None,
-                },
-                _ => None,
-            })
+        let sent: Vec<_> = f
+            .captured_sends()
+            .into_iter()
+            .map(|(recipient, amount, _)| (recipient, amount))
             .collect();
-        assert_eq!(dispatched, vec![(shown, 100_000_000)]);
+        assert_eq!(sent, vec![(shown, 100_000_000)]);
     });
 }
 
@@ -1446,6 +1480,7 @@ fn the_send_confirmation_dispatches_what_it_shows() {
 /// edited while the send runs.
 #[test]
 fn the_send_screen_reports_the_confirmed_recipient() {
+    use dash_evo_tool::app::TaskResult;
     use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
     use dash_evo_tool::model::amount::Amount;
     use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
@@ -1464,10 +1499,11 @@ fn the_send_screen_reports_the_confirmed_recipient() {
         f.app_context
             .update_local_qualified_identity(&sender)
             .expect("fund the sender");
-        let recipient = Identifier::from([0x55; 32]).to_string(Encoding::Base58);
+        let recipient_id = Identifier::from([0x55; 32]);
+        let recipient = recipient_id.to_string(Encoding::Base58);
         f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
-        f.fill_text_input(0, "1");
-        f.fill_text_input(1, &recipient);
+        f.set_named_input("Amount:", "1");
+        f.set_named_input("Identity ID", &recipient);
         f.click_button(SEND_LABEL);
         let amount = Amount::new(100_000_000, 8).with_unit_name(SMOKE_TOKEN);
         assert!(f.harness.query_by_label(CONFIRM_SEND_TITLE).is_some());
@@ -1478,18 +1514,26 @@ fn the_send_screen_reports_the_confirmed_recipient() {
             "the confirmation names the amount and the recipient"
         );
         f.click_button(SEND_LABEL);
-        assert_eq!(f.harness.state().test_captured_dispatches().len(), 1);
+        let sends = f.captured_sends();
+        let [(sent_to, sent_amount, context)] = &sends[..] else {
+            panic!("expected one token send");
+        };
+        assert_eq!((*sent_to, *sent_amount), (recipient_id, 100_000_000));
 
         let other = Identifier::from([0x66; 32]).to_string(Encoding::Base58);
-        f.fill_text_input(1, &format!("{other}x"));
-        f.harness
-            .state_mut()
-            .screen_stack
-            .last_mut()
-            .expect("the send screen")
-            .display_task_result(BackendTaskSuccessResult::TransferredTokens(
-                FeeResult::estimated_only(0),
-            ));
+        f.set_named_input("Identity ID", &other);
+        rt.block_on(
+            f.harness
+                .state()
+                .task_result_sender
+                .send(TaskResult::Success {
+                    context: context.clone(),
+                    result: Box::new(BackendTaskSuccessResult::TransferredTokens(
+                        FeeResult::estimated_only(0),
+                    )),
+                }),
+        )
+        .expect("deliver the send result");
         f.harness.run_steps(3);
         assert!(
             f.harness

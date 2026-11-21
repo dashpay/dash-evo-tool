@@ -16,6 +16,7 @@ use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
@@ -125,7 +126,14 @@ impl TokenAction for MintAction {
     const CONFIRM_TITLE: &'static str = "Confirm Mint";
 
     fn new(info: &IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let rules = info.token_config.distribution_rules();
+        // The rules of the contract the mint is signed with, which Platform
+        // applies; the token registry's copy only when that contract lacks it.
+        let rules = info
+            .data_contract
+            .contract
+            .expected_token_configuration(info.token_position)
+            .unwrap_or(&info.token_config)
+            .distribution_rules();
         let has_default_destination = rules.new_tokens_destination_identity().is_some();
         let allow_choosing_destination = rules.minting_allow_choosing_destination();
         MintAction {
@@ -193,7 +201,10 @@ impl TokenAction for MintAction {
             self.render_amount_input(ui, ctx);
         }
 
-        let distribution_rules = ctx.info.token_config.distribution_rules();
+        let destination = self
+            .distribution_rules
+            .new_tokens_destination_identity()
+            .copied();
         if ctx.is_group_signing {
             // The co-signer approves the proposal as it stands, so its
             // recipient is shown but cannot be changed.
@@ -203,12 +214,10 @@ impl TokenAction for MintAction {
             );
             ui.add_space(5.0);
             ui.label(self.proposed_recipient_text());
-        } else if distribution_rules.minting_allow_choosing_destination() {
+        } else if self.allow_choosing_destination {
             // A token that forbids choosing mints to its configured
             // destination for every role, so no one gets a field it ignores.
-            let destination_optional = distribution_rules
-                .new_tokens_destination_identity()
-                .is_some();
+            let destination_optional = destination.is_some();
 
             ui.add_space(10.0);
             ui.separator();
@@ -222,7 +231,7 @@ impl TokenAction for MintAction {
             }
             ui.add_space(5.0);
             self.render_recipient_input(ui, ctx);
-        } else if let Some(destination) = distribution_rules.new_tokens_destination_identity() {
+        } else if let Some(destination) = destination {
             ui.add_space(10.0);
             ui.label(format!(
                 "New tokens go to this token's destination identity {destination}.",
@@ -473,6 +482,53 @@ mod tests {
             action.proposed_recipient_text(),
             "This proposal does not name a recipient."
         );
+    }
+
+    /// The mint is signed with the contract in `info.data_contract`, so the
+    /// recipient rules come from that contract even when the token registry's
+    /// copy (`info.token_config`) says otherwise, and the confirmation names
+    /// the identity Platform will credit.
+    #[test]
+    fn the_recipient_follows_the_contract_the_mint_is_signed_with() {
+        use dash_sdk::dpp::data_contract::TokenConfiguration as ContractTokenConfiguration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        // The registry lets the minter choose and has no destination; the
+        // signed contract forbids choosing and mints to `destination`.
+        let mut info = token_info(&context, None, true);
+        let destination = Identifier::from([5; 32]);
+        let mut signed = TokenConfigurationV0::default_most_restrictive();
+        signed
+            .distribution_rules
+            .set_new_tokens_destination_identity(Some(destination));
+        signed
+            .distribution_rules
+            .set_minting_allow_choosing_destination(false);
+        let dash_sdk::platform::DataContract::V1(contract) = &mut info.data_contract.contract
+        else {
+            panic!("a version 1 contract");
+        };
+        contract
+            .tokens
+            .insert(0, ContractTokenConfiguration::V0(signed));
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: &context,
+            is_group_signing: false,
+        };
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+        action.recipient_identity_id = Identifier::from([6; 32]).to_string(Encoding::Base58);
+
+        assert!(action.inputs_ready());
+        assert!(
+            action
+                .confirm_message(&ctx)
+                .ends_with(&format!("{}?", destination.to_string(Encoding::Base58))),
+            "the confirmation names the signed contract's destination"
+        );
+        assert_eq!(built_recipient(&mut action, &ctx), None);
     }
 
     /// Without a configured destination the recipient stays required.

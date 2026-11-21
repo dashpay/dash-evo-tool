@@ -812,7 +812,10 @@ impl WalletSendScreen {
         });
     }
 
-    fn receive_chips(&mut self, to_wallet: Option<WalletSeedHash>) -> Vec<ChoiceChip<ReceiveInto>> {
+    pub(super) fn receive_chips(
+        &mut self,
+        to_wallet: Option<WalletSeedHash>,
+    ) -> Vec<ChoiceChip<ReceiveInto>> {
         let same_wallet = to_wallet.is_some() && to_wallet == self.selected_wallet_seed_hash;
         let explicit = self.form.explicit_source_kind().or_else(|| {
             self.identity_flow
@@ -838,7 +841,8 @@ impl WalletSendScreen {
         for kind in kinds {
             let mut chip = ChoiceChip::new(ReceiveInto::from_kind(kind), kind_label(kind))
                 .with_tooltip(kind_tooltip(kind));
-            if same_wallet && explicit == Some(kind) {
+            // Identities are separate accounts: one may pay another.
+            if same_wallet && explicit == Some(kind) && kind != PayFromKind::Identity {
                 chip = chip.disabled(PAYING_FROM_THIS_BALANCE);
             } else if let Some(source) = explicit {
                 match crate::model::send_route::route_refusal(

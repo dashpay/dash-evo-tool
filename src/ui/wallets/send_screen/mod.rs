@@ -9348,6 +9348,48 @@ mod tests {
         assert!(screen.route_requests().iter().any(is_address_request));
     }
 
+    /// Under My wallets, an identity can pay another identity of the same
+    /// wallet: identities are separate accounts.
+    #[test]
+    fn an_identity_can_pay_another_identity_of_the_same_wallet() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        let payer = sender_holding_a_transfer_key();
+        let payee = sender_holding_a_transfer_key();
+        screen.identities_by_wallet = Some(BTreeMap::from([(
+            seed_hash,
+            vec![payer.clone(), payee.clone()],
+        )]));
+        screen
+            .form
+            .choose_pay_from(PayFrom::Identity, PayFromKind::Identity);
+        screen.form.choose_pay_identity(payer.identity.id());
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, Some(seed_hash), PayFromKind::Identity);
+        screen.form.choose_receive_into(
+            ReceiveInto::from_kind(PayFromKind::Identity),
+            PayFromKind::Identity,
+        );
+        screen.form.choose_receive_identity(payee.identity.id());
+        screen.amount = Some(Amount::new_dash(0.1));
+        screen.sync_route();
+
+        let identity_chip = screen
+            .receive_chips(Some(seed_hash))
+            .into_iter()
+            .find(|chip| *chip.value() == ReceiveInto::from_kind(PayFromKind::Identity))
+            .expect("the Identity chip");
+        assert!(identity_chip.is_enabled(), "{identity_chip:?}");
+        assert_eq!(screen.own_balance_refusal(), None);
+        assert!(matches!(
+            &screen.validated_destination,
+            Some(ValidatedAddress::Identity { id, .. }) if *id == payee.identity.id()
+        ));
+    }
+
     /// Only the answer to the awaited quote request can ask for an unlock.
     #[test]
     fn a_superseded_locked_quote_reply_asks_for_no_unlock() {

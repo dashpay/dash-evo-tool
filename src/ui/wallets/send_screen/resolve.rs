@@ -740,7 +740,8 @@ impl WalletSendScreen {
         AutoDestination {
             kind: self.destination_kind(),
             shielded_is_own_pool,
-            same_account: same_wallet.then_some(kind),
+            // Identities are separate accounts: one may pay another.
+            same_account: (same_wallet && kind != PayFromKind::Identity).then_some(kind),
         }
     }
 

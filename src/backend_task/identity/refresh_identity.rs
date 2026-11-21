@@ -37,7 +37,8 @@ impl AppContext {
         // snapshot written back would undo whatever changed while the fetch
         // ran, such as a removed key whose vault secret is already gone.
         // TODO(platform-wallet): upstream `ManagedIdentity::take_fetched_identity`
-        // applies the same rule; use it once `IdentityManager` holds the record.
+        // takes a fetch at the stored revision or newer and keeps the cached
+        // keys for an older one; use it once `IdentityManager` holds the record.
         let qualified_identity_to_update = self.edit_local_qualified_identity_observed(
             &refreshed_identity_id,
             provenance,
@@ -50,7 +51,7 @@ impl AppContext {
                         stored.status.update(IdentityStatus::Active);
                     }
                     Some(fetched) => {
-                        stored.identity = super::with_stored_public_keys(fetched, &stored.identity);
+                        stored.identity = fetched;
                         stored.status.update(IdentityStatus::Active);
                     }
                     None => stored.status.update(IdentityStatus::NotFound),
@@ -452,38 +453,6 @@ mod concurrent_refresh_tests {
         assert_eq!(after.identity.revision(), added.identity.revision());
         assert_eq!(after.identity.balance(), 9_999);
         staged.ctx.wallet_backend().unwrap().shutdown().await;
-    }
-
-    /// A newer identity from Platform replaces the stored one, but a stored
-    /// public key it lacks is kept: keys only accumulate on-chain.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_newer_fetched_identity_keeps_a_stored_key_it_lacks() {
-        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
-        let ctx = &staged.ctx;
-        let mut stored = ctx
-            .get_local_qualified_identity(&staged.id)
-            .unwrap()
-            .unwrap();
-        let mut fetched = stored.identity.clone();
-        stored.identity.add_public_key(random_key(9));
-        ctx.update_local_qualified_identity(&stored).unwrap();
-        fetched.add_public_key(random_key(10));
-        fetched.bump_revision();
-        fetched.bump_revision();
-        let sdk = sdk_returning(&fetched, 10).await;
-
-        ctx.refresh_identity(&sdk, stored, sender_for(ctx))
-            .await
-            .expect("the refresh succeeds");
-
-        let after = ctx
-            .get_local_qualified_identity(&staged.id)
-            .unwrap()
-            .unwrap();
-        let key_ids: Vec<_> = after.identity.public_keys().keys().copied().collect();
-        assert_eq!(key_ids, vec![9, 10]);
-        assert_eq!(after.identity.revision(), fetched.revision());
-        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     fn random_key(id: dash_sdk::dpp::identity::KeyID) -> dash_sdk::platform::IdentityPublicKey {

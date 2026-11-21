@@ -1135,10 +1135,6 @@ impl AppContext {
             }
         }
 
-        // Update the identity balance in memory
-        let mut updated_identity = qualified_identity;
-        updated_identity.identity.set_balance(new_balance);
-
         // Calculate actual fee
         let total_outputs: Credits = outputs.values().sum();
         let actual_fee = balance_before
@@ -1160,7 +1156,7 @@ impl AppContext {
         }
 
         self.store_observed_balance(
-            &updated_identity.identity.id(),
+            &identity.id(),
             new_balance,
             BalanceProvenance::ObservedAt(height),
         );
@@ -1219,17 +1215,6 @@ impl AppContext {
             None => topped_up,
         }
     }
-}
-
-/// `fetched` with every public key of `stored` it lacks: keys only accumulate
-/// on-chain, so a missing one comes from an older read, not a removal.
-fn with_stored_public_keys(mut fetched: Identity, stored: &Identity) -> Identity {
-    for (key_id, stored_key) in stored.public_keys() {
-        if !fetched.public_keys().contains_key(key_id) {
-            fetched.add_public_key(stored_key.clone());
-        }
-    }
-    fetched
 }
 
 #[cfg(test)]

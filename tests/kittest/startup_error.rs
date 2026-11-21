@@ -220,7 +220,7 @@ fn copy_details_copies_technical_details() {
 /// carry the user's folder names.
 #[test]
 fn copy_details_hides_the_home_folder() {
-    let home = directories::UserDirs::new()
+    let home = directories::BaseDirs::new()
         .expect("home folder")
         .home_dir()
         .display()

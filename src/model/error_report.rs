@@ -167,7 +167,7 @@ impl QuestionEnvironment {
             version: crate::VERSION.to_owned(),
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
-            home_dir: directories::UserDirs::new().map(|dirs| dirs.home_dir().to_owned()),
+            home_dir: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_owned()),
             user_name: std::env::var("USER")
                 .or_else(|_| std::env::var("USERNAME"))
                 .ok(),

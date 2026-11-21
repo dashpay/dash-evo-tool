@@ -3901,11 +3901,16 @@ pub enum TaskError {
 const DATA_FOLDER_ACCESS_DENIED: &str = "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application.";
 
 impl TaskError {
-    /// A failure to open or prepare the app database: read-only, permission
-    /// and access-refused codes get [`Self::DatabaseAccessDenied`], the rest
-    /// [`Self::Database`].
-    pub fn from_database_open_error(source: rusqlite::Error) -> Self {
-        use rusqlite::ErrorCode;
+    /// A failure to open or prepare the app database at `path`: read-only,
+    /// permission and access-refused codes get [`Self::DatabaseAccessDenied`],
+    /// the rest, and a directory in the file's place, [`Self::Database`].
+    pub fn from_database_open_error(source: rusqlite::Error, path: &std::path::Path) -> Self {
+        use rusqlite::{ErrorCode, ffi};
+        let is_dir = matches!(&source, rusqlite::Error::SqliteFailure(e, _)
+            if e.extended_code == ffi::SQLITE_CANTOPEN_ISDIR);
+        if is_dir || path.is_dir() {
+            return Self::Database { source };
+        }
         match source.sqlite_error_code() {
             Some(
                 ErrorCode::ReadOnly
@@ -5347,6 +5352,7 @@ mod tests {
     fn database_open_errors_name_permission_problems() {
         use rusqlite::ffi;
         let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+        let no_dir = std::path::Path::new("missing/data.db");
         let folder_message = TaskError::DataFolderAccessDenied {
             source: crate::boot::PrepareEnvironmentError::Locate {
                 source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
@@ -5359,7 +5365,7 @@ mod tests {
             ffi::SQLITE_PERM,
             ffi::SQLITE_AUTH,
         ] {
-            let error = TaskError::from_database_open_error(sqlite(code));
+            let error = TaskError::from_database_open_error(sqlite(code), no_dir);
             assert!(
                 matches!(error, TaskError::DatabaseAccessDenied { .. }),
                 "{code}: {error:?}"
@@ -5368,10 +5374,36 @@ mod tests {
         }
         for source in [sqlite(ffi::SQLITE_FULL), rusqlite::Error::InvalidQuery] {
             assert!(matches!(
-                TaskError::from_database_open_error(source),
+                TaskError::from_database_open_error(source, no_dir),
                 TaskError::Database { .. }
             ));
         }
+    }
+
+    /// A directory in the database file's place is not a permission problem,
+    /// so it keeps the general database advice.
+    #[test]
+    fn database_path_that_is_a_directory_is_not_access_denied() {
+        use rusqlite::ffi;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir
+            .path()
+            .join(crate::database::legacy_backups::LEGACY_DATABASE);
+        std::fs::create_dir(&db_path).expect("directory at the database path");
+        let source = crate::database::Database::open_legacy_read_only(&db_path)
+            .expect_err("a directory cannot be opened as a database");
+        let error = TaskError::from_database_open_error(source, &db_path);
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+
+        let is_dir =
+            rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CANTOPEN_ISDIR), None);
+        let error =
+            TaskError::from_database_open_error(is_dir, std::path::Path::new("missing/data.db"));
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+
+        let cant_open = rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CANTOPEN), None);
+        let error = TaskError::from_database_open_error(cant_open, &db_path);
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
     }
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;

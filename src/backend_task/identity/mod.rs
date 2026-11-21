@@ -1083,11 +1083,9 @@ impl AppContext {
         let mut updated_identity = qualified_identity.clone();
         updated_identity.identity.set_balance(new_balance);
 
-        // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        let updated_identity = self
+            .store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height))
+            .unwrap_or(updated_identity);
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1162,20 +1160,87 @@ impl AppContext {
             );
         }
 
-        // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        self.store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height));
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+    }
+
+    /// Store the balance `paid` carries after a paid task into the record as
+    /// stored now, so a change made while the task ran (such as a key removed
+    /// in Key Info) is kept. Returns the stored record, with the top-up history
+    /// `paid` carries (kept outside the record). The task already happened, so
+    /// a failed save is only logged; it never reads as a failed task that the
+    /// user might repeat.
+    fn store_paid_balance(
+        &self,
+        paid: &QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) -> Option<QualifiedIdentity> {
+        let id = paid.identity.id();
+        let credits = paid.identity.balance();
+        self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
+            stored.identity.set_balance(credits);
+            Ok(())
+        })
+        .inspect_err(|error| {
+            tracing::warn!(identity_id = %id, ?error, "Balance after a paid task could not be stored locally; it updates on the next identity refresh");
+        })
+        .ok()
+        .map(|mut stored| {
+            stored.top_ups = paid.top_ups.clone();
+            stored
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paid task's network call can outlast a key removed in Key Info;
+    /// storing its new balance must not bring that key back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paid_balance_keeps_a_change_made_while_the_task_ran() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let removed_key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1);
+        let mut paid = read();
+        assert!(paid.private_keys.has(&removed_key));
+        let mut removed = paid.clone();
+        removed.private_keys.remove_at(&removed_key);
+        staged
+            .ctx
+            .update_local_qualified_identity(&removed)
+            .unwrap();
+
+        paid.identity.set_balance(1_234);
+        paid.top_ups.insert(3, 50_000);
+        let stored = staged
+            .ctx
+            .store_paid_balance(&paid, BalanceProvenance::ObservedAt(7))
+            .expect("the balance is stored");
+
+        assert!(!stored.private_keys.has(&removed_key));
+        assert_eq!(stored.top_ups, paid.top_ups, "the caller keeps its top-ups");
+        let after = read();
+        assert!(
+            !after.private_keys.has(&removed_key),
+            "a paid task must not bring back a key removed while it ran"
+        );
+        assert_eq!(after.identity.balance(), 1_234);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
 
     /// RUST-001: every seed-recovery scan must cover the highest derivation
     /// index the Add Key chooser can offer. Once the derived key is on-chain the

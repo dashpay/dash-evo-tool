@@ -73,22 +73,43 @@ impl AppContext {
             );
         }
 
-        let observed = BalanceProvenance::ObservedAt(metadata.height);
         qualified_identity.identity.set_balance(sender_balance);
-
-        if let Some(receiver) = self
-            .load_local_qualified_identities()?
-            .iter_mut()
-            .find(|qi| qi.identity.id() == to_identifier)
-        {
-            receiver.identity.set_balance(receiver_balance);
-            self.update_local_qualified_identity_observed(receiver, observed)?;
-        }
+        self.store_transfer_balances(
+            &qualified_identity,
+            to_identifier,
+            receiver_balance,
+            BalanceProvenance::ObservedAt(metadata.height),
+        );
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
+        Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+    }
 
-        self.update_local_qualified_identity_observed(&mut qualified_identity, observed)
-            .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
+    /// Store the balances a finished transfer reports: the sender's, and the
+    /// receiver's when it is loaded here. The credits already moved, so a
+    /// failed save is only logged.
+    fn store_transfer_balances(
+        &self,
+        sender: &QualifiedIdentity,
+        receiver_id: Identifier,
+        receiver_balance: Credits,
+        observed: BalanceProvenance,
+    ) {
+        match self.load_local_qualified_identities() {
+            Ok(identities) => {
+                if let Some(mut receiver) = identities
+                    .into_iter()
+                    .find(|qi| qi.identity.id() == receiver_id)
+                {
+                    receiver.identity.set_balance(receiver_balance);
+                    self.store_paid_balance(&receiver, observed);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%receiver_id, ?error, "Receiver of a finished transfer could not be read; its balance updates on the next identity refresh");
+            }
+        }
+        self.store_paid_balance(sender, observed);
     }
 }
 
@@ -101,6 +122,48 @@ mod tests {
     };
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    /// Both identities' new balances land on their records as stored now:
+    /// an alias set on either while the transfer ran is kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transfer_stores_both_balances_without_overwriting() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let ctx = &staged.ctx;
+        let receiver_id = Identifier::from([0x5B; 32]);
+        ctx.update_local_qualified_identity(&crate::context::test_support::bare_user_identity(
+            receiver_id,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        ))
+        .unwrap();
+        let mut sender = ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        ctx.set_identity_alias(&staged.id, Some("sender alias"))
+            .unwrap();
+        ctx.set_identity_alias(&receiver_id, Some("receiver alias"))
+            .unwrap();
+
+        sender.identity.set_balance(700);
+        ctx.store_transfer_balances(
+            &sender,
+            receiver_id,
+            1_300,
+            BalanceProvenance::ObservedAt(7),
+        );
+
+        let read = |id| ctx.get_local_qualified_identity(id).unwrap().unwrap();
+        let (sender_after, receiver_after) = (read(&staged.id), read(&receiver_id));
+        assert_eq!(sender_after.alias.as_deref(), Some("sender alias"));
+        assert_eq!(sender_after.identity.balance(), 700);
+        assert_eq!(receiver_after.alias.as_deref(), Some("receiver alias"));
+        assert_eq!(receiver_after.identity.balance(), 1_300);
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
 
     #[test]
     fn transfer_signs_with_the_active_key_held_in_this_app() {

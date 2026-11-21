@@ -911,7 +911,18 @@ impl AppContext {
     /// The write carries no block height, so a balance other than the newest
     /// one observed is replaced by that one (see `balance_watermark`). A
     /// write that changes the balance uses
-    /// `update_local_qualified_identity_observed`.
+    /// `edit_local_qualified_identity_observed`.
+    ///
+    /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
+    /// caller that read the record before a concurrent change (for example a
+    /// key removed in Key Info) writes that change away, including keys whose
+    /// vault secrets are already gone. Resolved by moving identity keys and
+    /// scalar fields onto platform-wallet's `IdentityManager`: keys persist as
+    /// per-key `IdentityKeysChangeSet` upserts and removals, scalars as an
+    /// `IdentityChangeSet` snapshot, and every mutation goes through the one
+    /// shared manager under its state lock instead of a caller's stale copy.
+    /// Until then, prefer [`Self::edit_local_qualified_identity`] for new
+    /// writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -2488,6 +2499,13 @@ pub(crate) mod test_staging {
             _dir: dir,
             _events: events,
         }
+    }
+
+    /// Drop `id` from the roster and keep its blob, with no unload marker:
+    /// the state a removal that failed part-way can leave behind.
+    pub(crate) fn unlist_identity(ctx: &AppContext, id: &Identifier) {
+        index_remove_identity(&ctx.det_kv().expect("identity kv"), &id.to_buffer())
+            .expect("remove from the roster");
     }
 
     /// Fail the top-up deletion after the identity has been delisted and its blob deleted.

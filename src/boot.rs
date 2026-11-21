@@ -20,8 +20,8 @@
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
 use platform_wallet_storage::secrets::{SecretStore, SecretString};
@@ -185,9 +185,15 @@ impl BootApp {
         outcome: &StartupOutcome,
     ) -> Result<Self, BootError> {
         match decision {
-            BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
-                ctx, db, data_dir, store,
-            )?))),
+            BootDecision::Ready(store) => {
+                // Held until the app runs: if building it fails, the failure
+                // window still saves into the profile, so no other launch may
+                // start writing that profile meanwhile.
+                outcome.hold_vault(Arc::clone(&store));
+                let app = AppState::new_inner(ctx, db, data_dir, store)?;
+                outcome.release_vault();
+                Ok(BootApp::Running(Box::new(app)))
+            }
             BootDecision::Unlock => {
                 tracing::warn!(
                     "Seed vault is protected by a passphrase from an earlier version; \
@@ -454,18 +460,46 @@ impl Startup {
 }
 
 /// Whether startup failed, shared with `main` so the process can exit with a
-/// failure code after the user closes the failure dialog.
-#[derive(Debug, Clone, Default)]
-pub struct StartupOutcome(Arc<AtomicBool>);
+/// failure code after the user closes the failure dialog. Also keeps the vault
+/// of a failed boot open until `main` drops it.
+#[derive(Clone, Default)]
+pub struct StartupOutcome {
+    failed: Arc<AtomicBool>,
+    held_vault: Arc<Mutex<Option<Arc<SecretStore>>>>,
+}
 
 impl StartupOutcome {
     fn mark_failed(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.failed.store(true, Ordering::Relaxed);
     }
 
     /// Whether the app entered [`BootApp::Failed`].
     pub fn failed(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.failed.load(Ordering::Relaxed)
+    }
+
+    /// Keep `vault`, and so its lock, open until [`Self::release_vault`] or the
+    /// end of startup.
+    fn hold_vault(&self, vault: Arc<SecretStore>) {
+        *self
+            .held_vault
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(vault);
+    }
+
+    fn release_vault(&self) {
+        self.held_vault
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+}
+
+impl std::fmt::Debug for StartupOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartupOutcome")
+            .field("failed", &self.failed())
+            .finish_non_exhaustive()
     }
 }
 
@@ -728,48 +762,62 @@ mod tests {
     /// into a profile another launch may share.
     #[test]
     fn legacy_vault_prompt_does_not_persist_egui_memory() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
-            .expect("create passphrase vault");
-        let mut startup = with_data_dir(tmp.path(), || {
-            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
-        });
+        let Some(dir) = in_data_dir_child(passphrase_vault) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir));
         let app = startup.boot(egui::Context::default(), &StartupOutcome::default());
         assert!(matches!(app, BootApp::Unlocking(_)));
         assert!(!eframe::App::persist_egui_memory(&app));
     }
 
-    /// Runs `f` with `DASH_EVO_DATA_DIR` set to `dir`, serialized with every
-    /// other test that changes it.
-    fn with_data_dir<R>(dir: &std::path::Path, f: impl FnOnce() -> R) -> R {
-        let _lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prior = std::env::var_os("DASH_EVO_DATA_DIR");
-        // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK; restored below.
-        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", dir) };
-        let result = f();
-        // SAFETY: serialized by DASH_EVO_DATA_DIR_LOCK.
-        unsafe {
-            match prior {
-                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
-                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
-            }
+    /// Runs the calling test's body in a child process whose
+    /// `DASH_EVO_DATA_DIR` is a fresh folder, so this process's environment is
+    /// never changed. `setup` prepares the folder in the parent; what it
+    /// returns lives until the child exits. The folder in the child, `None` in
+    /// the parent.
+    fn in_data_dir_child<G>(setup: impl FnOnce(&std::path::Path) -> G) -> Option<PathBuf> {
+        const CHILD_ENV: &str = "DET_BOOT_DATA_DIR_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            return std::env::var_os("DASH_EVO_DATA_DIR").map(PathBuf::from);
         }
-        result
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = setup(tmp.path());
+        let test_name = std::thread::current().name().expect("test name").to_owned();
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .env("DASH_EVO_DATA_DIR", tmp.path())
+            .output()
+            .expect("run child");
+        assert!(
+            output.status.success(),
+            "child failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        None
+    }
+
+    fn keyless_vault(dir: &std::path::Path) {
+        AppContext::open_secret_store(dir).expect("create keyless vault");
+    }
+
+    fn passphrase_vault(dir: &std::path::Path) {
+        AppContext::open_secret_store_with_passphrase(dir, SecretString::new("legacy-pass"))
+            .expect("create passphrase vault");
     }
 
     /// A healthy launch lets the window save into the profile in the data
     /// folder.
     #[test]
     fn healthy_startup_persists_into_the_data_folder() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store(tmp.path()).expect("create keyless vault");
-        let startup = with_data_dir(tmp.path(), || {
-            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
-        });
+        let Some(dir) = in_data_dir_child(keyless_vault) else {
+            return;
+        };
+        let startup = Startup::prepare(Ok::<_, std::io::Error>(dir.clone()));
         assert!(startup.persist_window());
-        assert_eq!(startup.persistence_path(), Some(tmp.path().join("app.ron")));
+        assert_eq!(startup.persistence_path(), Some(dir.join("app.ron")));
         assert!(startup.error().is_none());
     }
 
@@ -778,12 +826,12 @@ mod tests {
     /// window, and the boot shows the failure dialog with the selection guard.
     #[test]
     fn locked_vault_fails_preparation_without_profile_writes() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let first_instance = AppContext::open_secret_store(tmp.path()).expect("first instance");
-        let mut startup = with_data_dir(tmp.path(), || {
-            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
-        });
-        drop(first_instance);
+        let first_instance =
+            |dir: &std::path::Path| AppContext::open_secret_store(dir).expect("first instance");
+        let Some(dir) = in_data_dir_child(first_instance) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir));
 
         assert!(
             !startup.persist_window(),
@@ -809,6 +857,32 @@ mod tests {
         );
     }
 
+    /// A failure while building the app after a successful preparation keeps
+    /// the vault held until startup ends: the failure window still saves into
+    /// the profile, so no other launch may start writing it meanwhile.
+    #[test]
+    fn failure_after_preparation_keeps_the_vault_held() {
+        let setup = |dir: &std::path::Path| {
+            keyless_vault(dir);
+            std::fs::create_dir(crate::wallet_backend::app_database_path(dir))
+                .expect("block the app database");
+        };
+        let Some(dir) = in_data_dir_child(setup) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir.clone()));
+        assert!(startup.persist_window());
+        let outcome = StartupOutcome::default();
+        let app = startup.boot(egui::Context::default(), &outcome);
+        assert!(matches!(app, BootApp::Failed(_)));
+        assert!(
+            AppContext::open_secret_store(&dir).is_err(),
+            "another launch must find the vault held"
+        );
+        drop((app, outcome));
+        AppContext::open_secret_store(&dir).expect("the vault is released when startup ends");
+    }
+
     /// A data folder that could not be prepared shows the failure dialog and
     /// stays reportable; nothing is saved.
     #[test]
@@ -828,12 +902,10 @@ mod tests {
     /// launches could both reach it: the window must not save in that state.
     #[test]
     fn legacy_vault_prompt_does_not_persist() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
-            .expect("create passphrase vault");
-        let startup = with_data_dir(tmp.path(), || {
-            Startup::prepare(Ok::<_, std::io::Error>(tmp.path().to_path_buf()))
-        });
+        let Some(dir) = in_data_dir_child(passphrase_vault) else {
+            return;
+        };
+        let startup = Startup::prepare(Ok::<_, std::io::Error>(dir));
         assert!(startup.error().is_none());
         assert!(!startup.persist_window());
     }

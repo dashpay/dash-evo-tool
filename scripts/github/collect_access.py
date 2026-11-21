@@ -253,6 +253,12 @@ def main(argv=None):
         report["checks"][key] = api_get(
             "rules", f"{prefix}/rulesets/{ruleset['id']}?includes_parents=true"
         )
+    for policy in (
+        report["checks"]["actions_policies"].get("data", {}).get("policies", [])
+    ):
+        report["checks"][f"actions_policy_{policy['id']}"] = api_get(
+            "policies", f"{prefix}/actions/policies/{policy['id']}"
+        )
     for environment in (
         report["checks"]["environments"].get("data", {}).get("environments", [])
     ):
@@ -270,11 +276,17 @@ def main(argv=None):
     )
     report["checks"]["sampled_prs"] = pull_requests
     if pull_requests["ok"]:
-        for pr in pull_requests["data"]:
-            if not pr.get("draft"):
-                report["checks"][f"required_checks_pr_{pr['number']}"] = (
-                    required_checks(args.repo, pr["number"])
-                )
+        ready = [pr for pr in pull_requests["data"] if not pr.get("draft")]
+        for pr in ready:
+            report["checks"][f"required_checks_pr_{pr['number']}"] = required_checks(
+                args.repo, pr["number"]
+            )
+        if not ready:
+            # Required checks are read from a PR; without one they are unknown.
+            report["checks"]["required_checks"] = {
+                "ok": False,
+                "error": {"message": "no non-draft PR to sample"},
+            }
     report["limitations"] = (
         "403/404 are unavailable evidence, not proof that protection is disabled. No secret values or token strings are requested."
     )

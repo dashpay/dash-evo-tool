@@ -189,6 +189,77 @@ class CollectAccessTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(read.call_count, 1)
 
+    def collect(self, responses, pulls):
+        """Run main() against fake reads; unknown endpoints succeed with no data."""
+
+        def read(kind, endpoint, query=None, paginate=True):
+            if endpoint == "user":
+                return {"ok": True, "data": {"login": "operator"}}
+            path = endpoint.removeprefix("repos/owner/repo/").split("?")[0]
+            if path == "pulls":
+                return {"ok": True, "data": pulls}
+            return responses.get(path, {"ok": True, "data": {}})
+
+        with (
+            tempfile.TemporaryDirectory() as scratch,
+            patch.object(collect_access, "api_get", side_effect=read),
+            patch.object(
+                collect_access, "required_checks", return_value={"ok": True, "data": {}}
+            ),
+            patch("sys.stdout"),
+        ):
+            output = Path(scratch) / "report.json"
+            code = collect_access.main(
+                [
+                    "--repo",
+                    "owner/repo",
+                    "--expected-user",
+                    "operator",
+                    "--output",
+                    str(output),
+                ]
+            )
+            return code, json.loads(output.read_text())["checks"]
+
+    def test_each_actions_policy_is_read_from_its_detail_endpoint(self):
+        rules = [{"type": "workflow_actor", "parameters": {"actors": ["x"]}}]
+        code, checks = self.collect(
+            {
+                "actions/policies": {
+                    "ok": True,
+                    "data": {"total_count": 2, "policies": [{"id": 7}, {"id": 9}]},
+                },
+                "actions/policies/7": {"ok": True, "data": {"id": 7, "rules": rules}},
+                "actions/policies/9": {"ok": False, "error": {"status": "403"}},
+            },
+            [{"number": 1, "draft": False}],
+        )
+        self.assertEqual(checks["actions_policy_7"]["data"]["rules"], rules)
+        self.assertFalse(checks["actions_policy_9"]["ok"])
+        self.assertEqual(code, 2)
+
+    def test_empty_policy_inventory_and_a_sampled_pr_are_complete(self):
+        code, checks = self.collect(
+            {
+                "actions/policies": {
+                    "ok": True,
+                    "data": {"total_count": 0, "policies": []},
+                }
+            },
+            [{"number": 1, "draft": False}],
+        )
+        self.assertFalse(
+            [name for name in checks if name.startswith("actions_policy_")]
+        )
+        self.assertEqual(code, 0)
+
+    def test_a_run_without_a_sampled_ready_pr_is_incomplete(self):
+        for pulls in ([], [{"number": 1, "draft": True}]):
+            with self.subTest(pulls=pulls):
+                code, checks = self.collect({}, pulls)
+                self.assertFalse(checks["required_checks"]["ok"])
+                self.assertEqual(code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

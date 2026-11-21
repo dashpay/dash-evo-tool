@@ -1649,7 +1649,7 @@ impl TokensScreen {
                             signing_key: Box::new(signing_key),
                             params: Box::new(args.into_contract_params()),
                         })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                        BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);

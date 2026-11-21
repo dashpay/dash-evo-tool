@@ -160,7 +160,7 @@ impl AddTokenByIdScreen {
                         None,
                         insert_mode,
                     ))),
-                    BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                    BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
                 ],
                 crate::app::BackendTasksExecutionMode::Sequential,
             );

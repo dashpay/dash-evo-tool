@@ -5,14 +5,10 @@ on:
   push:
     branches:
       - "v*-dev"
-    paths:
-      - "**/*.rs" # includes build.rs
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/config.toml"
-      - "rust-toolchain.toml"
-      - ".github/workflows/clippy.yml"
-      - "scripts/ci/pr_scope.py"
+    # Mirrors scripts/ci/pr_scope.py: only documentation skips the suite.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   # Allows a manual run against a branch. Draft PRs are suppressed by the

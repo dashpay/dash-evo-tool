@@ -9,40 +9,19 @@ import subprocess
 from pathlib import Path
 
 
+def is_documentation(path):
+    return path.startswith("docs/") or path.endswith(".md")
+
+
 def is_relevant(paths, suite):
-    for path in paths:
-        if (
-            path.endswith(".rs")
-            or path == "Cargo.toml"
-            or path.endswith("/Cargo.toml")
-            or path
-            in {
-                "Cargo.lock",
-                ".cargo/config.toml",
-                "rust-toolchain.toml",
-                "scripts/ci/pr_scope.py",
-                f".github/workflows/{suite}.yml",
-            }
-        ):
-            return True
-        if suite == "tests" and (
-            path.startswith(
-                (
-                    "tests/backend-e2e/",
-                    "tests/migration-fixtures/",
-                    "src/wallet_backend/platform_compatibility/fixtures/",
-                    "scripts/migration-fixtures/",
-                    "scripts/ci/",
-                )
-            )
-            or path
-            in {
-                ".github/workflows/weekly-build.yml",
-                ".github/workflows/migration-fixture-capture.yml",
-            }
-        ):
-            return True
-    return False
+    """Any change outside documentation runs both suites.
+
+    Build scripts embed inputs from many places (`.env.example`, `assets/`,
+    `dash_core_configs/`), and lints read `clippy.toml`, so only a known
+    documentation path is safe to skip. `suite` is kept for the CLI output.
+    """
+    del suite
+    return not all(is_documentation(path) for path in paths)
 
 
 def changed_paths(repo, event_path):

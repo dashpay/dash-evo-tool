@@ -5,21 +5,10 @@ on:
   push:
     branches:
       - "v*-dev"
-    paths:
-      - "**/*.rs" # includes build.rs
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/config.toml"
-      - "rust-toolchain.toml"
-      - "tests/backend-e2e/**"
-      - "tests/migration-fixtures/**"
-      - "src/wallet_backend/platform_compatibility/fixtures/**"
-      - "scripts/migration-fixtures/**"
-      - "scripts/ci/**"
-      - ".github/workflows/tests.yml"
-      - ".github/workflows/weekly-build.yml"
-      # Its permissions are checked against the weekly job that calls it.
-      - ".github/workflows/migration-fixture-capture.yml"
+    # Mirrors scripts/ci/pr_scope.py: only documentation skips the suite.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   # Allows a manual run against a branch. Draft PRs are suppressed by the

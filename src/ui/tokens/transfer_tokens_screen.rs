@@ -249,7 +249,7 @@ impl TransferTokensScreen {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                "Invalid amount",
+                "Enter an amount greater than zero that does not exceed your balance.",
                 MessageType::Error,
             );
             return;
@@ -264,7 +264,7 @@ impl TransferTokensScreen {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                "Invalid receiver",
+                "This recipient ID is not valid. Check it and try again.",
                 MessageType::Error,
             );
             return;

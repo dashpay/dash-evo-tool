@@ -1475,6 +1475,37 @@ fn the_send_confirmation_dispatches_what_it_shows() {
     });
 }
 
+/// A recipient ID that does not parse is refused before the confirmation
+/// opens, with a sentence that names the field and says what to do.
+#[test]
+fn the_send_screen_explains_an_invalid_recipient() {
+    use dash_evo_tool::ui::tokens::transfer_tokens_screen::{CONFIRM_SEND_TITLE, SEND_LABEL};
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.harness.state_mut().test_capture_dispatches();
+        let mut sender = f.info.identity.clone();
+        sender.identity.set_balance(1_000_000_000);
+        f.app_context
+            .update_local_qualified_identity(&sender)
+            .expect("fund the sender");
+        f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
+        f.set_named_input("Amount:", "1");
+        f.set_named_input("Identity ID", "not-an-identity");
+        f.click_button(SEND_LABEL);
+        assert!(f.harness.query_by_label(CONFIRM_SEND_TITLE).is_none());
+        assert!(
+            f.harness
+                .query_by_label("This recipient ID is not valid. Check it and try again.")
+                .is_some(),
+            "the banner explains the invalid recipient"
+        );
+        assert!(f.captured_sends().is_empty());
+    });
+}
+
 /// The send screen asks in Send wording, and its success line names the
 /// amount and recipient that were confirmed, even if the recipient field is
 /// edited while the send runs.

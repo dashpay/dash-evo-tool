@@ -10,7 +10,6 @@ use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -40,7 +39,6 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Ui};
 use std::collections::HashSet;
@@ -59,19 +57,6 @@ impl StepCounter {
         self.0 += 1;
         self.0
     }
-}
-
-/// The entered amount in base units, when it is greater than zero.
-pub fn positive_amount(amount: &Option<Amount>) -> Option<u64> {
-    amount
-        .as_ref()
-        .map(Amount::value)
-        .filter(|value| *value > 0)
-}
-
-/// The identity ID typed into a field (Base58 or hex), when it is valid.
-pub fn parse_identity_id(input: &str) -> Option<Identifier> {
-    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex]).ok()
 }
 
 /// Lifecycle of a single-shot token action.

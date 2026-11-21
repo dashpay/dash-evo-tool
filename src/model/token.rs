@@ -1,3 +1,4 @@
+use super::amount::Amount;
 use super::validation::{TextLengthError, validate_char_count};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -13,6 +14,19 @@ use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_dist
 };
 use dash_sdk::dpp::platform_value::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+/// The entered amount in base units, when it is greater than zero.
+pub fn positive_amount(amount: &Option<Amount>) -> Option<u64> {
+    amount
+        .as_ref()
+        .map(Amount::value)
+        .filter(|value| *value > 0)
+}
+
+/// The identity ID typed into a field (Base58 or hex), when it is valid.
+pub fn parse_identity_id(input: &str) -> Option<Identifier> {
+    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex]).ok()
+}
 
 /// Minimum number of characters in a searchable contract keyword.
 pub const MIN_CONTRACT_KEYWORD_CHARS: usize = 3;

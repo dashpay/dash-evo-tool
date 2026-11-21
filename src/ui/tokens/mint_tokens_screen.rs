@@ -1,6 +1,5 @@
 use super::token_action_screen::{
     FILL_IN_THE_FORM, StepCounter, TokenAction, TokenActionCtx, TokenActionScreen,
-    parse_identity_id, positive_amount,
 };
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
@@ -10,6 +9,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::token::MintRecipient;
+use crate::model::token::{parse_identity_id, positive_amount};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;

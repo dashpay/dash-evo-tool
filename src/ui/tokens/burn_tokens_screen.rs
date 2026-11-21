@@ -1,6 +1,4 @@
-use super::token_action_screen::{
-    StepCounter, TokenAction, TokenActionCtx, TokenActionScreen, positive_amount,
-};
+use super::token_action_screen::{StepCounter, TokenAction, TokenActionCtx, TokenActionScreen};
 use super::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo};
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -8,6 +6,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::token::positive_amount;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;

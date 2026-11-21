@@ -6,8 +6,8 @@ use crate::model::token_creator::{
     TokenDraft,
     registration::{RegistrationStatus, review_json},
 };
-use crate::ui::MessageType;
 use crate::ui::state::token_creator::json_export::ContractJsonExport;
+use crate::ui::{MessageType, Screen};
 use dash_sdk::dpp::{
     data_contract::accessors::{v0::DataContractV0Getters, v1::DataContractV1Getters},
     identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
@@ -66,12 +66,19 @@ impl TokensScreen {
                         ui.label("The token was created, but a local save did not finish. Restore the local receipt to save it and the token again; this does not create or pay for another token.");
                     }
                     if ui.button("Open contract").clicked() {
-                        self.tokens_subscreen = super::super::TokensSubscreen::SearchTokens;
-                        self.selected_contract_id = Some(record.contract_id);
-                        self.contract_details_loading = true;
-                        self.selected_contract_description = None;
-                        self.selected_token_infos.clear();
-                        action=AppAction::BackendTask(BackendTask::ContractTask(Box::new(crate::backend_task::contract::ContractTask::FetchContractsWithDescriptions(vec![record.contract_id]))));
+                        let mut preview = TokensScreen::new(
+                            &self.app_context,
+                            super::super::TokensSubscreen::SearchTokens,
+                        );
+                        preview.selected_contract_id = Some(record.contract_id);
+                        preview.contract_details_loading = true;
+                        // The preview owns its fetch; leaving it preserves the creator's receipt.
+                        preview.pending_backend_task = Some(BackendTask::ContractTask(Box::new(
+                            crate::backend_task::contract::ContractTask::FetchContractsWithDescriptions(
+                                vec![record.contract_id],
+                            ),
+                        )));
+                        action = AppAction::AddScreen(Screen::TokensScreen(Box::new(preview)));
                     }
                     if ui
                         .add_enabled(!pending, egui::Button::new("Create another token"))

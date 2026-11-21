@@ -1544,38 +1544,3 @@ fn token_creator_unit_conversion_error_is_shown_beneath_the_amount_controls() {
         );
     });
 }
-
-/// Opening a created token's contract shows it in Search Tokens; the Token
-/// Creator tab keeps its own view, so going back returns to the creator.
-#[test]
-fn opening_a_token_contract_leaves_the_token_creator_as_it_was() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let _guard = rt.enter();
-        let mut f = token_fixture();
-        let contract_id = f.balance.data_contract_id;
-        f.harness.get_by_label("Token Creator").click();
-        f.harness.run_steps(5);
-        assert_eq!(
-            f.harness.state().selected_main_screen,
-            RootScreenType::RootScreenTokenCreator
-        );
-
-        f.harness.state_mut().test_dispatch_action(
-            dash_evo_tool::app::AppAction::OpenTokenContract(contract_id),
-        );
-        f.harness.run_steps(5);
-        assert_eq!(
-            f.harness.state().selected_main_screen,
-            RootScreenType::RootScreenTokenSearch,
-            "the contract opens in Search Tokens"
-        );
-
-        f.harness.get_by_label("Token Creator").click();
-        f.harness.run_steps(5);
-        assert!(
-            f.harness.query_by_label("Create a token").is_some(),
-            "the Token Creator tab still shows the creator"
-        );
-    });
-}

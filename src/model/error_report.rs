@@ -196,7 +196,7 @@ pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironm
         format!(
             "I use Dash Evo Tool (desktop wallet for the Dash network) version {version} on {os} {arch}. {situation}\n\n\
              \"{message}\"\n\n\
-             Technical details (paths redacted):\n{details}\n\n\
+             Technical details (home folder and user name removed):\n{details}\n\n\
              Please explain in simple terms what is wrong and give me step-by-step instructions to fix it on my system. \
              The app data folder holds my wallet keys. \
              Do not suggest deleting or resetting the app data folder. \
@@ -528,6 +528,7 @@ mod tests {
             STARTUP_SITUATION,
             "\"The folder is unsafe.\"",
             "InsecureParentDir { mode: 0o775 }",
+            "Technical details (home folder and user name removed):",
             "step-by-step",
             "https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/",
             "https://github.com/dashpay/dash-evo-tool",

@@ -650,7 +650,7 @@ async fn step_update_config(
         .expect("Step 11: UpdateTokenConfig failed");
 
     match result {
-        BackendTaskSuccessResult::UpdatedTokenConfig(description, fee) => {
+        BackendTaskSuccessResult::UpdatedTokenConfig(description, fee, _) => {
             assert!(
                 fee.estimated_fee > 0,
                 "Config update fee should be positive"

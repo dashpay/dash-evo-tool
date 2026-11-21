@@ -135,6 +135,16 @@ pub const TOKEN_ACTIONS_WAIT_FOR_WALLET: &str = "The wallet that holds this iden
      open yet, so it cannot send token transactions. Unlock the wallet or wait for it to load, \
      then try again.";
 
+/// What a settings update Platform accepted did to the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigUpdateOutcome {
+    /// The new setting is in effect.
+    Applied,
+    /// A group action that stays open: the setting changes once the group
+    /// closes it, so the token's stored settings are still current.
+    ProposalRecorded,
+}
+
 /// Whether an identity can send token transactions from this app. Those of
 /// a wallet-held identity go through its wallet, which must be loaded; an
 /// identity no wallet holds signs them with its own keys.

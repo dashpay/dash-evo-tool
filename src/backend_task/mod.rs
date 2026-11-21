@@ -1296,7 +1296,9 @@ pub enum BackendTaskSuccessResult {
     ClaimedTokens(FeeResult),
     /// The once-per-identity claim note of this pair was forgotten.
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
-    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
+    /// The config item that was updated, the fee, and whether the update took
+    /// effect or was recorded as a group proposal.
+    UpdatedTokenConfig(String, FeeResult, crate::model::token::ConfigUpdateOutcome),
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
     /// running, so no second pass was started.

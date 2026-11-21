@@ -2,6 +2,7 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::token::ConfigUpdateOutcome;
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -54,11 +55,13 @@ impl AppContext {
             .update_config(common, change_item.clone(), public_note, group_info)
             .await?;
         let estimated_fee = self.fee_estimator().estimate_token_transition();
+        let outcome = config_update_outcome(&result);
         let success = BackendTaskSuccessResult::UpdatedTokenConfig(
             change_item.to_string(),
             FeeResult::estimated_only(estimated_fee),
+            outcome,
         );
-        match config_update_outcome(&result) {
+        match outcome {
             ConfigUpdateOutcome::ProposalRecorded => {
                 // The token keeps its settings until the group closes the action.
                 tracing::info!(
@@ -106,16 +109,6 @@ impl AppContext {
 
         Ok(success)
     }
-}
-
-/// What a settings update Platform accepted did to the token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigUpdateOutcome {
-    /// The new setting is in effect.
-    Applied,
-    /// A group action that stays open: the setting changes once the group
-    /// closes it, so the token's stored settings are still current.
-    ProposalRecorded,
 }
 
 fn config_update_outcome(result: &ConfigUpdateResult) -> ConfigUpdateOutcome {

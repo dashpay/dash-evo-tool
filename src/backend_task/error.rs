@@ -2071,7 +2071,7 @@ pub enum TaskError {
 
     /// Refreshing token balances exceeded the app's network-request deadline.
     #[error(
-        "Token balances could not be refreshed because the network took too long to respond. Check your connection and refresh the Tokens screen."
+        "Token balances could not be refreshed because the network took too long to respond. Check your connection, then refresh the balances."
     )]
     TokenBalanceRefreshTimeout {
         #[source]
@@ -2090,6 +2090,15 @@ pub enum TaskError {
         "Token balances were not refreshed because the network connection stopped. Connect again, then refresh the balances. If this happens again, disconnect, wait a moment, and connect again."
     )]
     TokenBalanceRefreshDisconnected,
+
+    /// A token-balance refresh ran but could not read these identities'
+    /// balances, so their earlier balances stay on screen.
+    #[error(
+        "Some token balances could not be checked, so earlier balances are shown. Check your connection, then refresh the balances."
+    )]
+    TokenBalancesNotChecked {
+        identities: Vec<dash_sdk::platform::Identifier>,
+    },
 
     /// A balance read was refused before the masternode list finished
     /// syncing: sent now, its proof could not be verified and the queried

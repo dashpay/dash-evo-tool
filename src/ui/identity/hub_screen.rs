@@ -1167,7 +1167,8 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        self.tokens_state.record_error(context, error);
+        self.tokens_state
+            .record_error(context, error, crate::utils::time::now_ms());
         self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
             && !self.is_own_contact_info_dispatch(context);
         // Wrapped errors retain the unreadable-details confirmation flow.

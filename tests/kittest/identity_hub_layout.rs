@@ -40,8 +40,13 @@ fn mount_hub(app_context: &Arc<AppContext>, width: f32) -> HubHarness {
     // The hub holds its proof-verifying reads until the masternode list is
     // synced; these tests start on a synced network.
     app_context.connection_status().set_masternodes_ready(true);
+    hub_harness(app_context, egui::vec2(width, 1100.0))
+}
+
+/// The hub at `size`, collecting the actions it returns.
+pub(crate) fn hub_harness(app_context: &Arc<AppContext>, size: egui::Vec2) -> HubHarness {
     crate::support::builder_with_app_fonts()
-        .with_size(egui::vec2(width, 1100.0))
+        .with_size(size)
         .build_ui_state(
             |ui, state: &mut (IdentityHubScreen, Vec<AppAction>)| {
                 let action = state.0.ui(ui);

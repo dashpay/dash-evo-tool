@@ -7,7 +7,7 @@
 use super::token_copy::*;
 use super::tokens_tab::{
     DETAIL_MONOGRAM_SIZE, RowContext, manage_action, open_stop_tracking_dialog,
-    paint_token_monogram, refresh_block_reason, render_row_status,
+    paint_token_monogram, render_row_status,
 };
 use crate::app::AppAction;
 use crate::context::AppContext;
@@ -157,7 +157,7 @@ pub fn render(
                         .disabled_tooltip(if reloading.is_some() {
                             RELOADING_DETAILS
                         } else {
-                            DISABLED_NOT_SYNCED
+                            context.block_reason
                         })
                         .clicked()
                     {
@@ -172,7 +172,7 @@ pub fn render(
                             context.synced && !refreshing,
                             ComponentStyles::secondary_button(CHECK_NOW_LABEL, dark),
                         )
-                        .disabled_tooltip(refresh_block_reason(context.synced))
+                        .disabled_tooltip(context.block_reason)
                         .clicked()
                     {
                         action |= state.check_pair_action(app_context, row.pair());

@@ -59,6 +59,7 @@ const DOMAINS: &[&dyn DomainFeedback] = &[
     &crate::ui::wallets::task_feedback::WalletsFeedback,
     &crate::ui::network_chooser_screen::task_feedback::SettingsFeedback,
     &crate::ui::dpns::task_feedback::DpnsFeedback,
+    &crate::ui::tokens::task_feedback::TokensFeedback,
 ];
 
 /// Feedback on a successful result, with the cache changes it implies.

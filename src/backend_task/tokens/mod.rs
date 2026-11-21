@@ -236,12 +236,6 @@ pub enum TokenTask {
 }
 
 impl AppContext {
-    /// Awaits a token state-transition SDK call, applies its post-broadcast
-    /// side effects (balance updates, audit logging), and returns the success
-    /// result carrying an estimated-only fee.
-    ///
-    /// The platform does not report a settled fee for token ops, so the fee is
-    /// always the pre-flight estimate (see [`FeeResult::estimated_only`]).
     /// The actor a token action of `identity` is sent through: the wallet
     /// that holds it, or the SDK when no wallet in this app holds it.
     ///
@@ -277,6 +271,12 @@ impl AppContext {
         }
     }
 
+    /// Awaits a token state-transition SDK call, applies its post-broadcast
+    /// side effects (balance updates, audit logging), and returns the success
+    /// result carrying an estimated-only fee.
+    ///
+    /// The platform does not report a settled fee for token ops, so the fee is
+    /// always the pre-flight estimate (see [`FeeResult::estimated_only`]).
     async fn execute_token_op<R>(
         &self,
         call: impl Future<Output = Result<R, TaskError>>,

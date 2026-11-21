@@ -285,6 +285,22 @@ pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
     sdk
 }
 
+/// [`mock_sdk_for`] on `ctx`'s network, for paths that derive keys for it.
+pub(crate) fn mock_network_sdk_for(ctx: &AppContext) -> Sdk {
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_network(ctx.network)
+        .build()
+        .expect("mock sdk");
+    let provider = ctx
+        .spv_context_provider
+        .read()
+        .expect("context provider lock")
+        .clone();
+    sdk.set_context_provider(provider)
+        .expect("a provider that declares no network pairs with any SDK");
+    sdk
+}
+
 /// [`mock_sdk_for`], starting at `protocol_version` as the app's SDK starts at
 /// its network's version.
 pub(crate) fn mock_sdk_at_for(ctx: &AppContext, protocol_version: u32) -> Sdk {

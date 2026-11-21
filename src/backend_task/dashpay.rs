@@ -383,7 +383,7 @@ impl AppContext {
 #[cfg(test)]
 mod qr_generation_tests {
     use super::*;
-    use crate::context::test_support::{bare_user_identity, wired_test_app_context};
+    use crate::context::test_support::{bare_user_identity, test_app_context};
     use crate::model::dashpay::ContactQr;
     use crate::model::qualified_identity::DPNSNameInfo;
     use crate::model::wallet::Wallet;
@@ -393,10 +393,63 @@ mod qr_generation_tests {
     use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
     use platform_wallet::wallet::identity::crypto::auto_accept::verify_auto_accept_proof;
 
+    /// An offline SDK on which Platform proves that `owner` owns `alice.dash`.
+    async fn sdk_proving_owner_name(ctx: &AppContext, owner: Identifier) -> dash_sdk::Sdk {
+        use crate::context::test_support::dpns_name_document;
+        use dash_sdk::dpp::document::Document;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
+        use dash_sdk::platform::DocumentQuery;
+        use dash_sdk::query_types::Documents;
+
+        let mut sdk = crate::context::test_support::mock_network_sdk_for(ctx);
+        let query = DocumentQuery {
+            select: SelectProjection::documents(),
+            data_contract: ctx.dpns_contract(),
+            document_type_name: "domain".into(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".into(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(owner.to_buffer()),
+            }],
+            time_range_clauses: vec![],
+            integer_range_clauses: vec![],
+            sub_queries: vec![],
+            group_by: vec![],
+            having: vec![],
+            order_by_clauses: vec![],
+            limit: 10,
+            offset: None,
+            start: None,
+        };
+        let domain = dpns_name_document(owner, "alice", Value::Identifier(owner.to_buffer()));
+        let documents: Documents = [(Identifier::new([0x5D; 32]), Some(domain))]
+            .into_iter()
+            .collect();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(query, Some(documents))
+            .await
+            .expect("domain expectation");
+        sdk
+    }
+
+    /// The code names the username Platform proves the identity owns, never
+    /// a cached one: a name can be transferred, so a cached name may now
+    /// send paid contact requests to someone else.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn generated_contact_qr_uses_the_linked_wallet_through_the_secret_session() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = wired_test_app_context(dir.path()).await;
+        let ctx = test_app_context(dir.path());
+        let owner_id = Identifier::new([2; 32]);
+        ctx.sdk
+            .store(Arc::new(sdk_proving_owner_name(&ctx, owner_id).await));
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire wallet backend");
         let mut wallets = Vec::new();
         for label in ["Unrelated", "Owner"] {
             let seed = crate::test_support::keys::seed();
@@ -415,10 +468,9 @@ mod qr_generation_tests {
         wallets.sort_by_key(|wallet| wallet.0);
         let unrelated = &wallets[0];
         let owner = &wallets[1];
-        let owner_id = Identifier::new([2; 32]);
         let mut identity = bare_user_identity(owner_id, Network::Testnet);
         identity.dpns_names.push(DPNSNameInfo {
-            name: "alice.dash".into(),
+            name: "transferred.dash".into(),
             acquired_at: 0,
         });
         for (hash, wallet, _) in &wallets {
@@ -436,6 +488,7 @@ mod qr_generation_tests {
         let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(uri) = result else {
             panic!("expected generated contact QR");
         };
+        assert!(uri.starts_with("dash:?du=alice&"), "{uri}");
         let now = u64::try_from(chrono::Utc::now().timestamp()).expect("current time");
         let sender = Identifier::new([3; 32]);
         let proof = ContactQr::parse(&uri, now)

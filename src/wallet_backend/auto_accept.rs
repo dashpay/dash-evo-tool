@@ -28,8 +28,8 @@ impl WalletBackend {
     /// derived from the seed of `seed_hash`, the identity's owning wallet
     /// (`AppContext::contact_qr_wallet_seed_hash`), and
     /// built by upstream's `DashPayView::build_auto_accept_qr`: valid for
-    /// upstream's auto-accept lifetime, naming the identity's first cached
-    /// username (or one upstream finds on Platform).
+    /// upstream's auto-accept lifetime, naming a username Platform proves the
+    /// identity owns.
     ///
     /// # Errors
     ///
@@ -43,15 +43,6 @@ impl WalletBackend {
     ) -> Result<String, TaskError> {
         let wallet = self.resolve_wallet(&seed_hash).await?;
         let owner = identity.identity.id();
-        // Upstream resolves a name on Platform when given none.
-        let username = identity
-            .dpns_names
-            .first()
-            .map(|name| {
-                let name = name.name.trim();
-                name.strip_suffix(".dash").unwrap_or(name).to_string()
-            })
-            .unwrap_or_default();
         let network = identity.network;
         let identity_wallet = wallet.identity();
         let dashpay = identity_wallet.dashpay();
@@ -61,8 +52,11 @@ impl WalletBackend {
                 let plaintext = session.plaintext();
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                 let provider = AutoAcceptKeyExport::new(seed, network);
+                // No cached name: one may have been transferred since, and a
+                // code naming it would send paid contact requests to its new
+                // owner. Given none, upstream uses a name Platform proves.
                 dashpay
-                    .build_auto_accept_qr(&owner, &username, &provider)
+                    .build_auto_accept_qr(&owner, "", &provider)
                     .await
                     .map_err(|source| TaskError::ContactQrBuildFailed {
                         source: Arc::new(source),
@@ -237,6 +231,58 @@ mod tests {
         assert!(
             verify_auto_accept_proof(&wallet, NETWORK, &proof, &sender, &owner, 3)
                 .expect("verifiable")
+        );
+    }
+
+    /// A DPNS name can be transferred, so the identity's cached names may
+    /// belong to someone else by now. A contact code never carries a cached
+    /// name: the name comes from Platform, and with no proven name (offline
+    /// here) no code is built.
+    #[tokio::test]
+    async fn a_contact_code_never_names_a_cached_username() {
+        use crate::context::test_support::{identity_holding, test_app_context};
+        use crate::model::qualified_identity::DPNSNameInfo;
+        use crate::wallet_backend::WalletSeedView;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        // An offline SDK: nothing on Platform can be read.
+        context.sdk.store(Arc::new(
+            crate::context::test_support::mock_network_sdk_for(&context),
+        ));
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wallet backend");
+        let backend = context.wallet_backend().expect("wired backend");
+        let seed = crate::test_support::keys::seed();
+        let seed_hash = crate::model::wallet::Wallet::new_from_seed(seed, NETWORK, None, None)
+            .expect("a wallet")
+            .seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("registered");
+        WalletSeedView::new(backend.secret_store())
+            .set_raw(&seed_hash, &seed)
+            .expect("seed stored");
+        let mut identity = identity_holding(&[]);
+        identity.dpns_names = vec![DPNSNameInfo {
+            name: "transferred.dash".to_string(),
+            acquired_at: 0,
+        }];
+
+        let result = backend
+            .dashpay_build_auto_accept_qr(&identity, seed_hash)
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::ContactQrBuildFailed { .. })),
+            "{result:?}"
         );
     }
 

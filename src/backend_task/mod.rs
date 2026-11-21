@@ -1837,7 +1837,10 @@ impl AppContext {
                 user_role,
             )
         })
-        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        .map_err(|source| TaskError::NetworkContextCreationFailed {
+            network,
+            source: Box::new(source),
+        })?;
         new_ctx.install_secret_prompt(self.secret_prompt());
         // The switch runs on the frame loop of the context it leaves; the new
         // context reports to the same one, and its backend is built on it

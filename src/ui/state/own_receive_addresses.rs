@@ -27,6 +27,9 @@ pub enum OwnAddressKind {
 enum Entry {
     InFlight(Instant),
     Ready(String),
+    /// The wallet is locked and not yet registered: only unlocking it lets
+    /// it derive an address. Asked again when the form next requests it.
+    NeedsUnlock,
 }
 
 /// Fetch state of own receiving addresses, keyed by wallet and kind.
@@ -99,6 +102,21 @@ impl OwnReceiveAddresses {
             }
             _ => false,
         }
+    }
+
+    /// Record that the awaited request failed because the wallet is locked.
+    pub fn mark_needs_unlock(&mut self, seed_hash: WalletSeedHash, kind: OwnAddressKind) {
+        if let Some(entry @ Entry::InFlight(_)) = self.entries.get_mut(&(seed_hash, kind)) {
+            *entry = Entry::NeedsUnlock;
+        }
+    }
+
+    /// Whether the wallet must be unlocked before it can derive an address.
+    pub fn needs_unlock(&self, seed_hash: &WalletSeedHash, kind: OwnAddressKind) -> bool {
+        matches!(
+            self.entries.get(&(*seed_hash, kind)),
+            Some(Entry::NeedsUnlock)
+        )
     }
 
     /// Forget every address, so the next frame asks again.

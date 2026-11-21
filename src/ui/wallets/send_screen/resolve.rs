@@ -672,9 +672,19 @@ impl WalletSendScreen {
                     ),
                     None => (None, DestinationStatus::Fetching { kind }),
                 },
+                None if self
+                    .own_addresses
+                    .needs_unlock(&to_wallet, OwnAddressKind::Core)
+                    && !self.wallet_is_open(&to_wallet) =>
+                {
+                    (None, DestinationStatus::NeedsUnlock { wallet: to_wallet })
+                }
                 None => {
-                    view.address_requests
-                        .push((to_wallet, OwnAddressKind::Core));
+                    // An unlocked wallet derives addresses once registered.
+                    if !self.awaits_registration(&to_wallet) {
+                        view.address_requests
+                            .push((to_wallet, OwnAddressKind::Core));
+                    }
                     (None, DestinationStatus::Fetching { kind })
                 }
             },

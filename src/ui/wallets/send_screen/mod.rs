@@ -4191,14 +4191,18 @@ impl ScreenLike for WalletSendScreen {
                 WalletUnlockResult::Unlocked => {
                     // A receiving address may now be derived.
                     self.unlock_target = None;
-                    // Quotes refused while locked are asked again once the
-                    // backend has registered the wallet.
-                    let unlocked = wallet.read().ok().map(|wallet| wallet.seed_hash());
-                    if unlocked.is_some() && self.quote_needs_unlock == unlocked {
-                        self.requote_on_registration = self
+                    // Quotes and a receiving address refused while locked
+                    // are asked again once the backend registers the wallet.
+                    if let Some(seed_hash) = wallet.read().ok().map(|wallet| wallet.seed_hash())
+                        && (self
                             .quote_needs_unlock
-                            .take()
-                            .map(|seed_hash| (seed_hash, std::time::Instant::now()));
+                            .take_if(|waiting| *waiting == seed_hash)
+                            .is_some()
+                            || self
+                                .own_addresses
+                                .needs_unlock(&seed_hash, OwnAddressKind::Core))
+                    {
+                        self.requote_on_registration = Some((seed_hash, std::time::Instant::now()));
                     }
                     if std::mem::take(&mut self.unlock_then_send) {
                         self.sync_route();
@@ -4334,6 +4338,12 @@ impl ScreenLike for WalletSendScreen {
         }
         if quoted_wallet.is_some() && matches!(error, TaskError::WalletLockedNotLoaded { .. }) {
             self.quote_needs_unlock = quoted_wallet;
+        }
+        if let Some(seed_hash) = context.generated_receive_address_wallet()
+            && matches!(error, TaskError::WalletLockedNotLoaded { .. })
+        {
+            self.own_addresses
+                .mark_needs_unlock(seed_hash, OwnAddressKind::Core);
         }
     }
 
@@ -9253,6 +9263,89 @@ mod tests {
                 Amount::dash_from_duffs(200_000_000).to_string_without_unit()
             )]
         );
+    }
+
+    /// My wallets › Core into another wallet that is locked and not yet
+    /// registered offers the unlock instead of fetching forever, and asks
+    /// again only once the unlocked wallet is registered.
+    #[test]
+    fn a_locked_receiving_wallet_offers_the_unlock_for_its_core_address() {
+        use super::resolve::DestinationStatus;
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        // Generated per run: no wallet secret is ever committed.
+        let password = format!("{:032x}", rand::random::<u128>());
+        let mut locked = Wallet::new_from_seed(
+            rand::random(),
+            Network::Testnet,
+            Some("Savings".to_string()),
+            Some(&crate::model::secret::Secret::new(password.clone())),
+        )
+        .expect("wallet from seed");
+        locked.wallet_seed.close();
+        let to_wallet = locked.seed_hash();
+        let locked = Arc::new(RwLock::new(locked));
+        screen
+            .app_context
+            .wallet_context()
+            .insert_test_wallet(to_wallet, locked.clone());
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, Some(seed_hash), PayFromKind::Core);
+        screen.form.choose_to_wallet(to_wallet);
+        screen
+            .form
+            .choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        let is_address_request = |task: &BackendTask| {
+            matches!(
+                task,
+                BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
+                    if *seed_hash == to_wallet
+            )
+        };
+        screen.sync_route();
+        let task = screen
+            .route_requests()
+            .into_iter()
+            .find(|task| is_address_request(task))
+            .expect("the receiving address is asked for");
+        screen.display_backend_task_error(
+            &BackendTaskContext::from(&task),
+            &TaskError::WalletLockedNotLoaded {
+                wallet_label: "Savings".to_string(),
+            },
+        );
+        screen.sync_route();
+        assert_eq!(
+            screen.route.destination_status,
+            DestinationStatus::NeedsUnlock { wallet: to_wallet }
+        );
+        assert!(!screen.route_requests().iter().any(is_address_request));
+
+        // Unlocked, and the backend is still registering the wallet.
+        locked
+            .write()
+            .expect("wallet")
+            .wallet_seed
+            .open(&password)
+            .expect("unlock");
+        screen.requote_on_registration = Some((to_wallet, std::time::Instant::now()));
+        screen.sync_route();
+        assert!(matches!(
+            screen.route.destination_status,
+            DestinationStatus::Fetching { .. }
+        ));
+        assert!(!screen.route_requests().iter().any(is_address_request));
+
+        // Registered: the address is asked for again.
+        screen.requote_on_registration = None;
+        screen.sync_route();
+        assert!(screen.route_requests().iter().any(is_address_request));
     }
 
     /// Only the answer to the awaited quote request can ask for an unlock.

@@ -190,7 +190,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
 pub(super) fn cap_notice(ui: &mut Ui, draft: &crate::model::token_creator::TokenDraft) {
     let permanent = !draft.no_maximum
         && draft.maximum.parse(draft.decimals).is_ok()
-        && draft.permissions.get(RuleKind::Cap).permanently_disabled();
+        && draft.permissions.get(RuleKind::Cap).is_fixed();
     inline_notice(
         ui,
         if permanent {

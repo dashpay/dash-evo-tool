@@ -4182,8 +4182,9 @@ impl ScreenLike for WalletSendScreen {
                     self.unlock_target = None;
                     // Quotes refused while locked are asked again once the
                     // backend has registered the wallet.
-                    if let Some(seed_hash) = self.quote_needs_unlock.take() {
-                        self.requote_on_registration = Some(seed_hash);
+                    let unlocked = wallet.read().ok().map(|wallet| wallet.seed_hash());
+                    if unlocked.is_some() && self.quote_needs_unlock == unlocked {
+                        self.requote_on_registration = self.quote_needs_unlock.take();
                     }
                     if std::mem::take(&mut self.unlock_then_send) {
                         self.sync_route();
@@ -4297,30 +4298,28 @@ impl ScreenLike for WalletSendScreen {
             self.send_banner.take_and_clear();
             self.send_status = SendStatus::Error;
         }
+        // The wallet of the awaited quote request this error answers.
+        let mut quoted_wallet = None;
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
-        {
-            self.asset_lock_balance.mark_request_error(
+            && self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
                 error,
-            );
-        }
-        if let Some((seed_hash, kind, request_id)) = context.spend_limit_request() {
-            self.spend_limits
-                .mark_request_error(seed_hash, kind, request_id, error);
-        }
-        let quoted_wallet = context
-            .asset_lock_max_amount_request()
-            .map(|(seed_hash, ..)| seed_hash)
-            .or(context
-                .spend_limit_request()
-                .map(|(seed_hash, ..)| seed_hash));
-        if let Some(seed_hash) = quoted_wallet
-            && matches!(error, TaskError::WalletLockedNotLoaded { .. })
+            )
         {
-            self.quote_needs_unlock = Some(seed_hash);
+            quoted_wallet = Some(seed_hash);
+        }
+        if let Some((seed_hash, kind, request_id)) = context.spend_limit_request()
+            && self
+                .spend_limits
+                .mark_request_error(seed_hash, kind, request_id, error)
+        {
+            quoted_wallet = Some(seed_hash);
+        }
+        if quoted_wallet.is_some() && matches!(error, TaskError::WalletLockedNotLoaded { .. }) {
+            self.quote_needs_unlock = quoted_wallet;
         }
     }
 
@@ -8975,6 +8974,30 @@ mod tests {
             screen.missing_step(),
             Some("Checking the available amount…")
         );
+    }
+
+    /// Only the answer to the awaited quote request can ask for an unlock.
+    #[test]
+    fn a_superseded_locked_quote_reply_asks_for_no_unlock() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        let kind = SpendLimitKind::ShieldFromPlatform;
+        let stale = screen
+            .spend_limits
+            .ensure_requested(seed_hash, kind, 1)
+            .expect("a request");
+        let current = screen
+            .spend_limits
+            .ensure_requested(seed_hash, kind, 2)
+            .expect("a request");
+        let locked = TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        };
+
+        screen.display_backend_task_error(&BackendTaskContext::from(&stale), &locked);
+        assert_eq!(screen.quote_needs_unlock, None);
+        screen.display_backend_task_error(&BackendTaskContext::from(&current), &locked);
+        assert_eq!(screen.quote_needs_unlock, Some(seed_hash));
     }
 
     /// Switching My wallets to the paying wallet while Receive into names the

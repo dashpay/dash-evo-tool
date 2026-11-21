@@ -4,6 +4,7 @@ pub mod asset_lock;
 pub mod avatar;
 pub mod backup_retention;
 pub mod contested_name;
+pub mod contract_fee_pots;
 pub mod dashpay;
 pub mod dashpay_derivation;
 pub(crate) mod data_migration;

@@ -2595,6 +2595,24 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A spend from Platform addresses would leave too little on them for the
+    /// network fee. The message names no amount left: which address pays
+    /// depends on the fee strategy, which the refusal does not carry.
+    #[error(
+        "Not enough would be left on your Platform addresses to pay the network fee. \
+         The network needs {required_dash} available for this fee. \
+         Send a smaller amount, or add funds to your Platform addresses, and try again.",
+        required_dash = format_credits_as_dash(*.required)
+    )]
+    PlatformAddressInsufficientFunds {
+        /// The most any one spending address would have left after the amount.
+        available: u64,
+        /// The fee Platform requires to be left for it.
+        required: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The asset lock transaction outpoint does not have enough remaining balance.
     #[error(
         "Not enough funds in this transaction to complete the operation. \
@@ -4640,6 +4658,22 @@ impl From<SdkError> for TaskError {
                         let (available, required) = (e.balance(), e.required_balance());
                         Some(Box::new(move |source_error| {
                             TaskError::IdentityInsufficientBalance {
+                                available,
+                                required,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::AddressesNotEnoughFundsError(e)) => {
+                        let available = e
+                            .addresses_with_info()
+                            .values()
+                            .map(|(_, balance)| *balance)
+                            .max()
+                            .unwrap_or(0);
+                        let required = e.required_balance();
+                        Some(Box::new(move |source_error| {
+                            TaskError::PlatformAddressInsufficientFunds {
                                 available,
                                 required,
                                 source_error,
@@ -7168,6 +7202,77 @@ mod tests {
         assert!(
             msg.contains("funding source"),
             "Expected actionable guidance in message, got: {msg}"
+        );
+    }
+
+    /// Platform's refusal of a Platform-address spend that leaves too little
+    /// on its inputs for the network fee states the amounts and what to do.
+    #[test]
+    fn from_sdk_error_addresses_not_enough_funds() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        let consensus = ConsensusError::from(AddressesNotEnoughFundsError::new(
+            std::collections::BTreeMap::from([(
+                PlatformAddress::P2pkh([1u8; 20]),
+                (2, 15_200_400),
+            )]),
+            15_308_500,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+        let msg = err.to_string();
+        assert!(
+            matches!(
+                err,
+                TaskError::PlatformAddressInsufficientFunds {
+                    available: 15_200_400,
+                    required: 15_308_500,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(
+            msg.contains("0.000153085 DASH"),
+            "message lacks the fee: {msg}"
+        );
+        for jargon in [
+            "unexpected",
+            "consensus",
+            "SDK",
+            "state transition",
+            "input",
+        ] {
+            assert!(!msg.contains(jargon), "message contains {jargon}: {msg}");
+        }
+        assert!(
+            msg.contains("Send a smaller amount"),
+            "message lacks an action: {msg}"
+        );
+    }
+
+    /// With several spending addresses, `available` is the most any one of
+    /// them would have left: one address pays the fee.
+    #[test]
+    fn addresses_not_enough_funds_reports_the_best_single_address() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        let consensus = ConsensusError::from(AddressesNotEnoughFundsError::new(
+            std::collections::BTreeMap::from([
+                (PlatformAddress::P2pkh([1u8; 20]), (2, 4_000_000)),
+                (PlatformAddress::P2pkh([2u8; 20]), (5, 9_000_000)),
+            ]),
+            15_308_500,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+        assert!(
+            matches!(
+                err,
+                TaskError::PlatformAddressInsufficientFunds {
+                    available: 9_000_000,
+                    ..
+                }
+            ),
+            "got {err:?}"
         );
     }
 

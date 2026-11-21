@@ -457,6 +457,55 @@ mod tests {
         );
     }
 
+    fn addresses_not_enough_funds() -> dash_sdk::dpp::consensus::ConsensusError {
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        AddressesNotEnoughFundsError::new(
+            BTreeMap::from([(PlatformAddress::P2pkh([1u8; 20]), (2, 15_200_400))]),
+            15_308_500,
+        )
+        .into()
+    }
+
+    /// A transfer or withdrawal whose inputs cannot keep the fee back gets
+    /// the dedicated shortfall error, not an unexpected-error envelope.
+    #[test]
+    fn spend_error_maps_addresses_not_enough_funds() {
+        let mapped =
+            map_platform_address_spend_error(broadcast_error(addresses_not_enough_funds()));
+        assert!(
+            matches!(
+                mapped,
+                TaskError::PlatformAddressInsufficientFunds {
+                    available: 15_200_400,
+                    required: 15_308_500,
+                    ..
+                }
+            ),
+            "got {mapped:?}"
+        );
+    }
+
+    /// The same refusal of an identity top-up from addresses maps alike.
+    #[test]
+    fn top_up_error_maps_addresses_not_enough_funds() {
+        let PlatformWalletError::Sdk(sdk_error) = broadcast_error(addresses_not_enough_funds())
+        else {
+            unreachable!("broadcast_error builds an SDK error");
+        };
+        let mapped = map_top_up_sdk_error(sdk_error);
+        assert!(
+            matches!(
+                mapped,
+                TaskError::PlatformAddressInsufficientFunds {
+                    available: 15_200_400,
+                    required: 15_308_500,
+                    ..
+                }
+            ),
+            "got {mapped:?}"
+        );
+    }
+
     #[test]
     fn spend_error_maps_nonce_mismatch() {
         let mapped = map_platform_address_spend_error(PlatformWalletError::AddressNonceMismatch {

@@ -1961,6 +1961,26 @@ mod tests {
         );
     }
 
+    /// A network switch drops the Tokens tab state, but list controls not
+    /// yet written (a filter still being typed) are written first.
+    #[test]
+    fn a_network_switch_saves_unsaved_token_list_controls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.tokens_state.prefs(&context);
+        hub.tokens_state
+            .edit_prefs(crate::model::token::IdentityTokensViewPrefs {
+                filter: "cof".into(),
+                ..Default::default()
+            });
+        hub.reset_for_context_change();
+        assert_eq!(context.identity_tokens_view_prefs().filter, "cof");
+    }
+
     /// On an updated install the hub sends the Usernames card's check of the
     /// previous version's data exactly once and accepts its answer, so the
     /// restore offer can reach an identity whose key is not on this device.

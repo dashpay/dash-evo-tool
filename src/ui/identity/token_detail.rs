@@ -31,7 +31,10 @@ pub fn render(
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
     let context = RowContext::new(app_context, identity);
-    if ui.link(BACK_LABEL).clicked() {
+    // The glyph is decoration; the accessible name is the label alone.
+    let back = ui.link(format!("‹ {BACK_LABEL}"));
+    back.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, BACK_LABEL));
+    if back.clicked() {
         state.detail = None;
     }
     ui.add_space(Spacing::SM);

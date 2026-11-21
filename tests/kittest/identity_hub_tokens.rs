@@ -1439,6 +1439,37 @@ fn the_detail_page_opens_from_the_row_and_goes_back() {
     });
 }
 
+/// A token whose row leaves while its page is open (stopped elsewhere)
+/// returns the tab to the list instead of a blank page.
+#[test]
+fn a_token_page_whose_row_leaves_returns_to_the_list() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB3);
+        let tokens = seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_label("DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+
+        app_context
+            .mark_token_balance_untracked(IdentityTokenIdentifier {
+                identity_id: identity,
+                token_id: tokens[0],
+            })
+            .expect("stop tracking elsewhere");
+        hub.state_mut()
+            .0
+            .cached_data_changed(dash_evo_tool::backend_task::CacheUpdate {
+                network: app_context.network(),
+                domain: dash_evo_tool::backend_task::CacheDomain::Tokens,
+            });
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_none());
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
+    });
+}
+
 #[test]
 fn check_balance_now_on_the_detail_page_says_why_it_waits_for_a_running_refresh() {
     with_isolated_data_dir(|| {

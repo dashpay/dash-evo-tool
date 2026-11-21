@@ -61,7 +61,9 @@ pub const FIRST_LOAD: &str =
 pub const FOOTNOTE: &str = "Select Refresh to check balances again. A token you don't see here can be added with Add a token.";
 
 // Detail page.
-pub const BACK_LABEL: &str = "‹ Back to tokens";
+pub const BACK_LABEL: &str = "Back to Tokens";
+/// Accessible name of the breadcrumb's Tokens link, which stays on this identity.
+pub const TOKEN_LIST_CRUMB_NAME: &str = "Tokens of this identity";
 pub const ABOUT_HEADING: &str = "About this token";
 pub const TOKEN_ID_LABEL: &str = "Token ID";
 pub const CONTRACT_LABEL: &str = "Contract";
@@ -210,6 +212,7 @@ mod tests {
         EMPTY_HEADING,
         DISMISSED_HEADING,
         BACK_LABEL,
+        TOKEN_LIST_CRUMB_NAME,
         ABOUT_HEADING,
         TOKEN_ID_LABEL,
         CONTRACT_LABEL,

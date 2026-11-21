@@ -128,10 +128,16 @@ pub fn render(
         if let Some(name) = token_detail_name {
             let color = crate::ui::theme::DashColors::text_secondary(ui.visuals().dark_mode);
             ui.label(egui::RichText::new("›").color(color));
-            if ui
-                .link(super::tabs::IdentityHubTab::Tokens.label())
-                .clicked()
-            {
+            let crumb = ui.link(super::tabs::IdentityHubTab::Tokens.label());
+            // Three controls read "Tokens"; this one names its destination.
+            crumb.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Link,
+                    true,
+                    super::token_copy::TOKEN_LIST_CRUMB_NAME,
+                )
+            });
+            if crumb.clicked() {
                 effect = BreadcrumbEffect::TokenList;
             }
             ui.label(egui::RichText::new("›").color(color));

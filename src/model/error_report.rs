@@ -205,8 +205,7 @@ pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironm
              Never ask me for my recovery phrase, private keys or passwords.\n\n\
              Background you can read:\n\
              - Dash Evo Tool user docs: https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/\n\
-             - Source and issues: https://github.com/dashpay/dash-evo-tool\n\
-             - Dash Platform knowledge base: https://github.com/lklimek/claudash/blob/0e3a0ecc77aeb126f3ee9fe89a041b3cc6808cfa/skills/dash-dev/SKILL.md\n",
+             - Source and issues: https://github.com/dashpay/dash-evo-tool\n",
             version = env.version,
             os = env.os_name(),
             arch = env.arch,
@@ -532,10 +531,10 @@ mod tests {
             "step-by-step",
             "https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/",
             "https://github.com/dashpay/dash-evo-tool",
-            "https://github.com/lklimek/claudash/blob/0e3a0ecc77aeb126f3ee9fe89a041b3cc6808cfa/skills/dash-dev/SKILL.md",
         ] {
             assert!(question.contains(part), "{part} missing:\n{question}");
         }
+        assert!(!question.contains("knowledge base"), "{question}");
     }
 
     /// The home folder becomes `~`, the user name is replaced, and long hex or
@@ -716,7 +715,7 @@ mod tests {
         }
         assert!(question.contains("Short message."));
         assert!(question.contains("(truncated)"));
-        assert!(question.contains("SKILL.md"));
+        assert!(question.contains("https://github.com/dashpay/dash-evo-tool"));
     }
 
     /// The URL carries the question percent-encoded after the assistant's prefix.

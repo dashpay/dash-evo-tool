@@ -427,7 +427,7 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Select Core Wallet source and enter a shielded address as destination. Core funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
+- Pay from Core and choose My wallets › Shielded, or open Shield from the Shielded tab. The funds go to the same wallet's private balance; someone else's private address can be paid only from a private balance (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
@@ -538,7 +538,7 @@ As a user, I want a payment whose confirmation could not be verified to tell me 
 - Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
 - While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
 
-### SND-019: Let the app choose which balance pays [Gap]
+### SND-019: Let the app choose which balance pays [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want the Send screen to pick which of my balances pays for a payment, and tell me what it picked, so that I can pay someone without knowing the difference between Core and Platform.
@@ -550,7 +550,7 @@ As a user, I want the Send screen to pick which of my balances pays for a paymen
 - Changing Pay from never clears the recipient. A choice that cannot reach the recipient is disabled or explained inline, never refused after pressing Send.
 - Design: `docs/ai-design/2026-10-23-send-screen-redesign/`.
 
-### SND-020: Move funds between my own wallets and balances [Gap]
+### SND-020: Move funds between my own wallets and balances [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to send to one of my own wallets, balances or identities by picking it, so that I never have to copy my own address.
@@ -561,7 +561,7 @@ As a user, I want to send to one of my own wallets, balances or identities by pi
 - Auto can be on only one side. Choosing it on one side fixes the other side to what its Auto had chosen, and says so.
 - The balance being paid from cannot also be chosen as the destination.
 
-### SND-021: One Summary of what a send costs [Gap]
+### SND-021: One Summary of what a send costs [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want a single summary of the route, fee and total before I press Send, so that I do not have to piece it together from several hints.
@@ -572,15 +572,16 @@ As a user, I want a single summary of the route, fee and total before I press Se
 - "Max" means "everything available" and stays that way until the amount is edited. With Auto, Max uses the balance that can send the most.
 - A locked wallet does not hide the form; Send asks for the password, then shows the confirmation.
 
-### SND-022: Choose exactly which addresses pay, or pay several recipients [Gap]
+### SND-022: Choose exactly which addresses pay, or pay several recipients [Implemented]
 **Persona:** Priya, Jordan
 
 As a power user, I want to pick the addresses a payment spends from, or pay several recipients at once, from the same Send form, so that I do not have to switch to a separate advanced screen.
 
-- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. The amount still comes from the single Amount field.
+- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. Each ticked address can take its own amount; with none entered, the payment is spread over the ticked addresses.
+- Ticked Platform addresses cannot pay into a private balance. The form says why and points to Auto or Platform, which can.
 - When Platform is involved, a collapsed "Fee options" row in the Summary offers the same four fee strategies as today (deduct from first/last input, reduce first/last output), with the same default.
 - "+ Add another recipient" under the recipient field turns it into address-and-amount rows. All recipients in one payment are the same kind.
-- Replaces the separate "Advanced Options" form and its per-address amounts.
+- Replaces the separate "Advanced Options" form; everything it could do stays available.
 
 ---
 

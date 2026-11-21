@@ -4,6 +4,7 @@ pub mod alias_input;
 pub mod amount_input;
 pub mod avatar;
 pub mod breadcrumb_pill;
+pub mod choice_chips;
 pub mod component_trait;
 pub mod confirmation_dialog;
 pub mod contract_chooser_panel;

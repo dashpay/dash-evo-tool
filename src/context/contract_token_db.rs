@@ -1,9 +1,10 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
+use crate::model::token::{
+    IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokensViewPrefs, token_display_name,
 };
+use crate::ui::tokens::tokens_screen::{TokenInfo, TokenInfoWithDataContract};
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError, UpstreamTokenBalances};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
@@ -436,7 +437,7 @@ impl AppContext {
                 },
                 IdentityTokenBalance {
                     token_id,
-                    token_alias: stored.alias.clone(),
+                    token_alias: token_display_name(&stored.alias, &token_id),
                     token_config,
                     identity_id,
                     balance,
@@ -737,6 +738,42 @@ impl AppContext {
             .collect())
     }
 
+    /// How the Identity Hub's Tokens tab lists tokens on this device. A
+    /// missing or unreadable blob yields the defaults; the read failure is
+    /// logged, never shown.
+    pub fn identity_tokens_view_prefs(&self) -> IdentityTokensViewPrefs {
+        match self.try_identity_tokens_view_prefs() {
+            Ok(prefs) => prefs,
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    "Could not read the Identity Hub token list preferences; using defaults"
+                );
+                IdentityTokensViewPrefs::default()
+            }
+        }
+    }
+
+    fn try_identity_tokens_view_prefs(
+        &self,
+    ) -> std::result::Result<IdentityTokensViewPrefs, TaskError> {
+        let kv = self.app_kv();
+        Ok(kv
+            .get(DetScope::Global, IdentityTokensViewPrefs::KV_KEY)
+            .map_err(token_err)?
+            .unwrap_or_default())
+    }
+
+    /// Remember how the Identity Hub's Tokens tab lists tokens on this device.
+    pub fn save_identity_tokens_view_prefs(
+        &self,
+        prefs: &IdentityTokensViewPrefs,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.app_kv();
+        kv.put(DetScope::Global, IdentityTokensViewPrefs::KV_KEY, prefs)
+            .map_err(token_err)
+    }
+
     /// Devnet-only sweep: drop the token registry, every balance entry,
     /// the saved order and the dismissal list. No-op on non-devnet networks.
     pub fn delete_all_local_tokens_in_devnet(&self) -> std::result::Result<(), TaskError> {
@@ -976,6 +1013,41 @@ mod tests {
 
     fn ident(b: u8) -> Identifier {
         Identifier::from([b; 32])
+    }
+
+    #[test]
+    fn identity_token_view_preferences_follow_the_device() {
+        let dir = tempfile::tempdir().expect("device data dir");
+        let testnet = crate::context::test_support::test_app_context(dir.path());
+        let mainnet = AppContext::new(
+            dir.path().to_path_buf(),
+            Network::Mainnet,
+            testnet.db.clone(),
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            testnet.app_kv(),
+            testnet.secret_store(),
+            Default::default(),
+        )
+        .expect("second network context");
+        testnet.set_det_kv_override_for_test(empty_kv());
+        mainnet.set_det_kv_override_for_test(empty_kv());
+
+        let mut prefs = IdentityTokensViewPrefs {
+            filter: "Coffee".into(),
+            hide_zero_balances: true,
+            sort: crate::model::token::TokenListSort::NameAToZ,
+        };
+        testnet
+            .save_identity_tokens_view_prefs(&prefs)
+            .expect("save");
+        assert_eq!(mainnet.identity_tokens_view_prefs(), prefs);
+        prefs.filter = "Tea".into();
+        mainnet
+            .save_identity_tokens_view_prefs(&prefs)
+            .expect("save");
+        assert_eq!(testnet.identity_tokens_view_prefs(), prefs);
     }
 
     /// The once-per-identity claim hint is per (identity, token) and holds

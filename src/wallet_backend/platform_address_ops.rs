@@ -757,6 +757,17 @@ mod tests {
         (seed_hash, path_index, owned)
     }
 
+    /// A wired context on the mock SDK whose secret prompt is `prompt`.
+    async fn context_with_prompt(
+        dir: &std::path::Path,
+        prompt: &Arc<crate::wallet_backend::secret_prompt::test_support::TestPrompt>,
+    ) -> Arc<AppContext> {
+        let ctx = crate::context::test_support::test_app_context(dir);
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        ctx.install_secret_prompt(Arc::clone(prompt) as _);
+        crate::context::test_support::wire_wallet_backend(ctx).await
+    }
+
     fn assert_spend_registered_the_wallet<T: std::fmt::Debug>(
         backend: &WalletBackend,
         seed_hash: &WalletSeedHash,
@@ -819,18 +830,14 @@ mod tests {
     /// passphrase prompt that session asks.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn transfer_from_a_locked_wallet_not_registered_upstream_registers_it() {
-        use crate::wallet_backend::secret_prompt::SecretPrompt;
         use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
-        const PASSWORD: &str = "locked-wallet-marker";
+        let password = hex::encode(crate::test_support::keys::secret_bytes());
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = crate::context::test_support::test_app_context(dir.path());
-        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
-        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(PASSWORD)]));
-        ctx.install_secret_prompt(Arc::clone(&prompt) as Arc<dyn SecretPrompt>);
-        let ctx = crate::context::test_support::wire_wallet_backend(ctx).await;
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(&password)]));
+        let ctx = context_with_prompt(dir.path(), &prompt).await;
         let backend = ctx.wallet_backend().expect("wired backend");
         let (seed_hash, path_index, owned) =
-            wallet_not_registered_upstream(&ctx, Some(PASSWORD)).await;
+            wallet_not_registered_upstream(&ctx, Some(&password)).await;
         assert!(matches!(
             backend.resolve_wallet(&seed_hash).await,
             Err(TaskError::WalletLockedNotLoaded { .. })
@@ -944,15 +951,19 @@ mod tests {
         );
     }
 
-    /// A poisoned wallet map is not an unloaded wallet: the spend is refused
-    /// before its seed session, so before anything is broadcast.
+    /// A poisoned wallet map is not an unloaded wallet: a spend from a
+    /// closed protected wallet is refused before its seed session, so
+    /// without a passphrase prompt and before anything is broadcast.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn preparing_slots_refuses_a_poisoned_wallet_map() {
+    async fn transfer_refuses_a_poisoned_wallet_map_without_prompting() {
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+        let password = hex::encode(crate::test_support::keys::secret_bytes());
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = wired_test_app_context(dir.path()).await;
+        let prompt = Arc::new(TestPrompt::never());
+        let ctx = context_with_prompt(dir.path(), &prompt).await;
         let backend = ctx.wallet_backend().expect("wired backend");
-        let (seed_hash, _, _) =
-            wallet_with_platform_address(&ctx, rand::random::<[u8; 64]>()).await;
+        let (seed_hash, path_index, owned) =
+            wallet_not_registered_upstream(&ctx, Some(&password)).await;
         let poisoner = Arc::clone(&backend);
         let _ = std::thread::spawn(move || {
             let _guard = poisoner.inner.id_map.write().expect("id map");
@@ -960,11 +971,20 @@ mod tests {
         })
         .join();
 
-        let prepared = backend.resolve_paying_wallet(&seed_hash).await;
+        let result = backend
+            .transfer_platform_address_credits(
+                &seed_hash,
+                &path_index,
+                BTreeMap::from([(owned, 1_000_000)]),
+                BTreeMap::from([(PlatformAddress::P2pkh([0x99; 20]), 1_000_000)]),
+                vec![dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep::DeductFromInput(0)],
+            )
+            .await;
         assert!(
-            matches!(prepared, Err(TaskError::LockPoisoned { .. })),
-            "{prepared:?}"
+            matches!(result, Err(TaskError::LockPoisoned { .. })),
+            "{result:?}"
         );
+        assert_eq!(prompt.ask_count(), 0, "no passphrase prompt");
     }
 
     fn infos(entries: &[(PlatformAddress, Credits, u32)]) -> AddressInfos {

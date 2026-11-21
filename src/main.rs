@@ -71,8 +71,13 @@ fn main() -> ExitCode {
     if result.is_err() || outcome.failed() {
         // Notice to the real terminal, independent of tracing (fd 2 is
         // redirected into det.log, so this writes to the preserved stderr).
+        // The shown failure carries the boot error; the startup error alone
+        // covers a failure before the app was built.
+        let shown = outcome.shown_failure();
         let mut causes: Vec<&dyn std::error::Error> = Vec::new();
-        if let Some(error) = startup.error() {
+        if let Some(notice) = &shown {
+            causes.push(notice);
+        } else if let Some(error) = startup.error() {
             causes.push(error);
         }
         if let Err(error) = &result {

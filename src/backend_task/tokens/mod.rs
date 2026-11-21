@@ -1182,8 +1182,8 @@ mod token_action_routing_tests {
     }
 
     /// Register an HD wallet with the upstream manager and return its hash.
-    async fn registered_wallet(ctx: &AppContext, seed_byte: u8) -> WalletSeedHash {
-        let seed = [seed_byte; 64];
+    async fn registered_wallet(ctx: &AppContext) -> WalletSeedHash {
+        let seed = crate::test_support::keys::seed();
         let wallet =
             crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
                 .expect("build wallet");
@@ -1203,7 +1203,7 @@ mod token_action_routing_tests {
     async fn token_actions_of_an_identity_no_wallet_holds_are_refused_before_sending() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ctx, sender, _rx) = offline_context(dir.path()).await;
-        registered_wallet(&ctx, 0x2C).await;
+        registered_wallet(&ctx).await;
         let (identity, key) = actor_identity();
         ctx.insert_local_qualified_identity(&identity, &None)
             .expect("store the wallet-less identity");
@@ -1233,7 +1233,7 @@ mod token_action_routing_tests {
     async fn token_actions_of_a_wallet_held_identity_go_through_platform_wallet() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ctx, sender, _rx) = offline_context(dir.path()).await;
-        let seed_hash = registered_wallet(&ctx, 0x3D).await;
+        let seed_hash = registered_wallet(&ctx).await;
         let (identity, key) = actor_identity();
         ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
             .expect("store the wallet-held identity");

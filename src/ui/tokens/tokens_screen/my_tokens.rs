@@ -4,6 +4,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::identity_name::shorten_id;
+use crate::model::token::token_display_name;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::copyable_id::copy_with_confirmation;
@@ -367,7 +368,7 @@ impl TokensScreen {
             } else {
                 IdentityTokenMaybeBalanceWithActions {
                     token_id,
-                    token_alias: token_info.token_name.clone(),
+                    token_alias: token_display_name(&token_info.token_name, &token_id),
                     token_config: token_info.token_configuration.clone(),
                     identity_id: *identity_id,
                     identity_name: Some(self.app_context.identity_display_label(identity)),
@@ -478,10 +479,7 @@ impl TokensScreen {
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
-                                                // Create an amount using the token's decimal places and alias
-                                                let decimals = itb.token_config.conventions().decimals();
-                                                let amount = Amount::new(balance, decimals).with_unit_name(&itb.token_alias);
-                                                ui.label(amount.to_string_without_unit());
+                                                ui.label(itb.amount_of(balance).to_string_without_unit());
                                             } else if ui.button("Check").clicked() {
                                                 action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
                                             }
@@ -491,10 +489,7 @@ impl TokensScreen {
                                                 if itb.available_actions.can_estimate {
                                                         if let Some(known_rewards) = itb.estimated_unclaimed_rewards  {
                                                             ui.horizontal(|ui| {
-                                                                // Create an amount for rewards using the token's decimal places and alias
-                                                                let decimals = itb.token_config.conventions().decimals();
-                                                                let rewards_amount = Amount::new(known_rewards, decimals);
-                                                                ui.label(rewards_amount.to_string());
+                                                                ui.label(itb.amount_of(known_rewards).to_string_without_unit());
 
                                                                 // Info button to show explanation
                                                                 let identity_token_id = IdentityTokenIdentifier {

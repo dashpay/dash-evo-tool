@@ -1,9 +1,10 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
+use crate::model::token::{
+    IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokensViewPrefs, token_display_name,
 };
+use crate::ui::tokens::tokens_screen::{TokenInfo, TokenInfoWithDataContract};
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError, UpstreamTokenBalances};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
@@ -436,7 +437,7 @@ impl AppContext {
                 },
                 IdentityTokenBalance {
                     token_id,
-                    token_alias: stored.alias.clone(),
+                    token_alias: token_display_name(&stored.alias, &token_id),
                     token_config,
                     identity_id,
                     balance,
@@ -669,7 +670,7 @@ impl AppContext {
                 token_id,
                 TokenInfoWithDataContract {
                     token_id,
-                    token_name: stored.alias,
+                    token_name: token_display_name(&stored.alias, &token_id),
                     data_contract: qc.contract,
                     token_position: stored.position,
                     token_configuration: token_config,
@@ -735,6 +736,42 @@ impl AppContext {
             .into_iter()
             .map(|(t, i)| (Identifier::from(t), Identifier::from(i)))
             .collect())
+    }
+
+    /// How the Identity Hub's Tokens tab lists tokens on this device. A
+    /// missing or unreadable blob yields the defaults; the read failure is
+    /// logged, never shown.
+    pub fn identity_tokens_view_prefs(&self) -> IdentityTokensViewPrefs {
+        match self.try_identity_tokens_view_prefs() {
+            Ok(prefs) => prefs,
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    "Could not read the Identity Hub token list preferences; using defaults"
+                );
+                IdentityTokensViewPrefs::default()
+            }
+        }
+    }
+
+    fn try_identity_tokens_view_prefs(
+        &self,
+    ) -> std::result::Result<IdentityTokensViewPrefs, TaskError> {
+        let kv = self.app_kv();
+        Ok(kv
+            .get(DetScope::Global, IdentityTokensViewPrefs::KV_KEY)
+            .map_err(token_err)?
+            .unwrap_or_default())
+    }
+
+    /// Remember how the Identity Hub's Tokens tab lists tokens on this device.
+    pub fn save_identity_tokens_view_prefs(
+        &self,
+        prefs: &IdentityTokensViewPrefs,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.app_kv();
+        kv.put(DetScope::Global, IdentityTokensViewPrefs::KV_KEY, prefs)
+            .map_err(token_err)
     }
 
     /// Devnet-only sweep: drop the token registry, every balance entry,
@@ -976,6 +1013,41 @@ mod tests {
 
     fn ident(b: u8) -> Identifier {
         Identifier::from([b; 32])
+    }
+
+    #[test]
+    fn identity_token_view_preferences_follow_the_device() {
+        let dir = tempfile::tempdir().expect("device data dir");
+        let testnet = crate::context::test_support::test_app_context(dir.path());
+        let mainnet = AppContext::new(
+            dir.path().to_path_buf(),
+            Network::Mainnet,
+            testnet.db.clone(),
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            testnet.app_kv(),
+            testnet.secret_store(),
+            Default::default(),
+        )
+        .expect("second network context");
+        testnet.set_det_kv_override_for_test(empty_kv());
+        mainnet.set_det_kv_override_for_test(empty_kv());
+
+        let mut prefs = IdentityTokensViewPrefs {
+            filter: "Coffee".into(),
+            hide_zero_balances: true,
+            sort: crate::model::token::TokenListSort::NameAToZ,
+        };
+        testnet
+            .save_identity_tokens_view_prefs(&prefs)
+            .expect("save");
+        assert_eq!(mainnet.identity_tokens_view_prefs(), prefs);
+        prefs.filter = "Tea".into();
+        mainnet
+            .save_identity_tokens_view_prefs(&prefs)
+            .expect("save");
+        assert_eq!(testnet.identity_tokens_view_prefs(), prefs);
     }
 
     /// The once-per-identity claim hint is per (identity, token) and holds
@@ -1293,6 +1365,36 @@ mod tests {
     // ----------------------------------------------------------------
     // Token order: prune helper rewrites the list only when it shrinks.
     // ----------------------------------------------------------------
+
+    /// Every screen listing known tokens gets the registry name cleaned of
+    /// invisible and direction characters, like identity names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn known_token_names_are_cleaned_for_display() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::version::PlatformVersion;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let contract = user_contract_at(PlatformVersion::latest(), None);
+        ctx.insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
+            .expect("contract");
+        let token_id = ident(9);
+        ctx.insert_token(
+            &token_id,
+            "\u{202E}Dash\u{200B}Coffee",
+            TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+            &contract.id(),
+            0,
+        )
+        .expect("token");
+        let names: Vec<String> = ctx
+            .get_all_known_tokens_with_data_contract()
+            .expect("known tokens")
+            .into_values()
+            .map(|token| token.token_name)
+            .collect();
+        assert_eq!(names, ["DashCoffee"]);
+    }
 
     #[test]
     fn prune_token_order_drops_only_filtered_pairs() {

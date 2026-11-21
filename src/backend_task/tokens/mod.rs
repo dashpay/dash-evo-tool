@@ -1223,11 +1223,6 @@ mod token_action_routing_tests {
         (identity, key)
     }
 
-    /// An identity no wallet in this app holds (a masternode or key-only
-    /// identity) still acts on tokens: each action is built through the SDK
-    /// and signed with the identity's own key, without borrowing a loaded
-    /// wallet. Holding the key gets every action past signing; without it,
-    /// the identity's signer refuses and says the key is missing.
     /// A mint at a token position the contract does not have fails before
     /// anything is signed, with the error the wallet route reports, instead
     /// of sending the chosen recipient unchecked.
@@ -1273,6 +1268,11 @@ mod token_action_routing_tests {
         assert_eq!(format!("{err:?}"), format!("{expected:?}"));
     }
 
+    /// An identity no wallet in this app holds (a masternode or key-only
+    /// identity) still acts on tokens: each action is built through the SDK
+    /// and signed with the identity's own key, without borrowing a loaded
+    /// wallet. Holding the key gets every action past signing; without it,
+    /// the identity's signer refuses and says the key is missing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_actions_of_an_identity_no_wallet_holds_are_signed_by_the_identity() {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;

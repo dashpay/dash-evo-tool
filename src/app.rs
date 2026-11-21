@@ -708,6 +708,9 @@ pub enum AppAction {
     /// Contacts gate's "Add a display name" CTA). Handled by `AppState::update`
     /// which looks up the visible `IdentityHubScreen` and calls `select_tab`.
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
+    /// Show a token contract's details in the Search Tokens root screen,
+    /// leaving the screen that asked (e.g. Token Creator's receipt) as it is.
+    OpenTokenContract(dash_sdk::platform::Identifier),
 }
 
 impl BitOrAssign for AppAction {
@@ -2828,6 +2831,15 @@ impl App for AppState {
                         self.screen_stack.push(screen);
                     }
                     self.try_auto_start_spv();
+                }
+                AppAction::OpenTokenContract(contract_id) => {
+                    let search = RootScreenType::RootScreenTokenSearch;
+                    self.screen_stack.clear();
+                    self.set_main_screen(search);
+                    if let Screen::TokensScreen(screen) = self.active_root_screen_mut() {
+                        let fetch = screen.open_contract(contract_id);
+                        self.dispatch_screen_task(Some(ScreenOwner::Root(search)), fetch);
+                    }
                 }
                 AppAction::SwitchIdentityHubTab(tab) => {
                     // Resolve the visible screen. In-hub deep links are only

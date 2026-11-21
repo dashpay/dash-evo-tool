@@ -160,13 +160,6 @@ impl TokenDraft {
                 DraftIssue::Supply,
             ));
         }
-        if !self.transferable && version.protocol_version < 14 {
-            return Err(DraftError::new(
-                Section::Supply,
-                "Ordinary transfers",
-                DraftIssue::Unsupported,
-            ));
-        }
         let mut groups = BTreeMap::new();
         let mut remap = BTreeMap::new();
         for (index, group) in self.groups.iter().enumerate() {
@@ -233,13 +226,6 @@ impl TokenDraft {
         let perpetual_distribution = self.recurring.parse(self.decimals, network, version)?;
         let pre_programmed_distribution = self.parse_schedule(owner, now_ms)?;
         let once_amount = if self.once_enabled {
-            if version.protocol_version < 14 {
-                return Err(DraftError::new(
-                    Section::Distribution,
-                    "Once per identity",
-                    DraftIssue::Unsupported,
-                ));
-            }
             let amount = self.once_amount.parse(self.decimals).map_err(|source| {
                 DraftError::new(Section::Distribution, "Amount per identity", source.into())
             })?;
@@ -715,6 +701,19 @@ mod tests {
             DraftIssue::DuplicateSchedule
         ));
     }
+    /// Whether the network accepts these features is Platform's decision, not
+    /// a protocol number this build hard-codes.
+    #[test]
+    fn non_transferable_and_once_per_identity_drafts_are_left_to_platform() {
+        let owner = Identifier::from([9; 32]);
+        let version = PlatformVersion::get(13).unwrap();
+        let mut draft = TokenDraft::example(false);
+        draft.transferable = false;
+        draft.once_enabled = true;
+        draft.once_amount = TokenAmountInput::tokens("1");
+        assert!(draft.parse(owner, Network::Testnet, version, 0).is_ok());
+    }
+
     #[test]
     fn token_registration_protocol_limits_are_enforced_before_signing() {
         let owner = Identifier::from([9; 32]);

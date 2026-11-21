@@ -231,10 +231,6 @@ pub enum DraftIssue {
     ExternalDocumentReference,
     #[error("The document definitions are too large. Reduce them to at most 1 MiB.")]
     DocumentsSize,
-    #[error(
-        "These settings are not supported by the selected network. Change them or choose a supported network."
-    )]
-    Unsupported,
     #[error("These settings are not accepted. Check the indicated field and adjust its values.")]
     InvalidConfiguration,
     #[error("These settings could not be checked. Check the indicated field and try again.")]

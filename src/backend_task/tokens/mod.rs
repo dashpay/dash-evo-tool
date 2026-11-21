@@ -245,8 +245,8 @@ impl AppContext {
         &self,
         identity: &'a QualifiedIdentity,
     ) -> Result<TokenActor<'a>, TaskError> {
-        match self.stored_identity_wallet_link(&identity.identity.id())? {
-            Some((seed_hash, _)) => {
+        match self.token_action_wallet(&identity.identity.id())? {
+            Some(seed_hash) => {
                 self.wallet_backend()?
                     .token_actor(&seed_hash, identity)
                     .await
@@ -1359,6 +1359,48 @@ mod token_action_routing_tests {
         assert_eq!(
             fee,
             FeeResult::estimated_only(ctx.fee_estimator().estimate_token_transition())
+        );
+    }
+
+    /// An identity whose wallet was removed from the app acts as a
+    /// wallet-less one again: it is not told to wait for a wallet that no
+    /// longer exists, and its actions go through the SDK.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_actions_of_an_identity_whose_wallet_was_removed_go_through_the_sdk() {
+        use crate::model::wallet::birth_height::WalletOrigin;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, sender, _rx) = offline_context(dir.path()).await;
+        ctx.prepare_storage(sender).await.expect("prepare storage");
+        let seed = crate::test_support::keys::seed();
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let (seed_hash, _) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register the wallet");
+        let (identity, _) = actor_identity();
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        assert_eq!(
+            ctx.token_action_wallet(&identity.identity.id())
+                .expect("the identity's wallet"),
+            Some(seed_hash),
+            "a wallet the app knows, loaded or not, carries the identity's actions"
+        );
+
+        ctx.remove_wallet(&seed_hash).expect("remove the wallet");
+
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .expect("availability"),
+            crate::model::token::TokenActionAvailability::Available
+        );
+        assert!(
+            !ctx.token_actor(&identity)
+                .await
+                .expect("an actor")
+                .is_wallet_held()
         );
     }
 

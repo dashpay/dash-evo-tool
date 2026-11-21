@@ -2,6 +2,7 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
 use crate::model::token::TokenActionAvailability;
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
@@ -23,6 +24,7 @@ use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 
 /// Key prefix for user-registered contract entries in the per-network
 /// wallet k/v store. The full key is `det:contract:<contract_id_base58>`
@@ -145,7 +147,8 @@ fn token_err(source: KvAdapterError) -> TaskError {
 
 impl AppContext {
     /// Whether `identity_id` can send token transactions. Those of a
-    /// wallet-held identity (its DET wallet link) wait for that wallet to load.
+    /// wallet-held identity (see [`Self::token_action_wallet`]) wait for that
+    /// wallet to load.
     ///
     /// # Errors
     /// Fails when the identity record cannot be read.
@@ -153,15 +156,31 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> std::result::Result<TokenActionAvailability, TaskError> {
-        let linked_wallet_open =
-            self.stored_identity_wallet_link(identity_id)?
-                .map(|(seed_hash, _)| {
-                    self.wallet_backend()
-                        .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
-                });
+        let linked_wallet_open = self.token_action_wallet(identity_id)?.map(|seed_hash| {
+            self.wallet_backend()
+                .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
+        });
         Ok(TokenActionAvailability::from_wallet_link(
             linked_wallet_open,
         ))
+    }
+
+    /// The wallet that carries `identity_id`'s token actions: its DET wallet
+    /// link, unless that wallet is no longer in this app (it was removed), in
+    /// which case the identity acts as one no wallet holds. Until storage is
+    /// prepared the wallet list may still be filling, so the link is kept.
+    ///
+    /// # Errors
+    /// Fails when the identity record cannot be read.
+    pub(crate) fn token_action_wallet(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<Option<WalletSeedHash>, TaskError> {
+        let storage_prepared = self.storage_prepared.load(Ordering::Acquire);
+        Ok(self
+            .stored_identity_wallet_link(identity_id)?
+            .map(|(seed_hash, _)| seed_hash)
+            .filter(|seed_hash| !storage_prepared || self.wallet_context().contains_hd(seed_hash)))
     }
 
     /// Retrieves all user-registered contracts from the per-network k/v

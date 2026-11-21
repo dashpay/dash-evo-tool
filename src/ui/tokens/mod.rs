@@ -161,13 +161,38 @@ impl TokenSigningKey {
             return;
         }
 
-        let automatic = match transaction_type {
-            TransactionType::TokenClaim | TransactionType::TokenTransfer => {
-                identity.single_token_transition_key(contract_id)
-            }
-            _ => identity.token_action_key(contract_id),
-        };
-        *self = Self::automatic(automatic.cloned());
+        *self = Self::automatic(automatic_key(identity, transaction_type, contract_id).cloned());
+    }
+
+    /// Keeps an automatic choice on the key the selector picks now, so a key
+    /// that expired since is never signed with; an explicit choice is left
+    /// to [`Self::refresh`]. Returns whether the selection changed.
+    fn follow_automatic(
+        &mut self,
+        identity: &QualifiedIdentity,
+        transaction_type: TransactionType,
+        contract_id: Identifier,
+    ) -> bool {
+        let automatic = automatic_key(identity, transaction_type, contract_id);
+        if self.manually_selected || self.selected.as_ref() == automatic {
+            return false;
+        }
+        self.selected = automatic.cloned();
+        true
+    }
+}
+
+/// The key a token form picks without the user's choice.
+fn automatic_key(
+    identity: &QualifiedIdentity,
+    transaction_type: TransactionType,
+    contract_id: Identifier,
+) -> Option<&IdentityPublicKey> {
+    match transaction_type {
+        TransactionType::TokenClaim | TransactionType::TokenTransfer => {
+            identity.single_token_transition_key(contract_id)
+        }
+        _ => identity.token_action_key(contract_id),
     }
 }
 

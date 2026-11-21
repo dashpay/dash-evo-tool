@@ -468,6 +468,14 @@ impl ScreenLike for TransferTokensScreen {
                 )
             };
 
+            if self.selected_key.follow_automatic(
+                identity,
+                TransactionType::TokenTransfer,
+                self.identity_token_balance.data_contract_id,
+            ) {
+                // A pending confirmation was for the previous key.
+                self.confirmation_dialog = None;
+            }
             if key_status == SigningKeyStatus::ManualChoiceOnly {
                 // Only a contract-group key can sign it: the user picks it below.
                 self.show_advanced_options = true;
@@ -798,6 +806,80 @@ mod tests {
                 .supports_action(egui::accesskit::Action::Click)
         }));
         assert!(!dispatched.get());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An automatically chosen key that expires while the confirmation is
+    /// open is never submitted, though another key still signs: the form
+    /// switches to that key and asks for confirmation again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_automatic_key_expiring_under_the_confirmation_is_not_submitted() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use egui_kittest::{Harness, kittest::Queryable};
+        use std::cell::RefCell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        // The form submits only for a contract this device stores.
+        ctx.insert_contract_if_not_exists(
+            &ctx.dpns_contract(),
+            None,
+            crate::model::qualified_contract::InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .unwrap();
+        let mut identity = identity_holding(&[expired.clone(), live]);
+        identity.identity.set_balance(1_000_000_000_000);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Example".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: ctx.dpns_contract().id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &ctx);
+        screen.amount = Some(Amount::new(1, 0));
+        screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        // Key 1 was the automatic choice before it expired.
+        screen.selected_key = TokenSigningKey::automatic(Some(expired));
+        screen.confirmation_dialog = Some(
+            ConfirmationDialog::new("Confirm Transfer", "Send the token?")
+                .confirm_text(Some("Confirm pending transfer")),
+        );
+        let submitted = RefCell::new(Vec::new());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferTokensScreen| {
+                    if let AppAction::BackendTask(BackendTask::TokenTask(task)) = screen.ui(ui)
+                        && let TokenTask::TransferTokens { signing_key, .. } = *task
+                    {
+                        submitted.borrow_mut().push(signing_key.id());
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        if let Some(confirm) = harness.query_by_label("Confirm pending transfer") {
+            confirm.click();
+            harness.run_steps(4);
+        }
+        assert_eq!(*submitted.borrow(), Vec::<u32>::new());
+        assert_eq!(
+            harness.state().selected_key.as_ref().map(|key| key.id()),
+            Some(2)
+        );
         ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

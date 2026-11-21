@@ -128,7 +128,10 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
                 checkbox(ui,"Allow the administrator to remove all action performers","flags.0",&mut rule.allow_disable_action,&mut state.help);
                 checkbox(ui,"Allow the administrator to remove all rule administrators","flags.1",&mut rule.allow_remove_administrator,&mut state.help);
                 checkbox(ui,"Allow the administrator to replace itself","flags.2",&mut rule.allow_replace_administrator,&mut state.help);
-                ui.small("These allowances are separate. An action with no current performer may still be enabled later when a rule administrator remains.");
+                ui.small("An action with no current performer may still be enabled later when a rule administrator remains.");
+                if rule.allow_remove_administrator && !rule.allow_replace_administrator {
+                    ui.small("Removing all rule administrators also needs the administrator to be allowed to replace itself.");
+                }
                 if rule.administrator == ActorDraft::NoOne {
                     ui.small("There is currently no administrator to use these allowances.");
                 }
@@ -299,6 +302,14 @@ mod tests {
         }
         for kind in crate::model::token_creator::distributions::FunctionKind::ALL {
             assert!(TOPICS.contains_key(kind.help_key()));
+            let topic = &TOPICS[kind.help_key()];
+            for field in [&topic.formula, &topic.formula_note] {
+                assert!(
+                    field.as_deref().is_some_and(|text| !text.trim().is_empty()),
+                    "{} needs a worked formula and its note",
+                    kind.help_key()
+                );
+            }
             for parameter in kind.parameters() {
                 assert!(TOPICS.contains_key(parameter.help_key()));
             }
@@ -308,6 +319,13 @@ mod tests {
             "https://drive.google.com/drive/folders/1ECWS2d_-OeHXTW-Ur-qFlf_mZzYUIqQ1?usp=sharing"
         );
     }
+    #[test]
+    fn rule_help_titles_match_the_rule_labels() {
+        for kind in RuleKind::ALL {
+            assert_eq!(topic_title(kind.help_key()), kind.label());
+        }
+    }
+
     #[test]
     fn checkpoint_review_help_renders_the_approved_consequence() {
         use egui_kittest::kittest::Queryable;

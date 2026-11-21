@@ -30,7 +30,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         }
         hint(
             ui,
-            "Use at least 3 characters without spaces, within 25 UTF-8 bytes. Accented letters and other multibyte characters leave room for fewer characters.",
+            "Use 3 to 25 UTF-8 bytes without spaces. Accented letters and other multibyte characters use more than one byte each.",
         );
         egui::CollapsingHeader::new("Names in other languages").show(ui, |ui| {
             hint(ui, "Keep one set of names per language.");

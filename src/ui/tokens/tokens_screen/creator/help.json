@@ -26,7 +26,7 @@
   },
   "name": {
     "title": "Token name",
-    "body": "The display name helps people recognize your token. It does not prove ownership or make the token unique; the confirmed token identifier distinguishes it from other tokens. Both names are required. Use at least 3 characters without spaces, within 25 UTF-8 bytes; multibyte characters leave room for fewer characters.",
+    "body": "The display name helps people recognize your token. It does not prove ownership or make the token unique; the confirmed token identifier distinguishes it from other tokens. Both names are required. Use 3 to 25 UTF-8 bytes without spaces; multibyte characters leave room for fewer characters.",
     "example": "StudioCredit is a name; two different tokens could use it.",
     "scene": "04"
   },
@@ -136,7 +136,7 @@
   },
   "flags.1": {
     "title": "Allow removing all administrators",
-    "body": "Allow the rule administrator to set the administrator to No one. Once no administrator remains, this rule can no longer be updated through that authority.",
+    "body": "Allow the rule administrator to set the administrator to No one. This also requires allowing the administrator to replace itself. Once no administrator remains, this rule can no longer be updated through that authority.",
     "example": "Lock the chosen minting authority by removing its rule administrator.",
     "scene": "18"
   },
@@ -226,26 +226,26 @@
     "scene": "20"
   },
   "rule.burn": {
-    "title": "Burn the actor's own tokens",
+    "title": "Burn own tokens",
     "body": "Burning removes tokens from the executing identity's own balance and reduces outstanding supply. It does not let the actor take tokens from another holder.",
     "example": "Burning 10 from your balance of 100 leaves you with 90.",
     "consequence": "Burned tokens are destroyed; burning is not a recoverable transfer.",
     "scene": "22"
   },
   "rule.freeze": {
-    "title": "Freeze one holder",
+    "title": "Freeze an account",
     "body": "Prevent a particular identity from sending this token. Receiving while frozen is a separate setting, and permission to unfreeze is a separate action rule.",
     "example": "Freeze one account while other holders continue transferring normally.",
     "scene": "23"
   },
   "rule.unfreeze": {
-    "title": "Unfreeze one holder",
+    "title": "Unfreeze an account",
     "body": "Remove an identity's freeze so it can spend again when the token's other transfer rules permit. Freeze and unfreeze can have different authorized actors.",
     "example": "A governance group can unfreeze an account after reviewing the reason for its freeze.",
     "scene": "23"
   },
   "rule.destroy": {
-    "title": "Destroy a frozen balance",
+    "title": "Destroy frozen funds",
     "body": "Allow the authorized actor to destroy the target identity's entire frozen token balance. This is separate from burning the actor's own tokens and does not select a partial amount.",
     "example": "A frozen balance of 100 is reduced to zero.",
     "consequence": "Unfreezing the identity later does not restore destroyed tokens.",
@@ -259,19 +259,19 @@
   },
   "rule.cap": {
     "title": "Change maximum supply",
-    "body": "Choose who can change the numerical supply ceiling and who can change that permission. A permanent cap needs both selectors set to No one and all three change allowances off.",
+    "body": "Choose who can change the numerical supply ceiling and who can change that permission. The cap is permanent when both selectors are No one: with no administrator, the change allowances cannot be used.",
     "example": "Keep minting available below 10,000 while locking the ceiling at 10,000.",
     "scene": "19"
   },
   "rule.conventions": {
-    "title": "Change display conventions",
+    "title": "Change names and display conventions",
     "body": "Allow later changes to naming and decimal conventions. These can affect how clients present token names and amounts, so choose this authority separately from minting or pausing.",
     "example": "An authorized actor could update localized token names.",
     "scene": "25"
   },
   "rule.recurring": {
     "title": "Change recurring distribution",
-    "body": "This authority can enable, change or disable recurring distribution, including its recipient. Turning distribution off in the draft does not remove this permission.",
+    "body": "This authority is recorded with the token, but the current network does not support enabling, changing or disabling recurring distribution after creation. It can still change who holds this authority if its allowances permit.",
     "example": "If the owner retains this power, recurring rewards could be enabled after creation.",
     "scene": "44"
   },
@@ -307,7 +307,7 @@
   },
   "recurring": {
     "title": "Recurring distribution",
-    "body": "Allocate tokens over repeated periods using the chosen amount function and recipient. Review its change rule even when this feature starts off; retained authority can enable it later.",
+    "body": "Allocate tokens over repeated periods using the chosen amount function and recipient. Configure it before signing: the current network does not support enabling, changing or disabling recurring distribution after creation.",
     "example": "A fixed function can allocate 1 token per eligible daily period for the treasury to claim.",
     "scene": "30"
   },

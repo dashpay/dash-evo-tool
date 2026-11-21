@@ -443,7 +443,7 @@ fn human_review(ui: &mut Ui, draft: &TokenDraft) {
                     hint(ui, "Transferability is permanent after creation. A pause and other token actions have separate rules.");
                     inline_notice(ui, MessageType::Info, |ui| { ui.label("No marketplace sale or direct-purchase price is configured at creation. Review who could change these settings later."); });
                     ui.label(RichText::new("Powers and consequences").font(Typography::subheading()));
-                    for kind in RuleKind::ALL {let rule=draft.permissions.get(kind);ui.separator();ui.strong(kind.label());ui.label(format!("Performer: {} · administrator: {}",rule.performer.label(),rule.administrator.label()));ui.label(format!("Allow disabling action: {} · allow removing administrator: {} · allow replacing administrator: {}",supply::yes(rule.allow_disable_action),supply::yes(rule.allow_remove_administrator),supply::yes(rule.allow_replace_administrator)));}
+                    for kind in RuleKind::ALL {let rule=draft.permissions.get(kind);ui.separator();ui.strong(kind.label());ui.label(format!("Performer: {} · administrator: {}",rule.performer.label(),rule.administrator.label()));ui.label(format!("Allow disabling action: {} · allow removing administrator: {} · allow replacing administrator: {}",supply::yes(rule.allow_disable_action),supply::yes(rule.allows_removing_administrators()),supply::yes(rule.allow_replace_administrator)));}
                 },
                 Section::Distribution=>{
                     ui.label(format!("Recurring: {}",on_off(draft.recurring.enabled)));

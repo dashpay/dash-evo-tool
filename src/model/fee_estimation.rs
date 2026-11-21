@@ -1528,6 +1528,131 @@ pub(crate) fn platform_transfer_max(
     )
 }
 
+/// The identity top-up sources: the addresses that reach Platform's input
+/// minimum, in address order (the order the signed inputs take).
+fn top_up_sources(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+) -> BTreeMap<PlatformAddress, Credits> {
+    addresses
+        .iter()
+        .filter(|(_, _, balance)| *balance >= estimator.min_platform_input())
+        .map(|(address, _, balance)| (*address, *balance))
+        .collect()
+}
+
+/// The most a top-up paid by `payer` can send, spending up to `others`
+/// (higher addresses, by balance descending) after it, and its fee.
+fn top_up_max_for_payer(
+    estimator: &PlatformFeeEstimator,
+    payer_balance: Credits,
+    others: &[Credits],
+) -> Option<PlatformTransferMax> {
+    let mut best: Option<PlatformTransferMax> = None;
+    let mut others_total = 0u64;
+    for count in 1..=estimator.max_platform_inputs().min(others.len() + 1) {
+        if count > 1 {
+            others_total = others_total.saturating_add(others[count - 2]);
+        }
+        let estimated_fee = estimator.estimate_identity_topup_from_addresses(count);
+        let payer_gives = payer_balance.saturating_sub(estimated_fee);
+        if payer_gives < estimator.min_platform_input() {
+            continue;
+        }
+        let amount = payer_gives.saturating_add(others_total);
+        if best.as_ref().is_none_or(|best| amount > best.amount) {
+            best = Some(PlatformTransferMax {
+                amount,
+                estimated_fee,
+            });
+        }
+    }
+    best
+}
+
+/// Plans an identity top-up of `amount_credits` from Platform addresses.
+///
+/// The SDK signs the top-up with `DeductFromInput(0)`, so Platform charges
+/// the fee to the first input in address order: that input keeps the fee
+/// back and, like every input, gives at least Platform's input minimum.
+// TODO(upstream): drop the payer rule once dashpay/platform#5925 lets the
+// SDK choose the fee-paying input.
+pub(crate) fn allocate_identity_top_up(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+) -> AddressAllocationResult {
+    let sources = top_up_sources(estimator, addresses);
+    let mut estimated_fee = estimator.estimate_identity_topup_from_addresses(1);
+    for (&payer, &payer_balance) in &sources {
+        let mut others: Vec<_> = sources
+            .range(payer..)
+            .skip(1)
+            .map(|(a, b)| (*a, *b))
+            .collect();
+        others.sort_by_key(|(_, balance)| std::cmp::Reverse(*balance));
+        let mut fee = estimator.estimate_identity_topup_from_addresses(1);
+        for _ in 0..=estimator.max_platform_inputs() {
+            let split = split_amount(
+                std::iter::once((payer, payer_balance.saturating_sub(fee)))
+                    .chain(others.iter().copied()),
+                amount_credits,
+                estimator.max_platform_inputs(),
+                estimator.min_platform_input(),
+            );
+            let needed_fee = estimator.estimate_identity_topup_from_addresses(split.inputs.len());
+            let payer_keeps = split.inputs.get(&payer).map(|given| payer_balance - given);
+            if split.unplaced == 0 && payer_keeps.is_some_and(|kept| kept >= needed_fee) {
+                return AddressAllocationResult {
+                    inputs: split.inputs,
+                    fee_payer_index: 0,
+                    estimated_fee: needed_fee,
+                    shortfall: 0,
+                    sorted_addresses: sorted_sources(addresses, None),
+                    fee_from_amount: false,
+                    refusal: None,
+                };
+            }
+            if needed_fee == fee {
+                break;
+            }
+            fee = needed_fee;
+        }
+        estimated_fee = fee;
+    }
+    let max = identity_top_up_max(estimator, addresses).amount;
+    AddressAllocationResult {
+        inputs: BTreeMap::new(),
+        fee_payer_index: 0,
+        estimated_fee,
+        shortfall: amount_credits.saturating_sub(max).max(1),
+        sorted_addresses: sorted_sources(addresses, None),
+        fee_from_amount: false,
+        refusal: None,
+    }
+}
+
+/// The largest identity top-up [`allocate_identity_top_up`] can plan, and
+/// its estimated fee; a zero amount when no address can pay the fee.
+pub(crate) fn identity_top_up_max(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+) -> PlatformTransferMax {
+    let sources = top_up_sources(estimator, addresses);
+    sources
+        .iter()
+        .filter_map(|(payer, payer_balance)| {
+            let mut others: Vec<_> = sources.range(payer..).skip(1).map(|(_, b)| *b).collect();
+            others.sort_by_key(|balance| std::cmp::Reverse(*balance));
+            top_up_max_for_payer(estimator, *payer_balance, &others)
+        })
+        .max_by_key(|max| max.amount)
+        .unwrap_or(PlatformTransferMax {
+            amount: 0,
+            estimated_fee: estimator.estimate_identity_topup_from_addresses(1),
+        })
+}
+
 /// The rate DET's Core transactions build at: the upstream builder's default.
 fn core_fee_rate() -> FeeRate {
     FeeRate::normal()
@@ -2989,6 +3114,68 @@ mod tests {
         assert!(result.sorted_addresses.is_empty());
         assert_eq!(result.shortfall, 500);
         assert_eq!(result.estimated_fee, 10);
+    }
+
+    /// The identity top-up Max is a plan the SDK can sign: its first input
+    /// in address order, which Platform charges the fee to, keeps the fee
+    /// back, and every input gives at least Platform's input minimum.
+    fn assert_identity_top_up_max_is_sendable(addresses: &[(PlatformAddress, Address, u64)]) {
+        let estimator = PlatformFeeEstimator::latest();
+        let max = identity_top_up_max(&estimator, addresses);
+        assert!(max.amount > 0, "a Max is offered for {addresses:?}");
+        let plan = allocate_identity_top_up(&estimator, addresses, max.amount);
+        assert_eq!(plan.shortfall, 0, "Max is sendable: {plan:?}");
+        assert_eq!(plan.inputs.values().sum::<u64>(), max.amount, "{plan:?}");
+        let (payer, given) = plan.inputs.first_key_value().expect("an input");
+        let balance = addresses
+            .iter()
+            .find(|(address, _, _)| address == payer)
+            .map(|(_, _, balance)| *balance)
+            .expect("payer is a source");
+        assert!(
+            balance - given >= estimator.estimate_identity_topup_from_addresses(plan.inputs.len()),
+            "the first input keeps the fee back: {plan:?}"
+        );
+        assert!(
+            plan.inputs
+                .values()
+                .all(|given| *given >= estimator.min_platform_input()),
+            "every input reaches the minimum: {plan:?}"
+        );
+        let over = allocate_identity_top_up(&estimator, addresses, max.amount + 1);
+        assert!(over.shortfall > 0, "Max is the most: {over:?}");
+    }
+
+    /// The highest balance is not the first address: the first still pays.
+    #[test]
+    fn identity_top_up_max_keeps_the_fee_on_the_first_input() {
+        assert_identity_top_up_max_is_sendable(&addrs(&[(1, 40_000_000), (2, 100_000_000)]));
+    }
+
+    /// A first address holding the fee plus less than the input minimum
+    /// cannot pay for a second input; Max does not count on it.
+    #[test]
+    fn identity_top_up_max_counts_the_payer_only_above_the_input_minimum() {
+        let fee = PlatformFeeEstimator::latest().estimate_identity_topup_from_addresses(2);
+        assert_identity_top_up_max_is_sendable(&addrs(&[(1, fee + 50_000), (2, 20_000_000)]));
+    }
+
+    /// Max stays sendable across balance layouts and input counts.
+    #[test]
+    fn identity_top_up_max_is_sendable_across_layouts() {
+        for layout in [
+            vec![(1, 900_000_000)],
+            vec![(1, 100_000_000), (2, 100_000_000), (3, 100_000_000)],
+            vec![
+                (1, 300_000_000),
+                (2, 150_000),
+                (3, 700_000_000),
+                (4, 99_999),
+            ],
+            vec![(5, 200_000_000), (1, 600_000_000), (9, 50_000_000)],
+        ] {
+            assert_identity_top_up_max_is_sendable(&addrs(&layout));
+        }
     }
 
     #[test]

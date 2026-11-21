@@ -10,11 +10,12 @@ use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipi
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
-    PlatformFeeEstimator, PlatformTransferRefusal, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, allocate_platform_transfer, core_send_fee_at_max_duffs,
-    estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
-    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
+    PlatformFeeEstimator, PlatformTransferRefusal, allocate_identity_top_up,
+    allocate_platform_addresses, allocate_platform_addresses_with_fee, allocate_platform_transfer,
+    core_send_fee_at_max_duffs, estimate_address_funding_fee_from_transition,
+    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    identity_top_up_max, identity_topup_min_funding_duffs, max_platform_inputs,
     max_spendable_credits, min_platform_input, platform_transfer_max,
     shield_from_balance_fee_headroom,
 };
@@ -2318,8 +2319,7 @@ impl WalletSendScreen {
             })?;
 
         let fee_estimator = self.app_context.fee_estimator();
-        let allocation =
-            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
+        let allocation = allocate_identity_top_up(&fee_estimator, &addresses, amount_credits);
         if allocation.shortfall > 0 {
             return Err(format!(
                 "Insufficient platform balance. Need {} (including estimated fee of {}) but short by {}",
@@ -3249,6 +3249,27 @@ impl WalletSendScreen {
                     )
                 }
             }
+            Some(SourceSelection::PlatformAddresses(addresses))
+                if self.destination_kind() == Some(AddressKind::Identity) =>
+            {
+                let max = identity_top_up_max(&fee_estimator, addresses);
+                let fee = format_credits_as_dash(max.estimated_fee);
+                if max.amount == 0 {
+                    (
+                        None,
+                        Some(format!(
+                            "Your Platform addresses do not have enough to pay the network fee of approximately {fee}."
+                        )),
+                    )
+                } else {
+                    (
+                        Some(max.amount),
+                        Some(format!(
+                            "Fees of approximately {fee} are reserved from your balance."
+                        )),
+                    )
+                }
+            }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Extract destination to exclude it from max calculation (can't send to yourself)
                 let destination = self
@@ -3404,6 +3425,9 @@ impl WalletSendScreen {
                 amount_credits,
                 Some(&destination),
             ),
+            None if self.destination_kind() == Some(AddressKind::Identity) => {
+                allocate_identity_top_up(&fee_estimator, addresses, amount_credits)
+            }
             None => allocate_platform_addresses(&fee_estimator, addresses, amount_credits, None),
         };
 
@@ -7432,7 +7456,7 @@ mod tests {
             dpns_name: None,
         });
         let estimator = screen.app_context.fee_estimator();
-        let fee = estimate_platform_fee(&estimator, 1, 1);
+        let fee = estimator.estimate_identity_topup_from_addresses(1);
         let balance = 1_000_000_000;
         let addresses: Vec<_> = [(2, balance), (3, estimator.min_platform_input() - 1)]
             .into_iter()

@@ -165,6 +165,29 @@ impl TokenSigningKey {
         *self = Self::automatic(automatic_key(identity, transaction_type, contract_id).cloned());
     }
 
+    /// [`Self::refresh`], also moving the signing wallet to the key's wallet.
+    /// Returns whether the key or the wallet changed, so a confirmation asked
+    /// for with the old ones can be dropped.
+    fn refresh_with_wallet(
+        &mut self,
+        app_context: &AppContext,
+        identity: &QualifiedIdentity,
+        transaction_type: TransactionType,
+        contract_id: Identifier,
+        selected_wallet: &mut Option<Arc<RwLock<Wallet>>>,
+        wallet_open_attempted: &mut bool,
+    ) -> bool {
+        let previous = self.selected.clone();
+        self.refresh(app_context, identity, transaction_type, contract_id);
+        let wallet_changed = crate::ui::identity::sync_signing_wallet(
+            Some(identity),
+            self.as_ref(),
+            selected_wallet,
+            wallet_open_attempted,
+        );
+        wallet_changed || previous != self.selected
+    }
+
     /// Keeps an automatic choice on the key the selector picks now, so a key
     /// that expired since is never signed with; an explicit choice is left
     /// to [`Self::refresh`]. Returns whether the selection changed.

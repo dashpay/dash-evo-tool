@@ -1496,7 +1496,7 @@ mod tests {
         prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
     ) -> Arc<AppContext> {
         let data_dir = data_dir.to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -2510,7 +2510,7 @@ mod tests {
     async fn reject_if_exists_rejects_duplicate_pro_tx_hash_offline() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -2586,7 +2586,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -3004,7 +3004,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -3078,7 +3078,7 @@ mod tests {
     async fn malformed_id_routes_to_pro_tx_hash_error_for_nodes_only() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -3147,7 +3147,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");

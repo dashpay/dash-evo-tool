@@ -9,6 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::state::PendingRequest;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -27,7 +28,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use eframe::egui::{self, Color32, Frame, Margin, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
@@ -63,6 +64,8 @@ pub struct ClaimTokensScreen {
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
     status: ClaimTokensStatus,
+    /// The claim in flight; only its own result or error ends the wait.
+    claim_request: PendingRequest,
     refresh_banner: Option<BannerHandle>,
     pub app_context: Arc<AppContext>,
     /// The open claim confirmation and the claim it was opened for.
@@ -163,6 +166,7 @@ impl ClaimTokensScreen {
             token_configuration,
             distribution_type,
             status: ClaimTokensStatus::NotStarted,
+            claim_request: PendingRequest::default(),
             refresh_banner: None,
             app_context: app_context.clone(),
             confirmation_dialog: None,
@@ -317,20 +321,17 @@ impl ClaimTokensScreen {
             self.status = ClaimTokensStatus::Error;
             return;
         };
-        let action = AppAction::BackendTasks(
-            vec![
-                BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
-                    data_contract: Arc::new(self.token_contract.contract.clone()),
-                    token_position: self.identity_token_basic_info.token_position,
-                    actor_identity: identity,
-                    distribution_type,
-                    signing_key,
-                    public_note: self.public_note.clone(),
-                })),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-            ],
-            BackendTasksExecutionMode::Sequential,
-        );
+        let claim = BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
+            data_contract: Arc::new(self.token_contract.contract.clone()),
+            token_position: self.identity_token_basic_info.token_position,
+            actor_identity: identity,
+            distribution_type,
+            signing_key,
+            public_note: self.public_note.clone(),
+        }));
+        let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        let action =
+            AppAction::BackendTasks(vec![claim, refresh], BackendTasksExecutionMode::Sequential);
         self.confirmation_dialog = Some(PendingClaim {
             dialog: ConfirmationDialog::new(
                 "Confirm Claim".to_string(),
@@ -364,6 +365,12 @@ impl ClaimTokensScreen {
         let Some(pending) = self.confirmation_dialog.take() else {
             return AppAction::None;
         };
+        if self.claim_request.is_pending() {
+            return AppAction::None;
+        }
+        let action = self
+            .claim_request
+            .dispatch_action_on(*pending.action, self.app_context.network);
         self.status = ClaimTokensStatus::WaitingForResult;
         self.refresh_banner.take_and_clear();
         let handle = MessageBanner::set_global(
@@ -373,13 +380,14 @@ impl ClaimTokensScreen {
         );
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
-        *pending.action
+        action
     }
 
     /// Whether Claim may be pressed for the selected distribution.
     fn claim_allowed(&self) -> bool {
-        !(self.once_per_identity_refused
-            && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
+        !self.claim_request.is_pending()
+            && !(self.once_per_identity_refused
+                && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -401,18 +409,27 @@ impl ScreenLike for ClaimTokensScreen {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.claim_request.settle(context);
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the claim's own outcome, a later error (its balance refresh) changes nothing.
+        if !self.claim_request.is_pending()
+            && self.status != ClaimTokensStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.status = ClaimTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        self.refresh_banner.take_and_clear();
         match backend_task_success_result {
             BackendTaskSuccessResult::ClaimedTokens(fee_result) => {
+                self.claim_request.clear();
+                self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.status = ClaimTokensStatus::Complete;
                 // A successful once-per-identity claim records its hint.
@@ -745,9 +762,14 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                if ComponentStyles::add_primary_button_enabled(ui, self.claim_allowed(), "Claim")
-                    .clicked()
-                {
+                let claim =
+                    ComponentStyles::add_primary_button_enabled(ui, self.claim_allowed(), "Claim");
+                let claim = if self.claim_request.is_pending() {
+                    claim.disabled_tooltip("Wait for the current claim to finish.")
+                } else {
+                    claim
+                };
+                if claim.clicked() {
                     if self.distribution_type.is_none() {
                         MessageBanner::set_global(
                             ctx,
@@ -930,10 +952,10 @@ mod tests {
         screen.open_claim_confirmation();
         screen.distribution_type = Some(TokenDistributionType::Perpetual);
 
-        let AppAction::BackendTasks(tasks, _) = screen.confirm_claim() else {
+        let AppAction::BackendTasksWithContexts(tasks, _) = screen.confirm_claim() else {
             panic!("the confirmed claim is sent");
         };
-        let Some(BackendTask::TokenTask(task)) = tasks.first() else {
+        let Some((BackendTask::TokenTask(task), _)) = tasks.first() else {
             panic!("the claim comes first");
         };
         let TokenTask::ClaimTokens {
@@ -943,6 +965,56 @@ mod tests {
             panic!("a claim was confirmed");
         };
         assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
+
+    /// A claim is charged, so a second confirmation while the first is in
+    /// flight must not send it again.
+    #[test]
+    fn a_claim_in_flight_is_never_sent_twice() {
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.open_claim_confirmation();
+        assert!(
+            matches!(
+                screen.confirm_claim(),
+                AppAction::BackendTasksWithContexts(..)
+            ),
+            "the first confirmation sends the claim"
+        );
+        screen.open_claim_confirmation();
+        assert!(
+            matches!(screen.confirm_claim(), AppAction::None),
+            "a second confirmation while waiting must not send it again"
+        );
+    }
+
+    /// Only the claim's own outcome ends the wait: dismissing the note, or
+    /// another task's error, neither opens Claim again nor clears the claim's
+    /// progress banner, while the claim's own error does.
+    #[test]
+    fn only_the_claim_itself_releases_the_claim_button() {
+        use crate::backend_task::BackendTaskContext;
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.open_claim_confirmation();
+        let request = match screen.confirm_claim() {
+            AppAction::BackendTasksWithContexts(tasks, _) => tasks.first().map(|(_, c)| c.clone()),
+            _ => None,
+        };
+
+        screen.display_task_result(BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(
+            screen.claim_note_pair(),
+        ));
+        let other =
+            BackendTaskContext::for_dispatch_on(&BackendTask::None, screen.app_context.network);
+        screen.display_backend_task_error(&other, &TaskError::WalletStateInconsistent);
+        screen.display_message("Dismissing the note failed", MessageType::Error);
+        assert!(!screen.claim_allowed(), "the claim is still in flight");
+        assert!(screen.refresh_banner.is_some(), "its progress stays shown");
+
+        let request = request.expect("the claim is sent with its own context");
+        screen.display_backend_task_error(&request, &TaskError::WalletStateInconsistent);
+        screen.display_message("The claim failed", MessageType::Error);
+        assert!(screen.claim_allowed(), "a failed claim can be tried again");
+        assert!(screen.refresh_banner.is_none());
     }
 
     /// Regression: a refused second claim left Claim enabled with no note, so
@@ -1028,5 +1100,22 @@ mod tests {
             pair,
         ));
         assert_eq!(screen.once_per_identity_claimed_at, None);
+    }
+
+    /// A failed balance refresh after the claim went through must not bring
+    /// the claim form back.
+    #[test]
+    fn a_completed_claim_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.display_task_result(BackendTaskSuccessResult::ClaimedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        let refresh = unrelated_request(screen.app_context.network);
+        report_error(&mut screen, &refresh);
+        assert!(screen.status == ClaimTokensStatus::Complete);
     }
 }

@@ -11,6 +11,10 @@ use crate::model::send_route::{
     resolve_destination_auto, resolve_source_auto, route_refusal, ticked_source_refusal,
 };
 use crate::model::spend_limit::CoreSendShortfall;
+
+/// How long the quotes of a wallet just unlocked wait for its registration
+/// before their failure shows again with Retry.
+pub(super) const REGISTRATION_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::state::own_receive_addresses::OwnAddressKind;
 use crate::ui::state::send_form::{PayFrom, ToMode};
@@ -133,9 +137,13 @@ impl WalletSendScreen {
     }
 
     /// A wallet unlocked for its quotes is asked again once registered;
-    /// until then its earlier failures read as still checking.
+    /// until then, for at most [`REGISTRATION_QUOTE_WAIT`], its earlier
+    /// failures read as still checking.
     pub(super) fn awaits_registration(&self, seed_hash: &WalletSeedHash) -> bool {
-        self.requote_on_registration.as_ref() == Some(seed_hash)
+        self.requote_on_registration
+            .is_some_and(|(waiting, since)| {
+                waiting == *seed_hash && since.elapsed() < REGISTRATION_QUOTE_WAIT
+            })
     }
 
     /// Auto has nothing to pay someone else's private address with only
@@ -1064,15 +1072,19 @@ impl WalletSendScreen {
     /// Requests this frame's resolution needs: Max quotes and own receiving
     /// addresses.
     pub(super) fn route_requests(&mut self) -> Vec<BackendTask> {
-        if let Some(seed_hash) = self.requote_on_registration
-            && self
+        if let Some((seed_hash, since)) = self.requote_on_registration {
+            if self
                 .app_context
                 .wallet_backend()
                 .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
-        {
-            self.requote_on_registration = None;
-            self.asset_lock_balance.invalidate();
-            self.spend_limits.invalidate();
+            {
+                self.requote_on_registration = None;
+                self.asset_lock_balance.invalidate();
+                self.spend_limits.invalidate();
+            } else if let Some(left) = REGISTRATION_QUOTE_WAIT.checked_sub(since.elapsed()) {
+                // Show the failure again when the wait ends, even if idle.
+                self.app_context.egui_ctx().request_repaint_after(left);
+            }
         }
         let destination = self.destination_kind();
         let mut tasks = Vec::new();

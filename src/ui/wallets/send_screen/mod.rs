@@ -352,9 +352,9 @@ pub struct WalletSendScreen {
     /// A wallet whose Max quote was refused because only unlocking it
     /// registers it with the wallet backend.
     quote_needs_unlock: Option<WalletSeedHash>,
-    /// A wallet unlocked for its quotes: they are asked again once the
-    /// backend has registered it.
-    requote_on_registration: Option<WalletSeedHash>,
+    /// A wallet unlocked for its quotes, and when: they are asked again once
+    /// the backend has registered it.
+    requote_on_registration: Option<(WalletSeedHash, std::time::Instant)>,
     wallet_open_attempted: bool,
 }
 
@@ -4192,7 +4192,10 @@ impl ScreenLike for WalletSendScreen {
                     // backend has registered the wallet.
                     let unlocked = wallet.read().ok().map(|wallet| wallet.seed_hash());
                     if unlocked.is_some() && self.quote_needs_unlock == unlocked {
-                        self.requote_on_registration = self.quote_needs_unlock.take();
+                        self.requote_on_registration = self
+                            .quote_needs_unlock
+                            .take()
+                            .map(|seed_hash| (seed_hash, std::time::Instant::now()));
                     }
                     if std::mem::take(&mut self.unlock_then_send) {
                         self.sync_route();
@@ -8967,7 +8970,7 @@ mod tests {
         });
         // What a successful unlock leaves behind.
         screen.quote_needs_unlock = None;
-        screen.requote_on_registration = Some(seed_hash);
+        screen.requote_on_registration = Some((seed_hash, std::time::Instant::now()));
         screen.sync_route();
 
         assert!(
@@ -9065,7 +9068,7 @@ mod tests {
 
         // What a successful unlock leaves behind.
         harness.state_mut().quote_needs_unlock = None;
-        harness.state_mut().requote_on_registration = Some(seed_hash);
+        harness.state_mut().requote_on_registration = Some((seed_hash, std::time::Instant::now()));
         harness.run();
         assert!(
             harness
@@ -9073,6 +9076,35 @@ mod tests {
                 .is_some()
         );
         assert!(!retry(&harness), "no Retry while the wallet registers");
+    }
+
+    /// When the unlocked wallet's registration stalls, the wait ends: the
+    /// failure shows again with its Retry, without reopening Send.
+    #[test]
+    fn a_stalled_registration_gives_the_retry_back() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        });
+        screen.quote_needs_unlock = None;
+        let unlocked_at = std::time::Instant::now()
+            .checked_sub(resolve::REGISTRATION_QUOTE_WAIT + std::time::Duration::from_secs(1))
+            .expect("an instant before the wait");
+        screen.requote_on_registration = Some((seed_hash, unlocked_at));
+        screen.sync_route();
+
+        assert!(
+            matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::QuoteFailed { .. })
+            ),
+            "{:?}",
+            screen.route.auto
+        );
     }
 
     /// Only the answer to the awaited quote request can ask for an unlock.

@@ -367,6 +367,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     if env_path.exists()
         && let Err(e) = dotenvy::from_path(&env_path)
     {
+        let e = crate::config::EnvFileError::from(e);
         tracing::warn!("Failed to load .env file at {}: {e}", env_path.display());
     }
 

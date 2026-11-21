@@ -87,6 +87,26 @@ async fn standalone_tool_call_reports_the_startup_cause() {
     assert!(error.to_string().contains(&cause), "got: {error}");
 }
 
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_startup_log_omits_the_env_file_text() {
+    let marker = crate::test_support::keys::wif(dash_sdk::dpp::dashcore::Network::Testnet);
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A malformed first line stops dotenvy before it sets any variable.
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("MAINNET_core_host=\"unterminated\nMAINNET_wallet_private_key={marker}\n"),
+    )
+    .expect("write .env");
+    let _override = DataDirOverride::new(dir.path());
+    let log = crate::test_support::CapturedLog::start();
+    let _ = crate::mcp::server::init_app_context().await;
+
+    let text = log.text();
+    assert!(text.contains("Failed to load .env file"), "{text}");
+    assert!(!text.contains(&marker), "the log carries .env text");
+}
+
 #[cfg(feature = "mcp")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identity_list_reports_only_the_persisted_wallet_binding() {

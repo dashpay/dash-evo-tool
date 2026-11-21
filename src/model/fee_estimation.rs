@@ -601,8 +601,10 @@ impl PlatformFeeEstimator {
     }
 
     /// Estimate fee for identity top-up from platform addresses.
-    /// This includes base cost, asset lock cost, input costs, storage-based
-    /// fees, and the [`tolerance::ADDRESS_INPUTS_FEE`] reserve.
+    /// This includes base cost, input costs, storage-based fees, and the
+    /// [`tolerance::ADDRESS_INPUTS_FEE`] reserve. Platform charges no
+    /// asset-lock processing for it: the inputs pay with no additional fixed
+    /// fee.
     pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
         // Estimated bytes for top-up transaction structure
         const ESTIMATED_TOPUP_BASE_BYTES: usize = 100;
@@ -617,23 +619,11 @@ impl PlatformFeeEstimator {
             })
             .calculate_min_required_fee(self.platform_version),
         );
-        // A top-up also pays the address-funding asset-lock processing, which
-        // the from-addresses minimum leaves out.
-        let asset_lock_cost = self
-            .platform_version
-            .dpp
-            .state_transitions
-            .identities
-            .asset_locks
-            .required_asset_lock_duff_balance_for_processing_start_for_address_funding
-            .saturating_mul(CREDITS_PER_DUFF);
-
         // Add storage-based fees for serialized transaction data
         let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT + ESTIMATED_TOPUP_BASE_BYTES;
         let estimated_seeks = ESTIMATED_SEEKS_BASE + inputs;
-        let estimate = upstream
-            .saturating_add(asset_lock_cost)
-            .saturating_add(self.storage_based_fee(estimated_bytes, estimated_seeks));
+        let estimate =
+            upstream.saturating_add(self.storage_based_fee(estimated_bytes, estimated_seeks));
         tolerance::ADDRESS_INPUTS_FEE.apply_fee(self.reserve(
             EstimateTolerance::NONE,
             estimate,
@@ -3144,6 +3134,26 @@ mod tests {
         );
         let over = allocate_identity_top_up(&estimator, addresses, max.amount + 1);
         assert!(over.shortfall > 0, "Max is the most: {over:?}");
+    }
+
+    /// The identity top-up fee is the from-addresses transition's own:
+    /// Platform charges no asset-lock processing for it (drive-abci pays it
+    /// from the inputs with no additional fixed fee).
+    #[test]
+    fn identity_topup_from_addresses_fee_charges_no_asset_lock_processing() {
+        let estimator = PlatformFeeEstimator::latest();
+        let asset_lock_processing = estimator
+            .platform_version
+            .dpp
+            .state_transitions
+            .identities
+            .asset_locks
+            .required_asset_lock_duff_balance_for_processing_start_for_address_funding
+            * CREDITS_PER_DUFF;
+        assert!(
+            estimator.estimate_identity_topup_from_addresses(1) < asset_lock_processing,
+            "the estimate includes asset-lock processing"
+        );
     }
 
     /// The highest balance is not the first address: the first still pays.

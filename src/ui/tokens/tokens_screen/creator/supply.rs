@@ -101,13 +101,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         ui.small(
             "Distributions and other configured actions can continue while transfers are paused.",
         );
-        if state.draft.start_paused
-            && state
-                .draft
-                .permissions
-                .get(RuleKind::Pause)
-                .permanently_disabled()
-        {
+        if state.draft.start_paused && state.draft.permissions.get(RuleKind::Pause).is_fixed() {
             ui.colored_label(ui.visuals().warn_fg_color,"No one can resume transfers with these rules. Change the pause rule or turn this setting off.");
         }
         checkbox(
@@ -189,7 +183,7 @@ pub(super) fn cap_consequence(draft: &crate::model::token_creator::TokenDraft) -
         "No numerical supply cap is configured."
     } else if draft.maximum.parse(draft.decimals).is_err() {
         "Enter a valid maximum and inspect who can change it."
-    } else if draft.permissions.get(RuleKind::Cap).permanently_disabled() {
+    } else if draft.permissions.get(RuleKind::Cap).is_fixed() {
         "The maximum is a permanent hard cap: no one can change it or change that rule."
     } else {
         "A permanent hard cap has not been established. Inspect the maximum-supply authorities and allowances."

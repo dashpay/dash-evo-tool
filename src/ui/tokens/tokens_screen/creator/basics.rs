@@ -27,7 +27,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 columns[1].small("Required. For example, StudioCredits.");
             });
         }
-        ui.small("Use at least 3 characters without spaces, within 25 UTF-8 bytes. Accented letters and other multibyte characters leave room for fewer characters.");
+        ui.small("Use 3 to 25 UTF-8 bytes without spaces. Accented letters and other multibyte characters use more than one byte each.");
         egui::CollapsingHeader::new("Names in other languages").show(ui, |ui| {
             ui.label("Keep one set of names per language.");
             let mut remove = None;

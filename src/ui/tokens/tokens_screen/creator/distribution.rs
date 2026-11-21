@@ -225,9 +225,13 @@ pub(super) fn recurring_authority(draft: &crate::model::token_creator::TokenDraf
     if rule.performer != ActorDraft::NoOne {
         let actor = rule.performer.label();
         if draft.recurring.enabled {
-            format!("{actor} can change recurring distribution.")
+            format!(
+                "{actor} is recorded as the recurring distribution performer, but this network does not support changing recurring distribution after creation."
+            )
         } else {
-            format!("{actor} can enable recurring distribution later.")
+            format!(
+                "{actor} is recorded as the recurring distribution performer, but this network does not support enabling recurring distribution after creation. Configure it now if you need it."
+            )
         }
     } else if rule.administrator != ActorDraft::NoOne {
         format!(
@@ -236,5 +240,27 @@ pub(super) fn recurring_authority(draft: &crate::model::token_creator::TokenDraf
         )
     } else {
         "No one can enable or change recurring distribution later.".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The network rejects every recurring-distribution update after creation, so
+    /// the creator must not promise that a performer can enable it later.
+    #[test]
+    fn recurring_authority_never_promises_a_later_change() {
+        let mut draft = crate::model::token_creator::TokenDraft::example(false);
+        draft.permissions.get_mut(RuleKind::Recurring).performer = ActorDraft::Owner;
+        for enabled in [false, true] {
+            draft.recurring.enabled = enabled;
+            let text = recurring_authority(&draft);
+            assert!(
+                !text.contains("can enable") && !text.contains("can change recurring"),
+                "{text}"
+            );
+            assert!(text.contains("does not support"), "{text}");
+        }
     }
 }

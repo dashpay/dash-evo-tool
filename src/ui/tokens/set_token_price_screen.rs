@@ -1,7 +1,8 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -124,6 +125,8 @@ pub struct SetTokenPriceScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
+    /// The price change in flight; only its own result or error ends the wait.
+    set_price_request: Option<BackendTaskContext>,
 }
 
 /// 1 Dash = 100,000,000,000 credits
@@ -291,6 +294,7 @@ impl SetTokenPriceScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
+            set_price_request: None,
         }
     }
 
@@ -720,6 +724,9 @@ impl SetTokenPriceScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         self.show_confirmation_popup = false;
         self.confirmation_dialog = None; // Reset the dialog for next use
+        if self.set_price_request.is_some() {
+            return AppAction::None;
+        }
 
         // Validate user input and create pricing schedule
         let token_pricing_schedule_opt = match self.create_pricing_schedule() {
@@ -766,7 +773,7 @@ impl SetTokenPriceScreen {
         };
 
         // Create and return the backend task
-        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+        let (action, request) = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::SetDirectPurchasePrice {
                 identity: self.identity_token_info.identity.clone(),
                 data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
@@ -781,6 +788,9 @@ impl SetTokenPriceScreen {
                 group_info,
             },
         )))
+        .with_dispatch_contexts(self.app_context.network);
+        self.set_price_request = request;
+        action
     }
 
     /// Handle the cancel action when user clicks Cancel or closes dialog
@@ -842,9 +852,18 @@ impl ScreenLike for SetTokenPriceScreen {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.set_price_request.as_ref() == Some(context) {
+            self.set_price_request = None;
+        }
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        if self.set_price_request.is_none()
+            && self.status != SetTokenPriceStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.status = SetTokenPriceStatus::Error;
         }
@@ -852,6 +871,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
+            self.set_price_request = None;
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = SetTokenPriceStatus::Complete;
@@ -1138,13 +1158,16 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
-                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult);
+                let in_flight = self.set_price_request.is_some();
+                let button_active = validation_result.is_ok() && !in_flight;
 
                 let button_response =
                     ComponentStyles::add_primary_button_enabled(ui, button_active, set_price_text);
 
                 if let Err(hover_message) = validation_result {
                     button_response.disabled_tooltip(hover_message);
+                } else if in_flight {
+                    button_response.disabled_tooltip("Wait for the current price change to finish.");
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }
@@ -1187,5 +1210,39 @@ impl ScreenLike for SetTokenPriceScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::tests::{
+        report_error, sent_request, signing_key, token_info, unrelated_request,
+    };
+
+    /// A price change cannot be undone, so while one is in flight another
+    /// task's error must not let Set Price send it again; only its own
+    /// outcome ends the wait.
+    #[test]
+    fn only_the_price_change_itself_releases_set_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = SetTokenPriceScreen::new(token_info(&context, None, false), &context);
+        screen.selected_key = Some(signing_key());
+
+        let request = sent_request(&screen.confirmation_ok()).expect("the price change is sent");
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_none(),
+            "another task's error does not end the wait"
+        );
+        report_error(
+            &mut screen,
+            &request.expect("the price change's own context"),
+        );
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_some(),
+            "a failed price change can be sent again"
+        );
     }
 }

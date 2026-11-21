@@ -464,10 +464,9 @@ mod tests {
         use crate::model::wallet::birth_height::WalletOrigin;
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        // Nothing reaches a network: the broadcast fails after the slots.
-        ctx.sdk
-            .store(std::sync::Arc::new(dash_sdk::Sdk::new_mock()));
+        // Nothing reaches a network: the SDK refuses the registration after
+        // the slots were prepared.
+        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
         let seed = crate::test_support::keys::seed();
         let mut wallet =
             Wallet::new_from_seed(seed, Network::Testnet, Some("payer".to_string()), None)
@@ -503,7 +502,10 @@ mod tests {
                 seed_hash,
             )
             .await;
-        assert!(registered.is_err(), "the mock SDK refuses the broadcast");
+        assert!(
+            registered.is_err(),
+            "the SDK refuses the registration after the slots were prepared"
+        );
 
         let proof: dash_sdk::query_types::AddressInfos = [(
             funding,

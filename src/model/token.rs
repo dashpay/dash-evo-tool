@@ -130,25 +130,17 @@ pub(crate) fn token_change_item_is_supported(
     )
 }
 
-/// Why an identity held by no wallet in this app cannot send token
-/// transactions, and what to do about it.
-pub const TOKEN_ACTIONS_NEED_WALLET: &str = "This identity is not part of a wallet in this app, \
-     so it cannot send token transactions. Add or import the wallet that holds this identity, \
-     then try again.";
-
 /// Why token actions wait for the identity's wallet, and what to do about it.
 pub const TOKEN_ACTIONS_WAIT_FOR_WALLET: &str = "The wallet that holds this identity is not \
      open yet, so it cannot send token transactions. Unlock the wallet or wait for it to load, \
      then try again.";
 
-/// Whether an identity can send token transactions from this app. Token
-/// transactions go through the wallet that holds the identity, so an identity
-/// held by no wallet can only view its token data.
+/// Whether an identity can send token transactions from this app. Those of
+/// a wallet-held identity go through its wallet, which must be loaded; an
+/// identity no wallet holds signs them with its own keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenActionAvailability {
     Available,
-    /// No wallet in this app holds the identity.
-    NeedsWallet,
     /// The identity's wallet is known but not loaded (for example, locked).
     WalletNotOpen,
 }
@@ -158,9 +150,8 @@ impl TokenActionAvailability {
     /// `None` when no wallet holds it, otherwise whether that wallet is loaded.
     pub fn from_wallet_link(linked_wallet_open: Option<bool>) -> Self {
         match linked_wallet_open {
-            None => Self::NeedsWallet,
+            None | Some(true) => Self::Available,
             Some(false) => Self::WalletNotOpen,
-            Some(true) => Self::Available,
         }
     }
 
@@ -172,7 +163,6 @@ impl TokenActionAvailability {
     pub fn unavailable_reason(self) -> Option<&'static str> {
         match self {
             Self::Available => None,
-            Self::NeedsWallet => Some(TOKEN_ACTIONS_NEED_WALLET),
             Self::WalletNotOpen => Some(TOKEN_ACTIONS_WAIT_FOR_WALLET),
         }
     }
@@ -333,9 +323,9 @@ mod tests {
     }
 
     #[test]
-    fn token_actions_need_the_identitys_open_wallet() {
+    fn token_actions_wait_only_for_a_linked_wallet_to_open() {
         use TokenActionAvailability::*;
-        assert_eq!(TokenActionAvailability::from_wallet_link(None), NeedsWallet);
+        assert_eq!(TokenActionAvailability::from_wallet_link(None), Available);
         assert_eq!(
             TokenActionAvailability::from_wallet_link(Some(false)),
             WalletNotOpen
@@ -347,15 +337,9 @@ mod tests {
 
         assert!(Available.is_available());
         assert_eq!(Available.unavailable_reason(), None);
-        for blocked in [NeedsWallet, WalletNotOpen] {
-            assert!(!blocked.is_available());
-            let reason = blocked.unavailable_reason().expect("a reason");
-            assert!(reason.ends_with("then try again."), "{reason}");
-        }
-        assert_ne!(
-            NeedsWallet.unavailable_reason(),
-            WalletNotOpen.unavailable_reason()
-        );
+        assert!(!WalletNotOpen.is_available());
+        let reason = WalletNotOpen.unavailable_reason().expect("a reason");
+        assert!(reason.ends_with("then try again."), "{reason}");
     }
     use super::*;
 

@@ -499,7 +499,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return self.show_success_screen(ui);
             }
 
-            // An identity no wallet in this app holds cannot send token
+            // An identity whose wallet is not loaded yet cannot send token
             // transactions: explain that under the heading instead of the form.
             if self
                 .common

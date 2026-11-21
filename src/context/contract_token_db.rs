@@ -144,8 +144,8 @@ fn token_err(source: KvAdapterError) -> TaskError {
 }
 
 impl AppContext {
-    /// Whether `identity_id` can send token transactions. They go through the
-    /// wallet that holds it (its DET wallet link), which must be loaded.
+    /// Whether `identity_id` can send token transactions. Those of a
+    /// wallet-held identity (its DET wallet link) wait for that wallet to load.
     ///
     /// # Errors
     /// Fails when the identity record cannot be read.

@@ -1445,14 +1445,14 @@ fn token_contract(owner_id: Identifier) -> dash_sdk::platform::DataContract {
     dash_sdk::platform::DataContract::V1(contract)
 }
 
-/// Token transactions go through the wallet that holds the identity, so for
-/// an identity no wallet holds the action screen explains why and offers no
-/// form to sign.
+/// An identity no wallet holds (a masternode or key-only identity) signs
+/// token transactions with its own keys, so its action screen offers the
+/// form instead of a reason to wait.
 #[test]
-fn token_action_screen_of_a_wallet_less_identity_offers_no_form() {
+fn token_action_screen_of_a_wallet_less_identity_offers_the_form() {
     use dash_evo_tool::model::qualified_contract::QualifiedContract;
-    use dash_evo_tool::model::token::TOKEN_ACTIONS_NEED_WALLET;
-    use dash_evo_tool::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use dash_evo_tool::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET;
+    use dash_evo_tool::ui::tokens::burn_tokens_screen::BurnTokensScreen;
     use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
     use dash_evo_tool::ui::{RootScreenType, Screen};
     use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -1463,15 +1463,13 @@ fn token_action_screen_of_a_wallet_less_identity_offers_no_form() {
         let _guard = rt.enter();
         let mut harness = crate::support::mount_app(RootScreenType::RootScreenMyTokenBalances);
         let ctx = harness.state().current_app_context().clone();
+        // Every burn rule allows a developer through to the form.
+        ctx.set_user_role(UserRole::Developer);
 
-        let identity_id = seed_token_identity(&ctx, 0xC3, "Token Gamma");
-        let identity = ctx
-            .load_local_qualified_identities()
-            .expect("load identities")
-            .into_iter()
-            .find(|qi| qi.identity.id() == identity_id)
-            .expect("the seeded identity");
-        let contract = token_contract(identity_id);
+        let identity = identity_with_critical_key(&ctx);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the wallet-less identity");
+        let contract = token_contract(identity.identity.id());
         let token_config = contract.tokens()[&0].clone();
         let info = IdentityTokenInfo {
             token_id: Identifier::from([0x7D; 32]),
@@ -1487,22 +1485,22 @@ fn token_action_screen_of_a_wallet_less_identity_offers_no_form() {
         harness
             .state_mut()
             .screen_stack
-            .push(Screen::MintTokensScreen(MintTokensScreen::new(info, &ctx)));
+            .push(Screen::BurnTokensScreen(BurnTokensScreen::new(info, &ctx)));
         harness.run_steps(3);
 
         assert_eq!(
             harness
-                .query_all_by_label_contains(TOKEN_ACTIONS_NEED_WALLET)
-                .count(),
-            1,
-            "the screen says why the identity cannot mint"
-        );
-        assert_eq!(
-            harness
-                .query_all_by_label_contains("Amount to mint")
+                .query_all_by_label_contains(TOKEN_ACTIONS_WAIT_FOR_WALLET)
                 .count(),
             0,
-            "no mint form is offered"
+            "a wallet-less identity has no wallet to wait for"
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Amount to burn")
+                .count()
+                > 0,
+            "the burn form is offered"
         );
     });
 }

@@ -1,5 +1,6 @@
 //! Token actions on [`WalletBackend`], sent through the upstream
-//! `IdentityWallet` of the wallet that holds the acting identity.
+//! `IdentityWallet` of the wallet that holds the acting identity, or through
+//! the SDK for an identity no wallet in this app holds.
 //!
 //! DET keeps choosing the signing key and the state-transition options, so
 //! every action uses upstream's `token_*_with_signer` entry points with the
@@ -8,8 +9,11 @@
 
 use std::sync::Arc;
 
+use dash_sdk::Sdk;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::TokenContractPosition;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
 use dash_sdk::dpp::fee::Credits;
@@ -17,6 +21,15 @@ use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use dash_sdk::platform::tokens::builders::{
+    burn::TokenBurnTransitionBuilder, claim::TokenClaimTransitionBuilder,
+    config_update::TokenConfigUpdateTransitionBuilder,
+    destroy::TokenDestroyFrozenFundsTransitionBuilder,
+    emergency_action::TokenEmergencyActionTransitionBuilder, freeze::TokenFreezeTransitionBuilder,
+    mint::TokenMintTransitionBuilder, purchase::TokenDirectPurchaseTransitionBuilder,
+    set_price::TokenChangeDirectPurchasePriceTransitionBuilder,
+    transfer::TokenTransferTransitionBuilder, unfreeze::TokenUnfreezeTransitionBuilder,
+};
 use dash_sdk::platform::tokens::transitions::{
     BurnResult, ClaimResult, ConfigUpdateResult, DestroyFrozenFundsResult, DirectPurchaseResult,
     EmergencyActionResult, FreezeResult, MintResult, SetPriceResult, TransferResult,
@@ -28,6 +41,7 @@ use platform_wallet::PlatformWallet;
 use super::WalletBackend;
 use crate::backend_task::error::{TaskError, TokenOperationKind};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::MintRecipient;
 use crate::model::wallet::WalletSeedHash;
 
 /// What every token action carries besides its own arguments.
@@ -40,9 +54,19 @@ pub(crate) struct TokenActionCommon<'a> {
     pub options: Option<StateTransitionCreationOptions>,
 }
 
-/// An identity acting on tokens through the upstream wallet that holds it.
+/// Where a token action is sent.
+enum TokenRoute {
+    /// The upstream wallet that holds the identity.
+    Wallet(Arc<PlatformWallet>),
+    /// The SDK, for an identity no wallet in this app holds (masternode and
+    /// key-only identities). Upstream's `token_*_with_signer` builds the same
+    /// transitions and sends them through the same SDK calls.
+    Sdk(Arc<Sdk>),
+}
+
+/// An identity acting on tokens.
 pub(crate) struct TokenActor<'a> {
-    wallet: Arc<PlatformWallet>,
+    route: TokenRoute,
     identity: &'a QualifiedIdentity,
 }
 
@@ -59,13 +83,46 @@ impl WalletBackend {
         identity: &'a QualifiedIdentity,
     ) -> Result<TokenActor<'a>, TaskError> {
         Ok(TokenActor {
-            wallet: self.resolve_wallet(seed_hash).await?,
+            route: TokenRoute::Wallet(self.resolve_wallet(seed_hash).await?),
             identity,
         })
     }
 }
 
-impl TokenActor<'_> {
+/// Applies the optional public note, group info and creation options to a
+/// token transition builder.
+macro_rules! with_common {
+    ($builder:expr $(, note: $note:expr)? $(, group: $group:expr)?, options: $options:expr) => {{
+        let mut builder = $builder;
+        $(if let Some(note) = $note {
+            builder = builder.with_public_note(note);
+        })?
+        $(if let Some(group) = $group {
+            builder = builder.with_using_group_info(group);
+        })?
+        if let Some(options) = $options {
+            builder = builder.with_state_transition_creation_options(options);
+        }
+        builder
+    }};
+}
+
+impl<'a> TokenActor<'a> {
+    /// The token actor for an identity no wallet in this app holds; it signs
+    /// with the identity's own keys through `sdk`.
+    pub(crate) fn without_wallet(sdk: Arc<Sdk>, identity: &'a QualifiedIdentity) -> Self {
+        TokenActor {
+            route: TokenRoute::Sdk(sdk),
+            identity,
+        }
+    }
+
+    /// Whether the action goes through the upstream wallet holding the identity.
+    #[cfg(test)]
+    pub(crate) fn is_wallet_held(&self) -> bool {
+        matches!(self.route, TokenRoute::Wallet(_))
+    }
+
     fn id(&self) -> Identifier {
         self.identity.identity.id()
     }
@@ -78,22 +135,51 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<MintResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_mint_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                amount,
-                recipient,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Mint, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_mint_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        amount,
+                        recipient,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                // Platform refuses a named recipient when the token forbids
+                // choosing one; upstream drops it the same way.
+                let recipient = match common
+                    .data_contract
+                    .expected_token_configuration(common.token_position)
+                {
+                    Ok(config) => MintRecipient::resolve(config.distribution_rules(), recipient)
+                        .transition_recipient(),
+                    Err(_) => recipient,
+                };
+                let builder = TokenMintTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    amount,
+                );
+                let builder = match recipient {
+                    Some(recipient) => builder.issued_to_identity_id(recipient),
+                    None => builder,
+                };
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_mint(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Mint, e))
     }
 
     pub(crate) async fn transfer(
@@ -103,21 +189,37 @@ impl TokenActor<'_> {
         amount: TokenAmount,
         public_note: Option<String>,
     ) -> Result<TransferResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_transfer_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                recipient,
-                amount,
-                common.signing_key,
-                self.identity,
-                public_note,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Transfer, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_transfer_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        recipient,
+                        amount,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenTransferTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    recipient,
+                    amount,
+                );
+                let builder = with_common!(builder, note: public_note, options: common.options);
+                sdk.token_transfer(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Transfer, e))
     }
 
     pub(crate) async fn burn(
@@ -127,21 +229,36 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<BurnResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_burn_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                amount,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Burn, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_burn_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        amount,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenBurnTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    amount,
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_burn(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Burn, e))
     }
 
     pub(crate) async fn freeze(
@@ -151,21 +268,36 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<FreezeResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_freeze_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                target,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Freeze, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_freeze_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        target,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenFreezeTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    target,
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_freeze(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Freeze, e))
     }
 
     pub(crate) async fn unfreeze(
@@ -175,21 +307,36 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<UnfreezeResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_unfreeze_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                target,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Unfreeze, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_unfreeze_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        target,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenUnfreezeTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    target,
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_unfreeze_identity(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Unfreeze, e))
     }
 
     pub(crate) async fn destroy_frozen_funds(
@@ -199,20 +346,36 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<DestroyFrozenFundsResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_destroy_frozen_funds_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                frozen_identity,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_destroy_frozen_funds_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        frozen_identity,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenDestroyFrozenFundsTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    frozen_identity,
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_destroy_frozen_funds(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result
             .map_err(|e| TaskError::from_token_operation(TokenOperationKind::DestroyFrozenFunds, e))
     }
 
@@ -222,20 +385,34 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<EmergencyActionResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_pause_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Pause, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_pause_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenEmergencyActionTransitionBuilder::pause(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_emergency_action(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Pause, e))
     }
 
     pub(crate) async fn resume(
@@ -244,20 +421,34 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<EmergencyActionResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_resume_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Resume, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_resume_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenEmergencyActionTransitionBuilder::resume(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_emergency_action(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Resume, e))
     }
 
     pub(crate) async fn claim(
@@ -266,20 +457,35 @@ impl TokenActor<'_> {
         distribution_type: TokenDistributionType,
         public_note: Option<String>,
     ) -> Result<ClaimResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_claim_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                distribution_type,
-                common.signing_key,
-                self.identity,
-                public_note,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Claim, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_claim_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        distribution_type,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenClaimTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    distribution_type,
+                );
+                let builder = with_common!(builder, note: public_note, options: common.options);
+                sdk.token_claim(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Claim, e))
     }
 
     pub(crate) async fn set_price(
@@ -289,21 +495,39 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<SetPriceResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_set_price_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                pricing_schedule,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::SetPrice, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_set_price_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        pricing_schedule,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenChangeDirectPurchasePriceTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                );
+                let builder = match pricing_schedule {
+                    Some(schedule) => builder.with_token_pricing_schedule(schedule),
+                    None => builder,
+                };
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_set_price_for_direct_purchase(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::SetPrice, e))
     }
 
     pub(crate) async fn purchase(
@@ -312,20 +536,36 @@ impl TokenActor<'_> {
         amount: TokenAmount,
         total_agreed_price: Credits,
     ) -> Result<DirectPurchaseResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_purchase_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                amount,
-                total_agreed_price,
-                common.signing_key,
-                self.identity,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Purchase, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_purchase_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        amount,
+                        total_agreed_price,
+                        common.signing_key,
+                        self.identity,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenDirectPurchaseTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    amount,
+                    total_agreed_price,
+                );
+                let builder = with_common!(builder, options: common.options);
+                sdk.token_purchase(builder, common.signing_key, self.identity)
+                    .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::Purchase, e))
     }
 
     pub(crate) async fn update_config(
@@ -335,20 +575,39 @@ impl TokenActor<'_> {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Result<ConfigUpdateResult, TaskError> {
-        self.wallet
-            .identity()
-            .token_update_config_with_signer(
-                common.data_contract,
-                common.token_position,
-                self.id(),
-                change_item,
-                common.signing_key,
-                self.identity,
-                public_note,
-                group_info,
-                common.options,
-            )
-            .await
-            .map_err(|e| TaskError::from_token_operation(TokenOperationKind::ConfigUpdate, e))
+        let result = match &self.route {
+            TokenRoute::Wallet(wallet) => {
+                wallet
+                    .identity()
+                    .token_update_config_with_signer(
+                        common.data_contract,
+                        common.token_position,
+                        self.id(),
+                        change_item,
+                        common.signing_key,
+                        self.identity,
+                        public_note,
+                        group_info,
+                        common.options,
+                    )
+                    .await
+            }
+            TokenRoute::Sdk(sdk) => {
+                let builder = TokenConfigUpdateTransitionBuilder::new(
+                    common.data_contract,
+                    common.token_position,
+                    self.id(),
+                    change_item,
+                );
+                let builder = with_common!(builder, note: public_note, group: group_info, options: common.options);
+                sdk.token_update_contract_token_configuration(
+                    builder,
+                    common.signing_key,
+                    self.identity,
+                )
+                .await
+            }
+        };
+        result.map_err(|e| TaskError::from_token_operation(TokenOperationKind::ConfigUpdate, e))
     }
 }

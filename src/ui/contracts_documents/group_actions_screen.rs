@@ -740,23 +740,30 @@ mod sdk_adapter_tests {
         ));
     }
 
-    /// Co-signing a group token action is a token transaction, so an identity
-    /// no wallet in the app holds is told why it cannot take the action.
+    /// Co-signing a group token action is a token transaction. An identity no
+    /// wallet in the app holds signs it with its own keys; one whose wallet is
+    /// not loaded yet is told to wait for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_wallet_less_identity_cannot_take_group_token_actions() {
+    async fn group_token_actions_wait_only_for_a_linked_wallet_to_load() {
         use crate::context::test_support::{bare_user_identity, wired_test_app_context};
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
-        let identity = bare_user_identity(Identifier::from([8; 32]), ctx.network());
-        ctx.insert_local_qualified_identity(&identity, &None)
+        let wallet_less = bare_user_identity(Identifier::from([8; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&wallet_less, &None)
             .expect("store the wallet-less identity");
+        let waiting = bare_user_identity(Identifier::from([9; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&waiting, &Some(([0x4E; 32], 0)))
+            .expect("store the identity of an unloaded wallet");
         let mut screen = GroupActionsScreen::new(&ctx);
         assert_eq!(screen.selected_identity_token_action_block(), None);
 
-        screen.selected_identity = Some(identity);
+        screen.selected_identity = Some(wallet_less);
+        assert_eq!(screen.selected_identity_token_action_block(), None);
+
+        screen.selected_identity = Some(waiting);
         assert_eq!(
             screen.selected_identity_token_action_block(),
-            Some(crate::model::token::TOKEN_ACTIONS_NEED_WALLET)
+            Some(crate::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET)
         );
     }
 

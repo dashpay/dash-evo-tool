@@ -242,21 +242,23 @@ impl AppContext {
     ///
     /// The platform does not report a settled fee for token ops, so the fee is
     /// always the pre-flight estimate (see [`FeeResult::estimated_only`]).
-    /// The wallet-held actor a token action of `identity` is sent through.
+    /// The actor a token action of `identity` is sent through: the wallet
+    /// that holds it, or the SDK when no wallet in this app holds it.
     ///
     /// # Errors
-    /// [`TaskError::TokenActionNeedsWallet`] when no wallet in this app holds
-    /// `identity`; the wallet-not-loaded errors when its wallet is not loaded.
+    /// The wallet-not-loaded errors when the identity's wallet is not loaded.
     async fn token_actor<'a>(
         &self,
         identity: &'a QualifiedIdentity,
     ) -> Result<TokenActor<'a>, TaskError> {
-        let (seed_hash, _) = self
-            .stored_identity_wallet_link(&identity.identity.id())?
-            .ok_or(TaskError::TokenActionNeedsWallet)?;
-        self.wallet_backend()?
-            .token_actor(&seed_hash, identity)
-            .await
+        match self.stored_identity_wallet_link(&identity.identity.id())? {
+            Some((seed_hash, _)) => {
+                self.wallet_backend()?
+                    .token_actor(&seed_hash, identity)
+                    .await
+            }
+            None => Ok(TokenActor::without_wallet(self.sdk.load_full(), identity)),
+        }
     }
 
     /// The arguments every token action shares, with the current signing
@@ -1196,33 +1198,96 @@ mod token_action_routing_tests {
         seed_hash
     }
 
-    /// Token actions go through the wallet that holds the identity. With no
-    /// such wallet they are refused before anything is signed or sent, even
-    /// while another wallet is loaded: its handle is never borrowed.
+    /// `identity` with `key` as an ECDSA key whose private half it holds.
+    fn holding_its_key(
+        mut identity: QualifiedIdentity,
+        mut key: IdentityPublicKey,
+    ) -> (QualifiedIdentity, IdentityPublicKey) {
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use dash_sdk::dpp::identity::KeyType;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let secret = crate::test_support::keys::secret_key();
+        let public = secret.public_key();
+        key.set_key_type(KeyType::ECDSA_SECP256K1);
+        key.set_data(public.serialize().to_vec().into());
+        identity.identity.add_public_key(key.clone());
+        identity.private_keys = KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                key.clone().into(),
+                PrivateKeyData::Clear(*secret.as_secret_bytes()),
+            ),
+        )]));
+        (identity, key)
+    }
+
+    /// An identity no wallet in this app holds (a masternode or key-only
+    /// identity) still acts on tokens: each action is built through the SDK
+    /// and signed with the identity's own key, without borrowing a loaded
+    /// wallet. Holding the key gets every action past signing; without it,
+    /// the identity's signer refuses.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn token_actions_of_an_identity_no_wallet_holds_are_refused_before_sending() {
+    async fn token_actions_of_an_identity_no_wallet_holds_are_signed_by_the_identity() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::query_types::IdentityContractNonceFetcher;
+
         let dir = tempfile::tempdir().expect("tempdir");
         let (ctx, sender, _rx) = offline_context(dir.path()).await;
         registered_wallet(&ctx).await;
         let (identity, key) = actor_identity();
+        let (identity, key) = holding_its_key(identity, key);
         ctx.insert_local_qualified_identity(&identity, &None)
             .expect("store the wallet-less identity");
-        assert_eq!(
+        assert!(
             ctx.token_action_availability(&identity.identity.id())
-                .expect("availability"),
-            crate::model::token::TokenActionAvailability::NeedsWallet
+                .expect("availability")
+                .is_available()
+        );
+        assert!(
+            !ctx.token_actor(&identity)
+                .await
+                .expect("an actor")
+                .is_wallet_held()
         );
 
-        let sdk = ctx.sdk.load_full();
-        for (kind, task) in token_actions(&identity, &key) {
-            let err = ctx
-                .run_token_task(task, &sdk, sender.clone())
+        let mut keyless = identity.clone();
+        keyless.private_keys = Default::default();
+        for (signer, signs) in [(&identity, true), (&keyless, false)] {
+            let actions = token_actions(signer, &key);
+            let Some((_, TokenTask::MintTokens { data_contract, .. })) = actions.first() else {
+                panic!("the first action is a mint");
+            };
+            let mut sdk = (*ctx.sdk.load_full()).clone();
+            sdk.mock()
+                .expect_fetch(
+                    (identity.identity.id(), data_contract.id()),
+                    Some(IdentityContractNonceFetcher(0)),
+                )
                 .await
-                .expect_err("a wallet-less identity cannot act");
-            assert!(
-                matches!(err, TaskError::TokenActionNeedsWallet),
-                "{kind:?}: {err:?}"
-            );
+                .expect("mock the identity-contract nonce");
+            ctx.sdk.store(Arc::new(sdk.clone()));
+
+            for (kind, task) in actions {
+                let err = ctx
+                    .run_token_task(task, &sdk, sender.clone())
+                    .await
+                    .expect_err("the mock SDK accepts no broadcast");
+                let TaskError::TokenOperationFailed {
+                    operation,
+                    source_error,
+                } = &err
+                else {
+                    panic!("{kind:?}: {err:?}");
+                };
+                assert_eq!(*operation, kind);
+                assert_eq!(
+                    !matches!(**source_error, dash_sdk::Error::Protocol(_)),
+                    signs,
+                    "{kind:?} with the key held: {signs}: {err:?}"
+                );
+            }
         }
     }
 
@@ -1241,6 +1306,12 @@ mod token_action_routing_tests {
             ctx.token_action_availability(&identity.identity.id())
                 .expect("availability")
                 .is_available()
+        );
+        assert!(
+            ctx.token_actor(&identity)
+                .await
+                .expect("an actor")
+                .is_wallet_held()
         );
 
         let sdk = ctx.sdk.load_full();

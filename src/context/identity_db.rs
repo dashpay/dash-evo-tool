@@ -1433,7 +1433,7 @@ impl AppContext {
     /// store. A missing or unreadable entry is logged and treated as an
     /// empty map; pre-C5 SQLite data is intentionally not migrated and
     /// surfaces as empty under the "empty start" policy.
-    fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
+    pub(crate) fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
         let Ok(kv) = self.det_kv() else {
             return;
         };

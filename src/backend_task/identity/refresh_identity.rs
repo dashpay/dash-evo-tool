@@ -43,7 +43,7 @@ impl AppContext {
         // TODO(platform-wallet): a fetch at the stored revision still takes
         // reversible key states whole, so a lagging proof can undo one
         // (dashpay/platform#5542 item 6).
-        let qualified_identity_to_update = self.edit_local_qualified_identity_observed(
+        let mut qualified_identity_to_update = self.edit_local_qualified_identity_observed(
             &refreshed_identity_id,
             provenance,
             |stored| {
@@ -67,6 +67,7 @@ impl AppContext {
                 Ok(())
             },
         )?;
+        self.hydrate_top_ups(&mut qualified_identity_to_update);
 
         self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
             .await;
@@ -504,6 +505,28 @@ mod concurrent_refresh_tests {
             .unwrap();
         let key = after.identity.get_public_key_by_id(9).expect("key 9 kept");
         assert_eq!(key.total_budget(), Some(5_000));
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// The refreshed identity a screen receives carries its top-up history.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refreshed_identity_carries_its_top_up_history() {
+        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
+        let ctx = &staged.ctx;
+        let history = std::collections::BTreeMap::from([(1, 10_000), (2, 20_000)]);
+        ctx.save_top_ups(&staged.id, &history).unwrap();
+        let before = ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+        let sdk = sdk_returning(&before.identity, 10).await;
+
+        let result = ctx
+            .refresh_identity(&sdk, before, sender_for(ctx))
+            .await
+            .expect("the refresh succeeds");
+
+        let BackendTaskSuccessResult::RefreshedIdentity(refreshed) = result else {
+            panic!("expected RefreshedIdentity, got {result:?}");
+        };
+        assert_eq!(refreshed.top_ups, history);
         ctx.wallet_backend().unwrap().shutdown().await;
     }
 

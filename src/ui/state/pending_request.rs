@@ -93,6 +93,56 @@ impl<S> PendingRequest<S> {
     }
 }
 
+/// Several outstanding requests of one kind, each with the `subject` it is
+/// about — for actions a screen may fire on more than one row before the
+/// first answers. Unlike [`PendingRequest`], a new dispatch never replaces an
+/// earlier one, so no request is orphaned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingRequests<S> {
+    slots: Vec<(BackendTaskContext, S)>,
+}
+
+impl<S> Default for PendingRequests<S> {
+    fn default() -> Self {
+        Self { slots: Vec::new() }
+    }
+}
+
+impl<S> PendingRequests<S> {
+    /// Dispatch `task` under a context of its own and wait on it alongside
+    /// the requests already outstanding.
+    pub fn dispatch_with(&mut self, task: BackendTask, subject: S) -> AppAction {
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.slots.push((context.clone(), subject));
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
+    /// Whether this collection is waiting for this exact dispatch.
+    pub fn owns(&self, context: &BackendTaskContext) -> bool {
+        self.slots.iter().any(|(own, _)| own == context)
+    }
+
+    /// End the wait on the request `context` is, returning its subject. Any
+    /// other context leaves every request outstanding.
+    pub fn settle(&mut self, context: &BackendTaskContext) -> Option<S> {
+        let index = self.slots.iter().position(|(own, _)| own == context)?;
+        Some(self.slots.remove(index).1)
+    }
+
+    /// Whether any request is outstanding.
+    pub fn is_pending(&self) -> bool {
+        !self.slots.is_empty()
+    }
+
+    /// Whether a request about `subject` is outstanding.
+    pub fn is_pending_for(&self, subject: &S) -> bool
+    where
+        S: PartialEq,
+    {
+        self.slots.iter().any(|(_, pending)| pending == subject)
+    }
+}
+
 impl PendingRequest {
     /// Dispatch `task` under a context of its own and wait on it.
     pub fn dispatch(&mut self, task: BackendTask) -> AppAction {
@@ -204,6 +254,27 @@ mod tests {
         assert_eq!(pending.subject_for(&own), Some(&7));
         assert_eq!(pending.subject_for(&foreign), None);
         assert_eq!(pending.settle(&own), Some(7));
+    }
+
+    #[test]
+    fn several_requests_settle_independently() {
+        let mut pending = PendingRequests::<u8>::default();
+        let (_, first) = dispatched(pending.dispatch_with(refresh_task(), 1));
+        let (_, second) = dispatched(pending.dispatch_with(refresh_task(), 2));
+        assert!(pending.is_pending_for(&1) && pending.is_pending_for(&2));
+        assert_eq!(
+            pending.settle(&BackendTaskContext::for_dispatch(&refresh_task())),
+            None
+        );
+        assert_eq!(
+            pending.settle(&first),
+            Some(1),
+            "the earlier request is kept"
+        );
+        assert!(!pending.is_pending_for(&1) && pending.is_pending_for(&2));
+        assert_eq!(pending.settle(&first), None);
+        assert_eq!(pending.settle(&second), Some(2));
+        assert!(!pending.is_pending());
     }
 
     #[test]

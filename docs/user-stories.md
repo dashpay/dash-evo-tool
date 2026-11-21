@@ -1200,10 +1200,10 @@ As a power user, I want to add a token by entering its contract ID or token ID d
 
 - Enter ID manually and add to token list.
 
-### TOK-004: Transfer tokens [Implemented]
+### TOK-004: Send tokens [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to transfer tokens to another identity so that I can send tokens I own.
+As a user, I want to send tokens to another identity so that someone else can hold tokens I own.
 
 - Select token, enter recipient and amount.
 - Confirmation before broadcast.
@@ -1343,7 +1343,7 @@ As a token creator, I want to create a token that holders cannot send to other i
 - The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
-- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
 
 ## Contracts and Documents (DOC)

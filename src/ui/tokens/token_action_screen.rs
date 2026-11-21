@@ -540,10 +540,13 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 // Only a contract-group key can sign it: the user picks it below.
                 self.common.show_advanced_options = true;
             }
-            if !matches!(
+            let signing_available = matches!(
                 key_status,
                 SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
-            ) {
+            );
+            // A group proposal stays visible, read-only, to a co-signer
+            // without a key that can sign it.
+            if !signing_available && self.common.group_action_id.is_none() {
                 ui.heading(A::PAGE_HEADING);
                 ui.add_space(10.0);
                 return self.render_no_keys(ui, key_status);
@@ -552,7 +555,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             let mut inner_action = AppAction::None;
 
             // Handle a locked wallet before showing the form.
-            if let Some(wallet) = &self.common.selected_wallet {
+            if signing_available && let Some(wallet) = &self.common.selected_wallet {
                 if !self.common.wallet_open_attempted {
                     if let Err(e) = try_open_wallet_no_password(&self.common.app_context, wallet) {
                         MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
@@ -587,8 +590,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 });
             });
             ui.add_space(10.0);
+            if !signing_available {
+                inner_action |= self.render_no_keys(ui, key_status);
+            }
 
-            if self.common.show_advanced_options {
+            if signing_available && self.common.show_advanced_options {
                 let n = step.advance();
                 ui.heading(format!(
                     "{}. Select the key to sign the {} transition",
@@ -643,12 +649,13 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 &self.common.group_action_id,
             );
 
-            if self
-                .common
-                .app_context
-                .user_role()
-                .at_least(UserRole::Power)
-                || !button_text.contains("Test")
+            if signing_available
+                && (self
+                    .common
+                    .app_context
+                    .user_role()
+                    .at_least(UserRole::Power)
+                    || !button_text.contains("Test"))
             {
                 ui.add_space(10.0);
                 let ready = self.action.inputs_ready();
@@ -667,7 +674,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 }
             }
 
-            if self.common.confirmation_dialog.is_some() {
+            if signing_available && self.common.confirmation_dialog.is_some() {
                 inner_action |= self.show_confirmation_popup(ui);
             }
 
@@ -1013,5 +1020,61 @@ mod tests {
         let common = &harness.state().common;
         assert_eq!(common.selected_key.as_ref().map(|key| key.id()), Some(2));
         assert!(common.selected_wallet.is_none(), "key 2 needs no wallet");
+    }
+
+    /// A co-signer whose key cannot sign for this contract still sees the
+    /// group mint it was asked to sign, read-only, but cannot confirm it.
+    #[test]
+    fn a_group_mint_stays_visible_when_no_key_can_sign_it() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding, test_app_context};
+        use crate::model::amount::Amount;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let elsewhere = bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::SingleContract {
+                id: Identifier::from([9; 32]),
+            },
+        );
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        config
+            .distribution_rules
+            .set_minting_allow_choosing_destination(true);
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(&[elsewhere]),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: config.into(),
+            token_position: 0,
+        };
+        let amount = Amount::from_token(&info, 5);
+        let recipient = Identifier::from([5; 32]).to_string(Encoding::Base58);
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.action.amount = Some(amount.clone());
+        screen.action.recipient_identity_id = recipient.clone();
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        harness.get_by_label(&format!("Amount: {amount}"));
+        harness.get_by_label(&format!("Recipient: {recipient}"));
+        assert!(harness.query_by_label("Sign Mint").is_none());
     }
 }

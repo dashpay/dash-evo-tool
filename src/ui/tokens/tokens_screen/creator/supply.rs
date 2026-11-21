@@ -374,9 +374,11 @@ mod tests {
     /// The cap notice is rated as permanent exactly when its text says so.
     #[test]
     fn cap_notice_severity_matches_its_text() {
-        let mut fixed = TokenDraft::default();
-        fixed.maximum = TokenAmountInput::tokens("1000");
-        fixed.permissions = RuleBundle::default();
+        let mut fixed = TokenDraft {
+            maximum: TokenAmountInput::tokens("1000"),
+            permissions: RuleBundle::default(),
+            ..Default::default()
+        };
         fixed
             .permissions
             .get_mut(RuleKind::Cap)

@@ -224,7 +224,8 @@ impl AppContext {
         if let Some((index, amount)) = entry {
             topped_up.top_ups.insert(index, amount);
             let id = topped_up.identity.id();
-            if let Err(error) = self.save_top_ups(&id, &topped_up.top_ups) {
+            let entry = std::collections::BTreeMap::from([(index, amount)]);
+            if let Err(error) = self.save_top_ups(&id, &entry) {
                 tracing::warn!(identity_id = %id, ?error, "Top-up history could not be stored locally after a finished top-up");
             }
         }
@@ -331,6 +332,42 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.identity.balance(), 777);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity removed while its top-up ran keeps none of the history its
+    /// removal deleted: only the finished top-up's own entry is saved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_top_up_does_not_restore_a_removed_identitys_history() {
+        use crate::context::test_staging::stored_top_ups;
+        use std::collections::BTreeMap;
+
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let old = BTreeMap::from([(1, 10_000), (2, 20_000)]);
+        staged.ctx.save_top_ups(&staged.id, &old).unwrap();
+        let mut topped_up = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+        assert_eq!(topped_up.top_ups, old);
+        topped_up.identity.set_balance(777);
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        assert_eq!(stored_top_ups(&staged.ctx, &staged.id), None);
+
+        staged.ctx.store_finished_top_up(
+            topped_up,
+            Some((3, 50_000)),
+            BalanceProvenance::ObservedAt(7),
+        );
+
+        assert_eq!(
+            stored_top_ups(&staged.ctx, &staged.id),
+            Some(BTreeMap::from([(3, 50_000)]))
+        );
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 

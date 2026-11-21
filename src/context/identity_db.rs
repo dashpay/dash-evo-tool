@@ -195,8 +195,8 @@ fn top_up_err(source: KvAdapterError) -> TaskError {
 
 /// Merge `top_ups` into the stored history of `identity_id` (read-merge-write).
 ///
-/// Callers hold a partial view of the history — the top-up flow carries the
-/// entries it hydrated plus the one it just confirmed, and the legacy-data
+/// Callers hold a partial view of the history — the top-up flow carries only
+/// the entry it just confirmed, and the legacy-data
 /// import carries only what `data.db` held — so a replacing write would drop
 /// every entry the caller never saw. On a colliding index the caller's value
 /// wins: it is the fresher of the two. Removal is not expressible here; the
@@ -2517,6 +2517,14 @@ pub(crate) mod test_staging {
     pub(crate) fn unlist_identity(ctx: &AppContext, id: &Identifier) {
         index_remove_identity(&ctx.det_kv().expect("identity kv"), &id.to_buffer())
             .expect("remove from the roster");
+    }
+
+    /// The top-up history stored for `id`, whether or not it is listed.
+    pub(crate) fn stored_top_ups(ctx: &AppContext, id: &Identifier) -> Option<BTreeMap<u32, u64>> {
+        ctx.det_kv()
+            .expect("identity kv")
+            .get(DetScope::Identity(&id.to_buffer()), TOP_UPS_KEY)
+            .expect("read the top-up history")
     }
 
     /// Fail the next save of a top-up history.

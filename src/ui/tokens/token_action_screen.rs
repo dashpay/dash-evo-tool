@@ -745,4 +745,46 @@ mod tests {
         report_error(&mut screen, &unrelated_request(context.network));
         assert!(screen.common.status == TokenActionStatus::Complete);
     }
+
+    /// A burn is sent with its balance refresh. Only the burn's own error
+    /// ends the wait, and the refresh failing after the burn went through
+    /// keeps the screen complete.
+    #[test]
+    fn only_the_burn_itself_settles_a_burn_and_its_refresh() {
+        use crate::ui::tokens::burn_tokens_screen::BurnAction;
+        use crate::ui::tokens::mint_tokens_screen::tests::report_error;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut screen = TokenActionScreen::<BurnAction>::new(info.clone(), &context);
+        screen.common.selected_key = Some(signing_key());
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+        let burn = |action: AppAction| {
+            let AppAction::BackendTasksWithContexts(tasks, _) = action else {
+                panic!("the burn and its refresh are sent together");
+            };
+            let [(_, burn), (_, refresh)] = tasks.as_slice() else {
+                panic!("expected the burn and its refresh, got {tasks:?}");
+            };
+            (burn.clone(), refresh.clone())
+        };
+        let (burn_request, refresh_request) = burn(screen.submit());
+
+        report_error(&mut screen, &refresh_request);
+        assert!(
+            matches!(screen.submit(), AppAction::None),
+            "the refresh's error does not end the burn's wait"
+        );
+        report_error(&mut screen, &burn_request);
+        let (_, refresh_request) = burn(screen.submit());
+
+        screen.display_task_result(BackendTaskSuccessResult::BurnedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &refresh_request);
+        assert!(screen.common.status == TokenActionStatus::Complete);
+    }
 }

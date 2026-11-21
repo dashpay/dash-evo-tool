@@ -1356,6 +1356,12 @@ fn regression_import_by_id_restores_a_dismissed_token() {
                 .expect("global registry")
                 .contains_key(&tokens[0])
         );
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label("DashCoffee").is_none(),
+            "the dismissal hides the row before the import"
+        );
         hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
         hub.run_steps(2);
         hub.get_by_label(token_copy::ADD_BY_ID_LABEL).click();
@@ -1439,6 +1445,10 @@ fn regression_search_can_reimport_a_dismissed_known_token() {
         };
         ctx.mark_token_balance_untracked(pair).unwrap();
         let mut hub = mount_tokens_tab(&ctx);
+        assert!(
+            hub.query_by_label("DashCoffee").is_none(),
+            "the dismissal hides the row before the import"
+        );
         hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
         hub.run_steps(2);
         hub.get_by_label(token_copy::FIND_BY_NAME_LABEL).click();

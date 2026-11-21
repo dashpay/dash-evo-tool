@@ -445,7 +445,7 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, recipient, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.common.group_action_id = Some(action_id);
-                mint_screen.action.recipient_identity_id = recipient.to_string(Encoding::Base58);
+                mint_screen.action.set_proposal_recipient(*recipient);
                 mint_screen.action.amount = Some(Amount::from_token(
                     &mint_screen.common.identity_token_info,
                     *amount,
@@ -704,6 +704,37 @@ impl ScreenLike for GroupActionsScreen {
 #[cfg(test)]
 mod sdk_adapter_tests {
     use super::*;
+
+    /// Co-signing a group mint of a token that forbids choosing a recipient:
+    /// Platform refuses a signature whose destination differs from the
+    /// proposal's recipient, so signing is offered only while they match.
+    #[test]
+    fn a_group_mint_is_signable_only_while_the_destination_matches_the_proposal() {
+        use crate::ui::tokens::mint_tokens_screen::tests::token_info;
+        use crate::ui::tokens::token_action_screen::TokenAction;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let destination = Identifier::from([5; 32]);
+        let mut screen = GroupActionsScreen::new(&ctx);
+        for (proposed, signable) in [(destination, true), (Identifier::from([9; 32]), false)] {
+            let mut action = AppAction::None;
+            screen.handle_token_event_action(
+                &TokenEvent::Mint(5, proposed, None),
+                Identifier::from([8; 32]),
+                token_info(&ctx, Some(destination), false),
+                &mut action,
+            );
+            let AppAction::AddScreen(Screen::MintTokensScreen(mint)) = action else {
+                panic!("a mint screen opens");
+            };
+            assert_eq!(
+                mint.action.inputs_ready(),
+                signable,
+                "proposal to {proposed}, destination {destination}"
+            );
+        }
+    }
 
     #[test]
     fn shielded_events_are_displayed_without_offering_transparent_actions() {

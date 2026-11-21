@@ -45,6 +45,8 @@ pub struct MintAction {
     /// New tokens have somewhere to go: a configured destination, or the
     /// token lets the minter choose one.
     can_mint: bool,
+    /// The recipient of the group mint being co-signed, as proposed.
+    proposal_recipient: Option<Identifier>,
 }
 
 impl MintAction {
@@ -53,9 +55,9 @@ impl MintAction {
     ///
     /// A token that forbids choosing always mints to its configured
     /// destination, so any typed or pre-filled recipient is ignored: Platform
-    /// refuses a mint that names one. Co-signing a group mint still matches
-    /// the proposal, because Platform compares the resolved recipient (the
-    /// configured destination) and leaves the recipient out of the action id.
+    /// refuses a mint that names one. A co-signature resolves that destination
+    /// again and is refused unless it is the proposal's recipient (see
+    /// [`Self::proposal_mismatch`]).
     fn mint_recipient(&self) -> Option<MintRecipient> {
         let entered = self.recipient_identity_id.trim();
         let chosen = if self.allow_choosing_destination && !entered.is_empty() {
@@ -81,9 +83,30 @@ impl MintAction {
         self.mint_recipient()?.identity()
     }
 
+    /// Co-sign the group mint proposed to `recipient`.
+    pub fn set_proposal_recipient(&mut self, recipient: Identifier) {
+        self.recipient_identity_id = recipient.to_string(Encoding::Base58);
+        self.proposal_recipient = Some(recipient);
+    }
+
+    /// The proposal's recipient and the token's current destination when they
+    /// differ for a token that forbids choosing: Platform would refuse the
+    /// co-signature.
+    fn proposal_mismatch(&self) -> Option<(Identifier, Option<Identifier>)> {
+        let proposed = self.proposal_recipient?;
+        if self.allow_choosing_destination {
+            return None;
+        }
+        let destination = self.resolved_recipient();
+        (destination != Some(proposed)).then_some((proposed, destination))
+    }
+
     /// What a group co-signer is told about where the proposed tokens go.
     fn proposed_recipient_text(&self) -> String {
-        match self.resolved_recipient() {
+        match self
+            .proposal_recipient
+            .or_else(|| self.resolved_recipient())
+        {
             Some(recipient) => format!(
                 "Recipient: {recipient}",
                 recipient = recipient.to_string(Encoding::Base58)
@@ -144,6 +167,7 @@ impl TokenAction for MintAction {
             distribution_rules: rules.clone(),
             allow_choosing_destination,
             can_mint: has_default_destination || allow_choosing_destination,
+            proposal_recipient: None,
         }
     }
 
@@ -214,6 +238,23 @@ impl TokenAction for MintAction {
             );
             ui.add_space(5.0);
             ui.label(self.proposed_recipient_text());
+            if let Some((proposed, destination)) = self.proposal_mismatch() {
+                let proposed = proposed.to_string(Encoding::Base58);
+                let explanation = match destination {
+                    Some(destination) => format!(
+                        "This proposal mints to {proposed}, but this token now sends new tokens to {destination}, so Platform would refuse your signature.",
+                        destination = destination.to_string(Encoding::Base58)
+                    ),
+                    None => format!(
+                        "This proposal mints to {proposed}, but this token no longer has a destination for new tokens, so Platform would refuse your signature."
+                    ),
+                };
+                ui.add_space(5.0);
+                ui.colored_label(
+                    DashColors::error_color(ui.style().visuals.dark_mode),
+                    explanation,
+                );
+            }
         } else if self.allow_choosing_destination {
             // A token that forbids choosing mints to its configured
             // destination for every role, so no one gets a field it ignores.
@@ -241,11 +282,16 @@ impl TokenAction for MintAction {
     }
 
     fn inputs_ready(&self) -> bool {
-        self.can_mint && positive_amount(&self.amount).is_some() && self.recipient().is_some()
+        self.can_mint
+            && positive_amount(&self.amount).is_some()
+            && self.recipient().is_some()
+            && self.proposal_mismatch().is_none()
     }
 
     fn disabled_reason(&self) -> &'static str {
-        if self.can_mint {
+        if self.proposal_mismatch().is_some() {
+            "This proposal mints to an identity that is no longer this token's destination, so it cannot be signed."
+        } else if self.can_mint {
             FILL_IN_THE_FORM
         } else {
             "This token cannot be minted until its configuration sets a default recipient for new tokens."
@@ -436,6 +482,27 @@ pub(crate) mod tests {
             },
             other => panic!("expected a mint task, got {other:?}"),
         }
+    }
+
+    /// A co-signer is shown the recipient the group proposed, even when the
+    /// token's destination has changed since.
+    #[test]
+    fn a_co_signer_sees_the_proposed_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut action = MintAction::new(&info, &context);
+        let proposed = Identifier::from([9; 32]);
+        action.set_proposal_recipient(proposed);
+
+        assert_eq!(
+            action.proposed_recipient_text(),
+            format!("Recipient: {}", proposed.to_string(Encoding::Base58))
+        );
+        assert_eq!(
+            action.proposal_mismatch(),
+            Some((proposed, Some(Identifier::from([5; 32]))))
+        );
     }
 
     /// The recipient a built mint task carries; panics when no task is built.

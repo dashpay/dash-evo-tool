@@ -3,6 +3,9 @@
 /// A failed environment setup happens before the file logger exists, so the
 /// terminal is the only place the user can learn why the app did not start:
 /// stderr must name the cause instead of a panic or a redacted crash marker.
+/// The child gets no display, so no failure window can wait for a user; the
+/// kittests cover the window itself.
+#[cfg(target_os = "linux")]
 #[test]
 fn environment_setup_failure_names_its_cause_on_stderr() {
     let parent = tempfile::tempdir().expect("temp dir");
@@ -11,6 +14,10 @@ fn environment_setup_failure_names_its_cause_on_stderr() {
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_dash-evo-tool"))
         .env("DASH_EVO_DATA_DIR", &data_dir)
+        .env("XDG_DATA_HOME", parent.path())
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WAYLAND_SOCKET")
         .env_remove("RUST_BACKTRACE")
         .env_remove("RUST_LIB_BACKTRACE")
         .output()

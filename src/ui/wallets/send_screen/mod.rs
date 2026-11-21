@@ -9107,6 +9107,92 @@ mod tests {
         );
     }
 
+    /// With an explicit Core source and Max, a quote refused for a locked
+    /// wallet still offers the unlock, though Max leaves the amount empty.
+    #[test]
+    fn max_on_an_explicit_source_offers_the_unlock() {
+        let (mut screen, _temp_dir) = locked_core_send_screen();
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.form.press_max();
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Locked".to_string(),
+        });
+        let mut harness = form_harness(screen);
+
+        assert!(
+            harness
+                .query_by_label_contains("to check the available amount.")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none()
+        );
+        harness.get_by_label("Unlock").click();
+        harness.run();
+        assert!(harness.state().wallet_unlock_popup.is_open());
+    }
+
+    /// Quotes held back after an unlock are asked again once the wallet
+    /// backend has registered the wallet, and not before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quotes_are_asked_again_once_the_unlocked_wallet_registers() {
+        let is_core_quote = |task: &BackendTask| {
+            matches!(
+                task,
+                BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend { .. },
+                    ..
+                })
+            )
+        };
+        let (ctx, _temp_dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let seed = crate::test_support::keys::seed();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet from seed");
+        let seed_hash = wallet.seed_hash();
+        let mut screen = WalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
+        let address = testnet_core_address(9);
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 200_000_000,
+            core_addresses: vec![(address, 200_000_000)],
+            platform: vec![],
+            shielded_credits: 0,
+        });
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        });
+        // What a successful unlock leaves behind.
+        screen.quote_needs_unlock = None;
+        screen.requote_on_registration = Some((seed_hash, std::time::Instant::now()));
+        screen.sync_route();
+        assert!(
+            !screen.route_requests().iter().any(is_core_quote),
+            "nothing is asked before the wallet is registered"
+        );
+
+        ctx.wallet_backend()
+            .expect("wallet backend")
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("registration");
+        screen.sync_route();
+        assert!(screen.route_requests().iter().any(is_core_quote));
+        assert_eq!(screen.requote_on_registration, None);
+    }
+
     /// Only the answer to the awaited quote request can ask for an unlock.
     #[test]
     fn a_superseded_locked_quote_reply_asks_for_no_unlock() {

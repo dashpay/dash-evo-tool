@@ -169,6 +169,13 @@ fn is_pair_check(task: &TokenTask) -> bool {
     matches!(task, TokenTask::TrackTokenBalancesAgain(pairs) if pairs.len() == 1)
 }
 
+/// The shortened Base58 form the hub shows beside a token name.
+fn short_id(token: Identifier) -> String {
+    dash_evo_tool::model::identity_name::shorten_id(
+        &token.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+    )
+}
+
 /// Part of the timeout error's text, which the failed refresh shows inline.
 const TIMEOUT_TEXT: &str = "the network took too long to respond";
 
@@ -1246,6 +1253,19 @@ fn hub_token_surfaces_offer_neither_send_nor_claim() {
         hub.run_steps(3);
         assert!(hub.query_by_label(token_copy::ABOUT_HEADING).is_some());
         assert_no_send_or_claim(&hub);
+        hub.get_by_role_and_label(Role::Button, "Home").click();
+        hub.run_steps(3);
+        // Home's own Send is for Dash; its Tokens card offers no Claim.
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_some()
+        );
+        for role in [Role::Button, Role::Link] {
+            for node in hub.query_all_by_role(role) {
+                let label = node.accesskit_node().label().unwrap_or_default();
+                assert!(!label.starts_with("Claim"), "Home offers {label:?}");
+            }
+        }
     });
 }
 
@@ -1528,6 +1548,12 @@ fn hub_token_regression_missing_contract_keeps_balance_and_reloads_details() {
         set_balance(&ctx, identity, other, 300);
         set_balance(&ctx, Identifier::from([0xFF; 32]), token, 9_900);
 
+        let home = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
+        // The card shows the amount without the token's own name as its
+        // unit, and the short token ID beside the name.
+        assert!(home.query_by_label("1.25").is_some());
+        assert!(home.query_by_label("1.25 Coffee").is_none());
+        assert!(home.query_by_label(&short_id(token)).is_some());
         let mut hub = mount_tokens_tab(&ctx);
         assert!(hub.query_by_label("1.25 Coffee").is_some());
         assert!(hub.query_by_label("3 Tea").is_some());
@@ -1853,4 +1879,426 @@ fn regression_token_breadcrumb_is_hidden_on_the_identity_picker() {
                 .is_none()
         );
     });
+}
+
+#[test]
+fn the_home_card_shows_only_with_a_balance_or_a_claim() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB1);
+        let tokens = seed_three_tokens(&app_context, identity);
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_some()
+        );
+        assert!(
+            hub.query_by_label("1250").is_some(),
+            "the card lists what the identity holds"
+        );
+        assert!(
+            hub.query_by_label("Grit").is_none(),
+            "zero balances are not worth a glance"
+        );
+        hub.get_by_label(token_copy::SEE_ALL_TOKENS_LABEL).click();
+        hub.run_steps(3);
+        assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Tokens);
+
+        // Nothing held and nothing to claim: no card.
+        set_balance(&app_context, identity, tokens[0], 0);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
+            "an empty card would only advertise a feature"
+        );
+    });
+}
+
+/// On a fresh launch nothing has registered the identity with the balance
+/// sync, so the Home card has no balance to show until Home itself asks.
+#[test]
+fn home_asks_for_balances_on_a_fresh_launch_and_then_shows_the_card() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB4);
+        let tokens = seed_contract(
+            &app_context,
+            0xC4,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        assert_eq!(
+            hub.state().0.selected_tab(),
+            IdentityHubTab::Home,
+            "the check runs without leaving Home"
+        );
+        let refresh = hub
+            .state()
+            .1
+            .iter()
+            .filter_map(|action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    context,
+                } if matches!(**task, TokenTask::QueryMyTokenBalances) => Some(context.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(refresh.len(), 1, "one refresh per arrival");
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
+            "no balance known yet: no card"
+        );
+
+        set_balance(&app_context, identity, tokens[0], 125_000);
+        hub.state_mut().0.display_backend_task_result(
+            &refresh[0],
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label("1250").is_some(),
+            "the card appears once the refresh brought a balance"
+        );
+    });
+}
+
+#[test]
+fn a_failed_refresh_on_home_explains_itself_and_retries_once_per_click() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB6);
+        let tokens = seed_contract(
+            &app_context,
+            0xC6,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        let arrival = balance_refreshes(&hub);
+        assert_eq!(arrival.len(), 1, "one refresh per arrival");
+
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival[0], &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "a real failure always reaches the banner, beside Home's notice"
+        );
+        hub.run_steps(6);
+        assert!(
+            hub.query_by_label(&TaskError::NoIdentitiesFound.to_string())
+                .is_some(),
+            "the card cannot appear, so Home must say why"
+        );
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            1,
+            "a failure is not retried on its own, frame after frame"
+        );
+
+        hub.get_by_label(token_copy::TRY_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        let retried = balance_refreshes(&hub);
+        assert_eq!(retried.len(), 2, "the click sends one retry");
+        hub.get_by_label(token_copy::TRY_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            2,
+            "a retry still running is not sent again"
+        );
+
+        set_balance(&app_context, identity, tokens[0], 125_000);
+        hub.state_mut().0.display_backend_task_result(
+            &retried[1],
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(&TaskError::NoIdentitiesFound.to_string())
+                .is_none(),
+            "a success clears the notice"
+        );
+        assert!(hub.query_by_label("1250").is_some());
+    });
+}
+
+#[test]
+fn a_failed_refresh_on_home_can_be_dismissed() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_signing_identity(&app_context, 0xB7);
+        seed_contract(
+            &app_context,
+            0xC7,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        let arrival = balance_refreshes(&hub);
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival[0], &TaskError::NoIdentitiesFound);
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::DISMISS_LABEL).click();
+        hub.run_steps(4);
+        assert!(
+            hub.query_by_label(&TaskError::NoIdentitiesFound.to_string())
+                .is_none()
+        );
+        assert_eq!(balance_refreshes(&hub).len(), 1, "dismissing sends nothing");
+    });
+}
+
+/// Home asks for balances only when the identity tracks a token.
+#[test]
+fn home_sends_no_balance_refresh_without_tokens() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_signing_identity(&app_context, 0xB8);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            !asked_for_balances(&hub),
+            "an identity with no tokens needs no balance read on Home"
+        );
+    });
+}
+
+#[test]
+fn home_holds_its_balance_refresh_until_the_masternode_list_is_synced() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB5);
+        seed_three_tokens(&app_context, identity);
+        app_context.connection_status().set_masternodes_ready(false);
+        let mut hub = mount_hub_as_is(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            !asked_for_balances(&hub),
+            "a proof-verifying balance read went out before the masternode list synced"
+        );
+
+        app_context.connection_status().set_masternodes_ready(true);
+        hub.run_steps(6);
+        assert!(
+            asked_for_balances(&hub),
+            "the arrival stays owed until the network can answer"
+        );
+    });
+}
+
+#[test]
+fn hub_token_regression_scheduled_recipients_do_not_promise_home_claims() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let identity = seed_signing_identity(&ctx, 0xA2);
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let tokens = seed_contract(
+            &ctx,
+            0xC9,
+            Identifier::from([0xEE; 32]),
+            vec![
+                pre_programmed_token("Future", false, now + 86_400_000, identity),
+                pre_programmed_token("Past", false, 1, identity),
+            ],
+        );
+        for token in &tokens {
+            set_balance(&ctx, identity, *token, 0);
+        }
+        let mut home = mount_hub_on(&ctx, egui::vec2(1280.0, 900.0), IdentityHubTab::Home);
+        assert!(
+            home.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
+            "membership in a schedule alone does not announce a ready claim"
+        );
+
+        set_balance(&ctx, identity, tokens[0], 100);
+        home.state_mut()
+            .0
+            .cached_data_changed(dash_evo_tool::backend_task::CacheUpdate {
+                network: ctx.network(),
+                domain: dash_evo_tool::backend_task::CacheDomain::Tokens,
+            });
+        home.run_steps(3);
+        assert!(home.query_by_label("Future").is_some());
+        assert!(
+            home.query_by_label(&token_copy::pending_claims_text(2))
+                .is_none()
+        );
+
+        let mut hub = mount_tokens_tab(&ctx);
+        assert_eq!(
+            hub.query_all_by_label(token_copy::STATUS_REWARDS).count(),
+            2
+        );
+        hub.get_by_label("Future").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label_contains("Claim them whenever").is_none());
+    });
+}
+
+#[test]
+fn the_home_card_shows_a_claim_as_information() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xDA);
+        let mut airdrop = token_config("AirDrop", false);
+        let rules = match airdrop.distribution_rules().clone() {
+            TokenDistributionRules::V0(rules) => rules,
+            TokenDistributionRules::V1(_) => panic!("presets are version 0"),
+        };
+        airdrop.set_distribution_rules(distribution_rules_with_once_per_identity(rules, Some(100)));
+        let tokens = seed_contract(
+            &app_context,
+            0xC3,
+            Identifier::from([0xEE; 32]),
+            vec![airdrop],
+        );
+        set_balance(&app_context, identity, tokens[0], 0);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_some(),
+            "a pending claim alone earns the card"
+        );
+        assert!(
+            hub.query_by_label("You can claim 1 AirDrop once in Tokens › My Tokens.")
+                .is_some()
+        );
+        assert!(hub.query_by_label("Claim").is_none());
+        assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Home);
+    });
+}
+
+/// A view-only identity cannot claim, so a claim alone earns it no card.
+#[test]
+fn the_home_card_offers_no_claim_to_a_view_only_identity() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let auth = key(1, Purpose::AUTHENTICATION);
+        let identity = seed_identity_with_id(&app_context, 0xDC, vec![auth], vec![]);
+        let mut airdrop = token_config("AirDrop", false);
+        let TokenDistributionRules::V0(rules) = airdrop.distribution_rules().clone() else {
+            panic!("presets are version 0");
+        };
+        airdrop.set_distribution_rules(distribution_rules_with_once_per_identity(rules, Some(100)));
+        let tokens = seed_contract(
+            &app_context,
+            0xC5,
+            Identifier::from([0xEE; 32]),
+            vec![airdrop],
+        );
+        set_balance(&app_context, identity, tokens[0], 0);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none()
+        );
+        assert!(hub.query_by_label_contains("You can claim").is_none());
+    });
+}
+
+/// The card lists the three largest holdings, largest first, and counts
+/// several pending claims instead of naming them.
+#[test]
+fn the_home_card_lists_the_top_three_holdings_and_counts_claims() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xDB);
+        let once = |name: &str| {
+            let mut config = token_config(name, false);
+            let TokenDistributionRules::V0(rules) = config.distribution_rules().clone() else {
+                panic!("presets are version 0");
+            };
+            config.set_distribution_rules(distribution_rules_with_once_per_identity(
+                rules,
+                Some(100),
+            ));
+            config
+        };
+        let names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"];
+        let mut configs: Vec<_> = names.iter().map(|name| token_config(name, false)).collect();
+        configs.push(once("DropOne"));
+        configs.push(once("DropTwo"));
+        let tokens = seed_contract(&app_context, 0xC4, Identifier::from([0xEE; 32]), configs);
+        // Alpha holds the least, Echo the most.
+        for (i, token) in tokens.iter().take(names.len()).enumerate() {
+            set_balance(&app_context, identity, *token, 100 * (i as u64 + 1));
+        }
+        for token in &tokens[names.len()..] {
+            set_balance(&app_context, identity, *token, 0);
+        }
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        let top = |name: &str| {
+            hub.query_by_label(name)
+                .map(|node| node.rect().top())
+                .unwrap_or_else(|| panic!("{name} is listed"))
+        };
+        assert!(top("Echo") < top("Delta") && top("Delta") < top("Charlie"));
+        for absent in ["Bravo", "Alpha"] {
+            assert!(hub.query_by_label(absent).is_none(), "{absent} is listed");
+        }
+        assert!(
+            hub.query_by_label(&token_copy::pending_claims_text(2))
+                .is_some()
+        );
+    });
+}
+
+/// Whether the hub asked for the full token balance refresh.
+fn asked_for_balances(hub: &HubHarness) -> bool {
+    hub.state().1.iter().any(|action| {
+        matches!(
+            action,
+            AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(task), .. }
+                if matches!(**task, TokenTask::QueryMyTokenBalances)
+        )
+    })
 }

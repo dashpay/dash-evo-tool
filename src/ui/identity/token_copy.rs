@@ -1,5 +1,5 @@
-//! User-facing copy for the Identity Hub's token surfaces: the Tokens tab and
-//! the token detail page. Kept free of egui so the copy
+//! User-facing copy for the Identity Hub's token surfaces: the Tokens tab, the
+//! token detail page and the Home Tokens card. Kept free of egui so the copy
 //! is unit-testable, and every string is one complete translation unit.
 //!
 //! Design: `docs/ai-design/2026-10-28-identity-tokens/` frame T9.
@@ -85,7 +85,8 @@ pub const RELOAD_DETAILS_FAILED: &str =
     "Token details couldn't be reloaded. Check your connection and try again.";
 pub const ISSUED_BY_SOMEONE_ELSE: &str = "Issued by someone else";
 
-// Receive dialog.
+// Home card and Receive dialog.
+pub const SEE_ALL_TOKENS_LABEL: &str = "See all tokens";
 pub const RECEIVE_TOKENS_HINT: &str = "A token you receive shows under Tokens once you add it.";
 
 /// "Last updated {time}."
@@ -143,6 +144,15 @@ pub fn dismissed_body_text(identity: &str) -> String {
 /// "Stop tracking {token} for {identity}? …"
 pub fn stop_tracking_question(token: &str, identity: &str) -> String {
     format!("Stop tracking {token} for {identity}? You can add it again at any time.")
+}
+
+/// The Home card's claim line.
+pub fn pending_claims_text(count: usize) -> String {
+    if count == 1 {
+        "1 token has something to claim.".to_string()
+    } else {
+        format!("{count} tokens have something to claim.")
+    }
 }
 
 /// "Held by {identity}" — the detail page's caption.
@@ -223,6 +233,7 @@ mod tests {
         COPY_CONTRACT_ID_LABEL,
         ISSUED_BY_YOU,
         ISSUED_BY_SOMEONE_ELSE,
+        SEE_ALL_TOKENS_LABEL,
     ];
 
     fn formatted() -> Vec<String> {
@@ -238,6 +249,8 @@ mod tests {
             tracked_count_text(8),
             dismissed_body_text("Alice"),
             stop_tracking_question("DCF", "Alice"),
+            pending_claims_text(1),
+            pending_claims_text(2),
         ]
     }
 
@@ -266,6 +279,8 @@ mod tests {
 
     #[test]
     fn plurals_read_right() {
+        assert_eq!(pending_claims_text(1), "1 token has something to claim.");
+        assert_eq!(pending_claims_text(2), "2 tokens have something to claim.");
         assert_eq!(hidden_count_text(1), "1 token is hidden.");
         assert_eq!(hidden_count_text(3), "3 tokens are hidden.");
         assert_eq!(tracked_count_text(8), "Tracking 8 tokens.");

@@ -10,8 +10,7 @@ Scope: README §10 Phase 0, Phase 1, Phase 2. **Phase 3 is out of scope**
 **As built (user decision, TOK-021):** the hub offers no Send or Claim and
 the Tokens tab has no count badge; the row status lines say where to claim
 (Tokens › My Tokens). Hub sending and claiming are follow-up work. Items
-marked *dropped* below record that decision. The Home card (P2.1) ships in
-a follow-up change.
+marked *dropped* below record that decision.
 
 ## User decisions (README §11)
 
@@ -52,7 +51,7 @@ Each item needs code + a test (unit or kittest) unless marked *(no test)*.
 - [x] P1.18 List scrolls inside the island at 800 px window height; header + controls stay fixed.
 
 ### Phase 2
-- [ ] P2.1 Home Tokens card, shown iff any balance > 0 OR a claim is pending (Q5), without Claim (several claims show a count); "See all tokens" opens the Tokens tab.
+- [x] P2.1 Home Tokens card, shown iff any balance > 0 OR a claim is pending (Q5), without Claim (several claims show a count); "See all tokens" opens the Tokens tab. Home sends the arrival refresh only when the identity tracks a token.
 - [x] P2.2 Token detail page (row click / "Token details"): facts in plain words, copyable IDs, Manage (Q3 rule; opens Tokens › My Tokens on that token through the pending-token-selection courier), Stop tracking. *Dropped:* Send/Claim.
 - [x] P2.3 Many-token controls: filter by name/symbol and sort; remembered per device together with hide-zero.
 
@@ -72,6 +71,7 @@ otherwise. Each is intentional.
 |---|---|
 | D-1 | Backend additions beyond "no backend change": `TokenTask::TrackTokenBalancesAgain(Vec<IdentityTokenIdentifier>)` re-tracks the given pairs in one request (a one-pair list is "Check balance now") and takes the refresh guard before clearing the dismissals, so a refusal leaves them untouched; `AppContext::{set,take}_pending_token_selection` is the courier behind "Manage in Tokens screen" (`TokensScreen::refresh_on_arrival` takes it on every Tokens subscreen and selects the token only on My Tokens, so a stale request cannot linger); `IdentityTokensViewPrefs` is persisted at the global k/v key `det:identity_tokens_view:v1`. |
 | D-2 | P0.2's standalone helper was folded into `IdentityTokenAvailableActions::has_admin_permission()`; the hub computes every row's actions once with `in_dev_mode = false` and reads the flag, instead of computing the actions twice. |
+| D-3 | Home card (P2.1): no Claim on the card; two or more pending claims show "{count} tokens have something to claim." and "See all tokens" opens the tab. Each holding shows the short token ID beside its name and the amount without the token's name as unit; a view-only identity gets no claim line, and a claim alone earns it no card. |
 | D-4 | Not built from README §8: folding row actions into ••• under 640 px (the balance and status do stack under the name), the single-key `/` filter shortcut, the "Recently updated" sort (no per-pair update time exists), and T5's "Tracked since" and "Recent activity" (P3). |
 | D-5 | All hub copy lives in `src/ui/identity/token_copy.rs` with one complete-sentence / no-jargon test; "Contract" is allowed as the name of a copyable ID. The header count and the hidden count are complete sentences ("Tracking {count} tokens.", "{count} tokens are hidden."), the ▾ glyph is decoration outside the translated label, and "Issued by you" / "Issued by someone else" are whole values. |
 | D-6 | New theme constants: `DashColors::pill_accent` and `pill_neutral` (the only tints that read at 4.5:1 on their own 12 % fill in both themes); the row badges use them instead of `DASH_BLUE` / `text_secondary`. |

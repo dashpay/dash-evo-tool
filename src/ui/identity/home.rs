@@ -7,14 +7,23 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::TokenListSort;
 use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::copyable_id::CopyableId;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
-use crate::ui::identity::token_copy::{ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT};
+use crate::ui::identity::token_copy::{
+    ADD_TOKEN_LABEL, HEADING, RECEIVE_TOKENS_HINT, SEE_ALL_TOKENS_LABEL, can_claim_once_text,
+    pending_claims_text,
+};
+use crate::ui::identity::tokens_tab::render_failure;
 pub use crate::ui::state::identity_home::HomeState;
+use crate::ui::state::identity_tokens::{
+    IdentityTokensState, TokenRow, home_card_shows, sort_rows,
+};
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
 use crate::ui::wallets::send_screen::IdentitySendMode;
@@ -24,6 +33,9 @@ use dash_sdk::platform::Identifier;
 use egui::{self, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 
+/// How many held tokens the Home card lists.
+const TOKENS_CARD_ROWS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeOutcome {
     None,
@@ -32,6 +44,8 @@ pub enum HomeOutcome {
     GoToSettings,
     GoToUsernames,
     GoToAdvanced,
+    /// Open the Tokens tab (from the Tokens card).
+    GoToTokens,
     DismissChecklist,
 }
 
@@ -227,6 +241,7 @@ pub fn render(
     state: &mut HomeState,
     profiles: &mut ProfileCache,
     contacts: &mut ContactsState,
+    tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     state.reconcile_owner(identity);
     contacts.reconcile_owner(identity);
@@ -261,6 +276,7 @@ pub fn render(
                                 state,
                                 has_profile,
                                 contacts,
+                                tokens,
                             );
                         },
                     );
@@ -281,8 +297,15 @@ pub fn render(
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    (action, outcome) =
-                        render_main_column(ui, app_context, identity, state, has_profile, contacts);
+                    (action, outcome) = render_main_column(
+                        ui,
+                        app_context,
+                        identity,
+                        state,
+                        has_profile,
+                        contacts,
+                        tokens,
+                    );
                     action |= super::contacts::render_preview(
                         ui,
                         app_context,
@@ -340,6 +363,7 @@ fn render_main_column(
     state: &mut HomeState,
     has_profile: Option<bool>,
     contacts: &ContactsState,
+    tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
@@ -362,7 +386,7 @@ fn render_main_column(
         }
     });
     ui.add_space(Spacing::MD);
-    let outcome = render_setup(
+    let mut outcome = render_setup(
         ui,
         app_context,
         identity,
@@ -376,6 +400,85 @@ fn render_main_column(
         action = notice_action;
     }
     action |= render_payments(ui, app_context, state);
+    if outcome == HomeOutcome::None {
+        let (card_action, card_outcome) = render_tokens_card(ui, app_context, identity, tokens);
+        action |= card_action;
+        outcome = card_outcome;
+    }
+    (action, outcome)
+}
+
+/// The Tokens card: balances and outstanding once-per-identity claims.
+fn render_tokens_card(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    tokens: &mut IdentityTokensState,
+) -> (AppAction, HomeOutcome) {
+    let rows = tokens.rows(app_context, identity);
+    // Shown whether or not the card is: unread tokens may be why it is not.
+    super::tokens_tab::render_row_load_failure(ui, tokens);
+    let action = if rows.is_empty() {
+        AppAction::None
+    } else {
+        render_failure(ui, app_context, tokens)
+    };
+    let view_only = identity.private_keys.is_empty();
+    if !home_card_shows(&rows, view_only) {
+        return (action, HomeOutcome::None);
+    }
+    let mut outcome = HomeOutcome::None;
+    let dark = ui.visuals().dark_mode;
+    let mut held: Vec<&TokenRow> = rows.iter().filter(|row| row.holds_some()).collect();
+    sort_rows(&mut held, TokenListSort::BalanceHighToLow);
+    let claimable: Vec<_> = rows
+        .iter()
+        .filter(|_| !view_only)
+        .filter_map(|row| row.open_once_claim().map(|claim| (row, claim)))
+        .collect();
+    let pending_claims = claimable.len();
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(HEADING);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.link(SEE_ALL_TOKENS_LABEL).clicked() {
+                    outcome = HomeOutcome::GoToTokens;
+                }
+            });
+        });
+        for row in held.iter().take(TOKENS_CARD_ROWS) {
+            ui.horizontal(|ui| {
+                // A chain name can copy another's, so the ID tells them
+                // apart and the amount carries no unit taken from the name.
+                ui.label(row.name());
+                ui.label(
+                    RichText::new(shorten_id(&row.token_id_base58()))
+                        .small()
+                        .monospace()
+                        .color(DashColors::text_secondary(dark)),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(balance) = row.balance() {
+                        ui.label(
+                            RichText::new(row.amount(balance).to_string_without_unit()).monospace(),
+                        );
+                    }
+                });
+            });
+        }
+        if let [(row, claim)] = claimable.as_slice() {
+            ui.horizontal_wrapped(|ui| {
+                let text = can_claim_once_text(&row.amount(claim.amount));
+                ui.label(RichText::new(text).color(DashColors::success_color(dark)));
+            });
+        } else if pending_claims > 1 {
+            ui.label(
+                RichText::new(pending_claims_text(pending_claims))
+                    .color(DashColors::success_color(dark)),
+            );
+        }
+    });
+    ui.add_space(Spacing::MD);
     (action, outcome)
 }
 
@@ -557,9 +660,39 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
         HomeOutcome::GoToSettings | HomeOutcome::GoToUsernames | HomeOutcome::GoToAdvanced => {
             Some(IdentityHubTab::Settings)
         }
+        HomeOutcome::GoToTokens => Some(IdentityHubTab::Tokens),
         HomeOutcome::DismissChecklist => {
             state.dismissed_checklist = true;
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
+    use egui_kittest::kittest::Queryable;
+
+    /// Unreadable saved tokens are explained on Home, though no card shows.
+    #[test]
+    fn home_reports_unreadable_saved_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unwired: the token store cannot be reached.
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([1; 32]),
+            Network::Testnet,
+        );
+        let mut tokens = IdentityTokensState::default();
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui(|ui| {
+            let _ = render_tokens_card(ui, &context, &identity, &mut tokens);
+        });
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(crate::ui::identity::token_copy::TRY_AGAIN_LABEL)
+                .is_some()
+        );
     }
 }

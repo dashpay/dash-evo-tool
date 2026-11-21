@@ -813,6 +813,7 @@ impl ScreenLike for IdentityHubScreen {
                                         &mut self.home_state,
                                         &mut self.profile_cache,
                                         &mut self.contacts_state,
+                                        &mut self.tokens_state,
                                     ),
                                     None => (AppAction::None, super::home::HomeOutcome::None),
                                 };
@@ -928,11 +929,20 @@ impl ScreenLike for IdentityHubScreen {
         // below replaces an action.
         if matches!(action, AppAction::None) {
             action = match rendered_tab {
-                Some(IdentityHubTab::Home) => super::home::load_action(
+                // Home's Tokens card has no balances until the arrival refresh
+                // registers the identity with the balance sync, so Home owes
+                // that refresh too, once its own loads are out — only when the
+                // identity tracks a token, as the card has nothing else to show.
+                Some(IdentityHubTab::Home) => match super::home::load_action(
                     &self.app_context,
                     &mut self.home_state,
                     &mut self.contacts_state,
-                ),
+                ) {
+                    AppAction::None if self.tokens_state.tracks_tokens() => {
+                        super::tokens_tab::load_action(&self.app_context, &mut self.tokens_state)
+                    }
+                    home_load => home_load,
+                },
                 Some(IdentityHubTab::Contacts) => super::contacts::tab_load_action(
                     &self.app_context,
                     &mut self.contacts_state,

@@ -10,13 +10,13 @@ use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipi
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
-    PlatformFeeEstimator, PlatformTransferRefusal, allocate_identity_top_up,
+    PlatformFeeEstimator, PlatformTransferMax, PlatformTransferRefusal, allocate_identity_top_up,
     allocate_platform_addresses, allocate_platform_addresses_with_fee, allocate_platform_transfer,
     core_send_fee_at_max_duffs, estimate_address_funding_fee_from_transition,
     estimate_core_l1_send_fee_duffs, estimate_platform_fee,
     estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
     identity_top_up_max, identity_topup_min_funding_duffs, max_platform_inputs,
-    max_spendable_credits, min_platform_input, platform_transfer_max,
+    max_spendable_credits, min_platform_input, platform_transfer_max, platform_withdrawal_max,
     shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -566,48 +566,31 @@ impl WalletSendScreen {
         self
     }
 
-    fn estimate_max_fee_for_platform_send(
+    /// The largest Platform send to a Core address (or before a destination
+    /// is chosen) the withdrawal planner accepts, with its fee: zero when no
+    /// address can keep the fee back.
+    fn platform_withdrawal_max(
         &self,
         fee_estimator: &PlatformFeeEstimator,
         addresses: &[(PlatformAddress, Address, u64)],
-        destination: Option<&PlatformAddress>,
-    ) -> u64 {
-        let mut sorted_addresses: Vec<_> = addresses
-            .iter()
-            .filter(|(addr, _, _)| destination != Some(addr))
-            .cloned()
-            .collect();
-        sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
-
-        let usable_count = sorted_addresses
-            .len()
-            .min(fee_estimator.max_platform_inputs());
-        if usable_count == 0 {
-            return estimate_platform_fee(fee_estimator, 1, 1);
-        }
-
-        let dest_kind = self.validated_destination.as_ref().map(|v| v.kind());
-        if dest_kind == Some(AddressKind::Core) {
-            let output_script = self
-                .validated_destination
-                .as_ref()
-                .and_then(|v| v.as_core())
-                .map(|addr| CoreScript::new(addr.script_pubkey()));
-            if let Some(output_script) = output_script {
-                let max_fee_inputs: BTreeMap<PlatformAddress, u64> = sorted_addresses
-                    .iter()
-                    .take(usable_count)
-                    .map(|(addr, _, _)| (*addr, 0))
-                    .collect();
-                return estimate_withdrawal_fee_from_transition(
-                    self.app_context.platform_version(),
-                    &max_fee_inputs,
-                    &output_script,
-                );
-            }
-        }
-
-        estimate_platform_fee(fee_estimator, usable_count, 1)
+    ) -> PlatformTransferMax {
+        let platform_version = self.app_context.platform_version();
+        let output_script = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_core())
+            .map(|address| CoreScript::new(address.script_pubkey()));
+        platform_withdrawal_max(
+            addresses,
+            fee_estimator.max_platform_inputs(),
+            fee_estimator.min_platform_input(),
+            |inputs| match &output_script {
+                Some(script) => {
+                    estimate_withdrawal_fee_from_transition(platform_version, inputs, script)
+                }
+                None => estimate_platform_fee(fee_estimator, inputs.len(), 1),
+            },
+        )
     }
 
     /// Clear the AddressInput widget so it picks up the new network on next frame.
@@ -1680,18 +1663,25 @@ impl WalletSendScreen {
                 .take(max_inputs)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee_inputs: BTreeMap<PlatformAddress, u64> = allocation
-                .sorted_addresses
-                .iter()
-                .take(addresses_available)
-                .map(|(addr, _, _)| (*addr, 0))
-                .collect();
-            let max_fee = estimate_withdrawal_fee_from_transition(
-                platform_version,
-                &max_fee_inputs,
-                &output_script,
+            let max = platform_withdrawal_max(
+                &addresses,
+                max_inputs,
+                min_platform_input(platform_version),
+                |inputs| {
+                    estimate_withdrawal_fee_from_transition(
+                        platform_version,
+                        inputs,
+                        &output_script,
+                    )
+                },
             );
-            let max_sendable = max_balance.saturating_sub(max_fee);
+            if max.amount == 0 {
+                let fee = format_credits_as_dash(max.estimated_fee);
+                return Err(format!(
+                    "None of your Platform addresses can keep back the network fee of approximately {fee}, so nothing can be withdrawn right now."
+                ));
+            }
+            let max_sendable = max.amount;
 
             return Err(format!(
                 "Requested withdrawal {} exceeds maximum {} for a single transaction.\n\n\
@@ -3309,48 +3299,35 @@ impl WalletSendScreen {
                 }
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
-                // Extract destination to exclude it from max calculation (can't send to yourself)
-                let destination = self
-                    .validated_destination
-                    .as_ref()
-                    .and_then(|v| v.as_platform().copied());
-
-                // Leave out the destination and addresses below Platform's
-                // input minimum; sort by balance descending.
-                let mut sorted_addresses: Vec<_> = addresses
-                    .iter()
-                    .filter(|(addr, _, balance)| {
-                        destination.as_ref() != Some(addr)
-                            && *balance >= fee_estimator.min_platform_input()
-                    })
-                    .cloned()
-                    .collect();
-                sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
-
-                // Sum balances from top addresses, limited by the protocol's
-                // input limit.
+                let max = self.platform_withdrawal_max(&fee_estimator, addresses);
                 let max_inputs = fee_estimator.max_platform_inputs();
-                let total: u64 = sorted_addresses
+                let sources = addresses
                     .iter()
-                    .take(max_inputs)
-                    .map(|(_, _, balance)| *balance)
-                    .sum();
-                let max_fee = self.estimate_max_fee_for_platform_send(
-                    &fee_estimator,
-                    &sorted_addresses,
-                    destination.as_ref(),
-                );
-
-                // Build hint explaining the limit
-                let fee = format_credits_as_dash(max_fee);
-                let hint = if sorted_addresses.len() > max_inputs {
-                    format!(
-                        "This transaction is limited to {max_inputs} input addresses, and fees of approximately {fee} are reserved from your balance."
+                    .filter(|(_, _, balance)| *balance >= fee_estimator.min_platform_input())
+                    .count();
+                let fee = format_credits_as_dash(max.estimated_fee);
+                if max.amount == 0 {
+                    (
+                        None,
+                        Some(format!(
+                            "None of your Platform addresses can keep back the network fee of approximately {fee}, so nothing can be withdrawn right now."
+                        )),
+                    )
+                } else if sources > max_inputs {
+                    (
+                        Some(max.amount),
+                        Some(format!(
+                            "This transaction is limited to {max_inputs} input addresses, and fees of approximately {fee} are reserved from your balance."
+                        )),
                     )
                 } else {
-                    format!("Fees of approximately {fee} are reserved from your balance.")
-                };
-                (Some(total.saturating_sub(max_fee)), Some(hint))
+                    (
+                        Some(max.amount),
+                        Some(format!(
+                            "Fees of approximately {fee} are reserved from your balance."
+                        )),
+                    )
+                }
             }
             Some(SourceSelection::Shielded(_, balance)) => (
                 Some(*balance),

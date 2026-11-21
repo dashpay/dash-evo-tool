@@ -1409,6 +1409,7 @@ fn transfer_sources(
 }
 
 /// The largest gross Platform transfer and its estimated fee.
+#[derive(Debug)]
 pub(crate) struct PlatformTransferMax {
     /// Credits sent from the inputs before the fee, or zero if none can pay it.
     pub amount: Credits,
@@ -1516,6 +1517,52 @@ pub(crate) fn platform_transfer_max(
         estimator,
         &transfer_sources(estimator, &sorted_sources(addresses, destination)),
     )
+}
+
+/// The largest Platform → Core withdrawal [`allocate_platform_addresses_with_fee`]
+/// can plan, and its fee. The highest-balance address pays the fee, so it
+/// keeps the fee back and still gives Platform's input minimum; a zero amount
+/// when it cannot.
+pub(crate) fn platform_withdrawal_max<F>(
+    addresses: &[(PlatformAddress, Address, u64)],
+    max_inputs: usize,
+    min_input: Credits,
+    fee_for_inputs: F,
+) -> PlatformTransferMax
+where
+    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
+{
+    let sources: Vec<_> = sorted_sources(addresses, None)
+        .into_iter()
+        .filter(|(_, _, balance)| *balance >= min_input)
+        .take(max_inputs)
+        .collect();
+    let payer_balance = sources.first().map_or(0, |(_, _, balance)| *balance);
+    let mut inputs = BTreeMap::new();
+    let mut total = 0u64;
+    let mut max: Option<PlatformTransferMax> = None;
+    for (address, _, balance) in &sources {
+        inputs.insert(*address, 0);
+        total = total.saturating_add(*balance);
+        let estimated_fee = fee_for_inputs(&inputs);
+        if payer_balance < estimated_fee.saturating_add(min_input) {
+            continue;
+        }
+        let amount = total - estimated_fee;
+        if max.as_ref().is_none_or(|max| amount > max.amount) {
+            max = Some(PlatformTransferMax {
+                amount,
+                estimated_fee,
+            });
+        }
+    }
+    max.unwrap_or_else(|| {
+        let payer = sources.iter().take(1).map(|(address, _, _)| (*address, 0));
+        PlatformTransferMax {
+            amount: 0,
+            estimated_fee: fee_for_inputs(&payer.collect()),
+        }
+    })
 }
 
 /// The identity top-up sources: the addresses that reach Platform's input
@@ -3134,6 +3181,42 @@ mod tests {
         );
         let over = allocate_identity_top_up(&estimator, addresses, max.amount + 1);
         assert!(over.shortfall > 0, "Max is the most: {over:?}");
+    }
+
+    /// The Platform withdrawal Max is a plan the withdrawal planner accepts,
+    /// and Max + 1 is not.
+    fn assert_withdrawal_max_is_sendable(balances: &[(u8, u64)], fee: u64) {
+        let addresses = addrs(balances);
+        let fee_for = |_: &BTreeMap<PlatformAddress, u64>| fee;
+        let max = platform_withdrawal_max(&addresses, 16, 100_000, fee_for);
+        let plan = allocate_platform_addresses_with_fee(
+            &addresses, max.amount, None, 16, 100_000, fee_for,
+        );
+        assert_eq!(plan.shortfall, 0, "Max is sendable: {max:?} {plan:?}");
+        let over = allocate_platform_addresses_with_fee(
+            &addresses,
+            max.amount + 1,
+            None,
+            16,
+            100_000,
+            fee_for,
+        );
+        assert!(over.shortfall > 0, "Max is the most: {over:?}");
+    }
+
+    #[test]
+    fn platform_withdrawal_max_is_sendable() {
+        assert_withdrawal_max_is_sendable(&[(1, 900_000_000), (2, 300_000_000)], 400_000_000);
+        assert_withdrawal_max_is_sendable(&[(1, 500_100_000)], 400_000_000);
+    }
+
+    /// No address can keep the fee back and still give the input minimum:
+    /// nothing can be withdrawn, so no Max is quoted.
+    #[test]
+    fn platform_withdrawal_max_is_zero_when_no_address_can_pay_the_fee() {
+        let addresses = addrs(&[(1, 300_000_000), (2, 300_000_000), (3, 300_000_000)]);
+        let max = platform_withdrawal_max(&addresses, 16, 100_000, |_| 400_000_000);
+        assert_eq!(max.amount, 0, "{max:?}");
     }
 
     /// The identity top-up fee is the from-addresses transition's own:

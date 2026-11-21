@@ -1384,6 +1384,18 @@ mod tests {
     const PINNED_CONTRACT_LABELS: [&str; 5] =
         ["user", "dpns", "dashpay", "token-history", "rich-user"];
 
+    /// Pinned system contracts whose revision at their protocol version has
+    /// moved since they were written: `(protocol, label, contract version,
+    /// document types)` as the provenance build wrote them (see the fixtures'
+    /// README). This build makes a newer revision for that protocol, so these
+    /// are checked against the record, not against [`stored_contracts_at`].
+    const PINNED_EARLIER_REVISIONS: [(u32, &str, u32, &[&str]); 1] = [(
+        15,
+        "dashpay",
+        2,
+        &["contactInfo", "contactRequest", "profile"],
+    )];
+
     fn pinned_contract_path(protocol_version: u32, label: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/context/testdata/stored_contracts")
@@ -1418,7 +1430,31 @@ mod tests {
                         })
                         .unwrap_or_else(|e| panic!("p{written_at}-{label} at {read_at}: {e:?}"));
                     assert_eq!(decoded.alias.as_deref(), Some("saved"));
-                    if read_at == written_at {
+                    let earlier_revision = PINNED_EARLIER_REVISIONS
+                        .iter()
+                        .find(|(at, name, ..)| *at == written_at && *name == label);
+                    if let Some((_, _, version, document_types)) = earlier_revision {
+                        assert_eq!(
+                            decoded.contract.id(),
+                            original.id(),
+                            "p{written_at}-{label} id"
+                        );
+                        assert_eq!(
+                            decoded.contract.version(),
+                            *version,
+                            "p{written_at}-{label} version"
+                        );
+                        assert_eq!(
+                            decoded
+                                .contract
+                                .document_types()
+                                .keys()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>(),
+                            *document_types,
+                            "p{written_at}-{label} document types"
+                        );
+                    } else if read_at == written_at {
                         assert_eq!(
                             decoded.contract, original,
                             "p{written_at}-{label} decodes to a different contract"

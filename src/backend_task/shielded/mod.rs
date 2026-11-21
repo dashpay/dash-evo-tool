@@ -316,6 +316,15 @@ impl AppContext {
         // Zero would still size a funding the network accepts under some
         // protocol versions, paying the fee to shield nothing asked for.
         validate_nonzero_amount(amount_duffs).map_err(|_| TaskError::ShieldedZeroAmount)?;
+        // The lock is broadcast before Platform can refuse the shield, and an
+        // older network's fee is not the one this build sizes it with.
+        if let Some(verified_version) = self
+            .protocol_version_info()
+            .verified_version
+            .filter(|version| *version < crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version)
+        {
+            return Err(TaskError::PlatformNetworkTooOld { verified_version });
+        }
         let (version_at_sizing, platform_version) = self.shield_from_core_protocol_version();
         let shield = self
             .fee_estimator()
@@ -676,6 +685,37 @@ mod tests {
         assert!(
             matches!(&result, Err(TaskError::ShieldedNotBound)),
             "got {result:?}"
+        );
+    }
+
+    /// A network proved older than the supported minimum is refused before
+    /// the Core asset lock is sized or broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_refuses_a_network_proved_below_the_minimum() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let old_version = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version - 1;
+        crate::context::test_support::prove_protocol_version(&ctx, old_version);
+        let transfer_started = std::sync::atomic::AtomicBool::new(false);
+
+        let result = ctx
+            .shield_from_core_with(WalletSeedHash::default(), 100_000, async |_funding| {
+                transfer_started.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::PlatformNetworkTooOld { verified_version })
+                    if *verified_version == old_version
+            ),
+            "got {result:?}"
+        );
+        assert!(
+            !transfer_started.load(std::sync::atomic::Ordering::SeqCst),
+            "an older network must not reach the asset lock"
         );
     }
 

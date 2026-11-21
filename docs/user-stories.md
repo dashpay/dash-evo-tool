@@ -1799,6 +1799,8 @@ As a user whose app fails to start, I want a window that explains what happened 
 - The window says in plain language what happened and what to try. A known cause (for example, a data folder other accounts can change) gets its own message; any other cause gets a general one.
 - It suggests reporting the problem on the project's issue page if the user cannot solve it, shows that address so it can be copied, and can open it in the browser.
 - It shows the technical details, selectable and with a Copy details button, and where the log file is.
+- It can ask an AI assistant for help: Ask ChatGPT opens ChatGPT with a prepared question about the problem, and Copy question copies the same question for any assistant. The question includes the message and technical details with the home folder, user name and anything that looks like a key removed (also recovery phrases and keys written as hex, byte lists or base64), and is sent only when the user chooses to. Ask ChatGPT sends it as soon as ChatGPT opens; Copy question lets the user read it first. The question tells the assistant never to ask for the recovery phrase, keys or passwords and never to suggest deleting the app data folder.
+- Copy details copies the technical details with the home folder shown as `~` and the user name removed.
 - Quit closes the app.
 
 ## Identities Hub (IDH)

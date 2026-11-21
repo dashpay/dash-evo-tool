@@ -216,6 +216,31 @@ fn copy_details_copies_technical_details() {
     assert!(copied.contains(dash_evo_tool::VERSION), "{copied}");
 }
 
+/// The copied details show the home folder as `~`, so a bug report does not
+/// carry the user's folder names.
+#[test]
+fn copy_details_hides_the_home_folder() {
+    let home = directories::UserDirs::new()
+        .expect("home folder")
+        .home_dir()
+        .display()
+        .to_string();
+    let error = std::io::Error::other(format!("cannot open {home}/.config/det-test"));
+    let failure = StartupFailure::from_error(&error, None);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            StartupErrorDialog::new(&failure).show(ui);
+        });
+    harness.run();
+    harness.get_by_label("Copy details").click();
+    harness.step();
+
+    let copied = copied_text(&harness).expect("details copied");
+    assert!(copied.contains("~/.config/det-test"), "{copied}");
+    assert!(!copied.contains(&home), "{copied}");
+}
+
 /// In a small window the dialog stays inside it: Quit is visible without
 /// scrolling, and Copy details can be scrolled into view and clicked.
 #[test]
@@ -245,6 +270,15 @@ fn small_window_keeps_both_actions_reachable() {
     copy.click();
     harness.step();
     assert!(copied_text(&harness).is_some(), "details copied");
+
+    for label in ["Copy question", "Ask ChatGPT"] {
+        let button = harness.get_by_label(label);
+        assert!(
+            screen.contains_rect(button.rect()),
+            "{label} at {:?}",
+            button.rect()
+        );
+    }
 
     let quit_button = harness.get_by_label("Quit");
     assert!(
@@ -276,4 +310,45 @@ fn quit_button_requests_quit() {
     harness.run();
 
     assert!(quit.get());
+}
+
+fn open_url(harness: &Harness<'_, impl Sized>) -> Option<String> {
+    harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+            _ => None,
+        })
+}
+
+/// Copy question puts the same redacted question on the clipboard that Ask
+/// ChatGPT sends, and Ask ChatGPT opens it prefilled in the browser.
+#[test]
+fn ask_ai_buttons_copy_and_open_the_question() {
+    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let message = failure.report().message().to_owned();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            StartupErrorDialog::new(&failure).show(ui);
+        });
+    harness.run();
+
+    harness.get_by_label("Copy question").click();
+    harness.step();
+    let question = copied_text(&harness).expect("question copied");
+    assert!(question.contains(&message), "{question}");
+    assert!(question.contains("WalletDataFolderInsecure"), "{question}");
+
+    harness.run();
+    harness.get_by_label("Ask ChatGPT").click();
+    harness.step();
+    let url = open_url(&harness).expect("assistant opened");
+    let encoded = url
+        .strip_prefix("https://chatgpt.com/?q=")
+        .expect("ChatGPT URL");
+    assert_eq!(urlencoding::decode(encoded).unwrap(), question);
 }

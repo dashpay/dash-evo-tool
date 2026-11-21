@@ -1302,6 +1302,28 @@ impl WalletBackend {
         .expect("track the funding transaction");
     }
 
+    /// Give `address` on the registered wallet's Platform-payment account 0
+    /// a balance of `credits`, as if a sync pass had found it.
+    #[cfg(test)]
+    pub(crate) async fn set_platform_address_balance_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: dash_sdk::dpp::key_wallet::PlatformP2PKHAddress,
+        credits: u64,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        let wallet_id = wallet.wallet_id();
+        let mut manager = wallet.wallet_manager().write().await;
+        manager
+            .get_wallet_info_mut(&wallet_id)
+            .and_then(|info| {
+                info.core_wallet
+                    .first_platform_payment_managed_account_mut()
+            })
+            .expect("platform-payment account 0")
+            .set_address_credit_balance(address, credits, None);
+    }
+
     #[cfg(test)]
     pub(crate) fn registration_attempt_count(&self) -> usize {
         self.inner

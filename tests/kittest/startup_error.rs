@@ -99,8 +99,8 @@ fn unwritable_env_file_renders_startup_error_dialog() {
             failure
                 .report()
                 .message()
-                .starts_with("Dash Evo Tool could not create its settings file"),
-            "the dialog must name the failed step: {}",
+                .starts_with("Dash Evo Tool could not prepare its data at "),
+            "the dialog must give the production advice: {}",
             failure.report().message()
         );
         assert!(

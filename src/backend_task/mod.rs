@@ -1849,7 +1849,10 @@ impl AppContext {
                 user_role,
             )
         })
-        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        .map_err(|source| TaskError::NetworkContextCreationFailed {
+            network,
+            source: Box::new(source),
+        })?;
         // Never shown: shutdown drains task results without displaying them.
         if cancellation_token.is_cancelled() {
             return Err(TaskError::TaskManagerShuttingDown);

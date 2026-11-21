@@ -23,7 +23,8 @@ fn main() -> ExitCode {
     // below, where the logger's `Once` guard makes the repeat a no-op. A
     // failure here is shown in the startup failure window and named on the
     // terminal; the I/O error carries no secrets.
-    let environment = prepare_environment();
+    let environment = prepare_environment()
+        .map_err(crate::backend_task::error::TaskError::from_prepare_environment_error);
     // Redirect stderr into det.log so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio

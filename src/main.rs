@@ -8,7 +8,7 @@ use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
 use crate::logging::{
     capture_stderr_to_file, install_alt_signal_stack, install_fatal_signal_handler,
-    install_panic_hook, report_startup_failure_to_terminal,
+    install_panic_hook, report_startup_failure,
 };
 
 fn main() -> ExitCode {
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         Ok(runtime) => runtime,
         Err(error) => {
             tracing::error!(?error, "Could not start the async runtime");
-            report_startup_failure_to_terminal(&[&error]);
+            report_startup_failure(&[&error]);
             return ExitCode::FAILURE;
         }
     };
@@ -74,7 +74,7 @@ fn main() -> ExitCode {
         if let Err(error) = &result {
             causes.push(error);
         }
-        report_startup_failure_to_terminal(&causes);
+        report_startup_failure(&causes);
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

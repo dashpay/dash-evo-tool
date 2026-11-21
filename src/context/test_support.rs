@@ -145,7 +145,19 @@ pub(crate) fn hold_as_wallet_reference(
 /// [`test_app_context`] with its wallet backend wired, so identities can be
 /// stored and read back the way screens read them.
 pub(crate) async fn wired_test_app_context(dir: &Path) -> Arc<AppContext> {
+    wire_wallet_backend(test_app_context(dir)).await
+}
+
+/// [`wired_test_app_context`] on a mock SDK, installed before the wallet
+/// backend is wired so the backend's own SDK handle is the mock too and
+/// nothing reaches a network.
+pub(crate) async fn wired_mock_sdk_test_app_context(dir: &Path) -> Arc<AppContext> {
     let context = test_app_context(dir);
+    context.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+    wire_wallet_backend(context).await
+}
+
+async fn wire_wallet_backend(context: Arc<AppContext>) -> Arc<AppContext> {
     let (tx, _rx) = tokio::sync::mpsc::channel(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
     context

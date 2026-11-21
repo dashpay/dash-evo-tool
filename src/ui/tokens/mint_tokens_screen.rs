@@ -161,7 +161,7 @@ impl TokenAction for MintAction {
                 recipient = recipient.to_string(Encoding::Base58)
             ),
             Some(MintRecipient::ContractDestination(recipient)) => format!(
-                "Are you sure you want to mint {amount} tokens to this token's destination identity {recipient}?",
+                "Are you sure you want to mint {amount} tokens to the identity Platform uses as this token's destination, last known as {recipient}?",
                 recipient = recipient.to_string(Encoding::Base58)
             ),
             Some(MintRecipient::Missing) => format!(
@@ -415,11 +415,16 @@ pub(crate) mod tests {
             action.inputs_ready(),
             "the optional recipient may stay empty"
         );
-        assert!(
-            action
-                .confirm_message(&ctx)
-                .ends_with(&format!("{}?", Identifier::from([5; 32]))),
-            "the confirmation names the configured destination"
+        // The transition names no recipient: Platform applies the token's
+        // destination itself, which may have changed since it was read here.
+        assert_eq!(
+            action.confirm_message(&ctx),
+            format!(
+                "Are you sure you want to mint {amount} tokens to the identity Platform uses as this token's destination, last known as {destination}?",
+                amount = Amount::from_token(&info, 5),
+                destination = Identifier::from([5; 32]),
+            ),
+            "the confirmation names the configured destination as last known"
         );
         match action.build_action(&ctx, signing_key(), None, None) {
             Some(AppAction::BackendTask(BackendTask::TokenTask(task))) => match *task {

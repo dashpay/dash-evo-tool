@@ -462,7 +462,9 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // After the action's own outcome, a later error (its balance refresh) changes nothing.
         if self.common.request.is_none()
+            && self.common.status != TokenActionStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
             self.common.refresh_banner.take_and_clear();
@@ -720,5 +722,27 @@ mod tests {
             sent_request(&screen.submit()).is_some(),
             "a failed action can be sent again"
         );
+    }
+
+    /// The action and its balance refresh are sent together; the refresh
+    /// failing after the action succeeded must not bring the form back.
+    #[test]
+    fn a_completed_action_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut screen = TokenActionScreen::<MintAction>::new(info.clone(), &context);
+        screen.common.selected_key = Some(signing_key());
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+        screen.submit();
+        screen.display_task_result(BackendTaskSuccessResult::MintedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.common.status == TokenActionStatus::Complete);
     }
 }

@@ -421,7 +421,9 @@ impl ScreenLike for ClaimTokensScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // After the claim's own outcome, a later error (its balance refresh) changes nothing.
         if self.claim_request.is_none()
+            && self.status != ClaimTokensStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
             self.refresh_banner.take_and_clear();
@@ -1104,5 +1106,22 @@ mod tests {
             pair,
         ));
         assert_eq!(screen.once_per_identity_claimed_at, None);
+    }
+
+    /// A failed balance refresh after the claim went through must not bring
+    /// the claim form back.
+    #[test]
+    fn a_completed_claim_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.display_task_result(BackendTaskSuccessResult::ClaimedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        let refresh = unrelated_request(screen.app_context.network);
+        report_error(&mut screen, &refresh);
+        assert!(screen.status == ClaimTokensStatus::Complete);
     }
 }

@@ -411,7 +411,9 @@ impl ScreenLike for PurchaseTokenScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // After the purchase's own outcome, a later error (its balance refresh) changes nothing.
         if self.purchase_request.is_none()
+            && self.status != PurchaseTokensStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
             self.refresh_banner.take_and_clear();
@@ -967,5 +969,24 @@ mod tests {
             10 * user_price_credits_0,
             "Should be 0.5 DASH total"
         );
+    }
+
+    /// A failed balance refresh after the purchase went through must not
+    /// bring the purchase form back.
+    #[test]
+    fn a_completed_purchase_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut screen = PurchaseTokenScreen::new(info, &context);
+        screen.display_task_result(BackendTaskSuccessResult::PurchasedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.status == PurchaseTokensStatus::Complete);
     }
 }

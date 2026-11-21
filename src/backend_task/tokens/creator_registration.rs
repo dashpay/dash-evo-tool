@@ -150,9 +150,7 @@ impl AppContext {
         )
         .map_err(|error| match error {
             dash_sdk::Error::Protocol(source) => TaskError::InvalidTokenDraft {
-                source: Box::new(crate::model::token_creator::DraftError::protocol(
-                    crate::model::token_creator::Section::Documents,
-                    "Document types",
+                source: Box::new(crate::model::token_creator::DraftError::private_documents(
                     source,
                 )),
             },
@@ -397,14 +395,22 @@ impl AppContext {
     /// Saves the accepted contract and its token only where nothing is cached yet: a later
     /// configuration update may have replaced the creation-time settings.
     fn creator_cache_receipt(&self, accepted: &DataContract, alias: &str) -> Result<(), TaskError> {
-        let cached = self
-            .get_contract_by_id(&accepted.id())?
-            .map(|cached| cached.contract);
+        let cached = match self.get_contract_by_id(&accepted.id()) {
+            Ok(cached) => cached.map(|cached| cached.contract),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "Cached token contract is unreadable; filling missing tokens from the accepted contract"
+                );
+                None
+            }
+        };
         let contract = cached.as_ref().unwrap_or(accepted);
         let mut missing = Vec::new();
         for position in contract.tokens().keys().copied() {
+            // An existing entry is kept even if this build cannot read it.
             if let Some(token_id) = contract.token_id(position)
-                && self.get_token_config_for_id(&token_id)?.is_none()
+                && !self.has_token_entry(&token_id)?
             {
                 missing.push(position);
             }
@@ -415,6 +421,25 @@ impl AppContext {
             Some(alias),
             crate::model::qualified_contract::InsertTokensToo::SomeTokensShouldBeAdded(missing),
         )
+    }
+
+    /// Saves the receipt of a creation Platform confirmed, from the proven record alone: a
+    /// network read could return a later version of the contract and look like a conflict.
+    pub(super) fn save_confirmed_token_creation(
+        &self,
+        proven: RegistrationRecord,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let journal = self.token_registration_journal()?;
+        let current = journal.read()?.ok_or(TaskError::TokenCreatorChanged)?;
+        if proven.status != RegistrationStatus::Confirmed
+            || proven.network != self.network
+            || current.attempt_id != proven.attempt_id
+            || current.contract_bytes != proven.contract_bytes
+        {
+            return Err(TaskError::TokenCreatorChanged);
+        }
+        let accepted = proven.contract().map_err(protocol)?;
+        self.creator_accept(&journal, current, accepted)
     }
 
     pub(super) async fn check_token_creation(
@@ -812,35 +837,61 @@ mod tests {
 
     /// The SDK's PutContract preflight refuses private document types whose
     /// entries cannot hold their largest payload; the creator builds the
-    /// transition itself, so its review must run the same check.
+    /// transition itself, so its review must run the same check and name the
+    /// type and the size it needs.
     #[tokio::test(flavor = "multi_thread")]
     async fn token_creator_refuses_private_documents_whose_entries_cannot_hold_them() {
+        use crate::model::token_creator::{DraftIssue, Section};
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         use dash_sdk::query_types::IdentityNonceFetcher;
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let owner = owner_holding(&context, 43, |_| {});
         let owner_id = owner.identity.id();
-        let mut sdk = mock_sdk();
-        sdk.mock()
-            .expect_fetch::<Identity, _>(owner_id, Some(owner.identity.clone()))
-            .await
-            .unwrap();
-        sdk.mock()
-            .expect_fetch::<IdentityNonceFetcher, _>(owner_id, Some(IdentityNonceFetcher(6)))
-            .await
-            .unwrap();
-        // The SDK's own example: the largest payload needs 376-byte entries.
-        let mut draft = TokenDraft::example(false);
-        draft.documents = r#"{"request":{"type":"object","private":{"entrySize":375},"documentsMutable":false,"canBeDeleted":false,"properties":{"reference":{"type":"integer","position":0},"key":{"type":"array","byteArray":true,"minItems":69,"maxItems":69,"position":1}},"required":["reference","key"],"additionalProperties":false}}"#.into();
-        let key = owner.identity.get_public_key_by_id(1).unwrap().clone();
-        let result = context
-            .prepare_token_creation(&sdk, draft, owner_id, key)
-            .await;
+        let prepare = |entry_size: u32| {
+            let context = context.clone();
+            let owner = owner.clone();
+            async move {
+                let mut sdk = mock_sdk();
+                sdk.mock()
+                    .expect_fetch::<Identity, _>(owner_id, Some(owner.identity.clone()))
+                    .await
+                    .unwrap();
+                sdk.mock()
+                    .expect_fetch::<IdentityNonceFetcher, _>(
+                        owner_id,
+                        Some(IdentityNonceFetcher(6)),
+                    )
+                    .await
+                    .unwrap();
+                // The SDK's own example: the largest payload needs 376-byte entries.
+                let mut draft = TokenDraft::example(false);
+                draft.documents = r#"{"request":{"type":"object","private":{"entrySize":ENTRY},"documentsMutable":false,"canBeDeleted":false,"properties":{"reference":{"type":"integer","position":0},"key":{"type":"array","byteArray":true,"minItems":69,"maxItems":69,"position":1}},"required":["reference","key"],"additionalProperties":false}}"#
+                    .replace("ENTRY", &entry_size.to_string());
+                let key = owner.identity.get_public_key_by_id(1).unwrap().clone();
+                context
+                    .prepare_token_creation(&sdk, draft, owner_id, key)
+                    .await
+            }
+        };
+        let refused = prepare(375).await;
         assert!(
-            matches!(&result, Err(TaskError::InvalidTokenDraft { source })
-                if source.section == crate::model::token_creator::Section::Documents),
-            "{result:?}"
+            matches!(&refused, Err(TaskError::InvalidTokenDraft { source })
+                if source.section == Section::Documents
+                    && matches!(&source.issue, DraftIssue::PrivateEntrySize {
+                        document_type,
+                        minimum: 376,
+                        ..
+                    } if document_type == "request")),
+            "{refused:?}"
+        );
+        let accepted = prepare(376).await;
+        assert!(
+            matches!(
+                accepted,
+                Ok(BackendTaskSuccessResult::TokenCreationPrepared(_))
+            ),
+            "{accepted:?}"
         );
     }
 
@@ -878,14 +929,97 @@ mod tests {
             "the later update's settings stay"
         );
 
+        // The cached contract is newer than the accepted one.
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+        let mut newer = contract.clone();
+        let mut newer_config = contract.expected_token_configuration(0).unwrap().clone();
+        newer_config.set_max_supply(Some(456));
+        newer.add_token(0, newer_config.clone());
+        context.replace_contract(contract.id(), &newer).unwrap();
         context.remove_token(&token_id).unwrap();
         context
             .creator_accept(&journal, record, contract.clone())
             .unwrap();
         assert_eq!(
             context.get_token_config_for_id(&token_id).unwrap(),
-            Some(contract.expected_token_configuration(0).unwrap().clone()),
+            Some(newer_config),
             "a missing entry is filled from the cached contract"
         );
+    }
+
+    /// A cache entry this build cannot read never blocks the restore: it is
+    /// kept as it is, and missing entries are still filled.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_registration_restore_fills_missing_entries_past_unreadable_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (mut record, contract) = fixture(&context);
+        record.status = RegistrationStatus::Confirmed;
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&record).unwrap();
+        let token_id = contract.token_id(0).unwrap();
+
+        context.put_unreadable_token_entry_for_test(&token_id, &contract.id());
+        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
+            context.creator_accept(&journal, record.clone(), contract.clone())
+        else {
+            panic!("the restore is accepted");
+        };
+        assert!(outcome.local_cache_saved);
+        assert!(
+            context.get_token_config_for_id(&token_id).is_err(),
+            "the unreadable entry is left as it was"
+        );
+
+        context.remove_token(&token_id).unwrap();
+        context.put_unreadable_contract_entry_for_test(&contract.id());
+        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
+            context.creator_accept(&journal, record, contract.clone())
+        else {
+            panic!("the restore is accepted");
+        };
+        assert!(outcome.local_cache_saved);
+        assert_eq!(
+            context.get_token_config_for_id(&token_id).unwrap(),
+            Some(contract.expected_token_configuration(0).unwrap().clone()),
+            "the missing token is filled from the accepted contract"
+        );
+    }
+
+    /// After Platform confirmed a creation whose receipt was not saved, the
+    /// retry saves the proven record without reading the network, so a later
+    /// configuration update can never turn it into a conflict.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_confirmed_receipt_is_saved_from_the_proven_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (mut record, _) = fixture(&context);
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&record).unwrap();
+        record.status = RegistrationStatus::Submitted;
+        journal.update(&record).unwrap();
+        drop(journal);
+        let status = || {
+            let journal = context.token_registration_journal().unwrap();
+            journal.read().unwrap().unwrap().status
+        };
+        let mut proven = record.clone();
+        proven.status = RegistrationStatus::Confirmed;
+
+        let mut other = proven.clone();
+        other.attempt_id = [99; 32];
+        assert!(matches!(
+            context.save_confirmed_token_creation(other),
+            Err(TaskError::TokenCreatorChanged)
+        ));
+        assert_eq!(status(), RegistrationStatus::Submitted);
+
+        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
+            context.save_confirmed_token_creation(proven)
+        else {
+            panic!("the proven receipt is saved");
+        };
+        assert!(outcome.journal_saved && outcome.local_cache_saved);
+        assert_eq!(status(), RegistrationStatus::Confirmed);
     }
 }

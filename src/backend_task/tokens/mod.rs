@@ -83,6 +83,11 @@ pub enum TokenTask {
         json: String,
         replace: bool,
     },
+    /// Save the receipt of a creation Platform already confirmed, from that
+    /// proven record and without reading the network.
+    SaveConfirmedTokenCreation {
+        record: Box<crate::model::token_creator::registration::RegistrationRecord>,
+    },
 
     RegisterTokenContract {
         identity: QualifiedIdentity,
@@ -289,6 +294,9 @@ impl AppContext {
                 json,
                 replace,
             } => json_export::save(self.data_dir().to_owned(), path, json, replace).await,
+            TokenTask::SaveConfirmedTokenCreation { record } => {
+                self.save_confirmed_token_creation(*record)
+            }
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,

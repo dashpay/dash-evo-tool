@@ -372,6 +372,7 @@ impl BackendTask {
                 | TokenTask::CheckTokenCreation
                 | TokenTask::ChooseTokenContractJsonPath(_)
                 | TokenTask::SaveTokenContractJson { .. }
+                | TokenTask::SaveConfirmedTokenCreation { .. }
                 | TokenTask::QueryMyTokenBalances
                 | TokenTask::QueryIdentityTokenBalance(_)
                 | TokenTask::StopTrackingTokenBalance(_)

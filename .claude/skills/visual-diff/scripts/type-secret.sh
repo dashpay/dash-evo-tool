@@ -7,6 +7,8 @@
 # The value goes from the env file to xdotool's stdin, one character at a
 # time: never echoed, never an argument, never written to a file.
 set -euo pipefail
+# An inherited xtrace (SHELLOPTS, BASH_ENV) would print the value.
+{ set +x; } 2>/dev/null
 ENV_FILE=""
 if [ "${1:-}" = "--env-file" ]; then
   ENV_FILE="${2:?--env-file needs a path}"

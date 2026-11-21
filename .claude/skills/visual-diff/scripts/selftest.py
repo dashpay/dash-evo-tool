@@ -326,7 +326,7 @@ class TypeSecret(unittest.TestCase):
             f.write(text)
         os.chmod(path, 0o700)
 
-    def type_secret(self, focus_pid, *args, env_file="test.env", switch_at=""):
+    def type_secret(self, focus_pid, *args, env_file="test.env", switch_at="", extra_env=None):
         with open(os.path.join(self.dir, env_file), "w") as f:
             f.write(f"E2E_WALLET_MNEMONIC={self.VALUE}\n")
         r = subprocess.run(
@@ -338,10 +338,12 @@ class TypeSecret(unittest.TestCase):
                 "STATE": self.dir,
                 "FOCUS_PID": focus_pid,
                 "SWITCH_AT": str(switch_at),
+                **(extra_env or {}),
             },
             capture_output=True,
             text=True,
         )
+        self.output = r.stdout + r.stderr
         typed = os.path.join(self.dir, "typed")
         if not os.path.exists(typed):
             return r.returncode, ""
@@ -366,6 +368,15 @@ class TypeSecret(unittest.TestCase):
 
     def test_an_option_shaped_env_file_is_read_as_a_file(self):
         self.assertEqual(self.type_secret(str(self.gui.pid), env_file="--version"), (0, self.VALUE))
+
+    def test_an_inherited_trace_never_prints_the_value(self):
+        bash_env = os.path.join(self.dir, "trace.sh")
+        self.write(bash_env, "set -x\n")
+        for extra_env in [{"SHELLOPTS": "xtrace"}, {"BASH_ENV": bash_env}]:
+            code, typed = self.type_secret(str(self.gui.pid), extra_env=extra_env)
+            os.unlink(os.path.join(self.dir, "typed"))
+            self.assertEqual((code, typed), (0, self.VALUE), extra_env)
+            self.assertNotIn("bravo", self.output, extra_env)
 
 
 if __name__ == "__main__":

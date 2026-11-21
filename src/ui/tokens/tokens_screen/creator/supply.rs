@@ -188,12 +188,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
 }
 
 pub(super) fn cap_notice(ui: &mut Ui, draft: &crate::model::token_creator::TokenDraft) {
-    let permanent = !draft.no_maximum
-        && draft.maximum.parse(draft.decimals).is_ok()
-        && draft.permissions.get(RuleKind::Cap).is_fixed();
     inline_notice(
         ui,
-        if permanent {
+        if cap_is_permanent(draft) {
             MessageType::Info
         } else {
             MessageType::Warning
@@ -209,7 +206,7 @@ pub(super) fn cap_consequence(draft: &crate::model::token_creator::TokenDraft) -
         "No numerical supply cap is configured."
     } else if draft.maximum.parse(draft.decimals).is_err() {
         "Enter a valid maximum and inspect who can change it."
-    } else if draft.permissions.get(RuleKind::Cap).is_fixed() {
+    } else if cap_is_permanent(draft) {
         "The maximum is a permanent hard cap: no one can change it or change that rule."
     } else {
         "A permanent hard cap has not been established. Inspect the maximum-supply authorities and allowances."
@@ -358,6 +355,52 @@ pub(super) fn recipient(
                     ui.colored_label(ui.visuals().error_fg_color, error.to_string());
                 }
             }
+        }
+    }
+}
+
+/// Whether the draft sets a valid maximum that nobody can ever change.
+fn cap_is_permanent(draft: &crate::model::token_creator::TokenDraft) -> bool {
+    !draft.no_maximum
+        && draft.maximum.parse(draft.decimals).is_ok()
+        && draft.permissions.get(RuleKind::Cap).is_fixed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::token_creator::{TokenDraft, amount::TokenAmountInput, rules::RuleBundle};
+
+    /// The cap notice is rated as permanent exactly when its text says so.
+    #[test]
+    fn cap_notice_severity_matches_its_text() {
+        let mut fixed = TokenDraft::default();
+        fixed.maximum = TokenAmountInput::tokens("1000");
+        fixed.permissions = RuleBundle::default();
+        fixed
+            .permissions
+            .get_mut(RuleKind::Cap)
+            .allow_disable_action = true;
+        let mut administered = fixed.clone();
+        administered
+            .permissions
+            .get_mut(RuleKind::Cap)
+            .administrator = ActorDraft::Owner;
+        let mut unlimited = fixed.clone();
+        unlimited.no_maximum = true;
+        let mut invalid = fixed.clone();
+        invalid.maximum = TokenAmountInput::tokens("not a number");
+        for (draft, permanent) in [
+            (fixed, true),
+            (administered, false),
+            (unlimited, false),
+            (invalid, false),
+        ] {
+            assert_eq!(cap_is_permanent(&draft), permanent);
+            assert_eq!(
+                cap_consequence(&draft).starts_with("The maximum is a permanent hard cap"),
+                permanent
+            );
         }
     }
 }

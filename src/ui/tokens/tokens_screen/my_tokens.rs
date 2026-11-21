@@ -167,6 +167,14 @@ impl TokensScreen {
     }
 
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
+        // A wallet that finishes loading sends no cache notice.
+        for (identity_id, availability) in &mut self.token_action_availability {
+            crate::ui::tokens::recheck_token_action_availability(
+                &self.app_context,
+                identity_id,
+                availability,
+            );
+        }
         let mut action = AppAction::None;
         if self.all_known_tokens.is_empty() {
             // If no tokens, show a "no tokens found" message
@@ -1264,6 +1272,54 @@ mod tests {
         assert!(
             matches!(&actions[0], AppAction::BackendTask(BackendTask::TokenTask(task))
             if matches!(task.as_ref(), TokenTask::QueryTokenPricing(id) if *id == expected))
+        );
+    }
+
+    /// An identity waiting for its wallet gets its token actions back on the
+    /// next frame once the wallet has loaded; registration sends no cache
+    /// notice, so My Tokens re-checks waiting entries as it draws.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn my_tokens_offers_token_actions_once_the_wallet_loads() {
+        use crate::model::token::TokenActionAvailability;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let seed_hash =
+            crate::model::wallet::Wallet::new_from_seed(seed, context.network, None, None)
+                .expect("build wallet")
+                .seed_hash();
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([0x63; 32]),
+            context.network,
+        );
+        context
+            .insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let id = identity.identity.id();
+        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        assert_eq!(
+            screen.token_action_availability.get(&id),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
+
+        context
+            .wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut TokensScreen| {
+                screen.render_my_tokens_subscreen(ui);
+            },
+            screen,
+        );
+        harness.run();
+
+        assert_eq!(
+            harness.state().token_action_availability.get(&id),
+            Some(&TokenActionAvailability::Available)
         );
     }
 

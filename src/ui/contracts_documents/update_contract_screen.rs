@@ -4,6 +4,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::KeyRequirements;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -16,21 +17,19 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 #[derive(PartialEq)]
@@ -83,12 +82,6 @@ impl UpdateDataContractScreen {
             })
             .or_else(|| qualified_identities.first().cloned());
 
-        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
-        } else {
-            None
-        };
-
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
         let contracts = app_context.get_contracts().unwrap_or_else(|error| {
             MessageBanner::set_global(
@@ -109,15 +102,17 @@ impl UpdateDataContractScreen {
 
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
             identity
-                .identity
-                .get_first_public_key_matching(
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+                    &[SecurityLevel::CRITICAL],
+                    app_context.contract_signing_scope(),
+                ))
                 .cloned()
         });
+
+        let selected_wallet = selected_qualified_identity
+            .as_ref()
+            .and_then(|identity| wallet_for_signing_key(identity, selected_key.as_ref()));
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
@@ -186,19 +181,21 @@ impl UpdateDataContractScreen {
         }
     }
 
-    fn ui_input_field(&mut self, ui: &mut egui::Ui) {
+    fn ui_input_field(&mut self, ui: &mut egui::Ui, label_id: egui::Id) {
         ScrollArea::vertical()
             .max_height(ui.available_height() - 100.0)
             .show(ui, |ui| {
                 let dark_mode = ui.style().visuals.dark_mode;
-                let response = ui.add(
-                    TextEdit::multiline(&mut self.contract_json_input)
-                        .desired_rows(6)
-                        .desired_width(ui.available_width())
-                        .text_color(DashColors::text_primary(dark_mode))
-                        .background_color(DashColors::input_background(dark_mode))
-                        .code_editor(),
-                );
+                let response = ui
+                    .add(
+                        TextEdit::multiline(&mut self.contract_json_input)
+                            .desired_rows(6)
+                            .desired_width(ui.available_width())
+                            .text_color(DashColors::text_primary(dark_mode))
+                            .background_color(DashColors::input_background(dark_mode))
+                            .code_editor(),
+                    )
+                    .labelled_by(label_id);
                 if response.changed() {
                     self.parse_contract();
                 }
@@ -279,10 +276,16 @@ impl UpdateDataContractScreen {
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
-                if ComponentStyles::add_primary_button(ui, "Update Contract").clicked() {
-                    // The button is only reachable once an identity and key are
-                    // selected; guard rather than unwrap so a missing selection
-                    // degrades to an actionable banner instead of a panic.
+                let can_sign = self.selected_qualified_identity.is_some()
+                    && self.selected_key.is_some()
+                    && self
+                        .selected_wallet
+                        .as_ref()
+                        .is_none_or(|wallet| !wallet_needs_unlock(wallet));
+                if ComponentStyles::add_primary_button_enabled(ui, can_sign, "Update Contract")
+                    .clicked()
+                {
+                    // Recheck the selection before dispatching the paid operation.
                     if let (Some(qualified_identity), Some(key)) = (
                         self.selected_qualified_identity.clone(),
                         self.selected_key.clone(),
@@ -405,6 +408,18 @@ impl ScreenLike for UpdateDataContractScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        if crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_qualified_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::CRITICAL],
+        ) {
+            self.selected_wallet = self
+                .selected_qualified_identity
+                .as_ref()
+                .and_then(|identity| wallet_for_signing_key(identity, self.selected_key.as_ref()));
+            self.wallet_open_attempted = false;
+        }
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = add_top_panel(
@@ -445,28 +460,6 @@ impl ScreenLike for UpdateDataContractScreen {
                     egui::Color32::DARK_RED,
                     "No identities loaded. Please load an identity first.",
                 );
-                return AppAction::None;
-            }
-
-            // Check if any identity has suitable private keys for contract updates
-            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
-                qi.private_keys
-                    .identity_public_keys()
-                    .iter()
-                    .any(|key_ref| {
-                        let key = &key_ref.1.identity_public_key;
-                        // Contract updates require Authentication keys with Critical security level
-                        key.purpose() == Purpose::AUTHENTICATION
-                            && key.security_level() == SecurityLevel::CRITICAL
-                    })
-            });
-
-            if !has_suitable_keys {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
-                    "No identities with critical authentication private keys loaded. Contract updates require critical security level keys.",
-                );
-                return AppAction::None;
             }
 
             // Select the identity to update the contract for
@@ -493,20 +486,15 @@ impl ScreenLike for UpdateDataContractScreen {
                 if let Some(identity) = &self.selected_qualified_identity {
                     // Auto-select a suitable key for contract updates
                     self.selected_key = identity
-                        .identity
-                        .get_first_public_key_matching(
+                        .signing_key_now(KeyRequirements::new(
                             Purpose::AUTHENTICATION,
-                            HashSet::from([SecurityLevel::CRITICAL]),
-                            KeyType::all_key_types().into(),
-                            false,
-                        )
+                            &[SecurityLevel::CRITICAL],
+                            self.app_context.contract_signing_scope(),
+                        ))
                         .cloned();
 
-                    // Update wallet
                     self.selected_wallet =
-                        get_selected_wallet(identity, Some(&self.app_context), None)
-                            .or_show_error(self.app_context.egui_ctx())
-                            .unwrap_or(None);
+                        wallet_for_signing_key(identity, self.selected_key.as_ref());
                     self.wallet_open_attempted = false;
 
                     // Re-parse contract with new owner ID
@@ -528,10 +516,17 @@ impl ScreenLike for UpdateDataContractScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::UpdateContract,
+                        self.app_context.contract_signing_scope(),
                     );
                 }
             }
 
+            crate::ui::identity::sync_signing_wallet(
+                self.selected_qualified_identity.as_ref(),
+                self.selected_key.as_ref(),
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            );
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!(
@@ -540,8 +535,16 @@ impl ScreenLike for UpdateDataContractScreen {
                 ));
             }
 
-            if self.selected_key.is_none() {
-                return AppAction::None;
+            if self.selected_key.is_none() && self.selected_qualified_identity.is_some() {
+                let dark_mode = ui.style().visuals.dark_mode;
+                ui.label(
+                    RichText::new(crate::ui::helpers::contract_signing_key_notice(
+                        &self.app_context,
+                        self.selected_qualified_identity.as_ref(),
+                        &[SecurityLevel::CRITICAL],
+                    ))
+                    .color(DashColors::warning_color(dark_mode)),
+                );
             }
 
             ui.add_space(10.0);
@@ -565,7 +568,6 @@ impl ScreenLike for UpdateDataContractScreen {
                     if ui.button("Unlock Wallet").clicked() {
                         self.wallet_unlock_popup.open();
                     }
-                    return AppAction::None;
                 }
             }
 
@@ -573,7 +575,7 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.heading("2. Select contract to update");
             ui.add_space(5.0);
             ui.horizontal(|ui| {
-                ui.label("Contract:");
+                let contract_label = ui.label("Contract:");
                 egui::ComboBox::from_id_salt("contract_selector")
                     .selected_text(
                         self.selected_contract
@@ -612,7 +614,9 @@ impl ScreenLike for UpdateDataContractScreen {
                                 };
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(contract_label.id);
             });
 
             ui.add_space(10.0);
@@ -620,9 +624,9 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.add_space(10.0);
 
             // Input for the contract
-            ui.heading("2. Edit the contract JSON below or paste a new one");
+            let json_heading = ui.heading("2. Edit the contract JSON below or paste a new one");
             ui.add_space(10.0);
-            self.ui_input_field(ui);
+            self.ui_input_field(ui, json_heading.id);
 
             // Parse the contract and show the result
             self.ui_parsed_contract(ui)
@@ -647,6 +651,61 @@ impl ScreenLike for UpdateDataContractScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    #[tokio::test]
+    async fn interop_protocol14_contract_update_selects_limited_key() {
+        use crate::context::test_support::{
+            auth_key, identity_holding, prove_protocol_version, wired_test_app_context,
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        prove_protocol_version(&ctx, 14);
+        for (budget, expiry) in [(Some(1_000), None), (None, Some(u64::MAX))] {
+            let key = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+            let identity = identity_holding(&[key]);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("store identity");
+            let screen = UpdateDataContractScreen::new(&ctx);
+            assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn pv15_contract_update_auto_selection_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding, wired_test_app_context};
+        for (budget, expiry) in [
+            (Some(0), None),
+            (Some(1_000), None),
+            (None, Some(u64::MAX)),
+            (Some(1_000), Some(u64::MAX)),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = wired_test_app_context(dir.path()).await;
+            crate::context::test_support::prove_protocol_version(&ctx, 15);
+            let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+            let identity = identity_holding(std::slice::from_ref(&limited));
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("seed identity");
+            let screen = UpdateDataContractScreen::new(&ctx);
+            assert!(screen.selected_qualified_identity.is_some());
+            assert!(
+                screen.selected_key.is_none(),
+                "budget={budget:?}, expiry={expiry:?}"
+            );
+
+            let unlimited = auth_key(2, SecurityLevel::CRITICAL);
+            let identity = identity_holding(&[limited, unlimited]);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("replace identity");
+            assert_eq!(
+                UpdateDataContractScreen::new(&ctx)
+                    .selected_key
+                    .map(|key| key.id()),
+                Some(2)
+            );
+        }
+    }
 
     /// With no wallet backend wired, `get_contracts()` fails and the constructor
     /// must degrade to an empty known-contracts list instead of panicking.
@@ -663,5 +722,92 @@ mod tests {
         let screen = UpdateDataContractScreen::new(&ctx);
 
         assert!(screen.known_contracts.is_empty());
+    }
+
+    /// Regression: an identity holding only a key that cannot sign (here an
+    /// expired one) passed the screen's gate, and the form stopped with no
+    /// word once the key choice found nothing.
+    #[test]
+    fn an_identity_without_a_usable_key_is_told_so() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let mut screen = UpdateDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::document_action_screen::NO_SIGNING_KEY_NOTICE)
+                .is_some()
+        );
+    }
+    /// Read inputs remain visible when every held key is unusable for signing.
+    #[test]
+    fn interop_contract_form_keeps_read_inputs_without_a_signing_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let mut screen = UpdateDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("2. Select contract to update")
+                .is_some()
+        );
+    }
+    #[test]
+    fn interop_update_notice_does_not_promise_that_a_high_key_will_become_usable() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, SecurityLevel::HIGH).with_limits(Some(1_000), None)]);
+        let mut screen = UpdateDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::document_action_screen::NO_SIGNING_KEY_NOTICE)
+                .is_some()
+        );
     }
 }

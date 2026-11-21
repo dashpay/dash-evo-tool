@@ -1,3 +1,4 @@
+use super::TokenSigningKey;
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
@@ -5,6 +6,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::token::{
     TokenConfigInputError, parse_max_supply_input, parse_new_tokens_destination_input,
     token_change_item_is_supported,
@@ -19,9 +21,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{
-    TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
-};
+use crate::ui::helpers::{TransactionType, check_token_authorization, render_group_action_text};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -29,6 +29,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
@@ -40,7 +41,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DataContract, Identifier};
 use eframe::egui::{self, Color32, Ui};
 use egui::RichText;
 use std::collections::HashSet;
@@ -65,7 +66,7 @@ pub struct UpdateTokenConfigScreen {
     field_text: Option<String>,
     /// Why `field_text` does not parse; blocks the update until fixed.
     field_error: Option<TokenConfigInputError>,
-    signing_key: Option<IdentityPublicKey>,
+    signing_key: TokenSigningKey,
     show_advanced_options: bool,
     identity: QualifiedIdentity,
     pub public_note: Option<String>,
@@ -90,13 +91,7 @@ impl UpdateTokenConfigScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            )
+            .token_action_key(identity_token_info.data_contract.contract.id())
             .cloned();
 
         // Initialize with no group - will be set when user selects a change item
@@ -106,10 +101,13 @@ impl UpdateTokenConfigScreen {
         let is_unilateral_group_member = false;
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+        let selected_wallet = possible_key
+            .as_ref()
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         Self {
             identity_token_info: identity_token_info.clone(),
@@ -120,7 +118,7 @@ impl UpdateTokenConfigScreen {
             text_input_error: "".to_string(),
             field_text: None,
             field_error: None,
-            signing_key: possible_key,
+            signing_key: TokenSigningKey::automatic(possible_key),
             show_advanced_options: false,
             public_note: None,
 
@@ -158,12 +156,12 @@ impl UpdateTokenConfigScreen {
         self.is_unilateral_group_member = auth.is_unilateral_group_member;
     }
 
-    fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_token_config_updater(&mut self, ui: &mut Ui, signing_available: bool) -> AppAction {
         let mut action = AppAction::None;
         // Step 1 (choosing the signing key) only shows in advanced mode.
         let first_step = if self.show_advanced_options { 2 } else { 1 };
 
-        ui.heading(format!("{first_step}. Select the item to update"));
+        let item_heading = ui.heading(format!("{first_step}. Select the item to update"));
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -500,7 +498,9 @@ impl UpdateTokenConfigScreen {
                     {
                         self.update_group_based_on_change_item();
                     }
-                });
+                })
+                .response
+                .labelled_by(item_heading.id);
 
 
         if self.change_item != item_before_selection {
@@ -714,7 +714,14 @@ impl UpdateTokenConfigScreen {
             &self.group_action_id,
         );
 
-        if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
+        if signing_available
+            && self.signing_key.as_ref().is_some()
+            && self
+                .selected_wallet
+                .as_ref()
+                .is_none_or(|wallet| !wallet_needs_unlock(wallet))
+            && (self.app_context.user_role().at_least(UserRole::Power)
+                || !button_text.contains("Test"))
             && change_item_can_be_submitted(
                 &self.change_item,
                 &self.text_input_error,
@@ -899,6 +906,39 @@ impl UpdateTokenConfigScreen {
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        if let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Some(updated) = identities
+                .into_iter()
+                .find(|identity| identity.identity.id() == self.identity.identity.id())
+        {
+            self.identity_token_info.identity = updated.clone();
+            self.identity = updated;
+        }
+
+        self.signing_key.refresh(
+            &self.app_context,
+            &self.identity,
+            TransactionType::TokenAction,
+            self.identity_token_info.data_contract.contract.id(),
+        );
+        crate::ui::identity::sync_signing_wallet(
+            Some(&self.identity),
+            self.signing_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
@@ -974,96 +1014,120 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 });
                 ui.add_space(10.0);
 
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
-            } else {
-                !self
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
-
-            if !has_keys {
-                ui.colored_label(
-                    Color32::DARK_RED,
-                    format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity.identity_type,
-                    ),
+                // Signing eligibility affects submission, not reads or previews.
+                let key_status = super::token_action_key_status(
+                    &self.app_context,
+                    &self.identity,
+                    self.identity_token_info.data_contract.contract.id(),
                 );
-                ui.add_space(10.0);
-
-                // Show "Add key" or "Check keys" option
-                let first_key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
+                // The form signs on its button, with no confirmation to reset.
+                self.signing_key.follow_automatic_with_wallet(
+                    &self.identity,
+                    TransactionType::TokenAction,
+                    self.identity_token_info.data_contract.contract.id(),
+                    &mut self.selected_wallet,
+                    &mut self.wallet_open_attempted,
                 );
 
-                if let Some(key) = first_key {
-                    if ui.button("Check Keys").clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                if key_status == SigningKeyStatus::ManualChoiceOnly {
+                    // Only a contract-group key can sign it: the user picks it below.
+                    self.show_advanced_options = true;
+                }
+                if !matches!(
+                    key_status,
+                    SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                ) {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        super::token_action_key_message(key_status, &self.identity),
+                    );
+                    ui.add_space(10.0);
+
+                    // Show "Add key" or "Check keys" option
+                    let first_key = self.identity.identity.get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
+
+                    if let Some(key) = first_key {
+                        if ui.button("Check Keys").clicked() {
+                            action |=
+                                AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                    self.identity.clone(),
+                                    key.clone(),
+                                    None,
+                                    &self.app_context,
+                                )));
+                        }
+                        ui.add_space(5.0);
+                    }
+
+                    if ui.button("Add key").clicked() {
+                        action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                             self.identity.clone(),
-                            key.clone(),
-                            None,
                             &self.app_context,
                         )));
                     }
-                    ui.add_space(5.0);
                 }
-
-                if ui.button("Add key").clicked() {
-                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
-                        &self.app_context,
-                    )));
-                }
-            } else {
-                // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if let Some(wallet) = &self.selected_wallet {
-                    if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                .disable_auto_dismiss();
+                {
+                    // Possibly handle locked wallet scenario (similar to TransferTokens)
+                    if let Some(wallet) = &self.selected_wallet {
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                    .disable_auto_dismiss();
+                            }
+                            self.wallet_open_attempted = true;
                         }
-                        self.wallet_open_attempted = true;
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                        }
                     }
-                    if wallet_needs_unlock(wallet) {
+
+                    // Key selection (only in advanced mode)
+                    if self.show_advanced_options {
+                        ui.heading("1. Select the key to sign the transaction with");
                         ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
+                        if key_status == SigningKeyStatus::ManualChoiceOnly {
+                            ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                            ui.add_space(5.0);
                         }
-                        return;
+                        action |= self.signing_key.show_chooser(
+                            ui,
+                            &self.app_context,
+                            &self.identity,
+                            TransactionType::TokenAction,
+                            self.identity_token_info.data_contract.contract.id(),
+                        );
+                        ui.add_space(10.0);
+                        ui.separator();
                     }
-                }
-
-
-                // Key selection (only in advanced mode)
-                if self.show_advanced_options {
-                    ui.heading("1. Select the key to sign the transaction with");
                     ui.add_space(10.0);
-                    add_key_chooser(
-                        ui,
-                        &self.app_context,
-                        &self.identity,
-                        &mut self.signing_key,
-                        TransactionType::TokenAction,
+
+                    crate::ui::identity::sync_signing_wallet(
+                        Some(&self.identity),
+                        self.signing_key.as_ref(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
-                    ui.add_space(10.0);
-                    ui.separator();
+                    action |= self.render_token_config_updater(
+                        ui,
+                        matches!(
+                            key_status,
+                            SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                        ),
+                    );
                 }
-                ui.add_space(10.0);
-
-                action |= self.render_token_config_updater(ui);
-
-            }
             }); // end of ScrollArea
         });
 
@@ -1201,6 +1265,49 @@ fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str 
 #[cfg(test)]
 mod sdk_adapter_tests {
     use super::*;
+
+    #[test]
+    fn interop_token_configuration_remains_visible_without_a_signing_key() {
+        use crate::model::qualified_contract::QualifiedContract;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: crate::ui::tokens::tests::identity_with_expired_key(),
+            data_contract: QualifiedContract {
+                contract: ctx.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = UpdateTokenConfigScreen::new(info, &ctx);
+        screen.change_item = TokenConfigurationChangeItem::MaxSupply(Some(123_456));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateTokenConfigScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("1. Select the item to update")
+                .is_some()
+        );
+        assert!(harness.query_all_by_value("123456").next().is_some());
+        assert!(harness.query_all_by_label("Update Config").all(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+    }
 
     #[test]
     fn shielded_pool_configuration_cannot_be_submitted_from_this_editor() {

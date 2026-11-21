@@ -211,12 +211,15 @@ impl AppContext {
         qualified_identity: &QualifiedIdentity,
         sdk: &Sdk,
     ) -> Result<DpnsVoteAttempt, TaskError> {
-        let vote_poll = self.checked_dpns_vote_poll(name, sdk).await?;
-        let Some((_, public_key)) = &qualified_identity.associated_voter_identity else {
+        if qualified_identity.associated_voter_identity.is_none() {
             return Err(TaskError::NoVotingIdentity {
                 identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
             });
-        };
+        }
+        let public_key = qualified_identity
+            .active_masternode_voting_key()
+            .ok_or(TaskError::MasternodeVotingKeyNotUsable)?;
+        let vote_poll = self.checked_dpns_vote_poll(name, sdk).await?;
         let resource_vote = ResourceVoteV0 {
             vote_poll: vote_poll.into(),
             resource_vote_choice: vote_choice,
@@ -274,6 +277,38 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn interop_disabled_voter_is_rejected_before_any_network_request() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let mut key = auth_key(0, SecurityLevel::HIGH);
+        key.set_disabled_at(1);
+        let mut identity = identity_holding(&[]);
+        identity.associated_voter_identity = Some((identity.identity.clone(), key));
+        let target = DpnsVoteTargetKey {
+            network: ctx.network,
+            voter_id: identity.identity.id(),
+            vote_poll_id: Identifier::from([9; 32]),
+        };
+        let result = ctx
+            .submit_dpns_vote(
+                DpnsVoteOperationId::from_bytes([1; 16]),
+                &target,
+                "alice",
+                ResourceVoteChoice::Abstain,
+                &identity,
+                &Sdk::new_mock(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(TaskError::MasternodeVotingKeyNotUsable)
+        ));
+    }
 
     #[test]
     fn convert_to_homograph_safe_chars_maps_alice_to_a11ce() {

@@ -1,3 +1,5 @@
+use super::TokenSigningKey;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -16,7 +18,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::user_role::UserRole;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -29,7 +31,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -38,7 +40,6 @@ use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::platform::IdentityPublicKey;
 
 /// Internal states for the purchase process.
 #[derive(PartialEq)]
@@ -54,7 +55,7 @@ pub struct PurchaseTokenScreen {
     pub app_context: Arc<AppContext>,
 
     pub identity_token_info: IdentityTokenInfo,
-    selected_key: Option<IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
 
     // Specific to this transition - using AmountInput components following design pattern
@@ -82,26 +83,23 @@ impl PurchaseTokenScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            )
+            .token_action_key(identity_token_info.data_contract.contract.id())
             .cloned();
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
+        let selected_wallet = possible_key
+            .as_ref()
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            });
 
         Self {
             identity_token_info,
-            selected_key: possible_key,
+            selected_key: TokenSigningKey::automatic(possible_key),
             show_advanced_options: false,
             amount_to_purchase_input: None,
             amount_to_purchase_value: None,
@@ -397,13 +395,26 @@ impl ScreenLike for PurchaseTokenScreen {
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+        if let Ok(all_identities) = self.app_context.load_local_qualified_identities()
             && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
         {
             self.identity_token_info.identity = updated_identity;
         }
+        let contract_id = self.identity_token_info.data_contract.contract.id();
+        self.selected_key.refresh(
+            &self.app_context,
+            &self.identity_token_info.identity,
+            TransactionType::TokenAction,
+            contract_id,
+        );
+        crate::ui::identity::sync_signing_wallet(
+            Some(&self.identity_token_info.identity),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -448,29 +459,34 @@ impl ScreenLike for PurchaseTokenScreen {
             });
             ui.add_space(10.0);
 
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self
-                    .identity_token_info
-                    .identity
-                    .identity
-                    .public_keys()
-                    .is_empty()
-            } else {
-                !self
-                    .identity_token_info
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
+            // Signing eligibility affects submission, not reads or previews.
+            let key_status = super::token_action_key_status(
+                &self.app_context,
+                &self.identity_token_info.identity,
+                self.identity_token_info.data_contract.contract.id(),
+            );
+            if self.selected_key.follow_automatic_with_wallet(
+                &self.identity_token_info.identity,
+                TransactionType::TokenAction,
+                self.identity_token_info.data_contract.contract.id(),
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            ) {
+                // A pending confirmation was for the previous key.
+                self.confirmation_dialog = None;
+            }
 
-            if !has_keys {
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.show_advanced_options = true;
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
                 ui.colored_label(
                     DashColors::error_color(dark_mode),
-                    format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity_token_info.identity.identity_type,
-                    ),
+                    super::token_action_key_message(key_status, &self.identity_token_info.identity),
                 );
                 ui.add_space(10.0);
 
@@ -504,7 +520,8 @@ impl ScreenLike for PurchaseTokenScreen {
                         &self.app_context,
                     )));
                 }
-            } else {
+            }
+            {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
@@ -524,7 +541,6 @@ impl ScreenLike for PurchaseTokenScreen {
                         if ui.button("Unlock Wallet").clicked() {
                             self.wallet_unlock_popup.open();
                         }
-                        return;
                     }
                 }
 
@@ -532,18 +548,28 @@ impl ScreenLike for PurchaseTokenScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Purchase transaction");
                     ui.add_space(10.0);
-                    add_key_chooser(
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         &self.identity_token_info.identity,
-                        &mut self.selected_key,
                         TransactionType::TokenAction,
+                        self.identity_token_info.data_contract.contract.id(),
                     );
                     ui.add_space(10.0);
                     ui.separator();
                 }
                 ui.add_space(10.0);
 
+                crate::ui::identity::sync_signing_wallet(
+                    Some(&self.identity_token_info.identity),
+                    self.selected_key.as_ref(),
+                    &mut self.selected_wallet,
+                    &mut self.wallet_open_attempted,
+                );
                 // Amount to purchase
                 let step_num = if self.show_advanced_options { 2 } else { 1 };
                 ui.heading(format!("{}. Amount to purchase and price", step_num));
@@ -600,7 +626,15 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no valid amounts are available)
-                let can_purchase = self.fetched_pricing_schedule.is_some()
+                let can_purchase = matches!(
+                    key_status,
+                    SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                ) && self.selected_key.as_ref().is_some()
+                    && self
+                        .selected_wallet
+                        .as_ref()
+                        .is_none_or(|wallet| !wallet_needs_unlock(wallet))
+                    && self.fetched_pricing_schedule.is_some()
                     && self.calculated_price_credits.unwrap_or_default() > 0
                     && self
                         .amount_to_purchase_value
@@ -652,7 +686,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
 
                 // Show confirmation dialog if it exists
-                if self.confirmation_dialog.is_some() {
+                if can_purchase && self.confirmation_dialog.is_some() {
                     action |= self.show_confirmation_popup(ui);
                 }
 
@@ -791,5 +825,55 @@ mod tests {
             10 * user_price_credits_0,
             "Should be 0.5 DASH total"
         );
+    }
+    #[test]
+    fn interop_token_price_fetch_without_a_signing_key() {
+        use super::*;
+        use crate::model::qualified_contract::QualifiedContract;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: crate::ui::tokens::tests::identity_with_expired_key(),
+            data_contract: QualifiedContract {
+                contract: ctx.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut PurchaseTokenScreen| {
+                    screen.ui(ui);
+                },
+                PurchaseTokenScreen::new(info, &ctx),
+            );
+        harness.run();
+        assert!(
+            !harness
+                .get_by_label("Fetch Token Price")
+                .accesskit_node()
+                .is_disabled()
+        );
+        harness
+            .state_mut()
+            .display_task_result(BackendTaskSuccessResult::TokenPricing {
+                token_id: dash_sdk::platform::Identifier::from([4; 32]),
+                prices: Some(TokenPricingSchedule::SinglePrice(42)),
+            });
+        harness.run();
+        assert!(harness.query_by_label("Current pricing:").is_some());
+        assert!(harness.query_by_label_contains("Fixed price:").is_some());
+        assert!(harness.query_all_by_label("Purchase").any(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
     }
 }

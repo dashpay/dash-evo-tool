@@ -42,6 +42,8 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        let signing_time =
+            super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
         // Estimate fee for contract update
         let estimated_fee = self.fee_estimator().estimate_contract_update();
 
@@ -55,8 +57,6 @@ impl AppContext {
             .await
             .map_err(TaskError::from)?;
 
-        // Increment the version of the data contract
-        data_contract.increment_version();
         let contract_id = data_contract.id();
 
         // Fetch the identity contract nonce
@@ -64,6 +64,8 @@ impl AppContext {
             .get_identity_contract_nonce(identity.identity.id(), data_contract.id(), true, None)
             .await
             .map_err(TaskError::from)?;
+
+        data_contract.increment_version();
 
         // Update UI
         sender
@@ -83,6 +85,12 @@ impl AppContext {
 
         let mut state_transition = StateTransition::DataContractUpdate(contract_update_transition);
 
+        super::contract::validate_contract_signing_key(
+            &identity,
+            &signing_key,
+            sdk.protocol_version_info().verified_version,
+            signing_time,
+        )?;
         state_transition
             .sign_external_with_options(
                 &signing_key,
@@ -97,6 +105,9 @@ impl AppContext {
             )
             .await
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
+
+        // Unlocking can outlive an expiry or activation; confirm a fresh block before sending.
+        super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
 
         match state_transition
             .broadcast_and_wait_for_affected_state::<DataContract>(sdk, None)
@@ -182,6 +193,85 @@ mod tests {
         .expect("the contract registers")
     }
 
+    /// An identity holding its unlimited signing key `1`, so the signing key
+    /// check passes without a network read.
+    fn owner_holding_unlimited_key(context: &AppContext) -> (QualifiedIdentity, IdentityPublicKey) {
+        let signing_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: BinaryData::new(vec![2; 33]),
+            disabled_at: None,
+        });
+        let mut owner = dash_sdk::dpp::identity::Identity::create_basic_identity(
+            Identifier::from([8; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        owner.add_public_key(signing_key.clone());
+        let identity = QualifiedIdentity {
+            identity: owner,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: context.network(),
+        };
+        (identity, signing_key)
+    }
+
+    /// A contract registered with a private document type whose entries are
+    /// too small for its documents is refused before the nonce is read or
+    /// anything is signed: Platform would register it, and its entry size can
+    /// never change afterwards.
+    #[tokio::test]
+    async fn a_contract_whose_private_type_cannot_hold_its_documents_is_not_registered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        // The mock holds no answers: reading the nonce would fail it.
+        let sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("a mock SDK");
+        let (identity, signing_key) = owner_holding_unlimited_key(&context);
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let result = context
+            .register_data_contract(
+                private_contract(true),
+                String::new(),
+                identity,
+                signing_key,
+                &sdk,
+                sender,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::PrivateDocumentEntrySizeTooSmall {
+                    entry_size: 375,
+                    minimum_entry_size: 398,
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+    }
+
     /// An update that changes a private document type so that its entries can
     /// no longer hold its largest document is refused before the nonce is
     /// read or anything is signed, and the caller's contract is left as it
@@ -202,36 +292,7 @@ mod tests {
             .await
             .expect("stored contract expectation");
 
-        let identity = QualifiedIdentity {
-            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
-                Identifier::from([8; 32]),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: context.network(),
-        };
-        let signing_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 1,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::CRITICAL,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(vec![2; 33]),
-            disabled_at: None,
-        });
+        let (identity, signing_key) = owner_holding_unlimited_key(&context);
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
 

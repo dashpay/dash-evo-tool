@@ -8,8 +8,8 @@ pub mod dip14;
 pub mod hd;
 
 pub use hd::{
-    calculate_account_reference, derive_auto_accept_key, derive_dashpay_incoming_xpub,
-    derive_payment_address, generate_contact_xpub_data,
+    calculate_account_reference, derive_dashpay_incoming_xpub, derive_payment_address,
+    generate_contact_xpub_data,
 };
 
 use thiserror::Error;

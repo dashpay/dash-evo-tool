@@ -1,3 +1,4 @@
+use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
@@ -19,6 +20,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::identity_key_usability::KeyRequirements;
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
     distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
@@ -33,7 +35,6 @@ use crate::ui::components::MessageBanner;
 use crate::ui::MessageType;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use crate::ui::tokens::tokens_screen::{
     TokenPresetSelection, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
     TokenNameLanguage, TokensScreen,
@@ -53,6 +54,14 @@ impl TokensScreen {
     }
 
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
+        if crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        ) {
+            self.update_selected_wallet();
+        }
         let mut action = AppAction::None;
         self.reconcile_selected_preset();
 
@@ -94,7 +103,7 @@ impl TokensScreen {
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
-                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.is_empty()).collect::<Vec<_>>(),
+                            Ok(identities) => identities,
                             Err(error) => {
                                 tracing::error!(?error, "Token-creator identity loading failed");
                                 ui.colored_label(
@@ -191,19 +200,13 @@ impl TokensScreen {
                                     self.selected_key = None; // Clear previous key only on identity change
                                 }
                                 if let Some(ref identity) = self.selected_identity {
-                                    // Find first eligible key for RegisterContract
-                                    // Requires Authentication purpose with High or Critical security level
                                     let first_eligible_key = identity
-                                        .private_keys
-                                        .identity_public_keys()
-                                        .iter()
-                                        .find(|key_ref| {
-                                            let key = &key_ref.1.identity_public_key;
-                                            key.purpose() == Purpose::AUTHENTICATION
-                                                && (key.security_level() == SecurityLevel::CRITICAL
-                                                    || key.security_level() == SecurityLevel::HIGH)
-                                        })
-                                        .map(|key_ref| key_ref.1.identity_public_key.clone());
+                                        .signing_key_now(KeyRequirements::new(
+                                            Purpose::AUTHENTICATION,
+                                            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                                            self.app_context.contract_signing_scope(),
+                                        ))
+                                        .cloned();
 
                                     if first_eligible_key.is_some() {
                                         self.selected_key = first_eligible_key;
@@ -216,9 +219,8 @@ impl TokensScreen {
                                 ui.add_space(5.0);
                                 ui.colored_label(
                                     egui::Color32::from_rgb(200, 100, 100),
-                                    "No eligible key found for this identity. Please use Advanced Options or add a suitable key.",
+                                    crate::ui::helpers::contract_signing_key_notice(&self.app_context, self.selected_identity.as_ref(), &[SecurityLevel::HIGH, SecurityLevel::CRITICAL]),
                                 );
-                                return;
                             }
 
                             if self.selected_identity.is_none() {
@@ -232,9 +234,7 @@ impl TokensScreen {
                             ui.separator();
 
                             // Wallet unlock check for simple mode
-                            if !self.ensure_wallet_unlocked(ui) {
-                                return;
-                            }
+                            self.ensure_wallet_unlocked(ui);
                         } else {
                             // =====================================================
                             // ADVANCED MODE - Full identity and key selection
@@ -255,6 +255,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
+                                self.app_context.contract_signing_scope(),
                             );
                             let after_id = self
                                 .selected_identity
@@ -270,17 +271,12 @@ impl TokensScreen {
                             // If a key was selected, set the wallet reference
                             self.update_selected_wallet();
 
-                            if self.selected_key.is_none() {
-                                return;
-                            }
 
                             ui.add_space(10.0);
                             ui.separator();
 
                             // Wallet unlock check for advanced mode
-                            if !self.ensure_wallet_unlocked(ui) {
-                                return;
-                            }
+                            self.ensure_wallet_unlocked(ui);
                         }
 
                         // Continue with mode-specific content
@@ -420,7 +416,8 @@ impl TokensScreen {
                             ui.horizontal(|ui| {
                                 let mut response = ComponentStyles::add_primary_button_enabled(
                                     ui,
-                                    blocked_reason.is_none(),
+                                    blocked_reason.is_none() && self.selected_key.is_some()
+                                    && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)),
                                     "Create Token",
                                 );
                                 if let Some(reason) = &blocked_reason {
@@ -465,8 +462,9 @@ impl TokensScreen {
                                 // Row 1: Token Name
                                 let mut token_to_remove: Option<u8> = None;
                                 for i in 0..self.token_names_input.len() {
-                                    ui.label("Token Name (singular)*:");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].0);
+                                    let singular_label = ui.label("Token Name (singular)*:");
+                                    ui.text_edit_singleline(&mut self.token_names_input[i].0)
+                                        .labelled_by(singular_label.id);
                                     ui.horizontal(|ui| {
                                         let allow_all_languages = i != 0;
                                         ui.push_id(format!("combo_{i}"), |ui| {
@@ -502,8 +500,9 @@ impl TokensScreen {
                                     ui.end_row();
 
                                     // Plural name
-                                    ui.label("Token Name (plural)*:");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].1);
+                                    let plural_label = ui.label("Token Name (plural)*:");
+                                    ui.text_edit_singleline(&mut self.token_names_input[i].1)
+                                        .labelled_by(plural_label.id);
                                     ui.end_row();
 
                                 }
@@ -525,10 +524,11 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 4: Contract Keywords
-                                ui.horizontal(|ui| {
-                                    ui.label("Contract Keywords (comma separated):");
-                                });
-                                ui.text_edit_singleline(&mut self.contract_keywords_input);
+                                let keywords_label = ui
+                                    .horizontal(|ui| ui.label("Contract Keywords (comma separated):"))
+                                    .inner;
+                                ui.text_edit_singleline(&mut self.contract_keywords_input)
+                                    .labelled_by(keywords_label.id);
                                 let response = crate::ui::helpers::info_icon_button(ui, "Each searchable keyword costs 0.1 Dash");
                                     if response.clicked() {
                                         self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
@@ -552,8 +552,9 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 5: Token Description
-                                ui.label("Token Description (3–100 chars):");
-                                ui.text_edit_singleline(&mut self.token_description_input);
+                                let description_label = ui.label("Token Description (3–100 chars):");
+                                ui.text_edit_singleline(&mut self.token_description_input)
+                                    .labelled_by(description_label.id);
                                 ui.end_row();
                             });
 
@@ -829,7 +830,8 @@ impl TokensScreen {
                             let blocked_reason = self.advanced_mode_blocked_reason();
                             let mut register = ComponentStyles::add_primary_button_enabled(
                                 ui,
-                                blocked_reason.is_none(),
+                                blocked_reason.is_none() && self.selected_key.is_some()
+                                    && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)),
                                 "Register Token Contract",
                             );
                             if let Some(reason) = &blocked_reason {
@@ -896,7 +898,8 @@ impl TokensScreen {
                         } // Close advanced mode else block
 
         // 7) If the user pressed "Register Token Contract," show a popup confirmation
-        if self.show_token_creator_confirmation_popup {
+        if self.show_token_creator_confirmation_popup && self.selected_key.is_some()
+            && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)) {
             action |= self.render_token_creator_confirmation_popup(ui);
         }
 
@@ -919,22 +922,12 @@ impl TokensScreen {
     }
 
     fn update_selected_wallet(&mut self) {
-        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
-            let wallet_changed = match (&self.selected_wallet, &new_wallet) {
-                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
-                (None, None) => false,
-                _ => true,
-            };
-            if wallet_changed {
-                self.wallet_open_attempted = false;
-            }
-            self.selected_wallet = new_wallet;
-        }
+        crate::ui::identity::sync_signing_wallet(
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
     }
 
     fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {
@@ -998,7 +991,9 @@ impl TokensScreen {
                     }
                     ui.selectable_value(current_language, language, language.ui_label());
                 }
-            });
+            })
+            .response
+            .accessible_name("Token name language");
     }
 
     fn reset_token_creator_collapsing_states(&mut self) {

@@ -1541,4 +1541,157 @@ mod tests {
             "a mutation that reads the dismissal set before writing it back would race a concurrent one"
         );
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_contract_created_with_a_limited_v14_key_can_be_read_and_shown() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::contract::ContractTask;
+        use crate::context::test_support::{
+            auth_key, bound_to, identity_holding, mock_sdk_at_for, prove_protocol_version,
+            wired_test_app_context,
+        };
+        use crate::ui::{
+            ScreenLike, contracts_documents::contracts_documents_screen::DocumentQueryScreen,
+        };
+        use crate::utils::egui_mpsc::SenderAsync;
+        use dash_sdk::dpp::bls::native_bls::NativeBlsModule;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+        use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use dash_sdk::dpp::identity::{KeyType, PartialIdentity, SecurityLevel};
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use dash_sdk::dpp::serialization::{PlatformDeserializableUntrusted, PlatformSerializable};
+        use dash_sdk::dpp::state_transition::{
+            StateTransition,
+            data_contract_create_transition::{
+                DataContractCreateTransition, accessors::DataContractCreateTransitionAccessorsV0,
+                methods::DataContractCreateTransitionMethodsV0,
+            },
+        };
+        use dash_sdk::query_types::DataContracts;
+        use egui_kittest::kittest::Queryable;
+        use std::{collections::BTreeMap, sync::Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = wired_test_app_context(dir.path()).await;
+        let pv14 = PlatformVersion::get(14).unwrap();
+
+        // Use the same generated secret that identity_holding files for key 1.
+        let public_key = |id: u32, level| {
+            let secret = crate::test_support::keys::labelled_secret(
+                "context::test_support::identity_holding",
+                u64::from(id),
+            );
+            let mut key = auth_key(id, level);
+            let public_data = KeyType::ECDSA_SECP256K1
+                .public_key_data_from_private_key_data(&secret, ctx.network())
+                .expect("generated key");
+            key.set_data(public_data.into());
+            key
+        };
+        let signer_key =
+            public_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000_000), None);
+        let mut disabled =
+            public_key(4, SecurityLevel::HIGH).with_limits(Some(1_000_000_000), None);
+        disabled.set_disabled_at(2);
+        let mut owner = identity_holding(&[
+            signer_key.clone(),
+            public_key(2, SecurityLevel::HIGH).with_limits(None, Some(1)),
+            bound_to(
+                public_key(3, SecurityLevel::HIGH),
+                ContractBounds::SingleContract {
+                    id: ctx.dashpay_contract().id(),
+                },
+            ),
+            disabled,
+        ]);
+        let owner_id = owner.identity.id();
+        let mut keys = owner.identity.public_keys().clone();
+        keys.insert(0, public_key(0, SecurityLevel::MASTER)); // Public only.
+        owner.identity.set_public_keys(keys);
+        let nonce = 1;
+        let id = DataContract::generate_data_contract_id_v0(owner_id, nonce);
+        let mut contract = user_contract_at(pv14, None);
+        contract.set_id(id);
+        contract.set_owner_id(owner_id);
+        let partial = PartialIdentity {
+            id: owner_id,
+            loaded_public_keys: BTreeMap::from([(1, signer_key.clone())]),
+            balance: None,
+            revision: None,
+            not_found_public_keys: Default::default(),
+        };
+        let tx = DataContractCreateTransition::new_from_data_contract(
+            contract.clone(),
+            nonce,
+            &partial,
+            1,
+            &owner,
+            pv14,
+            None,
+        )
+        .await
+        .expect("limited signer creates a v14 transition");
+        let wire = tx
+            .serialize_to_bytes()
+            .expect("serialize signed transition");
+        let tx =
+            StateTransition::deserialize_from_bytes_untrusted(&wire).expect("parse transition");
+        assert_eq!(tx.signature_public_key_id(), Some(1));
+        tx.verify_identity_signed_signature(&signer_key, &NativeBlsModule, pv14)
+            .expect("real PV14 signature by the limited key");
+        let StateTransition::DataContractCreate(create) = &tx else {
+            panic!("contract creation transition expected");
+        };
+        assert_eq!(create.data_contract().id(), id);
+        assert_eq!(create.data_contract().owner_id(), owner_id);
+
+        ctx.insert_local_qualified_identity(&owner, &None)
+            .expect("store owner");
+        ctx.set_selected_identity(Some(owner_id));
+        let mut sdk = mock_sdk_at_for(&ctx, 14);
+        sdk.mock()
+            .expect_fetch_many::<Identifier, DataContract, _, DataContracts>(
+                vec![id],
+                Some(DataContracts::from_iter([(id, Some(contract))])),
+            )
+            .await
+            .expect("mock contract read");
+        let sdk = Arc::new(sdk);
+        ctx.sdk.store(sdk.clone());
+        prove_protocol_version(&ctx, 14);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let result = ctx
+            .run_contract_task(ContractTask::FetchContracts(vec![id]), &sdk, sender)
+            .await
+            .expect("contract loads through the SDK query");
+        let BackendTaskSuccessResult::FetchedContracts(contracts) = result else {
+            panic!("unexpected read result");
+        };
+        assert_eq!(contracts[0].as_ref().unwrap().owner_id(), owner_id);
+        let stored = ctx.get_contract_by_id(&id).unwrap().expect("DB read");
+        assert_eq!(stored.contract.owner_id(), owner_id);
+        assert!(stored.contract.document_types().contains_key("note"));
+
+        let label = id.to_string(Encoding::Base58);
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentQueryScreen| {
+                    let _ = screen.ui(ui);
+                },
+                DocumentQueryScreen::new(&ctx),
+            );
+        harness.run_steps(4);
+        assert!(harness.query_by_label(&label).is_some());
+        harness.state_mut().refresh();
+        harness.run_steps(4);
+        harness.get_by_label(&label).click();
+        harness.run_steps(4);
+        harness.get_by_label("Contract JSON").click();
+        harness.run_steps(4);
+        assert!(harness.query_by_label_contains("\"note\"").is_some());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
 }

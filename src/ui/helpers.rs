@@ -1,3 +1,5 @@
+use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyCaveat, SigningScope, key_caveats, now_ms};
 use crate::ui::theme::ResponseExt;
 use std::sync::Arc;
 
@@ -94,7 +96,7 @@ use dash_sdk::{
             group::{Group, accessors::v0::GroupV0Getters},
         },
         identity::{
-            Purpose, SecurityLevel, accessors::IdentityGettersV0,
+            KeyType, Purpose, SecurityLevel, TimestampMillis, accessors::IdentityGettersV0,
             identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
         },
         platform_value::string_encoding::Encoding,
@@ -148,18 +150,10 @@ pub fn compute_allowed_security_levels(
     document_type: Option<&DocumentType>,
 ) -> Vec<SecurityLevel> {
     match (transaction_type, document_type) {
-        (TransactionType::DocumentAction, Some(doc_type)) => {
-            let required_level = doc_type.security_level_requirement();
-            let allowed_range = SecurityLevel::CRITICAL as u8..=required_level as u8;
-            [
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]
-            .into_iter()
-            .filter(|level| allowed_range.contains(&(*level as u8)))
-            .collect()
-        }
+        (
+            TransactionType::DocumentAction | TransactionType::UsernameRegistration,
+            Some(doc_type),
+        ) => crate::model::identity_key_usability::document_security_levels(doc_type.as_ref()),
         _ => transaction_type.allowed_security_levels(),
     }
 }
@@ -351,6 +345,8 @@ pub enum TransactionType {
     TokenClaim,
     /// DashPay contact request - requires Authentication keys for signing (ENCRYPTION key for ECDH is auto-selected)
     ContactRequest,
+    /// DPNS username registration - requires ECDSA Authentication keys; security level depends on the document type
+    UsernameRegistration,
 }
 
 impl TransactionType {
@@ -368,7 +364,33 @@ impl TransactionType {
             TransactionType::TokenTransfer | TransactionType::TokenClaim => {
                 vec![Purpose::TRANSFER, Purpose::AUTHENTICATION]
             }
-            TransactionType::ContactRequest => vec![Purpose::AUTHENTICATION],
+            TransactionType::ContactRequest | TransactionType::UsernameRegistration => {
+                vec![Purpose::AUTHENTICATION]
+            }
+        }
+    }
+
+    /// The key types this transaction type is signed with, or `None` when
+    /// every key type is accepted: the ones its automatic key choice takes.
+    /// Never a type Platform refuses.
+    pub fn allowed_key_types(&self) -> Option<&'static [KeyType]> {
+        match self {
+            TransactionType::ContactRequest => {
+                Some(crate::model::qualified_identity::DASHPAY_SIGNING_KEY_TYPES)
+            }
+            TransactionType::UsernameRegistration => {
+                Some(crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES)
+            }
+            TransactionType::TokenTransfer
+            | TransactionType::TokenClaim
+            | TransactionType::RegisterContract
+            | TransactionType::UpdateContract
+            | TransactionType::Transfer
+            | TransactionType::Withdraw
+            | TransactionType::DocumentAction
+            | TransactionType::TokenAction => {
+                Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES)
+            }
         }
     }
 
@@ -387,7 +409,9 @@ impl TransactionType {
             TransactionType::TokenAction
             | TransactionType::TokenTransfer
             | TransactionType::TokenClaim => vec![SecurityLevel::CRITICAL],
-            TransactionType::ContactRequest => vec![SecurityLevel::CRITICAL, SecurityLevel::HIGH],
+            TransactionType::ContactRequest | TransactionType::UsernameRegistration => {
+                vec![SecurityLevel::CRITICAL, SecurityLevel::HIGH]
+            }
         }
     }
 
@@ -403,41 +427,179 @@ impl TransactionType {
             TransactionType::TokenTransfer => "Token Transfer",
             TransactionType::TokenClaim => "Token Claim",
             TransactionType::ContactRequest => "Contact Request",
+            TransactionType::UsernameRegistration => "Username Registration",
         }
     }
 }
 
-/// Key chooser that filters keys based on transaction type and dev mode.
-/// Use this when you already have a specific identity and just need to select a key.
-/// Whether `identity` has (a) a loaded private key eligible for the transaction and
-/// (b) an eligible public key whose private key is not yet loaded.
+/// Re-evaluate a contract key when the network confirms or changes its rules.
+/// A manually selected key is retained while the active protocol permits its limits.
+pub(crate) fn refresh_contract_signing_key(
+    app_context: &AppContext,
+    identity: Option<&QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+    security_levels: &[SecurityLevel],
+) -> bool {
+    let scope = app_context.contract_signing_scope();
+    if selected_key.as_ref().is_some_and(|key| {
+        !key_caveats(key, scope, now_ms())
+            .iter()
+            .any(KeyCaveat::blocks_signing)
+    }) {
+        return false;
+    }
+    let next = identity
+        .and_then(|identity| {
+            identity.signing_key_now(crate::model::identity_key_usability::KeyRequirements::new(
+                Purpose::AUTHENTICATION,
+                security_levels,
+                scope,
+            ))
+        })
+        .cloned();
+    if *selected_key == next {
+        return false;
+    }
+    *selected_key = next;
+    true
+}
+
+/// Explain why contract signing cannot proceed before the network is known.
+pub(crate) fn contract_signing_key_notice(
+    app_context: &AppContext,
+    identity: Option<&QualifiedIdentity>,
+    security_levels: &[SecurityLevel],
+) -> &'static str {
+    if app_context
+        .protocol_version_info()
+        .verified_version
+        .is_none()
+        && identity.is_some_and(|identity| {
+            identity
+                .signing_key_now(crate::model::identity_key_usability::KeyRequirements::new(
+                    Purpose::AUTHENTICATION,
+                    security_levels,
+                    SigningScope::DataContract {
+                        protocol_version: Some(14),
+                    },
+                ))
+                .is_some()
+        })
+    {
+        "The network's signing rules are not confirmed yet. Wait for the connection to refresh and try again."
+    } else {
+        "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity."
+    }
+}
+
+/// What a key chooser offers for one transaction: the purposes, security
+/// levels and key types the transaction accepts, and the scope its key signs
+/// in. The "no eligible key" gate and the list entries both judge keys by it,
+/// so the gate never opens onto an empty list.
+#[derive(Debug, Clone, Copy)]
+struct KeyFilter<'a> {
+    purposes: &'a [Purpose],
+    security_levels: &'a [SecurityLevel],
+    /// `None` accepts every key type.
+    key_types: Option<&'a [KeyType]>,
+    scope: SigningScope<'a>,
+}
+
+impl<'a> KeyFilter<'a> {
+    /// The filter for `transaction_type` within `scope`, at
+    /// `security_levels` (see [`compute_allowed_security_levels`]).
+    fn new(
+        transaction_type: TransactionType,
+        purposes: &'a [Purpose],
+        security_levels: &'a [SecurityLevel],
+        scope: SigningScope<'a>,
+        protocol_version: Option<u32>,
+    ) -> Self {
+        Self {
+            purposes,
+            security_levels,
+            key_types: transaction_type.allowed_key_types(),
+            scope: match transaction_type {
+                TransactionType::RegisterContract | TransactionType::UpdateContract => {
+                    SigningScope::DataContract { protocol_version }
+                }
+                _ => scope,
+            },
+        }
+    }
+
+    /// Whether `key` has a purpose, security level and key type the
+    /// transaction accepts. Developer mode lists keys failing this, tagged.
+    fn accepts(&self, key: &IdentityPublicKey) -> bool {
+        self.purposes.contains(&key.purpose())
+            && self.security_levels.contains(&key.security_level())
+            && self
+                .key_types
+                .is_none_or(|types| types.contains(&key.key_type()))
+    }
+
+    /// Whether `key` is ever listed: Platform refuses a disabled key, and a
+    /// key bound to another contract or document type, so no mode offers
+    /// them.
+    fn may_sign(&self, key: &IdentityPublicKey, now: TimestampMillis) -> bool {
+        let caveats = key_caveats(key, self.scope, now);
+        !key.is_disabled()
+            && offered_for_manual_choice(&caveats)
+            && (!matches!(self.scope, SigningScope::DataContract { .. })
+                || !caveats.iter().any(KeyCaveat::blocks_signing))
+    }
+
+    /// Whether `key` is listed outside developer mode.
+    fn offers(&self, key: &IdentityPublicKey, now: TimestampMillis) -> bool {
+        self.accepts(key) && self.may_sign(key, now)
+    }
+}
+
+/// The keys `identity`'s chooser lists under `filter`, each as the identity
+/// holds it now: filed keys whose private half this device can obtain and
+/// that Platform may accept here. Outside developer mode also only keys of a
+/// purpose, security level and key type the transaction accepts.
+fn listed_keys<'a>(
+    identity: &'a QualifiedIdentity,
+    filter: KeyFilter<'a>,
+    is_dev_mode: bool,
+    now: TimestampMillis,
+) -> impl Iterator<Item = &'a IdentityPublicKey> + 'a {
+    identity
+        .private_keys
+        .identity_public_keys()
+        .into_iter()
+        // The stored copy may predate a limits raise: judge, label and hand
+        // on the key as the identity holds it now, skipping one it no longer
+        // holds.
+        .filter_map(|key_ref| identity.current_public_key(&key_ref.1.identity_public_key))
+        // Platform rejects signing with a disabled key or a key bound
+        // elsewhere, and no signer here can produce a private half this
+        // device cannot obtain, so never offer one — not even in dev mode,
+        // where the override only relaxes purpose, security-level and key
+        // type filters, not signability.
+        .filter(move |key| filter.may_sign(key, now) && identity.holds_obtainable_key(key))
+        .filter(move |key| is_dev_mode || filter.accepts(key))
+}
+
+/// Whether `identity` has (a) a key the chooser lists outside developer mode
+/// and (b) a public key `filter` offers whose private half this device cannot
+/// obtain: not loaded, kept in the legacy encrypted form, or derived from a
+/// wallet that is not here. Keys are judged as the identity holds them now,
+/// as the list judges them.
 fn key_eligibility(
     identity: &QualifiedIdentity,
-    allowed_purposes: &[Purpose],
-    allowed_security_levels: &[SecurityLevel],
+    filter: &KeyFilter<'_>,
+    now: TimestampMillis,
 ) -> (bool, bool) {
     let has_suitable_keys_with_private =
-        identity
-            .private_keys
-            .identity_public_keys()
-            .iter()
-            .any(|key_ref| {
-                let key = &key_ref.1.identity_public_key;
-                allowed_purposes.contains(&key.purpose())
-                    && allowed_security_levels.contains(&key.security_level())
-            });
+        listed_keys(identity, *filter, false, now).next().is_some();
 
-    let has_eligible_public_keys_without_private =
-        identity.identity.public_keys().iter().any(|(_, pub_key)| {
-            let basic_ok = allowed_purposes.contains(&pub_key.purpose())
-                && allowed_security_levels.contains(&pub_key.security_level());
-            let has_private = identity
-                .private_keys
-                .identity_public_keys()
-                .iter()
-                .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
-            basic_ok && !has_private
-        });
+    let has_eligible_public_keys_without_private = identity
+        .identity
+        .public_keys()
+        .values()
+        .any(|pub_key| filter.offers(pub_key, now) && !identity.holds_obtainable_key(pub_key));
 
     (
         has_suitable_keys_with_private,
@@ -482,11 +644,11 @@ fn render_no_eligible_key_group(
     action
 }
 
-/// Renders a ComboBox listing `identity`'s loaded private keys eligible for the transaction.
+/// Renders a ComboBox listing `identity`'s loaded private keys `filter` offers.
 ///
 /// With `identity` `None`, prompts the user to pick an identity first. Developer mode also
-/// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`]. `label_id` is the
-/// label that names the combo box.
+/// lists keys of another purpose, security level or key type, tagged via
+/// [`format_key_label_dev`]. `label_id` is the label that names the combo box.
 #[allow(clippy::too_many_arguments)]
 fn render_key_combo(
     ui: &mut Ui,
@@ -495,10 +657,11 @@ fn render_key_combo(
     width: f32,
     identity: Option<&QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
-    allowed_purposes: &[Purpose],
-    allowed_security_levels: &[SecurityLevel],
+    filter: &KeyFilter<'_>,
     is_dev_mode: bool,
-) {
+) -> bool {
+    let now = now_ms();
+    let mut picked = false;
     ComboBox::from_id_salt(combo_id)
         .width(width)
         .selected_text(
@@ -512,42 +675,106 @@ fn render_key_combo(
                 kui.label("Pick an identity first");
                 return;
             };
-            for key_ref in qi.private_keys.identity_public_keys() {
-                let key = &key_ref.1.identity_public_key;
-
-                // Platform rejects signing with a disabled key, so never offer one
-                // — not even in dev mode, where the override only relaxes purpose and
-                // security-level filters, not signability.
-                if key.is_disabled() {
-                    continue;
-                }
-
-                let is_allowed = is_dev_mode
-                    || (allowed_purposes.contains(&key.purpose())
-                        && allowed_security_levels.contains(&key.security_level()));
-                if !is_allowed {
-                    continue;
-                }
-
-                let is_dev_override = is_dev_mode
-                    && (!allowed_purposes.contains(&key.purpose())
-                        || !allowed_security_levels.contains(&key.security_level()));
+            for key in listed_keys(qi, *filter, is_dev_mode, now) {
+                let is_dev_override = !filter.accepts(key);
                 let label = if is_dev_override {
                     format_key_label_dev(key)
                 } else {
                     format_key_label(key)
                 };
+                // A key Platform may refuse stays selectable (the user may know
+                // better, e.g. a contract group that covers this contract), but
+                // its entry says why it may not work.
+                let label = key_entry_label(&label, key_caveats(key, filter.scope, now).first());
 
                 if kui
                     .selectable_label(selected_key.as_ref() == Some(key), label)
                     .clicked()
                 {
                     *selected_key = Some(key.clone());
+                    picked = true;
                 }
             }
         })
         .response
         .labelled_by(label_id);
+
+    if let (Some(qi), Some(selected)) = (identity, selected_key.as_ref()) {
+        let live = qi.live_public_key(selected);
+        if live != selected {
+            *selected_key = Some(live.clone());
+        }
+    }
+    if let Some(key) = selected_key.as_ref() {
+        render_key_caveats(ui, &key_caveats(key, filter.scope, now));
+    }
+    picked
+}
+
+/// Whether the key's caveats permit an explicit choice. Callers also
+/// enforce disabled-key and operation-specific signing rules.
+pub(crate) fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
+    !caveats.iter().any(|caveat| {
+        matches!(
+            caveat,
+            KeyCaveat::OutOfBounds | KeyCaveat::ContractRequiresUnlimitedKey
+        )
+    })
+}
+
+/// A key list entry for the key labelled `label`, naming its most severe
+/// caveat. Each entry is one complete template, so it translates as a unit.
+fn key_entry_label(label: &str, caveat: Option<&KeyCaveat>) -> String {
+    match caveat {
+        Some(KeyCaveat::Expired { .. }) => format!("{label} (expired)"),
+        Some(KeyCaveat::ContractGroupBound { .. }) => format!("{label} (contract group)"),
+        Some(KeyCaveat::Budgeted { .. }) => format!("{label} (spending limit)"),
+        Some(KeyCaveat::Expiring { .. }) => format!("{label} (expires)"),
+        // Disabled keys and keys bound to another contract or document type
+        // are never listed, so no entry names them.
+        Some(
+            KeyCaveat::Disabled | KeyCaveat::OutOfBounds | KeyCaveat::ContractRequiresUnlimitedKey,
+        )
+        | None => label.to_string(),
+    }
+}
+
+/// The user-facing explanation of a key caveat: what it means and what to do.
+pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
+    match caveat {
+        KeyCaveat::ContractRequiresUnlimitedKey => "This key has a spending limit or an expiry date, so it cannot create or update contracts. Choose a key without either restriction.".to_string(),
+        KeyCaveat::Disabled => "This key is disabled, so the network will reject anything signed with it. Choose another key.".to_string(),
+        KeyCaveat::Expired { expired_at } => format!(
+            "This key expired on {date}, so the network will reject anything signed with it. Choose another key.",
+            date = crate::model::datetime::local_date_time_from_unix_millis(*expired_at)
+        ),
+        KeyCaveat::OutOfBounds => "This key can only sign for a different contract or document type, so the network will reject this action. Choose another key.".to_string(),
+        KeyCaveat::ContractGroupBound { group_id } => format!(
+            "This key can only sign for the contracts in contract group {group_id}. If this contract is not in that group, the network rejects the action. Choose another key if you are not sure.",
+            group_id = group_id.to_string(Encoding::Base58)
+        ),
+        KeyCaveat::Budgeted { total_budget } => format!(
+            "This key has a lifetime spending limit of {amount}. Once the limit is used up, the network rejects actions signed with it.",
+            amount = format_credits_as_dash(*total_budget)
+        ),
+        KeyCaveat::Expiring { expires_at } => format!(
+            "This key stops working on {date}.",
+            date = crate::model::datetime::local_date_time_from_unix_millis(*expires_at)
+        ),
+    }
+}
+
+/// Renders the caveats of the selected signing key under a key chooser.
+fn render_key_caveats(ui: &mut Ui, caveats: &[KeyCaveat]) {
+    let dark_mode = ui.style().visuals.dark_mode;
+    for caveat in caveats {
+        let color = if caveat.blocks_signing() {
+            DashColors::error_color(dark_mode)
+        } else {
+            DashColors::warning_color(dark_mode)
+        };
+        ui.label(egui::RichText::new(key_caveat_message(caveat)).color(color));
+    }
 }
 
 /// Renders a centered title + description block (used above success-screen buttons).
@@ -575,12 +802,15 @@ fn render_info_section(ui: &mut Ui, title: &str, description: &str) {
     );
 }
 
+/// `scope` is what the chosen key will sign, for the contract-bounds warning
+/// under the chooser.
 pub fn add_key_chooser(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
+    scope: SigningScope<'_>,
 ) -> AppAction {
     add_key_chooser_with_doc_type(
         ui,
@@ -589,6 +819,7 @@ pub fn add_key_chooser(
         selected_key,
         transaction_type,
         None,
+        scope,
     )
 }
 
@@ -601,47 +832,100 @@ pub fn add_key_chooser_with_doc_type(
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
     document_type: Option<&DocumentType>,
+    scope: SigningScope<'_>,
 ) -> AppAction {
-    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
-    let mut action = AppAction::None;
-
-    let allowed_purposes = transaction_type.allowed_purposes();
     let allowed_security_levels = compute_allowed_security_levels(transaction_type, document_type);
+    add_key_chooser_with_security_levels(
+        ui,
+        app_context,
+        identity,
+        selected_key,
+        transaction_type,
+        &allowed_security_levels,
+        scope,
+    )
+}
+
+/// Key chooser offering keys at `allowed_security_levels` only, for a
+/// transaction whose accepted levels no single document type decides (a
+/// username registration signs both DPNS preorder and domain documents).
+/// Otherwise as [`add_key_chooser_with_doc_type`].
+pub fn add_key_chooser_with_security_levels(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    allowed_security_levels: &[SecurityLevel],
+    scope: SigningScope<'_>,
+) -> AppAction {
+    add_key_chooser_with_selection(
+        ui,
+        app_context,
+        identity,
+        selected_key,
+        transaction_type,
+        allowed_security_levels,
+        scope,
+    )
+    .0
+}
+
+/// Reports an explicit pick, including a click on the key already selected.
+pub(crate) fn add_key_chooser_with_selection(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    allowed_security_levels: &[SecurityLevel],
+    scope: SigningScope<'_>,
+) -> (AppAction, bool) {
+    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
+    let allowed_purposes = transaction_type.allowed_purposes();
+    let filter = KeyFilter::new(
+        transaction_type,
+        &allowed_purposes,
+        allowed_security_levels,
+        scope,
+        app_context.protocol_version_info().verified_version,
+    );
 
     let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
-        key_eligibility(identity, &allowed_purposes, &allowed_security_levels);
+        key_eligibility(identity, &filter, now_ms());
 
     if !is_dev_mode && !has_suitable_keys_with_private {
-        action = render_no_eligible_key_group(
-            ui,
-            app_context,
-            identity,
-            transaction_type,
-            has_eligible_public_keys_without_private,
-        );
-    } else {
-        ui.horizontal(|ui| {
-            let label = ui
-                .vertical(|ui| {
-                    ui.add_space(15.0);
-                    ui.label("Key:")
-                })
-                .inner;
-            render_key_combo(
+        return (
+            render_no_eligible_key_group(
                 ui,
-                label.id,
-                "key_chooser_combo",
-                300.0,
-                Some(identity),
-                selected_key,
-                &allowed_purposes,
-                &allowed_security_levels,
-                is_dev_mode,
-            );
-        });
+                app_context,
+                identity,
+                transaction_type,
+                has_eligible_public_keys_without_private,
+            ),
+            false,
+        );
     }
 
-    action
+    let picked = ui.horizontal(|ui| {
+        let label = ui
+            .vertical(|ui| {
+                ui.add_space(15.0);
+                ui.label("Key:")
+            })
+            .inner;
+        render_key_combo(
+            ui,
+            label.id,
+            "key_chooser_combo",
+            300.0,
+            Some(identity),
+            selected_key,
+            &filter,
+            is_dev_mode,
+        )
+    });
+    (AppAction::None, picked.inner)
 }
 
 /// Identity key chooser that filters keys based on transaction type and dev mode
@@ -652,6 +936,7 @@ pub fn add_identity_key_chooser<'a, T>(
     selected_identity: &mut Option<QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
+    scope: SigningScope<'_>,
 ) -> AppAction
 where
     T: Iterator<Item = &'a QualifiedIdentity>,
@@ -664,10 +949,12 @@ where
         selected_key,
         transaction_type,
         None,
+        scope,
     )
 }
 
 /// Identity key chooser that filters keys based on transaction type, document type and dev mode
+#[allow(clippy::too_many_arguments)]
 pub fn add_identity_key_chooser_with_doc_type<'a, T>(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -676,6 +963,7 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
     document_type: Option<&DocumentType>,
+    scope: SigningScope<'_>,
 ) -> AppAction
 where
     T: Iterator<Item = &'a QualifiedIdentity>,
@@ -722,13 +1010,20 @@ where
                 let allowed_purposes = transaction_type.allowed_purposes();
                 let allowed_security_levels =
                     compute_allowed_security_levels(transaction_type, document_type);
+                let filter = KeyFilter::new(
+                    transaction_type,
+                    &allowed_purposes,
+                    &allowed_security_levels,
+                    scope,
+                    app_context.protocol_version_info().verified_version,
+                );
 
                 // Show the "no eligible key" notice instead of the combo when the selected
                 // identity has no loaded eligible key (outside developer mode).
                 let mut show_combo = true;
                 if let Some(qi) = selected_identity.as_ref() {
                     let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
-                        key_eligibility(qi, &allowed_purposes, &allowed_security_levels);
+                        key_eligibility(qi, &filter, now_ms());
                     if !is_dev_mode && !has_suitable_keys_with_private {
                         show_combo = false;
                         action = render_no_eligible_key_group(
@@ -749,8 +1044,7 @@ where
                         220.0,
                         selected_identity.as_ref(),
                         selected_key,
-                        &allowed_purposes,
-                        &allowed_security_levels,
+                        &filter,
                         is_dev_mode,
                     );
                 }
@@ -1151,7 +1445,393 @@ pub fn show_group_token_success_screen_with_fee(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn interop_contract_manual_choice_does_not_offer_expired_keys_on_protocol14() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let identity = identity_holding(&[expired]);
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            let filter =
+                KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, Some(14));
+            for dev in [false, true] {
+                assert_eq!(listed_keys(&identity, filter, dev, 2).count(), 0);
+            }
+        }
+    }
+    #[test]
+    fn interop_contract_key_choice_tracks_verified_protocol_changes() {
+        use crate::context::test_support::{
+            auth_key, identity_holding, prove_protocol_version, test_app_context,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let key =
+            auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(200_000_000_000), Some(u64::MAX));
+        let identity = identity_holding(&[key]);
+        let mut selected = None;
+        let levels = [SecurityLevel::CRITICAL];
+        assert!(!refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert!(selected.is_none(), "a seed is not network confirmation");
+        prove_protocol_version(&ctx, 14);
+        assert!(refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert_eq!(selected.as_ref().map(|key| key.id()), Some(1));
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            for (version, expected) in [(None, 0), (Some(14), 1), (Some(15), 0)] {
+                let filter =
+                    KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, version);
+                for dev in [false, true] {
+                    assert_eq!(listed_keys(&identity, filter, dev, 1).count(), expected);
+                }
+            }
+        }
+        prove_protocol_version(&ctx, 15);
+        assert!(refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert!(
+            selected.is_none(),
+            "activation invalidates a previous limited choice"
+        );
+    }
+
+    #[test]
+    fn pv15_contract_manual_chooser_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            let filter =
+                KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, Some(15));
+            for (budget, expiry) in [
+                (Some(0), None),
+                (Some(1_000), None),
+                (None, Some(u64::MAX)),
+                (Some(1_000), Some(u64::MAX)),
+            ] {
+                let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+                let identity = identity_holding(&[limited, auth_key(2, SecurityLevel::CRITICAL)]);
+                for dev_mode in [false, true] {
+                    let ids: Vec<_> = listed_keys(&identity, filter, dev_mode, 1)
+                        .map(|key| key.id())
+                        .collect();
+                    assert_eq!(
+                        ids,
+                        vec![2],
+                        "{action:?}, dev={dev_mode}, budget={budget:?}, expiry={expiry:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pv15_limited_document_key_remains_usable_automatically_and_manually() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::model::identity_key_usability::{KeyRequirements, select_identity_signing_key};
+        let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000), Some(u64::MAX));
+        let identity = identity_holding(&[limited]);
+        let scope = SigningScope::Document {
+            contract_id: Identifier::new([1; 32]),
+            document_type_name: "note",
+        };
+        let action = TransactionType::DocumentAction;
+        let purposes = action.allowed_purposes();
+        let levels = action.allowed_security_levels();
+        let filter = KeyFilter::new(action, &purposes, &levels, scope, Some(15));
+        assert_eq!(
+            listed_keys(&identity, filter, false, 1)
+                .map(|key| key.id())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            select_identity_signing_key(
+                &identity.identity,
+                KeyRequirements::new(Purpose::AUTHENTICATION, &levels, scope),
+                1,
+                |_| true
+            )
+            .map(|key| key.id()),
+            Some(1)
+        );
+    }
+
+    /// Regression: a key bound to another contract or document type was
+    /// offered, though its bounds prove Platform refuses it here. Expired and
+    /// limited keys stay on offer (IDN-024), with their warning.
+    #[test]
+    fn the_manual_chooser_leaves_out_keys_bound_elsewhere() {
+        use super::{KeyCaveat, offered_for_manual_choice};
+        assert!(!offered_for_manual_choice(&[KeyCaveat::OutOfBounds]));
+        assert!(!offered_for_manual_choice(&[
+            KeyCaveat::Expired { expired_at: 1 },
+            KeyCaveat::OutOfBounds,
+        ]));
+        for kept in [
+            KeyCaveat::Expired { expired_at: 1 },
+            KeyCaveat::Budgeted { total_budget: 5 },
+            KeyCaveat::Expiring { expires_at: 9 },
+            KeyCaveat::ContractGroupBound {
+                group_id: dash_sdk::platform::Identifier::new([3; 32]),
+            },
+        ] {
+            assert!(
+                offered_for_manual_choice(std::slice::from_ref(&kept)),
+                "{kept:?}"
+            );
+        }
+        assert!(offered_for_manual_choice(&[]));
+    }
+
     use super::*;
+
+    /// The filter the contact-request chooser applies, within DashPay's
+    /// contactRequest document type.
+    fn contact_request_filter<'a>(
+        purposes: &'a [Purpose],
+        levels: &'a [SecurityLevel],
+        dashpay: Identifier,
+    ) -> KeyFilter<'a> {
+        KeyFilter {
+            purposes,
+            security_levels: levels,
+            key_types: TransactionType::ContactRequest.allowed_key_types(),
+            scope: SigningScope::Document {
+                contract_id: dashpay,
+                document_type_name: "contactRequest",
+            },
+        }
+    }
+
+    /// Regression: the chooser gate counted any filed key of the right purpose
+    /// and level, while the list left out disabled keys and keys bound
+    /// elsewhere, so an identity holding only such a key got an empty list
+    /// instead of the no-usable-key guidance. Both now apply one predicate,
+    /// to the key as the identity holds it now.
+    #[test]
+    fn the_chooser_gate_counts_only_keys_the_list_offers() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::KeyType;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+
+        let dashpay = Identifier::new([0xDA; 32]);
+        let purposes = TransactionType::ContactRequest.allowed_purposes();
+        let levels = TransactionType::ContactRequest.allowed_security_levels();
+        let filter = contact_request_filter(&purposes, &levels, dashpay);
+        let high = |id| auth_key(id, SecurityLevel::HIGH);
+        let now = 1_000;
+
+        let usable = identity_holding(&[high(1)]);
+        assert_eq!(key_eligibility(&usable, &filter, now), (true, false));
+
+        let elsewhere = identity_holding(&[bound_to(
+            high(1),
+            ContractBounds::SingleContract {
+                id: Identifier::new([9; 32]),
+            },
+        )]);
+        assert_eq!(key_eligibility(&elsewhere, &filter, now), (false, false));
+
+        let mut bls = high(1);
+        bls.set_key_type(KeyType::BLS12_381);
+        assert_eq!(
+            key_eligibility(&identity_holding(&[bls]), &filter, now),
+            (false, false),
+            "a DashPay document is signed with an ECDSA key"
+        );
+
+        // Filed while enabled, disabled on the network since.
+        let mut disabled_live = identity_holding(&[high(1)]);
+        let mut disabled = high(1);
+        disabled.set_disabled_at(1);
+        disabled_live
+            .identity
+            .set_public_keys(std::collections::BTreeMap::from([(1, disabled)]));
+        assert_eq!(
+            key_eligibility(&disabled_live, &filter, now),
+            (false, false)
+        );
+
+        // Published only: guidance to load it, unless it could not sign anyway.
+        let mut public_only = identity_holding(&[]);
+        public_only
+            .identity
+            .set_public_keys(std::collections::BTreeMap::from([(1, high(1))]));
+        assert_eq!(key_eligibility(&public_only, &filter, now), (false, true));
+        public_only
+            .identity
+            .set_public_keys(std::collections::BTreeMap::from([(
+                1,
+                bound_to(
+                    high(1),
+                    ContractBounds::SingleContract {
+                        id: Identifier::new([9; 32]),
+                    },
+                ),
+            )]));
+        assert_eq!(key_eligibility(&public_only, &filter, now), (false, false));
+    }
+
+    /// Regression: the chooser gate and its list counted a filed key whose
+    /// private half this device cannot obtain (kept in the legacy encrypted
+    /// form, or as a reference into a wallet not on this device), so the form
+    /// opened onto a key that cannot sign. Such a key is offered nowhere, and
+    /// the gate gives the guidance for a key whose private half is missing.
+    #[test]
+    fn the_chooser_gate_and_list_skip_keys_this_device_cannot_obtain() {
+        use crate::context::test_support::{
+            auth_key, hold_as_legacy_encrypted, hold_as_wallet_reference, identity_holding,
+        };
+
+        let dashpay = Identifier::new([0xDA; 32]);
+        let purposes = TransactionType::ContactRequest.allowed_purposes();
+        let levels = TransactionType::ContactRequest.allowed_security_levels();
+        let filter = contact_request_filter(&purposes, &levels, dashpay);
+        let now = 1_000;
+
+        let mut legacy = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        hold_as_legacy_encrypted(&mut legacy, 1);
+        let mut walletless = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        hold_as_wallet_reference(&mut walletless, 1, [0x5A; 32]);
+
+        for (case, identity) in [("legacy encrypted", legacy), ("wallet missing", walletless)] {
+            assert_eq!(
+                key_eligibility(&identity, &filter, now),
+                (false, true),
+                "{case}"
+            );
+            assert_eq!(
+                listed_keys(&identity, filter, true, now).count(),
+                0,
+                "{case}: not listed, not even in developer mode"
+            );
+        }
+    }
+
+    /// Regression: a filed key the identity no longer holds, removed or
+    /// replaced under the same id, was listed by its stored copy, though
+    /// Platform verifies against the identity's current key.
+    #[test]
+    fn the_chooser_lists_no_key_the_identity_no_longer_holds() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let dashpay = Identifier::new([0xDA; 32]);
+        let purposes = TransactionType::ContactRequest.allowed_purposes();
+        let levels = TransactionType::ContactRequest.allowed_security_levels();
+        let filter = contact_request_filter(&purposes, &levels, dashpay);
+        let now = 1_000;
+
+        let mut removed = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        removed
+            .identity
+            .set_public_keys(std::collections::BTreeMap::new());
+        let mut replaced = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        let mut other = auth_key(1, SecurityLevel::HIGH);
+        other.set_data(vec![3; 33].into());
+        replaced
+            .identity
+            .set_public_keys(std::collections::BTreeMap::from([(1, other)]));
+
+        for (case, identity) in [("removed", removed), ("replaced", replaced)] {
+            assert_eq!(
+                listed_keys(&identity, filter, true, now).count(),
+                0,
+                "{case}"
+            );
+            assert!(!key_eligibility(&identity, &filter, now).0, "{case}");
+        }
+    }
+
+    /// DashPay and username registration choosers offer the key types their
+    /// automatic choice takes; other transactions the types Platform verifies.
+    #[test]
+    fn document_choosers_offer_the_key_types_their_writes_sign_with() {
+        use crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES;
+        use crate::model::qualified_identity::DASHPAY_SIGNING_KEY_TYPES;
+        assert_eq!(
+            TransactionType::ContactRequest.allowed_key_types(),
+            Some(DASHPAY_SIGNING_KEY_TYPES)
+        );
+        assert_eq!(
+            TransactionType::UsernameRegistration.allowed_key_types(),
+            Some(DPNS_SIGNING_KEY_TYPES)
+        );
+        assert_eq!(
+            TransactionType::DocumentAction.allowed_key_types(),
+            Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES)
+        );
+        for token in [TransactionType::TokenTransfer, TransactionType::TokenClaim] {
+            assert_eq!(
+                token.allowed_key_types(),
+                Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES),
+                "{token:?}"
+            );
+        }
+        assert_eq!(
+            TransactionType::UsernameRegistration.allowed_purposes(),
+            vec![Purpose::AUTHENTICATION]
+        );
+    }
+
+    /// Regression: every chooser except the token, DashPay and username ones
+    /// offered keys of any type, including EdDSA and BIP13 keys Platform
+    /// refuses for every identity-signed transition.
+    #[test]
+    fn no_chooser_offers_a_key_type_platform_refuses() {
+        for transaction_type in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+            TransactionType::Transfer,
+            TransactionType::Withdraw,
+            TransactionType::DocumentAction,
+            TransactionType::TokenAction,
+            TransactionType::TokenTransfer,
+            TransactionType::TokenClaim,
+            TransactionType::ContactRequest,
+            TransactionType::UsernameRegistration,
+        ] {
+            let types = transaction_type
+                .allowed_key_types()
+                .unwrap_or_else(|| panic!("{transaction_type:?} accepts every key type"));
+            for refused in [KeyType::EDDSA_25519_HASH160, KeyType::BIP13_SCRIPT_HASH] {
+                assert!(
+                    !types.contains(&refused),
+                    "{transaction_type:?}: {refused:?}"
+                );
+            }
+        }
+    }
 
     /// Screen readers announce the info icon as a button with a short name,
     /// and its explanation as the description.

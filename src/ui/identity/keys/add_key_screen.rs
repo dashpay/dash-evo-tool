@@ -32,7 +32,6 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
 
@@ -137,13 +136,11 @@ pub struct AddKeyScreen {
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -183,13 +180,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -234,13 +229,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);

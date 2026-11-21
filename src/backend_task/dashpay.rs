@@ -4,8 +4,6 @@ use crate::context::AppContext;
 use dash_sdk::Sdk;
 use std::sync::Arc;
 
-pub mod auto_accept_handler;
-pub mod auto_accept_proof;
 pub mod avatar_processing;
 pub mod contact_info;
 pub mod contact_requests;
@@ -85,12 +83,12 @@ pub enum DashPayTask {
         to_username: String,
         account_label: Option<String>,
     },
+    /// Send a contact request to the owner of a scanned contact QR code,
+    /// carrying the auto-accept proof its key signs.
     SendContactRequestWithProof {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
-        to_identity_id: Identifier,
-        account_label: Option<String>,
-        qr_auto_accept: crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData,
+        qr: crate::model::dashpay::ContactQr,
     },
     AcceptContactRequest {
         identity: QualifiedIdentity,
@@ -138,13 +136,11 @@ pub enum DashPayTask {
     DetectIncomingContactPayments {
         outputs: Vec<crate::model::dashpay::DetectedIncomingOutput>,
     },
-    /// Build an auto-accept contact QR payload. Resolves the ENCRYPTION key and
-    /// derives the auto-accept key through the JIT chokepoint in the backend, so
-    /// the UI never reads a seed.
+    /// Build the identity's contact QR code through upstream platform-wallet;
+    /// the wallet seed is read through the secret seam in the backend, so the
+    /// UI never reads a seed.
     GenerateAutoAcceptQrCode {
         identity: QualifiedIdentity,
-        account_reference: u32,
-        validity_hours: u32,
     },
 }
 
@@ -206,18 +202,15 @@ impl AppContext {
             DashPayTask::SendContactRequestWithProof {
                 identity,
                 signing_key,
-                to_identity_id,
-                account_label,
-                qr_auto_accept,
+                qr,
             } => Ok(contact_requests::send_contact_request_with_proof(
                 self,
                 sdk,
                 identity,
                 signing_key,
-                to_identity_id
-                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
-                account_label,
-                Some(qr_auto_accept),
+                qr.dpns_name(),
+                None,
+                Some(qr),
             )
             .await?),
             DashPayTask::AcceptContactRequest {
@@ -375,21 +368,152 @@ impl AppContext {
                     ))
                 }
             }
-            DashPayTask::GenerateAutoAcceptQrCode {
-                identity,
-                account_reference,
-                validity_hours,
-            } => {
-                let proof = auto_accept_proof::generate_auto_accept_proof(
-                    &identity,
-                    account_reference,
-                    validity_hours,
-                )
-                .await?;
-                Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(
-                    proof.to_qr_string(),
-                ))
+            DashPayTask::GenerateAutoAcceptQrCode { identity } => {
+                let seed_hash = self.contact_qr_wallet_seed_hash(&identity)?;
+                let uri = self
+                    .wallet_backend()?
+                    .dashpay_build_auto_accept_qr(&identity, seed_hash)
+                    .await?;
+                Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(uri))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod qr_generation_tests {
+    use super::*;
+    use crate::context::test_support::{bare_user_identity, test_app_context};
+    use crate::model::dashpay::ContactQr;
+    use crate::model::qualified_identity::DPNSNameInfo;
+    use crate::model::wallet::Wallet;
+    use crate::model::wallet::birth_height::WalletOrigin;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+    use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    use platform_wallet::wallet::identity::crypto::auto_accept::verify_auto_accept_proof;
+
+    /// An offline SDK on which Platform proves that `owner` owns `alice.dash`.
+    async fn sdk_proving_owner_name(ctx: &AppContext, owner: Identifier) -> dash_sdk::Sdk {
+        use crate::context::test_support::dpns_name_document;
+        use dash_sdk::dpp::document::Document;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
+        use dash_sdk::platform::DocumentQuery;
+        use dash_sdk::query_types::Documents;
+
+        let mut sdk = crate::context::test_support::mock_network_sdk_for(ctx);
+        let query = DocumentQuery {
+            select: SelectProjection::documents(),
+            data_contract: ctx.dpns_contract(),
+            document_type_name: "domain".into(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".into(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(owner.to_buffer()),
+            }],
+            time_range_clauses: vec![],
+            integer_range_clauses: vec![],
+            sub_queries: vec![],
+            group_by: vec![],
+            having: vec![],
+            order_by_clauses: vec![],
+            limit: 10,
+            offset: None,
+            start: None,
+        };
+        let domain = dpns_name_document(owner, "alice", Value::Identifier(owner.to_buffer()));
+        let documents: Documents = [(Identifier::new([0x5D; 32]), Some(domain))]
+            .into_iter()
+            .collect();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(query, Some(documents))
+            .await
+            .expect("domain expectation");
+        sdk
+    }
+
+    /// The code names the username Platform proves the identity owns, never
+    /// a cached one: a name can be transferred, so a cached name may now
+    /// send paid contact requests to someone else.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_contact_qr_uses_the_linked_wallet_through_the_secret_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner_id = Identifier::new([2; 32]);
+        ctx.sdk
+            .store(Arc::new(sdk_proving_owner_name(&ctx, owner_id).await));
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire wallet backend");
+        let mut wallets = Vec::new();
+        for label in ["Unrelated", "Owner"] {
+            let seed = crate::test_support::keys::seed();
+            let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(label.into()), None)
+                .expect("wallet");
+            let (hash, wallet) = ctx
+                .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                .expect("register wallet");
+            ctx.wallet_backend()
+                .expect("wallet backend")
+                .register_wallet_from_seed(&hash, &seed, Some(0))
+                .await
+                .expect("register upstream wallet");
+            wallets.push((hash, wallet, seed));
+        }
+        wallets.sort_by_key(|wallet| wallet.0);
+        let unrelated = &wallets[0];
+        let owner = &wallets[1];
+        let mut identity = bare_user_identity(owner_id, Network::Testnet);
+        identity.dpns_names.push(DPNSNameInfo {
+            name: "transferred.dash".into(),
+            acquired_at: 0,
+        });
+        for (hash, wallet, _) in &wallets {
+            identity.associated_wallets.insert(*hash, wallet.clone());
+        }
+        ctx.insert_local_qualified_identity(&identity, &Some((owner.0, 0)))
+            .expect("store owner link");
+        assert_ne!(identity.dashpay_wallet_seed_hash(), Some(owner.0));
+
+        let sdk = crate::context::test_support::mock_sdk_for(&ctx);
+        let result = ctx
+            .run_dashpay_task(DashPayTask::GenerateAutoAcceptQrCode { identity }, &sdk)
+            .await
+            .expect("generate QR through the production task");
+        let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(uri) = result else {
+            panic!("expected generated contact QR");
+        };
+        assert!(uri.starts_with("dash:?du=alice&"), "{uri}");
+        let now = u64::try_from(chrono::Utc::now().timestamp()).expect("current time");
+        let sender = Identifier::new([3; 32]);
+        let proof = ContactQr::parse(&uri, now)
+            .expect("parse upstream QR")
+            .sign_proof(&sender, &owner_id, 3, now)
+            .expect("sign contact proof");
+        for (wallet, expected) in [(owner, true), (unrelated, false)] {
+            let upstream = UpstreamWallet::from_seed_bytes(
+                wallet.2,
+                Network::Testnet,
+                WalletAccountCreationOptions::None,
+            )
+            .expect("upstream wallet");
+            assert_eq!(
+                verify_auto_accept_proof(
+                    &upstream,
+                    Network::Testnet,
+                    &proof,
+                    &sender,
+                    &owner_id,
+                    3
+                )
+                .expect("verify proof"),
+                expected
+            );
         }
     }
 }

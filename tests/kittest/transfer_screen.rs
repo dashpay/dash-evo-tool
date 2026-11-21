@@ -46,6 +46,67 @@ fn identity_without_transfer_keys() -> QualifiedIdentity {
     }
 }
 
+/// An identity holding only an expired transfer key: it has a key, but no
+/// key that can sign a transfer.
+fn identity_with_only_an_expired_transfer_key() -> QualifiedIdentity {
+    use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
+    use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+    use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::identity::{IdentityPublicKey, Purpose};
+
+    let (mut transfer, _) = IdentityPublicKey::random_ecdsa_critical_level_authentication_key(
+        1,
+        None,
+        PlatformVersion::latest(),
+    )
+    .expect("a random ECDSA key");
+    transfer.set_purpose(Purpose::TRANSFER);
+    let expired = transfer.with_limits(None, Some(1));
+
+    let mut qi = identity_without_transfer_keys();
+    qi.identity
+        .set_public_keys(BTreeMap::from([(1, expired.clone())]));
+    qi.private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+        (
+            QualifiedIdentityPublicKey::from(expired),
+            PrivateKeyData::Clear(rand::random()),
+        ),
+    )]));
+    qi
+}
+
+/// The gate opens only for a key the form can sign with: an identity holding
+/// only an expired transfer key is told its key cannot sign, not handed a
+/// form with no key selected.
+#[test]
+fn an_expired_transfer_key_closes_the_form_with_its_own_message() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let mut screen =
+            TransferScreen::new(identity_with_only_an_expired_transfer_key(), &app_context);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(3);
+
+        assert!(
+            harness
+                .query_by_label_contains("No transfer key on this device can sign")
+                .is_some(),
+            "an expired-key-only identity must be told its key cannot sign"
+        );
+        assert!(
+            harness.query_by_label("Manage keys").is_some(),
+            "the closed gate still offers the keys list"
+        );
+    });
+}
+
 /// The no-key branch signposts the keys list instead of dead-ending on "Add
 /// key", and clicking it opens that list.
 #[test]

@@ -4337,6 +4337,51 @@ mod tests {
         screen.base_supply_amount = Some(Amount::new(1_000, 8));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_token_creator_keeps_json_preview_for_a_watch_only_identity() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = TokensScreen::new(&ctx, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &ctx);
+        ctx.insert_local_qualified_identity(screen.selected_identity.as_ref().unwrap(), &None)
+            .unwrap();
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::MostRestrictive,
+        ));
+        screen.base_supply_input = Some(AmountInput::new(Amount::new(1_000, 8)));
+        screen.show_advanced_token_creator = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1600.0, 4000.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let context = ui.ctx().clone();
+                    screen.render_token_creator(&context, ui);
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        assert!(harness.query_by_label("No Identities Loaded").is_none());
+        let args = harness
+            .state_mut()
+            .parse_token_build_args()
+            .expect("valid preview inputs");
+        ctx.build_data_contract_v1_with_one_token(args.identity_id, args.into_contract_params())
+            .expect("valid preview contract");
+        harness.get_by_label("View JSON").click();
+        harness.run_steps(4);
+        assert!(harness.state().show_json_popup);
+        assert!(harness.state().json_popup_text.contains("PresetCoin"));
+        assert!(
+            !harness
+                .get_by_label("Register Token Contract")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// Asserts that every rule in `args` equals what `features` defines, computed
     /// straight from the Platform preset rather than through the creator.
     fn assert_build_args_match_preset(

@@ -506,4 +506,30 @@ mod tests {
         let mintable = MintAction::new(&token_info(&context, None, true), &context);
         assert_eq!(mintable.disabled_reason(), FILL_IN_THE_FORM);
     }
+
+    /// Regression: with no automatic key (here only a contract-group key, for
+    /// the user to choose) the constructor still looked up the unlock wallet
+    /// for no key and raised its error banner over a form that is fine.
+    #[test]
+    fn opening_the_form_without_an_automatic_key_raises_no_wallet_error() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut info = token_info(&context, None, false);
+        info.identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::from([0x6A; 32]),
+            },
+        )]);
+
+        let _screen = MintTokensScreen::new(info, &context);
+        let banners =
+            crate::ui::components::message_banner::global_banner_texts(context.egui_ctx());
+        assert!(
+            !banners.iter().any(|text| text.contains("No key provided")),
+            "{banners:?}"
+        );
+    }
 }

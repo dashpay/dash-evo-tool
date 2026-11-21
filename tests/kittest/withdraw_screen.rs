@@ -6,8 +6,8 @@
 //! on-chain TRANSFER key with no local private material, e.g. a loaded
 //! masternode identity with the payout field left blank) could get silently
 //! pre-selected even though the signer can never use it. The fix
-//! (`identity.default_withdrawal_key()`, TRANSFER-preferred / OWNER-fallback,
-//! private-key-backed only) is unit-tested at the model layer in
+//! (`identity.withdrawal_signing_key()`, TRANSFER-preferred / OWNER-fallback,
+//! signable keys only) is unit-tested at the model layer in
 //! `src/model/qualified_identity/mod.rs::withdrawal_key_tests`. This file
 //! verifies the fix holds when `WithdrawalScreen` is actually constructed and
 //! rendered — the layer the model-only tests never touched.
@@ -37,7 +37,7 @@ use dash_evo_tool::ui::identity::withdraw_screen::WithdrawalScreen;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
-use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose};
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -50,10 +50,13 @@ use std::sync::Arc;
 /// `model/qualified_identity/mod.rs::withdrawal_key_tests` so the two test
 /// suites stay in lockstep on fixture shape.
 fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-    let mut k = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
-    k.set_id(id);
+    let (mut k, _) = IdentityPublicKey::random_ecdsa_critical_level_authentication_key(
+        id,
+        Some(id as u64),
+        PlatformVersion::latest(),
+    )
+    .expect("a random ECDSA key");
     k.set_purpose(purpose);
-    k.set_security_level(SecurityLevel::CRITICAL);
     k
 }
 
@@ -150,7 +153,7 @@ fn fresh_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
 /// Ghost-key repro: an identity whose only on-chain key is a `Purpose::TRANSFER`
 /// key with no local private material (like a loaded masternode identity with
 /// the payout field left blank). The withdraw form must never render for it —
-/// `available_withdrawal_keys()` (private-key-backed only) is empty, so the
+/// `withdrawal_signing_key()` (signable keys only) picks nothing, so the
 /// screen shows the "no eligible key" empty state, not a Confirm-enabled form.
 #[test]
 fn ghost_transfer_key_shows_no_keys_empty_state_not_a_form() {
@@ -188,7 +191,41 @@ fn ghost_transfer_key_shows_no_keys_empty_state_not_a_form() {
     });
 }
 
-/// Regression lock for a bug this fix (default_withdrawal_key) briefly
+/// An identity whose only withdrawal key has expired holds a key but cannot
+/// sign with it: the gate stays closed, as the backend would refuse to pick
+/// that key, and says why instead of claiming no key is loaded.
+#[test]
+fn an_expired_withdrawal_key_closes_the_form_with_its_own_message() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_context();
+
+        let expired = key(1, Purpose::TRANSFER).with_limits(None, Some(1));
+        let identity = build_identity(
+            &app_context,
+            IdentityType::User,
+            vec![expired.clone()],
+            vec![expired],
+        );
+
+        let screen = WithdrawalScreen::new(identity, &app_context);
+        let harness = mount_withdrawal_screen(screen);
+
+        assert!(
+            harness
+                .query_by_label_contains("No key on this device can approve a withdrawal")
+                .is_some(),
+            "an expired-key-only identity must be told its key cannot sign"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Amount to withdraw")
+                .is_none(),
+            "the withdraw form must not render without a key that can sign"
+        );
+    });
+}
+
+/// Regression lock for a bug this fix (then `default_withdrawal_key`) briefly
 /// introduced and a follow-up fix (2edbc18e, "skip wallet resolution when no
 /// signable key exists") closed: constructing `WithdrawalScreen` for a
 /// ghost-key-only identity used to leak a raw, technical error banner
@@ -320,7 +357,7 @@ fn private_backed_transfer_key_is_selected_and_rendered_in_combo() {
 }
 
 /// Owner fallback: a masternode-type identity with only a private-key-backed
-/// OWNER key, no TRANSFER key at all. `default_withdrawal_key()` must fall
+/// OWNER key, no TRANSFER key at all. `withdrawal_signing_key()` must fall
 /// back to OWNER, and the rendered ComboBox must reflect that exact key.
 #[test]
 fn owner_key_fallback_is_selected_and_rendered_in_combo_when_no_transfer_key() {
@@ -380,7 +417,7 @@ fn owner_key_destination_is_locked_at_every_role() {
         MessageBanner::clear_all_global(app_context.egui_ctx());
 
         // Only the OWNER key is signable locally; the payout key is on-chain
-        // only, so `default_withdrawal_key()` falls back to OWNER while
+        // only, so `withdrawal_signing_key()` falls back to OWNER while
         // `masternode_payout_address()` still resolves the forced destination.
         let owner = key(1, Purpose::OWNER);
         let payout = payout_key(2, [0x11; 20]);

@@ -4,6 +4,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::KeyRequirements;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -15,13 +16,12 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
@@ -74,25 +74,20 @@ impl RegisterDataContractScreen {
             })
             .or_else(|| qualified_identities.first().cloned());
 
-        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
-        } else {
-            None
-        };
-
         // Auto-select a suitable key for contract registration
-        use dash_sdk::dpp::identity::KeyType;
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
             identity
-                .identity
-                .get_first_public_key_matching(
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+                    &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                    app_context.contract_signing_scope(),
+                ))
                 .cloned()
         });
+
+        let selected_wallet = selected_qualified_identity
+            .as_ref()
+            .and_then(|identity| wallet_for_signing_key(identity, selected_key.as_ref()));
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
@@ -164,16 +159,18 @@ impl RegisterDataContractScreen {
         }
     }
 
-    fn ui_input_field(&mut self, ui: &mut egui::Ui) {
+    fn ui_input_field(&mut self, ui: &mut egui::Ui, label_id: egui::Id) {
         let dark_mode = ui.style().visuals.dark_mode;
-        let response = ui.add(
-            TextEdit::multiline(&mut self.contract_json_input)
-                .desired_rows(12)
-                .desired_width(ui.available_width())
-                .text_color(DashColors::text_primary(dark_mode))
-                .background_color(DashColors::input_background(dark_mode))
-                .code_editor(),
-        );
+        let response = ui
+            .add(
+                TextEdit::multiline(&mut self.contract_json_input)
+                    .desired_rows(12)
+                    .desired_width(ui.available_width())
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode))
+                    .code_editor(),
+            )
+            .labelled_by(label_id);
         if response.changed() {
             self.parse_contract();
         }
@@ -257,10 +254,16 @@ impl RegisterDataContractScreen {
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
-                if ComponentStyles::add_primary_button(ui, "Register Contract").clicked() {
-                    // The button is only reachable once an identity and key are
-                    // selected; guard rather than unwrap so a missing selection
-                    // degrades to an actionable banner instead of a panic.
+                let can_sign = self.selected_qualified_identity.is_some()
+                    && self.selected_key.is_some()
+                    && self
+                        .selected_wallet
+                        .as_ref()
+                        .is_none_or(|wallet| !wallet_needs_unlock(wallet));
+                if ComponentStyles::add_primary_button_enabled(ui, can_sign, "Register Contract")
+                    .clicked()
+                {
+                    // Recheck the selection before dispatching the paid operation.
                     if let (Some(qualified_identity), Some(key)) = (
                         self.selected_qualified_identity.clone(),
                         self.selected_key.clone(),
@@ -374,6 +377,18 @@ impl ScreenLike for RegisterDataContractScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        if crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_qualified_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        ) {
+            self.selected_wallet = self
+                .selected_qualified_identity
+                .as_ref()
+                .and_then(|identity| wallet_for_signing_key(identity, self.selected_key.as_ref()));
+            self.wallet_open_attempted = false;
+        }
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let mut action = add_top_panel(
@@ -415,29 +430,6 @@ impl ScreenLike for RegisterDataContractScreen {
                         egui::Color32::DARK_RED,
                         "No identities loaded. Please load an identity first.",
                     );
-                    return AppAction::None;
-                }
-
-                // Check if any identity has suitable private keys for contract registration
-                let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
-                    qi.private_keys
-                        .identity_public_keys()
-                        .iter()
-                        .any(|key_ref| {
-                            let key = &key_ref.1.identity_public_key;
-                            // Contract registration requires Authentication keys with High or Critical security level
-                            key.purpose() == Purpose::AUTHENTICATION
-                                && (key.security_level() == SecurityLevel::HIGH
-                                    || key.security_level() == SecurityLevel::CRITICAL)
-                        })
-                });
-
-                if !has_suitable_keys {
-                    ui.colored_label(
-                        egui::Color32::DARK_RED,
-                        "No identities with high or critical authentication private keys loaded. Contract registration requires high or critical security level keys.",
-                    );
-                    return AppAction::None;
                 }
 
                 // Select the identity to register the contract for
@@ -463,25 +455,16 @@ impl ScreenLike for RegisterDataContractScreen {
                 if response.changed() {
                     if let Some(identity) = &self.selected_qualified_identity {
                         // Auto-select a suitable key for contract registration
-                        use dash_sdk::dpp::identity::KeyType;
                         self.selected_key = identity
-                            .identity
-                            .get_first_public_key_matching(
+                            .signing_key_now(KeyRequirements::new(
                                 Purpose::AUTHENTICATION,
-                                [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
-                                KeyType::all_key_types().into(),
-                                false,
-                            )
+                                &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                                self.app_context.contract_signing_scope(),
+                            ))
                             .cloned();
 
-                        // Update wallet
-                        self.selected_wallet = get_selected_wallet(
-                            identity,
-                            Some(&self.app_context),
-                            None,
-                        )
-                        .or_show_error(self.app_context.egui_ctx())
-                        .unwrap_or(None);
+                        self.selected_wallet =
+                            wallet_for_signing_key(identity, self.selected_key.as_ref());
                         self.wallet_open_attempted = false;
 
                         // Re-parse contract with new owner ID
@@ -503,10 +486,17 @@ impl ScreenLike for RegisterDataContractScreen {
                             identity,
                             &mut self.selected_key,
                             TransactionType::RegisterContract,
+                            self.app_context.contract_signing_scope(),
                         );
                     }
                 }
 
+                crate::ui::identity::sync_signing_wallet(
+                    self.selected_qualified_identity.as_ref(),
+                    self.selected_key.as_ref(),
+                    &mut self.selected_wallet,
+                    &mut self.wallet_open_attempted,
+                );
                 ui.add_space(5.0);
                 if let Some(identity) = &self.selected_qualified_identity {
                     ui.label(format!(
@@ -515,8 +505,16 @@ impl ScreenLike for RegisterDataContractScreen {
                     ));
                 }
 
-                if self.selected_key.is_none() {
-                    return AppAction::None;
+                if self.selected_key.is_none() && self.selected_qualified_identity.is_some() {
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new(crate::ui::helpers::contract_signing_key_notice(
+                            &self.app_context,
+                            self.selected_qualified_identity.as_ref(),
+&[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                        ))
+                        .color(DashColors::warning_color(dark_mode)),
+                    );
                 }
 
                 ui.add_space(10.0);
@@ -540,21 +538,21 @@ impl ScreenLike for RegisterDataContractScreen {
                         if ui.button("Unlock Wallet").clicked() {
                             self.wallet_unlock_popup.open();
                         }
-                        return AppAction::None;
                     }
                 }
 
                 // Input for the alias
-                ui.heading("2. Contract alias for DET (optional)");
+                let alias_heading = ui.heading("2. Contract alias for DET (optional)");
                 ui.add_space(5.0);
-                ui.text_edit_singleline(&mut self.contract_alias_input);
+                ui.text_edit_singleline(&mut self.contract_alias_input)
+                    .labelled_by(alias_heading.id);
 
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
 
                 // Input for the contract
-                ui.heading("3. Paste the contract JSON below");
+                let json_heading = ui.heading("3. Paste the contract JSON below");
                 ui.add_space(5.0);
 
                 ui.label(
@@ -562,7 +560,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 );
                 ui.add_space(5.0);
 
-                self.ui_input_field(ui);
+                self.ui_input_field(ui, json_heading.id);
 
                 // Parse the contract and show the result
                 self.ui_parsed_contract(ui)
@@ -582,5 +580,167 @@ impl ScreenLike for RegisterDataContractScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding};
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn interop_manual_contract_key_change_updates_the_unlock_wallet() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let first = Arc::new(RwLock::new(
+            crate::model::wallet::test_support::open_wallet(),
+        ));
+        let second = Arc::new(RwLock::new(
+            crate::model::wallet::test_support::open_wallet(),
+        ));
+        let mut identity = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ]);
+        for (id, wallet) in [(1, &first), (2, &second)] {
+            let hash = wallet.read().unwrap().seed_hash();
+            crate::context::test_support::hold_as_wallet_reference(&mut identity, id, hash);
+            identity.associated_wallets.insert(hash, wallet.clone());
+        }
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_key = identity.identity.public_keys().get(&2).cloned();
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_wallet = Some(first);
+        screen.wallet_open_attempted = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .selected_wallet
+                .as_ref()
+                .is_some_and(|wallet| Arc::ptr_eq(wallet, &second))
+        );
+    }
+
+    #[tokio::test]
+    async fn interop_protocol14_contract_create_selects_limited_key() {
+        use crate::context::test_support::{
+            auth_key, identity_holding, prove_protocol_version, wired_test_app_context,
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        prove_protocol_version(&ctx, 14);
+        for (budget, expiry) in [(Some(1_000), None), (None, Some(u64::MAX))] {
+            let key = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+            let identity = identity_holding(&[key]);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("store identity");
+            let screen = RegisterDataContractScreen::new(&ctx);
+            assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn pv15_contract_create_auto_selection_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding, wired_test_app_context};
+        for (budget, expiry) in [
+            (Some(0), None),
+            (Some(1_000), None),
+            (None, Some(u64::MAX)),
+            (Some(1_000), Some(u64::MAX)),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = wired_test_app_context(dir.path()).await;
+            crate::context::test_support::prove_protocol_version(&ctx, 15);
+            let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+            let identity = identity_holding(std::slice::from_ref(&limited));
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("seed identity");
+            let screen = RegisterDataContractScreen::new(&ctx);
+            assert!(screen.selected_qualified_identity.is_some());
+            assert!(
+                screen.selected_key.is_none(),
+                "budget={budget:?}, expiry={expiry:?}"
+            );
+
+            let unlimited = auth_key(2, SecurityLevel::CRITICAL);
+            let identity = identity_holding(&[limited, unlimited]);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("replace identity");
+            assert_eq!(
+                RegisterDataContractScreen::new(&ctx)
+                    .selected_key
+                    .map(|key| key.id()),
+                Some(2)
+            );
+        }
+    }
+
+    /// Regression: an identity holding only a key that cannot sign (here an
+    /// expired one) passed the screen's gate, and the form stopped with no
+    /// word once the key choice found nothing.
+    #[test]
+    fn an_identity_without_a_usable_key_is_told_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::document_action_screen::NO_SIGNING_KEY_NOTICE)
+                .is_some()
+        );
+    }
+    /// Read inputs remain visible when every held key is unusable for signing.
+    #[test]
+    fn interop_contract_form_keeps_read_inputs_without_a_signing_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut RegisterDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("3. Paste the contract JSON below")
+                .is_some()
+        );
     }
 }

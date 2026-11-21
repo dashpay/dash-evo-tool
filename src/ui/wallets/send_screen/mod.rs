@@ -8885,6 +8885,69 @@ mod tests {
         assert!(pays_from_shielded(&screen), "Auto pays once verified");
     }
 
+    /// A private balance held back while it is verified is not "no funds":
+    /// Auto paying a private address says it is being checked, with an
+    /// amount and with Max (spec §3.1).
+    #[test]
+    fn auto_does_not_call_a_paused_private_balance_empty() {
+        use crate::backend_task::migration::MigrationError;
+        use crate::context::migration_status::MigrationState;
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+
+        const PAUSED: &str = "Your private balance is still being checked.";
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen.app_context.set_user_role(UserRole::Power);
+        crate::context::test_support::prove_protocol_version(
+            &screen.app_context,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: vec![],
+            platform: vec![],
+            shielded_credits: 100_000_000 * CREDITS_PER_DUFF,
+        });
+        screen
+            .app_context
+            .migration_status()
+            .set_state(MigrationState::Failed {
+                error: Arc::new(MigrationError::WalletBackendUnavailable),
+            });
+        screen.typed_destination = Some(foreign_shielded_destination());
+        let mut amount_input = WalletSendScreen::new_amount_input();
+        amount_input.set_value(Amount::new_dash(0.5));
+        screen.amount_input = Some(amount_input);
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        for max in [false, true] {
+            if max {
+                harness.state_mut().form.press_max();
+                harness.run();
+            }
+            assert!(
+                harness
+                    .query_by_label_contains("Auto: your private balance is still being checked.")
+                    .is_some(),
+                "max: {max}"
+            );
+            for wrong in ["no funds", "Add funds"] {
+                assert!(
+                    harness.query_by_label_contains(wrong).is_none(),
+                    "max: {max}, shows {wrong:?}"
+                );
+            }
+            assert_eq!(harness.state().missing_step(), Some(PAUSED), "max: {max}");
+        }
+    }
+
     /// Switching My wallets to the paying wallet while Receive into names the
     /// paying balance keeps Send disabled and is refused before any task.
     #[test]

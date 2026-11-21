@@ -132,6 +132,16 @@ impl WalletSendScreen {
         )
     }
 
+    /// Auto has nothing to pay someone else's private address with only
+    /// because the private balance waits for its verification.
+    pub(super) fn auto_waits_for_shielded(&self) -> bool {
+        self.form.pay_from() == PayFrom::Auto
+            && self.destination_kind() == Some(AddressKind::Shielded)
+            && !self.shielded_destination_is_own_pool()
+            && self.shielded_spending_paused()
+            && self.spendable_shielded().is_some()
+    }
+
     /// What the Amount field may offer for paying `destination` from `source`.
     /// The same figures back Max, the field's limits and Auto's "covers" test.
     pub(super) fn amount_limits_for(

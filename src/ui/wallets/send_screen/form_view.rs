@@ -123,6 +123,8 @@ pub(super) enum AmountProblem {
     NothingCovers { kind: PayFromKind, best: u64 },
     /// Auto found no funds at all.
     NoFunds,
+    /// Only the private balance can pay, and it waits for its verification.
+    ShieldedPaused,
     /// The explicit source can send at most `max`.
     OverMax { kind: PayFromKind, max: u64 },
     /// The ticked Advanced addresses hold at most `max`.
@@ -443,6 +445,9 @@ impl WalletSendScreen {
                     ),
                 ),
                 AutoMax::QuoteFailed { kind } => self.render_auto_quote_failed(ui, kind),
+                AutoMax::NoFunds if self.auto_waits_for_shielded() => {
+                    status_line(ui, "Auto: your private balance is still being checked.")
+                }
                 AutoMax::NoFunds => {
                     status_line(ui, format!("Auto: {wallet} has no funds to send."))
                 }
@@ -497,7 +502,7 @@ impl WalletSendScreen {
                     .map(CoreSendShortfall::message)
                     .unwrap_or_default(),
             ),
-            Some(AutoSource::NoFunds) if foreign_private && self.shielded_spending_paused() => {
+            Some(AutoSource::NoFunds) if self.auto_waits_for_shielded() => {
                 status_line(ui, "Auto: your private balance is still being checked.")
             }
             Some(AutoSource::NoFunds) if foreign_private => status_line(
@@ -1334,6 +1339,9 @@ impl WalletSendScreen {
                 Some(AutoSource::NothingCovers {
                     best: Some((kind, best)),
                 }) => Some(AmountProblem::NothingCovers { kind, best }),
+                Some(AutoSource::NoFunds) if self.auto_waits_for_shielded() => {
+                    Some(AmountProblem::ShieldedPaused)
+                }
                 Some(AutoSource::NoFunds) => Some(AmountProblem::NoFunds),
                 _ => None,
             };
@@ -1442,6 +1450,10 @@ impl WalletSendScreen {
                     ui,
                     "Only your identities hold funds. Choose Identity under Pay from.",
                 );
+                None
+            }
+            Some(AmountProblem::ShieldedPaused) => {
+                inline_warning(ui, SHIELDED_BALANCE_UNVERIFIED);
                 None
             }
             // Shown with the Amount field itself.
@@ -1765,6 +1777,11 @@ impl WalletSendScreen {
         {
             return Some(refusal);
         }
+        let shielded_paused =
+            self.form.pay_from() == PayFrom::Shielded && self.shielded_spending_paused();
+        if shielded_paused || self.auto_waits_for_shielded() {
+            return Some(SHIELDED_BALANCE_UNVERIFIED);
+        }
         if self.requested_credits().filter(|v| *v > 0).is_none() {
             return Some(match self.route.auto_max {
                 Some(AutoMax::Checking { .. }) => "Checking the available amount…",
@@ -1774,9 +1791,6 @@ impl WalletSendScreen {
         }
         if self.form.pay_from() == PayFrom::Advanced && self.form.ticked_advanced().is_empty() {
             return Some("Choose the addresses to pay from.");
-        }
-        if self.form.pay_from() == PayFrom::Shielded && self.shielded_spending_paused() {
-            return Some(SHIELDED_BALANCE_UNVERIFIED);
         }
         if self.route.refusal.is_some() || self.selected_source.is_none() {
             return Some(match self.route.auto {

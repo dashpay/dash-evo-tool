@@ -137,6 +137,9 @@ pub enum BootApp {
     /// Startup failed. Only the failure dialog is shown; no part of the app
     /// is built.
     Failed(StartupFailure),
+    /// The failure dialog closed through the macOS menu Quit; exits when
+    /// eframe drops the app.
+    Exiting(FailureExit),
 }
 
 impl BootApp {
@@ -272,6 +275,7 @@ impl eframe::App for BootApp {
                 }
                 return;
             }
+            BootApp::Exiting(_) => return,
             BootApp::Unlocking(state) => state,
         };
         let ctx = ui.ctx().clone();
@@ -296,20 +300,27 @@ impl eframe::App for BootApp {
         match self {
             BootApp::Running(app) => app.on_exit(),
             // After the macOS menu Quit, eframe never returns to `main`, so the
-            // failure is reported and the status set here. Elsewhere `main`
-            // does both after eframe finishes its teardown.
+            // failure is reported and the status set when this app is dropped.
+            // Elsewhere `main` does both after eframe finishes its teardown.
             BootApp::Failed(failure) if cfg!(target_os = "macos") => {
-                report_failure_and_exit(failure)
+                let failure = failure.clone();
+                *self = BootApp::Exiting(FailureExit(failure));
             }
-            BootApp::Failed(_) | BootApp::Unlocking(_) => {}
+            BootApp::Failed(_) | BootApp::Unlocking(_) | BootApp::Exiting(_) => {}
         }
     }
 }
 
-/// Name `failure` on the terminal and exit with `main`'s failure status.
-fn report_failure_and_exit(failure: &StartupFailure) -> ! {
-    crate::logging::report_startup_failure(&[&FailureNotice(failure)]);
-    std::process::exit(1)
+/// Reports a failed startup and exits with `main`'s failure status when
+/// dropped. eframe drops its storage, joining the profile save, before the
+/// app, so the exit cannot cut that save short.
+pub struct FailureExit(StartupFailure);
+
+impl Drop for FailureExit {
+    fn drop(&mut self) {
+        crate::logging::report_startup_failure(&[&FailureNotice(&self.0)]);
+        std::process::exit(1);
+    }
 }
 
 /// A shown startup failure as a terminal cause: its message and details.
@@ -711,10 +722,11 @@ mod tests {
         const MARKER: &str = "failed-boot-exit-marker";
         if std::env::var_os(CHILD_ENV).is_some() {
             let app = BootApp::failed(&std::io::Error::other(MARKER), &StartupOutcome::default());
-            let BootApp::Failed(failure) = &app else {
+            let BootApp::Failed(failure) = app else {
                 panic!("expected the failure dialog");
             };
-            report_failure_and_exit(failure);
+            drop(FailureExit(failure));
+            return;
         }
         let test_name = std::thread::current().name().expect("test name").to_owned();
         let output = std::process::Command::new(std::env::current_exe().expect("test binary"))

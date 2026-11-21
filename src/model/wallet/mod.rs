@@ -1853,6 +1853,9 @@ impl Wallet {
 
     /// Record a balance ordered by height, then nonce, so a delayed update
     /// cannot undo a spend, including one confirmed at the same height.
+    /// Pins do not identify the chain: after a Devnet or Regtest reset an
+    /// old-chain pin outranks new results until the new chain passes its
+    /// height. Clear the data directory, or wait it out.
     pub fn apply_pinned_platform_address_info(
         &mut self,
         address: Address,

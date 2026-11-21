@@ -155,6 +155,18 @@ def required_checks(repo, number):
                 "error": {"message": "The pull request is no longer available"},
             }
         commits = pr.get("commits", {}).get("nodes", []) if pr else []
+        collected = [
+            node
+            for commit in commits
+            for node in (
+                (commit["commit"].get("statusCheckRollup") or {}).get("contexts") or {}
+            ).get("nodes")
+            or []
+        ]
+        if not collected:
+            # Without a single check context the required checks are unknown.
+            result["complete"] = False
+            result["limitation"] = "The sampled PR has no checks yet."
         for commit in commits:
             contexts = (commit["commit"].get("statusCheckRollup") or {}).get(
                 "contexts", {}

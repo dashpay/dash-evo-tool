@@ -260,6 +260,23 @@ class CollectAccessTests(unittest.TestCase):
                 self.assertFalse(checks["required_checks"]["ok"])
                 self.assertEqual(code, 2)
 
+    def test_a_sampled_pr_without_checks_is_incomplete(self):
+        for commits in (
+            [],
+            [{"commit": {"statusCheckRollup": None}}],
+            [{"commit": {"statusCheckRollup": {"contexts": {"nodes": []}}}}],
+        ):
+            with self.subTest(commits=commits):
+                pr = {"number": 1, "commits": {"nodes": commits}}
+                response = {"data": {"repository": {"pullRequest": pr}}}
+                with patch.object(
+                    collect_access,
+                    "api_get",
+                    return_value={"ok": True, "data": response},
+                ):
+                    result = collect_access.required_checks("owner/repo", 1)
+                self.assertIs(result["complete"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

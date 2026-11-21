@@ -2,6 +2,7 @@
 //! selected identity. Design: `docs/ai-design/2026-10-28-identity-tokens/`.
 
 use crate::identity_home::{key, seed_identity_with_id};
+use crate::identity_hub_layout::{HubHarness, hub_harness};
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::error::TaskError;
@@ -42,8 +43,6 @@ use egui_kittest::kittest::NodeT;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-type HubHarness = Harness<'static, (IdentityHubScreen, Vec<AppAction>)>;
 
 /// A token whose admin actions, if any, belong to the contract owner.
 fn token_config(name: &str, admin: bool) -> TokenConfiguration {
@@ -155,17 +154,7 @@ fn mount_hub_as_is(
     size: egui::Vec2,
     tab: IdentityHubTab,
 ) -> HubHarness {
-    let mut hub = crate::support::builder_with_app_fonts()
-        .with_size(size)
-        .build_ui_state(
-            |ui, state: &mut (IdentityHubScreen, Vec<AppAction>)| {
-                let action = state.0.ui(ui);
-                if !matches!(action, AppAction::None) {
-                    state.1.push(action);
-                }
-            },
-            (IdentityHubScreen::new(app_context), Vec::new()),
-        );
+    let mut hub = hub_harness(app_context, size);
     hub.state_mut().0.select_tab(tab);
     hub.run_steps(4);
     hub
@@ -175,11 +164,13 @@ fn mount_tokens_tab(app_context: &Arc<AppContext>) -> HubHarness {
     mount_hub(app_context, egui::vec2(1280.0, 900.0))
 }
 
-/// The DashCoffee (held), Grit (zero) and Tester (unchecked) tokens of `identity`.
 /// A pair check: a track-again request for exactly one pair.
 fn is_pair_check(task: &TokenTask) -> bool {
     matches!(task, TokenTask::TrackTokenBalancesAgain(pairs) if pairs.len() == 1)
 }
+
+/// Part of the timeout error's text, which the failed refresh shows inline.
+const TIMEOUT_TEXT: &str = "the network took too long to respond";
 
 /// The error a timed-out network request carries.
 fn elapsed_timeout(runtime: &tokio::runtime::Runtime) -> tokio::time::error::Elapsed {
@@ -190,6 +181,7 @@ fn elapsed_timeout(runtime: &tokio::runtime::Runtime) -> tokio::time::error::Ela
         .expect_err("elapsed")
 }
 
+/// The DashCoffee (held), Grit (zero) and Tester (unchecked) tokens of `identity`.
 fn seed_three_tokens(app_context: &Arc<AppContext>, identity: Identifier) -> Vec<Identifier> {
     let tokens = seed_contract(
         app_context,
@@ -291,6 +283,8 @@ fn rows_show_balance_zero_and_checking_states_without_send() {
             )),
             "arriving on the tab refreshes balances"
         );
+        // Every input on the tab is named for screen readers.
+        hub.check_accessibility();
     });
 }
 
@@ -323,6 +317,8 @@ fn hide_zero_hides_only_fetched_zeros_and_is_remembered() {
             again.query_by_label("0 Grit").is_none(),
             "the choice is remembered on this device"
         );
+        // Every input on the tab is named for screen readers.
+        hub.check_accessibility();
     });
 }
 
@@ -510,10 +506,10 @@ fn a_failed_refresh_shows_inline_and_keeps_the_rows() {
             .display_backend_task_error(&context, &error);
         assert!(
             !hub.state_mut().0.display_task_error(&error),
-            "a real failure always reaches the banner, beside the inline notice"
+            "a real failure always reaches the banner, with the inline notice's text"
         );
         hub.run_steps(2);
-        assert!(hub.query_by_label(token_copy::ERROR_REFRESH_SLOW).is_some());
+        assert!(hub.query_by_label_contains(TIMEOUT_TEXT).is_some());
         assert!(
             hub.query_all_by_label(token_copy::TRY_AGAIN_LABEL).count() >= 1,
             "the notice offers a retry"
@@ -544,6 +540,8 @@ fn a_failed_refresh_shows_inline_and_keeps_the_rows() {
         hub.state_mut()
             .0
             .display_backend_task_error(&foreign, &busy);
+        // Every input on the tab is named for screen readers.
+        hub.check_accessibility();
     });
 }
 
@@ -805,10 +803,8 @@ fn return_to_the_hub_after_my_tokens_ran(
         },
     );
     assert!(
-        harness
-            .query_by_label(token_copy::ERROR_REFRESH_SLOW)
-            .is_some(),
-        "the hub shows its failed refresh"
+        harness.query_all_by_label_contains(TIMEOUT_TEXT).count() == 2,
+        "the hub shows its failed refresh beside the banner"
     );
 
     harness.state_mut().selected_main_screen = RootScreenType::RootScreenMyTokenBalances;
@@ -842,10 +838,8 @@ fn a_full_refresh_on_my_tokens_settles_the_hidden_hub() {
         let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
         let (harness, asked) = return_to_the_hub_after_my_tokens_ran(&runtime, task);
         assert!(
-            harness
-                .query_by_label(token_copy::ERROR_REFRESH_SLOW)
-                .is_none(),
-            "the full refresh ended the hub's failure"
+            harness.query_all_by_label_contains(TIMEOUT_TEXT).count() == 1,
+            "the full refresh ended the hub's failure; the banner stays"
         );
         assert_eq!(asked, 0, "the balances are fresh, so no refresh starts");
     });
@@ -865,9 +859,7 @@ fn a_pair_check_on_my_tokens_leaves_the_hidden_hubs_failure() {
         ])));
         let (harness, asked) = return_to_the_hub_after_my_tokens_ran(&runtime, task);
         assert!(
-            harness
-                .query_by_label(token_copy::ERROR_REFRESH_SLOW)
-                .is_some(),
+            harness.query_all_by_label_contains(TIMEOUT_TEXT).count() == 2,
             "one pair's answer says nothing about the failed refresh"
         );
         assert_eq!(asked, 1, "the arrival still asks for every balance");
@@ -1286,7 +1278,7 @@ fn a_disconnected_refresh_cannot_be_retried_while_the_connection_stops() {
             .display_backend_task_error(&arrival[0], &TaskError::TokenBalanceRefreshDisconnected);
         hub.run_steps(6);
         assert!(
-            hub.query_by_label(token_copy::ERROR_REFRESH_DISCONNECTED)
+            hub.query_by_label(&TaskError::TokenBalanceRefreshDisconnected.to_string())
                 .is_some()
         );
         // The notice's retry is a link; the failed row has a retry button too.

@@ -42,17 +42,19 @@ pub fn clean_display_text(text: &str) -> String {
     cleaned.trim().to_owned()
 }
 
-/// Keep visible text and normal Unicode shaping while excluding controls,
-/// bidi directives and every invisible format character that makes two names
-/// look identical: soft hyphen, Mongolian vowel separator, ZWSP, word joiner
-/// and the invisible operators, BOM, and the tag characters. ZWNJ and ZWJ
-/// stay: scripts and emoji sequences need them.
+/// Keep visible text and normal Unicode shaping while excluding controls
+/// and every Unicode default-ignorable code point (bidi directives, soft
+/// hyphen, ZWSP, word joiner, variation selectors, BOM, tag characters, …)
+/// plus the blank-rendering Hangul and braille fillers. ZWNJ and ZWJ stay:
+/// scripts and emoji sequences need them.
 pub(super) fn is_safe_display_character(character: char) -> bool {
     !character.is_control()
         && !matches!(character,
-            '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}' | '\u{200e}' | '\u{200f}'
-            | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'
-            | '\u{feff}' | '\u{e0000}'..='\u{e007f}'
+            '\u{00ad}' | '\u{034f}' | '\u{061c}' | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}' | '\u{180b}'..='\u{180f}' | '\u{200b}'
+            | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}'
+            | '\u{2800}' | '\u{3164}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{ffa0}'
+            | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0000}'..='\u{e0fff}'
         )
 }
 
@@ -93,6 +95,33 @@ mod tests {
             display_label(Some("李雷 👩‍💻 العربية"), Some("username"), "abcdefghijk"),
             "李雷 👩‍💻 العربية"
         );
+    }
+
+    /// Default-ignorable code points and blank-rendering fillers are hidden
+    /// characters too; a name made only of them falls back like an empty one.
+    #[test]
+    fn default_ignorable_and_blank_filler_characters_are_dropped() {
+        for hidden in [
+            '\u{034f}',
+            '\u{115f}',
+            '\u{1160}',
+            '\u{17b4}',
+            '\u{180b}',
+            '\u{180f}',
+            '\u{2800}',
+            '\u{3164}',
+            '\u{fe00}',
+            '\u{fe0f}',
+            '\u{ffa0}',
+            '\u{1bca0}',
+            '\u{1d173}',
+            '\u{e0100}',
+            '\u{e01ef}',
+        ] {
+            let name = format!("Al{hidden}ice");
+            assert_eq!(clean_display_text(&name), "Alice", "{hidden:?} survived");
+        }
+        assert_eq!(clean_display_text("\u{3164}\u{3164}"), "");
     }
 
     #[test]

@@ -170,6 +170,10 @@ pub(crate) enum TokenBalanceSyncError {
     /// This backend's masternode list has not synced, so a proof-verifying
     /// read would fail and get the queried node banned.
     MasternodesNotReady,
+    /// Upstream's own pass outlasted the wait for it.
+    UpstreamPassStillRunning,
+    /// The pass ran but read none of these identities' balances.
+    NotRead(Vec<dash_sdk::platform::Identifier>),
 }
 
 /// Whether DET's stops left upstream identity sync admitting passes: even
@@ -181,10 +185,13 @@ pub(crate) struct TokenSyncAdmission {
     state: AtomicU64,
     /// Shutdown seals upstream identity sync for good.
     sealed: AtomicBool,
+    /// A stop left identity sync draining: reopen once it has drained.
+    reopen_deferred: AtomicBool,
 }
 
 impl TokenSyncAdmission {
     fn close(&self) {
+        self.reopen_deferred.store(false, Ordering::SeqCst);
         self.state.fetch_or(1, Ordering::SeqCst);
         self.state.fetch_add(2, Ordering::SeqCst);
     }
@@ -205,42 +212,72 @@ impl TokenSyncAdmission {
     fn current(&self) -> u64 {
         self.state.load(Ordering::SeqCst)
     }
+
+    fn defer_reopen(&self) {
+        self.reopen_deferred.store(true, Ordering::SeqCst);
+    }
+
+    /// Reopen after a stop whose identity sync drained only later. Callers
+    /// hold the start/stop lifecycle lock.
+    fn reopen_if_deferred(&self, drained: bool) {
+        if drained && self.reopen_deferred.swap(false, Ordering::SeqCst) {
+            self.reopen();
+        }
+    }
 }
 
 /// How often a refresh checks whether upstream's own pass has finished.
 const UPSTREAM_PASS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Run one upstream token-balance pass that sees the current watch lists,
+/// How long a refresh waits for upstream's own pass; shorter than the
+/// request timeout, so an abandoned refresh stops polling on its own.
+const UPSTREAM_PASS_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run one upstream token-balance `pass` that sees the current watch lists,
 /// first waiting out any pass upstream's own loop is running, unless a DET
-/// stop closes identity sync around the call. The caller bounds the wait.
-async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
+/// stop closes identity sync before or during the call. Waits at most
+/// `wait_limit`. Returns what the pass that ran returned.
+async fn run_token_balance_sync_if_idle<IsSyncing, Pass, PassFuture, T>(
     mut is_syncing: IsSyncing,
-    mut sync_now: SyncNow,
+    mut pass: Pass,
     admission: &TokenSyncAdmission,
-) -> Result<(), TokenBalanceSyncError>
+    wait_limit: std::time::Duration,
+) -> Result<T, TokenBalanceSyncError>
 where
     IsSyncing: FnMut() -> bool,
-    SyncNow: FnMut() -> SyncFuture,
-    SyncFuture: std::future::Future<Output = ()>,
+    Pass: FnMut() -> PassFuture,
+    PassFuture: std::future::Future<Output = T>,
 {
     let admitted = admission.current();
+    let stopped = || admission.current() != admitted;
     if admitted & 1 == 1 {
         return Err(TokenBalanceSyncError::SyncStopped);
     }
+    let deadline = tokio::time::Instant::now() + wait_limit;
     // TODO(upstream): `IdentitySyncManager::sync_now()` should report whether
-    // it ran; a busy `is_syncing()` after the call may mean another pass took
-    // the slot first, so the call is repeated. A call skipped by a quiesce
-    // looks like a finished pass, so `admission` covers DET's stops.
+    // it ran and which identities it read (dashpay/platform#5771); a busy
+    // `is_syncing()` after the call may mean another pass took the slot first,
+    // so the call is repeated. A call skipped by a quiesce looks like a
+    // finished pass, so `admission` covers DET's stops.
     loop {
         while is_syncing() {
+            if stopped() {
+                return Err(TokenBalanceSyncError::SyncStopped);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(TokenBalanceSyncError::UpstreamPassStillRunning);
+            }
             tokio::time::sleep(UPSTREAM_PASS_POLL).await;
         }
-        sync_now().await;
-        if admission.current() != admitted {
+        if stopped() {
+            return Err(TokenBalanceSyncError::SyncStopped);
+        }
+        let ran = pass().await;
+        if stopped() {
             return Err(TokenBalanceSyncError::SyncStopped);
         }
         if !is_syncing() {
-            return Ok(());
+            return Ok(ran);
         }
     }
 }
@@ -2223,9 +2260,12 @@ impl WalletBackend {
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
         // Reopen only now, so a refresh admitted from here on sees this
-        // backend as not started rather than reading mid-disconnect.
+        // backend as not started rather than reading mid-disconnect. A slow
+        // pass reopens it on the first read after it drains.
         if identity_sync_drained {
             self.inner.token_sync_admission.reopen();
+        } else {
+            self.inner.token_sync_admission.defer_reopen();
         }
     }
 
@@ -2233,6 +2273,11 @@ impl WalletBackend {
     /// no stop has closed token sync and its masternode list has synced. The
     /// shared connection status can still report a previous session.
     pub(crate) fn admit_token_balance_read(&self) -> Result<(), TokenBalanceSyncError> {
+        // No start or stop is running while the lifecycle lock is free.
+        if let Ok(_lifecycle) = self.inner.start_latch.lifecycle.try_lock() {
+            let drained = !self.inner.pwm.identity_sync().is_syncing();
+            self.inner.token_sync_admission.reopen_if_deferred(drained);
+        }
         if self.inner.token_sync_admission.current() & 1 == 1 {
             Err(TokenBalanceSyncError::SyncStopped)
         } else if !self.inner.coordinator_gate.masternodes_ready() {
@@ -3278,7 +3323,8 @@ impl WalletBackend {
 
     /// Set the watch lists, run one upstream pass (after any pass upstream is
     /// already running), and republish DET's snapshot. Fails instead of
-    /// reporting stale balances when a stop closes identity sync during the call.
+    /// reporting stale balances when a stop closes identity sync during the
+    /// call, and names the identities whose balances the pass did not read.
     pub(crate) async fn sync_token_balances_now(
         &self,
         watch_sets: Vec<(
@@ -3288,31 +3334,49 @@ impl WalletBackend {
     ) -> Result<(), TokenBalanceSyncError> {
         let store = &self.inner.token_balances;
         let identity_sync = self.inner.pwm.identity_sync();
+        // Upstream reads only identities that watch a token.
+        let requested: std::collections::BTreeSet<_> = watch_sets
+            .iter()
+            .filter(|(_, token_ids)| !token_ids.is_empty())
+            .map(|(identity_id, _)| *identity_id)
+            .collect();
         for (identity_id, token_ids) in watch_sets {
             self.register_identity_tokens(identity_id, token_ids).await;
         }
         let (before, synced) = store
             .load_with(async {
-                let (_, started) = TokenBalanceStore::read_upstream(identity_sync).await;
-                run_token_balance_sync_if_idle(
+                // The baseline is read right before this refresh's own call,
+                // so a pass upstream ran first does not count as this one.
+                let (pre_pass, started) = run_token_balance_sync_if_idle(
                     || identity_sync.is_syncing(),
-                    || identity_sync.sync_now(),
+                    || async {
+                        let baseline = TokenBalanceStore::read_upstream(identity_sync).await;
+                        token_balance::after_latest_stamp_second(&baseline.1).await;
+                        identity_sync.sync_now().await;
+                        baseline
+                    },
                     &self.inner.token_sync_admission,
+                    UPSTREAM_PASS_WAIT_LIMIT,
                 )
                 .await?;
                 let (incoming, finished) = TokenBalanceStore::read_upstream(identity_sync).await;
                 Ok((
+                    pre_pass,
                     incoming,
                     token_balance::refreshed_between(&started, &finished),
                 ))
             })
             .await;
-        let (incoming, refreshed) = synced?;
-        // TODO(upstream): `sync_now()` should report which identities it read;
-        // the per-identity stamp has one-second resolution, so a pass ending
-        // in the same second as the one before counts as not having read them.
-        store.replace(incoming, &before, &refreshed);
-        Ok(())
+        let (pre_pass, incoming, refreshed) = synced?;
+        // TODO(upstream): `sync_now()` should report which identities it read
+        // (dashpay/platform#5771); a moved stamp stands in for that.
+        store.replace(incoming, &pre_pass, &before, &refreshed);
+        let unread: Vec<_> = requested.difference(&refreshed).copied().collect();
+        if unread.is_empty() {
+            Ok(())
+        } else {
+            Err(TokenBalanceSyncError::NotRead(unread))
+        }
     }
 
     /// The [`SecretScope`] that addresses the HD seed for `seed_hash`.
@@ -4535,6 +4599,7 @@ mod tests {
             || busy.borrow_mut().next().unwrap_or(false),
             || async { sync_calls.set(sync_calls.get() + 1) },
             &TokenSyncAdmission::default(),
+            UPSTREAM_PASS_WAIT_LIMIT,
         )
         .await;
         assert_eq!(outcome, Ok(()));
@@ -4554,6 +4619,7 @@ mod tests {
                 std::future::ready(())
             },
             &admission,
+            UPSTREAM_PASS_WAIT_LIMIT,
         )
         .await;
         assert_eq!(outcome, Err(TokenBalanceSyncError::SyncStopped));
@@ -4569,10 +4635,98 @@ mod tests {
             || false,
             || async { sync_called.set(true) },
             &admission,
+            UPSTREAM_PASS_WAIT_LIMIT,
         )
         .await;
         assert_eq!(outcome, Err(TokenBalanceSyncError::SyncStopped));
         assert!(!sync_called.get());
+    }
+
+    /// A disconnect during the wait for upstream's pass ends the refresh
+    /// before it runs a pass of its own.
+    #[tokio::test]
+    async fn the_wait_for_upstream_ends_when_a_stop_closes_token_sync() {
+        let admission = TokenSyncAdmission::default();
+        let polls = std::cell::Cell::new(0);
+        let pass_ran = std::cell::Cell::new(false);
+        let waited = run_token_balance_sync_if_idle(
+            || {
+                polls.set(polls.get() + 1);
+                if polls.get() == 3 {
+                    admission.close();
+                }
+                true
+            },
+            || async { pass_ran.set(true) },
+            &admission,
+            UPSTREAM_PASS_WAIT_LIMIT,
+        );
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waited)
+            .await
+            .expect("the wait ends");
+        assert_eq!(outcome, Err(TokenBalanceSyncError::SyncStopped));
+        assert!(!pass_ran.get());
+    }
+
+    /// The wait for upstream's pass has its own limit, so an abandoned
+    /// refresh stops polling.
+    #[tokio::test]
+    async fn the_wait_for_upstream_gives_up_at_its_limit() {
+        let admission = TokenSyncAdmission::default();
+        let waited = run_token_balance_sync_if_idle(
+            || true,
+            || async {},
+            &admission,
+            std::time::Duration::from_millis(300),
+        );
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waited)
+            .await
+            .expect("the wait ends");
+        assert_eq!(
+            outcome,
+            Err(TokenBalanceSyncError::UpstreamPassStillRunning)
+        );
+    }
+
+    /// A stop whose identity sync drained only later reopens token reads on
+    /// the first read after that, unless a later stop closed them again.
+    #[test]
+    fn a_deferred_reopen_waits_for_the_drain_and_yields_to_a_later_stop() {
+        let admission = TokenSyncAdmission::default();
+        admission.close();
+        admission.defer_reopen();
+        admission.reopen_if_deferred(false);
+        assert_eq!(admission.current() & 1, 1, "still draining");
+        admission.reopen_if_deferred(true);
+        assert_eq!(admission.current() & 1, 0, "drained");
+        admission.close();
+        admission.defer_reopen();
+        admission.close();
+        admission.reopen_if_deferred(true);
+        assert_eq!(admission.current() & 1, 1, "a later stop wins");
+    }
+
+    /// After a disconnect that did not drain, a reconnected session reads
+    /// token balances again once identity sync is idle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_reads_reopen_after_a_disconnect_that_did_not_drain() {
+        let directory = tempfile::tempdir().expect("app data directory");
+        let ctx = crate::context::test_support::test_app_context_for_network(
+            directory.path(),
+            Network::Regtest,
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, ctx.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        backend.inner.token_sync_admission.close();
+        backend.inner.token_sync_admission.defer_reopen();
+        backend.mark_started_for_test();
+        backend.mark_masternodes_ready_for_test();
+        let admitted = backend.admit_token_balance_read();
+        backend.shutdown().await;
+        assert_eq!(admitted, Ok(()));
     }
 
     /// A drained disconnect reopens refreshes; after shutdown sealed upstream

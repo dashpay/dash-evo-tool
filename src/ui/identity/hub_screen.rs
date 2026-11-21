@@ -770,11 +770,6 @@ impl ScreenLike for IdentityHubScreen {
                         }
                         ui.add_space(16.0);
                         rendered_tab = Some(self.selected_tab);
-                        if self.selected_tab != IdentityHubTab::Tokens {
-                            // List controls not yet written when the tab is
-                            // left are written now rather than lost.
-                            self.tokens_state.save_prefs(&self.app_context);
-                        }
                         let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
                                 let (home_action, outcome) = match &selected {
@@ -1139,7 +1134,8 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        self.tokens_state.record_error(context, error);
+        self.tokens_state
+            .record_error(context, error, crate::utils::time::now_ms());
         self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
             && !self.is_own_contact_info_dispatch(context);
         // Wrapped errors retain the unreadable-details confirmation flow.

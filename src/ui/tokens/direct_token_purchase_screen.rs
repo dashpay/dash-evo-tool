@@ -324,7 +324,7 @@ impl PurchaseTokenScreen {
                             amount: amount.value(),
                             total_agreed_price: total_price_credits,
                         })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                        BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
                     ],
                     BackendTasksExecutionMode::Sequential,
                 )

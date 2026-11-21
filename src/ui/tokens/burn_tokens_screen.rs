@@ -138,7 +138,7 @@ impl TokenAction for BurnAction {
                     amount,
                     group_info,
                 })),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
             ],
             BackendTasksExecutionMode::Sequential,
         ))

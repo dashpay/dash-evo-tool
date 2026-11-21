@@ -377,6 +377,8 @@ class TypeSecret(unittest.TestCase):
             os.unlink(os.path.join(self.dir, "typed"))
             self.assertEqual((code, typed), (0, self.VALUE), extra_env)
             self.assertNotIn("bravo", self.output, extra_env)
+            traced = [line for line in self.output.splitlines() if line.startswith("+")]
+            self.assertEqual(traced, [], extra_env)
 
 
 if __name__ == "__main__":

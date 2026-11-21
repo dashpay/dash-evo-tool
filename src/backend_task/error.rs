@@ -2091,6 +2091,12 @@ pub enum TaskError {
     )]
     TokenBalanceRefreshDisconnected,
 
+    /// Upstream's own balance pass outlasted the refresh's wait for it.
+    #[error(
+        "Token balances are taking longer than usual to check. Wait a moment, then refresh the balances."
+    )]
+    TokenBalanceRefreshTookTooLong,
+
     /// A token-balance refresh ran but could not read these identities'
     /// balances, so their earlier balances stay on screen.
     #[error(

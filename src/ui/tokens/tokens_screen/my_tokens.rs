@@ -1036,8 +1036,9 @@ impl TokensScreen {
     }
 }
 
-/// Why a holder cannot send this token right now. An unknown balance is
-/// never called zero: it is still being checked.
+/// Why a holder cannot send this token right now, in terms of the balance the
+/// app has: a cached zero may never have been fetched, so neither reason
+/// claims what the identity holds.
 fn send_disabled_reason(balance: Option<TokenAmount>, transferable: bool) -> &'static str {
     if !transferable {
         DISABLED_NOT_TRANSFERABLE
@@ -1520,6 +1521,20 @@ mod tests {
             positions[0] < positions[1] && positions[1] < positions[2],
             "updated names use ID tie-breaks"
         );
+    }
+
+    /// The cached balance can be a placeholder that was never fetched, and a
+    /// missing one does not mean a fetch is running (dashpay/platform#5771):
+    /// each reason says what the screen shows and names the action that
+    /// loads the balance again.
+    #[test]
+    fn a_disabled_send_points_to_the_balance_actions() {
+        assert!(DISABLED_BALANCE_UNKNOWN.contains("Use Check or Refresh"));
+        assert!(DISABLED_NOTHING_TO_SEND.contains("Use Refresh"));
+        for reason in [DISABLED_BALANCE_UNKNOWN, DISABLED_NOTHING_TO_SEND] {
+            assert!(!reason.contains("holds none"), "{reason}");
+            assert!(!reason.contains("once the balance is checked"), "{reason}");
+        }
     }
 
     #[test]

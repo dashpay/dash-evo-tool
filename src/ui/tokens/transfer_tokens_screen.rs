@@ -53,10 +53,12 @@ pub const SEND_LABEL: &str = "Send";
 pub const CONFIRM_SEND_TITLE: &str = "Send tokens?";
 /// Why Send is off: the token cannot move between identities.
 pub const DISABLED_NOT_TRANSFERABLE: &str = "This token cannot be sent to other identities.";
-/// Why Send is off: the balance is still being checked.
-pub const DISABLED_BALANCE_UNKNOWN: &str = "Available once the balance is checked.";
-/// Why Send is off: the identity holds none of the token.
-pub const DISABLED_NOTHING_TO_SEND: &str = "This identity holds none of this token to send.";
+/// Why Send is off: the app has no balance for this token and identity.
+pub const DISABLED_BALANCE_UNKNOWN: &str =
+    "No balance is available for this token yet. Use Check or Refresh to load it.";
+/// Why Send is off: the balance the app has shows no tokens.
+pub const DISABLED_NOTHING_TO_SEND: &str =
+    "The current balance shows no tokens to send. Use Refresh if you expect some.";
 
 /// "Send {amount} to {recipient}?"
 pub fn send_question(amount: &Amount, recipient: &str) -> String {

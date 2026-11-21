@@ -3319,7 +3319,7 @@ mod tests {
     fn ensure_test_env() {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            copy_env_file_if_not_exists(); // required by AppContext::new()
+            copy_env_file_if_not_exists().expect("write .env"); // required by AppContext::new()
 
             // Ensure minimum required configs exist even if .env isn't loaded.
             // Safety: tests set env vars once to ensure deterministic config.

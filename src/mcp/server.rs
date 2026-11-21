@@ -362,7 +362,8 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         .map_err(|e| McpError::internal_error(format!("data dir: {e}"), None))?;
     ensure_data_dir_exists(&data_dir)
         .map_err(|e| McpError::internal_error(format!("ensure data dir: {e}"), None))?;
-    ensure_env_file(&data_dir);
+    ensure_env_file(&data_dir)
+        .map_err(|e| McpError::internal_error(format!("write .env: {e}"), None))?;
 
     let env_path = data_dir.join(".env");
     if env_path.exists()

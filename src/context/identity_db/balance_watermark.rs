@@ -167,9 +167,7 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut fresh = self
-            .get_local_qualified_identity(identity_id)?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let mut fresh = self.read_listed_identity_locked(identity_id)?;
         edit(&mut fresh)?;
         let pending = self.adopt_balance_observation_locked(&mut fresh, provenance)?;
         self.write_local_qualified_identity_locked(&fresh)?;

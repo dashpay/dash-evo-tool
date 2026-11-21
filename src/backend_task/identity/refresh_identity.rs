@@ -36,17 +36,21 @@ impl AppContext {
         // Apply only what was fetched, to the record as stored now: a stale
         // snapshot written back would undo whatever changed while the fetch
         // ran, such as a removed key whose vault secret is already gone.
+        // TODO(platform-wallet): upstream `ManagedIdentity::take_fetched_identity`
+        // applies the same rule; use it once `IdentityManager` holds the record.
         let qualified_identity_to_update = self.edit_local_qualified_identity_observed(
             &refreshed_identity_id,
             provenance,
             |stored| {
-                // Refresh only a loaded identity; never re-list one.
-                if !self.is_identity_listed(&refreshed_identity_id)? {
-                    return Err(TaskError::IdentityNotFoundLocally);
-                }
                 match maybe_refreshed_identity {
-                    Some(refreshed_identity) => {
-                        stored.identity = refreshed_identity;
+                    // Read from before a key was added here: keep that key and
+                    // its revision, take only the balance.
+                    Some(fetched) if fetched.revision() < stored.identity.revision() => {
+                        stored.identity.set_balance(fetched.balance());
+                        stored.status.update(IdentityStatus::Active);
+                    }
+                    Some(fetched) => {
+                        stored.identity = super::with_stored_public_keys(fetched, &stored.identity);
                         stored.status.update(IdentityStatus::Active);
                     }
                     None => stored.status.update(IdentityStatus::NotFound),
@@ -145,17 +149,8 @@ impl AppContext {
                 return false;
             }
         };
-        let provenance = BalanceProvenance::ObservedAt(height);
-        match self.edit_local_qualified_identity_observed(&identity_id, provenance, |stored| {
-            stored.identity.set_balance(balance);
-            Ok(())
-        }) {
-            Ok(_) => true,
-            Err(error) => {
-                tracing::warn!(%identity_id, ?error, "Balance after a paid task could not be saved locally");
-                false
-            }
-        }
+        self.store_observed_balance(&identity_id, balance, BalanceProvenance::ObservedAt(height))
+            .is_some()
     }
 }
 
@@ -389,8 +384,9 @@ mod concurrent_refresh_tests {
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
-    /// An identity taken off the roster while its refresh ran stays off it:
-    /// the refresh reports it as not loaded and writes nothing.
+    /// An identity off the roster with no unload marker (an insert that
+    /// stopped before its roster add) is not re-listed by a refresh that was
+    /// waiting for its record: the refresh reports it as not loaded.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_refresh_does_not_relist_an_unloaded_identity() {
         let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
@@ -418,13 +414,93 @@ mod concurrent_refresh_tests {
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
+    /// A key added while the refresh waited, with its revision bump, is kept
+    /// when the fetch answered from before that add; the balance it read is
+    /// still taken.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_keeps_a_key_added_while_it_was_running() {
+        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let before = read();
+        let mut fetched = before.identity.clone();
+        fetched.set_balance(9_999);
+        let sdk = sdk_returning(&fetched, 10).await;
+
+        let lock = staged.ctx.identity_record_lock(staged.id);
+        let guard = lock.lock().unwrap();
+        let probe = LockProbe::new();
+        let refresh = spawn_refresh(&probe, &staged.ctx, sdk, before.clone());
+        let refresh = probe.wait_for(LockSite::RecordRequest, refresh, REACH_LOCK_DEADLINE);
+        let mut added = before.clone();
+        added.identity.add_public_key(random_key(9));
+        added.identity.bump_revision();
+        staged
+            .ctx
+            .write_local_qualified_identity_locked(&added)
+            .unwrap();
+        drop(guard);
+        refresh.join().unwrap().expect("the refresh succeeds");
+
+        let after = read();
+        assert_eq!(after.identity.public_keys(), added.identity.public_keys());
+        assert_eq!(after.identity.revision(), added.identity.revision());
+        assert_eq!(after.identity.balance(), 9_999);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A newer identity from Platform replaces the stored one, but a stored
+    /// public key it lacks is kept: keys only accumulate on-chain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_newer_fetched_identity_keeps_a_stored_key_it_lacks() {
+        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
+        let ctx = &staged.ctx;
+        let mut stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let mut fetched = stored.identity.clone();
+        stored.identity.add_public_key(random_key(9));
+        ctx.update_local_qualified_identity(&stored).unwrap();
+        fetched.add_public_key(random_key(10));
+        fetched.bump_revision();
+        fetched.bump_revision();
+        let sdk = sdk_returning(&fetched, 10).await;
+
+        ctx.refresh_identity(&sdk, stored, sender_for(ctx))
+            .await
+            .expect("the refresh succeeds");
+
+        let after = ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let key_ids: Vec<_> = after.identity.public_keys().keys().copied().collect();
+        assert_eq!(key_ids, vec![9, 10]);
+        assert_eq!(after.identity.revision(), fetched.revision());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    fn random_key(id: dash_sdk::dpp::identity::KeyID) -> dash_sdk::platform::IdentityPublicKey {
+        dash_sdk::platform::IdentityPublicKey::random_key(
+            id,
+            Some(u64::from(id)),
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+    }
+
     /// A refresh answered at an earlier block than a paid task's balance
     /// keeps that newer balance.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_newer_paid_balance_is_not_replaced_by_an_older_refresh() {
         let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
         let ctx = &staged.ctx;
-        let mut paid = ctx
+        let paid = ctx
             .get_local_qualified_identity(&staged.id)
             .unwrap()
             .unwrap();
@@ -432,8 +508,7 @@ mod concurrent_refresh_tests {
         fetched.set_balance(100);
         let sdk = sdk_returning(&fetched, 10).await;
 
-        paid.identity.set_balance(500);
-        ctx.store_paid_balance(&paid, BalanceProvenance::ObservedAt(11))
+        ctx.store_observed_balance(&staged.id, 500, BalanceProvenance::ObservedAt(11))
             .expect("the paid balance is stored");
         ctx.refresh_identity(&sdk, paid, sender_for(ctx))
             .await

@@ -1083,9 +1083,8 @@ impl AppContext {
         let mut updated_identity = qualified_identity.clone();
         updated_identity.identity.set_balance(new_balance);
 
-        let updated_identity = self
-            .store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height))
-            .unwrap_or(updated_identity);
+        let updated_identity =
+            self.store_topped_up_identity(updated_identity, BalanceProvenance::ObservedAt(height));
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1160,38 +1159,77 @@ impl AppContext {
             );
         }
 
-        self.store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height));
+        self.store_observed_balance(
+            &updated_identity.identity.id(),
+            new_balance,
+            BalanceProvenance::ObservedAt(height),
+        );
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
     }
 
-    /// Store the balance `paid` carries after a paid task into the record as
-    /// stored now, so a change made while the task ran (such as a key removed
-    /// in Key Info) is kept. Returns the stored record, with the top-up history
-    /// `paid` carries (kept outside the record). The task already happened, so
-    /// a failed save is only logged; it never reads as a failed task that the
-    /// user might repeat.
-    fn store_paid_balance(
+    /// Store `credits`, observed per `provenance`, as `id`'s balance on its
+    /// record as stored now, so a change made meanwhile (such as a key removed
+    /// in Key Info) is kept. Returns the stored record; `None` when the
+    /// identity is not loaded here or the save failed. The task that moved the
+    /// credits already happened, so a failure is only logged; it never reads
+    /// as a failed task the user might repeat.
+    ///
+    /// TODO(platform-wallet): interim DET-side write. Once `IdentityManager`
+    /// holds the identity record, wallet-owned identities go through
+    /// `IdentityWallet::*_with_signer`, which store only the confirmed balance
+    /// via `persist_confirmed_balance`.
+    fn store_observed_balance(
         &self,
-        paid: &QualifiedIdentity,
+        id: &Identifier,
+        credits: Credits,
         provenance: BalanceProvenance,
     ) -> Option<QualifiedIdentity> {
-        let id = paid.identity.id();
-        let credits = paid.identity.balance();
-        self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
+        match self.edit_local_qualified_identity_observed(id, provenance, |stored| {
             stored.identity.set_balance(credits);
             Ok(())
-        })
-        .inspect_err(|error| {
-            tracing::warn!(identity_id = %id, ?error, "Balance after a paid task could not be stored locally; it updates on the next identity refresh");
-        })
-        .ok()
-        .map(|mut stored| {
-            stored.top_ups = paid.top_ups.clone();
-            stored
-        })
+        }) {
+            Ok(stored) => Some(stored),
+            Err(TaskError::IdentityNotFoundLocally) => {
+                tracing::debug!(identity_id = %id, "Identity is not loaded here; its new balance is not stored");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(identity_id = %id, ?error, "Identity balance could not be stored locally; it updates on the next identity refresh");
+                None
+            }
+        }
     }
+
+    /// `topped_up` as stored with its new balance (see
+    /// [`Self::store_observed_balance`]), keeping its top-up history, which
+    /// lives outside the record; `topped_up` itself when it was not stored.
+    fn store_topped_up_identity(
+        &self,
+        topped_up: QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) -> QualifiedIdentity {
+        let id = topped_up.identity.id();
+        match self.store_observed_balance(&id, topped_up.identity.balance(), provenance) {
+            Some(stored) => QualifiedIdentity {
+                top_ups: topped_up.top_ups,
+                ..stored
+            },
+            None => topped_up,
+        }
+    }
+}
+
+/// `fetched` with every public key of `stored` it lacks: keys only accumulate
+/// on-chain, so a missing one comes from an older read, not a removal.
+fn with_stored_public_keys(mut fetched: Identity, stored: &Identity) -> Identity {
+    for (key_id, stored_key) in stored.public_keys() {
+        if !fetched.public_keys().contains_key(key_id) {
+            fetched.add_public_key(stored_key.clone());
+        }
+    }
+    fetched
 }
 
 #[cfg(test)]
@@ -1228,8 +1266,7 @@ mod tests {
         paid.top_ups.insert(3, 50_000);
         let stored = staged
             .ctx
-            .store_paid_balance(&paid, BalanceProvenance::ObservedAt(7))
-            .expect("the balance is stored");
+            .store_topped_up_identity(paid.clone(), BalanceProvenance::ObservedAt(7));
 
         assert!(!stored.private_keys.has(&removed_key));
         assert_eq!(stored.top_ups, paid.top_ups, "the caller keeps its top-ups");
@@ -1239,6 +1276,47 @@ mod tests {
             "a paid task must not bring back a key removed while it ran"
         );
         assert_eq!(after.identity.balance(), 1_234);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A stored balance keeps public keys and a revision written meanwhile,
+    /// such as those of a key added while a withdrawal ran.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stored_balance_keeps_a_concurrent_key_set_and_revision() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let mut changed = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        changed
+            .identity
+            .add_public_key(IdentityPublicKey::random_key(
+                9,
+                Some(9),
+                PlatformVersion::latest(),
+            ));
+        changed.identity.bump_revision();
+        staged
+            .ctx
+            .update_local_qualified_identity(&changed)
+            .unwrap();
+
+        let stored = staged
+            .ctx
+            .store_observed_balance(&staged.id, 4_321, BalanceProvenance::ObservedAt(7))
+            .expect("the balance is stored");
+
+        assert_eq!(
+            stored.identity.public_keys(),
+            changed.identity.public_keys()
+        );
+        assert_eq!(stored.identity.revision(), changed.identity.revision());
+        assert_eq!(stored.identity.balance(), 4_321);
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 

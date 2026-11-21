@@ -204,9 +204,7 @@ impl AppContext {
                 &qualified_identity.top_ups,
             )?;
         }
-        let qualified_identity = self
-            .store_paid_balance(&qualified_identity, provenance)
-            .unwrap_or(qualified_identity);
+        let qualified_identity = self.store_topped_up_identity(qualified_identity, provenance);
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(

@@ -6,7 +6,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
-use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentityWithMetadata;
@@ -125,62 +125,13 @@ impl AppContext {
             );
         }
 
-        qualified_identity.identity.set_balance(remaining_balance);
-
-        self.store_paid_balance(
-            &qualified_identity,
+        self.store_observed_balance(
+            &qualified_identity.identity.id(),
+            remaining_balance,
             BalanceProvenance::ObservedAt(metadata.height),
         );
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::context::test_staging::stage_identity_with_vaulted_keys;
-    use crate::model::identity_balance::BalanceProvenance;
-    use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-    use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::IdentityPublicKey;
-
-    /// The withdrawal stores its remaining balance into the record as stored
-    /// now: public keys and a revision written while it ran are kept, not
-    /// replaced by the ones it fetched before the network call.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn withdrawal_does_not_restore_stale_public_keys_or_revision() {
-        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
-        let read = || {
-            staged
-                .ctx
-                .get_local_qualified_identity(&staged.id)
-                .unwrap()
-                .unwrap()
-        };
-        let mut withdrawn = read();
-        let mut changed = withdrawn.clone();
-        let added = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
-        changed.identity.add_public_key(added.clone());
-        changed.identity.bump_revision();
-        staged
-            .ctx
-            .update_local_qualified_identity(&changed)
-            .unwrap();
-
-        withdrawn.identity.set_balance(4_321);
-        staged
-            .ctx
-            .store_paid_balance(&withdrawn, BalanceProvenance::ObservedAt(7));
-
-        let after = read();
-        assert_eq!(
-            after.identity.public_keys(),
-            changed.identity.public_keys(),
-            "the withdrawal must not restore the public keys it read before"
-        );
-        assert_eq!(after.identity.revision(), changed.identity.revision());
-        assert_eq!(after.identity.balance(), 4_321);
-        staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

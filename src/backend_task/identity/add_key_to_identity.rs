@@ -421,16 +421,10 @@ impl AppContext {
             .get_local_qualified_identity(&identity_id)?
             .unwrap_or_else(|| snapshot.clone());
 
-        // The on-chain identity as the broadcast left it. Public keys only
-        // accumulate on-chain, so any key the stored copy knows and the
-        // snapshot does not is kept rather than dropped.
-        let mut identity = snapshot.identity.clone();
-        for (key_id, stored_key) in record.identity.public_keys() {
-            if !identity.public_keys().contains_key(key_id) {
-                identity.add_public_key(stored_key.clone());
-            }
-        }
-        record.identity = identity;
+        // The on-chain identity as the broadcast left it, keeping any key the
+        // stored copy knows and the snapshot does not.
+        record.identity =
+            super::with_stored_public_keys(snapshot.identity.clone(), &record.identity);
         let pending = self.adopt_balance_observation_locked(&mut record, balance_provenance)?;
 
         // Both inserts refuse a slot another writer filled with a different

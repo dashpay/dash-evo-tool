@@ -5,7 +5,7 @@ use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
-use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::transition::transfer::TransferToIdentityWithMetadata;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
@@ -31,7 +31,7 @@ pub(super) fn transfer_signing_key(
 impl AppContext {
     pub(super) async fn transfer_to_identity(
         &self,
-        mut qualified_identity: QualifiedIdentity,
+        qualified_identity: QualifiedIdentity,
         to_identifier: Identifier,
         credits: Credits,
         id: Option<KeyID>,
@@ -73,11 +73,9 @@ impl AppContext {
             );
         }
 
-        qualified_identity.identity.set_balance(sender_balance);
         self.store_transfer_balances(
-            &qualified_identity,
-            to_identifier,
-            receiver_balance,
+            (qualified_identity.identity.id(), sender_balance),
+            (to_identifier, receiver_balance),
             BalanceProvenance::ObservedAt(metadata.height),
         );
 
@@ -85,31 +83,20 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
     }
 
-    /// Store the balances a finished transfer reports: the sender's, and the
-    /// receiver's when it is loaded here. The credits already moved, so a
-    /// failed save is only logged.
+    /// Store the `(identity, balance)` pairs a finished transfer reports for
+    /// its sender and receiver, each only when that identity is loaded here.
+    ///
+    /// TODO(platform-wallet): `IdentityWallet::transfer_credits_with_signer`
+    /// stores both via `persist_confirmed_balance`; route wallet-owned
+    /// identities through it once `IdentityManager` holds the identity record.
     fn store_transfer_balances(
         &self,
-        sender: &QualifiedIdentity,
-        receiver_id: Identifier,
-        receiver_balance: Credits,
+        (sender_id, sender_balance): (Identifier, Credits),
+        (receiver_id, receiver_balance): (Identifier, Credits),
         observed: BalanceProvenance,
     ) {
-        match self.load_local_qualified_identities() {
-            Ok(identities) => {
-                if let Some(mut receiver) = identities
-                    .into_iter()
-                    .find(|qi| qi.identity.id() == receiver_id)
-                {
-                    receiver.identity.set_balance(receiver_balance);
-                    self.store_paid_balance(&receiver, observed);
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%receiver_id, ?error, "Receiver of a finished transfer could not be read; its balance updates on the next identity refresh");
-            }
-        }
-        self.store_paid_balance(sender, observed);
+        self.store_observed_balance(&receiver_id, receiver_balance, observed);
+        self.store_observed_balance(&sender_id, sender_balance, observed);
     }
 }
 
@@ -123,8 +110,8 @@ mod tests {
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 
-    /// Both identities' new balances land on their records as stored now:
-    /// an alias set on either while the transfer ran is kept.
+    /// The transfer stores only the two balances: an alias set on either
+    /// identity while it ran is kept.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_transfer_stores_both_balances_without_overwriting() {
         let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
@@ -139,20 +126,14 @@ mod tests {
             dash_sdk::dpp::dashcore::Network::Testnet,
         ))
         .unwrap();
-        let mut sender = ctx
-            .get_local_qualified_identity(&staged.id)
-            .unwrap()
-            .unwrap();
         ctx.set_identity_alias(&staged.id, Some("sender alias"))
             .unwrap();
         ctx.set_identity_alias(&receiver_id, Some("receiver alias"))
             .unwrap();
 
-        sender.identity.set_balance(700);
         ctx.store_transfer_balances(
-            &sender,
-            receiver_id,
-            1_300,
+            (staged.id, 700),
+            (receiver_id, 1_300),
             BalanceProvenance::ObservedAt(7),
         );
 

@@ -1239,6 +1239,48 @@ mod tests {
     use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
     use egui_kittest::kittest::Queryable;
 
+    /// The lower of two expiry-limited keys, chosen automatically, expires
+    /// while the price confirmation is open: the next frame moves to the
+    /// other key and closes both pieces of pending confirmation state.
+    #[test]
+    fn an_automatic_key_expiring_under_the_confirmation_closes_it() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::new([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(&[expired.clone(), live]),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = SetTokenPriceScreen::new(info, &context);
+        screen.selected_key = TokenSigningKey::automatic(Some(expired));
+        screen.show_confirmation_popup = true;
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut SetTokenPriceScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(2);
+
+        let screen = harness.state();
+        assert!(!screen.show_confirmation_popup);
+        assert!(screen.confirmation_dialog.is_none());
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+    }
+
     #[test]
     fn token_group_price_proposal_remains_visible_without_a_signing_key() {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -2091,6 +2091,15 @@ pub enum TaskError {
     )]
     TokenBalanceRefreshDisconnected,
 
+    /// A token-balance refresh ran but could not read these identities'
+    /// balances, so their earlier balances stay on screen.
+    #[error(
+        "Some token balances could not be checked, so earlier balances are shown. Check your connection, then refresh the balances."
+    )]
+    TokenBalancesNotChecked {
+        identities: Vec<dash_sdk::platform::Identifier>,
+    },
+
     /// A balance read was refused before the masternode list finished
     /// syncing: sent now, its proof could not be verified and the queried
     /// node would be banned.

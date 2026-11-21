@@ -125,6 +125,13 @@ impl WalletSendScreen {
         self.get_shielded_balance()
     }
 
+    /// Whether the Shielded tab pauses spending the private balance.
+    pub(super) fn shielded_spending_paused(&self) -> bool {
+        crate::ui::wallets::shielded_tab::shielded_spending_paused(
+            &self.app_context.migration_status().state(),
+        )
+    }
+
     /// What the Amount field may offer for paying `destination` from `source`.
     /// The same figures back Max, the field's limits and Auto's "covers" test.
     pub(super) fn amount_limits_for(
@@ -844,6 +851,7 @@ impl WalletSendScreen {
                 let addresses = self.platform_source_addresses();
                 (!addresses.is_empty()).then_some(SourceSelection::PlatformAddresses(addresses))
             }
+            PayFrom::Shielded if self.shielded_spending_paused() => None,
             PayFrom::Shielded => {
                 let seed_hash = self.selected_wallet_seed_hash?;
                 // A Shielded preset spends the private balance whatever it
@@ -926,7 +934,7 @@ impl WalletSendScreen {
             max_of(&SourceSelection::PlatformAddresses(platform))
         };
         let shielded = match self.spendable_shielded() {
-            Some((seed_hash, balance)) if !several => {
+            Some((seed_hash, balance)) if !several && !self.shielded_spending_paused() => {
                 max_of(&SourceSelection::Shielded(seed_hash, balance))
             }
             _ => CandidateMax::Unavailable,

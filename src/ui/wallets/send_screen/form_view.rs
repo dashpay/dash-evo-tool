@@ -131,6 +131,9 @@ pub(super) enum AmountProblem {
     FeeNotCovered,
 }
 
+/// Why the private balance cannot pay yet (spec §3.1).
+const SHIELDED_BALANCE_UNVERIFIED: &str = "Your private balance is still being checked.";
+
 /// Short name of a balance kind (spec D-14).
 pub(super) fn kind_label(kind: PayFromKind) -> &'static str {
     match kind {
@@ -346,7 +349,9 @@ impl WalletSendScreen {
                         format_selector_balance(balance / CREDITS_PER_DUFF).replace(" DASH", ""),
                     )
                     .with_tooltip(kind_tooltip(PayFromKind::Shielded));
-                if let Some(refusal) = refused(PayFromKind::Shielded) {
+                if self.shielded_spending_paused() {
+                    shielded = shielded.disabled(SHIELDED_BALANCE_UNVERIFIED);
+                } else if let Some(refusal) = refused(PayFromKind::Shielded) {
                     shielded = shielded.disabled(refusal_message(refusal, own_pool));
                 }
                 chips.push(shielded);
@@ -492,6 +497,9 @@ impl WalletSendScreen {
                     .map(CoreSendShortfall::message)
                     .unwrap_or_default(),
             ),
+            Some(AutoSource::NoFunds) if foreign_private && self.shielded_spending_paused() => {
+                status_line(ui, "Auto: your private balance is still being checked.")
+            }
             Some(AutoSource::NoFunds) if foreign_private => status_line(
                 ui,
                 "Auto: only your private balance can pay a private address, and it holds nothing.",
@@ -1764,6 +1772,9 @@ impl WalletSendScreen {
         }
         if self.form.pay_from() == PayFrom::Advanced && self.form.ticked_advanced().is_empty() {
             return Some("Choose the addresses to pay from.");
+        }
+        if self.form.pay_from() == PayFrom::Shielded && self.shielded_spending_paused() {
+            return Some(SHIELDED_BALANCE_UNVERIFIED);
         }
         if self.route.refusal.is_some() || self.selected_source.is_none() {
             return Some(match self.route.auto {

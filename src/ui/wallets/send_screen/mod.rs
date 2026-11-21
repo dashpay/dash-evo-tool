@@ -8774,6 +8774,80 @@ mod tests {
         assert!(!identity_chip_enabled(&mut screen));
     }
 
+    /// The private balance is not spent while the Shielded tab pauses
+    /// spending: the chip says why, an explicit choice resolves to no source
+    /// and Auto passes over it (spec §3.1, §4.1; SND-016).
+    #[test]
+    fn shielded_is_not_spent_until_its_balance_is_verified() {
+        use crate::backend_task::migration::MigrationError;
+        use crate::context::migration_status::{MigrationState, MigrationStep};
+        use crate::model::send_route::PayFromKind;
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen.app_context.set_user_role(UserRole::Power);
+        crate::context::test_support::prove_protocol_version(
+            &screen.app_context,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: vec![],
+            platform: vec![],
+            shielded_credits: 100_000_000 * CREDITS_PER_DUFF,
+        });
+        screen.typed_destination = Some(foreign_shielded_destination());
+        screen.amount = Some(Amount::new_dash(0.5));
+        let shielded_chip = |screen: &mut WalletSendScreen| {
+            screen
+                .pay_from_chips()
+                .into_iter()
+                .find(|chip| *chip.value() == PayFrom::Shielded)
+                .expect("the Shielded chip")
+        };
+        let pays_from_shielded = |screen: &WalletSendScreen| {
+            matches!(screen.selected_source, Some(SourceSelection::Shielded(..)))
+        };
+
+        let paused = [
+            MigrationState::Running {
+                step: MigrationStep::Shielded,
+            },
+            MigrationState::Failed {
+                error: Arc::new(MigrationError::WalletBackendUnavailable),
+            },
+        ];
+        for state in paused {
+            screen
+                .app_context
+                .migration_status()
+                .set_state(state.clone());
+            let chip = shielded_chip(&mut screen);
+            assert!(!chip.is_enabled(), "{state:?}");
+            assert!(
+                format!("{chip:?}").contains("Your private balance is still being checked."),
+                "{state:?}: {chip:?}"
+            );
+            screen.form.reset();
+            screen.sync_route();
+            assert!(!pays_from_shielded(&screen), "Auto under {state:?}");
+            screen
+                .form
+                .choose_pay_from(PayFrom::Shielded, PayFromKind::Shielded);
+            screen.sync_route();
+            assert!(!pays_from_shielded(&screen), "explicit under {state:?}");
+        }
+
+        screen
+            .app_context
+            .migration_status()
+            .set_state(MigrationState::Success);
+        assert!(shielded_chip(&mut screen).is_enabled());
+        screen.form.reset();
+        screen.sync_route();
+        assert!(pays_from_shielded(&screen), "Auto pays once verified");
+    }
+
     /// Switching My wallets to the paying wallet while Receive into names the
     /// paying balance keeps Send disabled and is refused before any task.
     #[test]

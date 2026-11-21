@@ -31,6 +31,7 @@ use crate::ui::helpers::{
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -173,7 +174,7 @@ pub struct TokenActionCommon {
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
     /// The action in flight; only its own result or error ends the wait.
-    request: Option<BackendTaskContext>,
+    request: PendingRequest,
     app_context: Arc<AppContext>,
 }
 
@@ -247,7 +248,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 wallet_open_attempted: false,
                 completed_fee_result: None,
                 refresh_banner: None,
-                request: None,
+                request: PendingRequest::default(),
                 app_context: app_context.clone(),
             },
             action,
@@ -398,7 +399,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
     }
 
     fn submit(&mut self) -> AppAction {
-        if self.common.request.is_some() {
+        if self.common.request.is_pending() {
             return AppAction::None;
         }
         let Some(signing_key) =
@@ -433,10 +434,9 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 );
                 handle.with_elapsed();
                 self.common.refresh_banner = Some(handle);
-                let (dispatch, request) =
-                    dispatch.with_dispatch_contexts(self.common.app_context.network);
-                self.common.request = request;
-                dispatch
+                self.common
+                    .request
+                    .dispatch_action_on(dispatch, self.common.app_context.network)
             }
             None => {
                 self.common.status = TokenActionStatus::Error;
@@ -456,14 +456,12 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
     }
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.common.request.as_ref() == Some(context) {
-            self.common.request = None;
-        }
+        self.common.request.settle(context);
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // After the action's own outcome, a later error (its balance refresh) changes nothing.
-        if self.common.request.is_none()
+        if !self.common.request.is_pending()
             && self.common.status != TokenActionStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
@@ -474,7 +472,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let Some(fee_result) = A::success_fee(&backend_task_success_result) {
-            self.common.request = None;
+            self.common.request.clear();
             self.common.refresh_banner.take_and_clear();
             self.common.completed_fee_result = Some(fee_result);
             self.common.status = TokenActionStatus::Complete;
@@ -643,7 +641,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 || !button_text.contains("Test")
             {
                 ui.add_space(10.0);
-                let in_flight = self.common.request.is_some();
+                let in_flight = self.common.request.is_pending();
                 let ready = self.action.inputs_ready() && !in_flight;
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
                     .disabled_tooltip(if in_flight {

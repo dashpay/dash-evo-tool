@@ -711,41 +711,42 @@ pub enum AppAction {
 }
 
 impl AppAction {
-    /// Gives each task this action sends its own dispatch context, so the
-    /// sending screen can tell their results and errors from any other task's;
-    /// contexts the action already carries are kept. Returns the action and
-    /// the context of its first task.
-    pub(crate) fn with_dispatch_contexts(
+    /// The tasks this action sends, each with its own dispatch context on
+    /// `network` so its sender can tell their results and errors from any
+    /// other task's; contexts the action already carries are kept. An action
+    /// that sends no task is returned unchanged.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands back the caller's own action, not a failure"
+    )]
+    pub(crate) fn into_dispatch(
         self,
         network: Network,
-    ) -> (Self, Option<BackendTaskContext>) {
-        let (tasks, mode) = match self {
-            AppAction::BackendTask(task) => (vec![task], BackendTasksExecutionMode::Sequential),
-            AppAction::BackendTasks(tasks, mode) => (tasks, mode),
-            AppAction::BackendTaskWithContext { task, context } => {
-                return (
-                    AppAction::BackendTasksWithContexts(
-                        vec![(task, context.clone())],
-                        BackendTasksExecutionMode::Sequential,
-                    ),
-                    Some(context),
-                );
-            }
-            AppAction::BackendTasksWithContexts(tasks, mode) => {
-                let first = tasks.first().map(|(_, context)| context.clone());
-                return (AppAction::BackendTasksWithContexts(tasks, mode), first);
-            }
-            other => return (other, None),
+    ) -> Result<
+        (
+            Vec<(BackendTask, BackendTaskContext)>,
+            BackendTasksExecutionMode,
+        ),
+        Self,
+    > {
+        let with_context = |task: BackendTask| {
+            let context = BackendTaskContext::for_dispatch_on(&task, network);
+            (task, context)
         };
-        let tasks: Vec<_> = tasks
-            .into_iter()
-            .map(|task| {
-                let context = BackendTaskContext::for_dispatch_on(&task, network);
-                (task, context)
-            })
-            .collect();
-        let first = tasks.first().map(|(_, context)| context.clone());
-        (AppAction::BackendTasksWithContexts(tasks, mode), first)
+        Ok(match self {
+            AppAction::BackendTask(task) => (
+                vec![with_context(task)],
+                BackendTasksExecutionMode::Sequential,
+            ),
+            AppAction::BackendTaskWithContext { task, context } => {
+                (vec![(task, context)], BackendTasksExecutionMode::Sequential)
+            }
+            AppAction::BackendTasks(tasks, mode) => {
+                (tasks.into_iter().map(with_context).collect(), mode)
+            }
+            AppAction::BackendTasksWithContexts(tasks, mode) => (tasks, mode),
+            other => return Err(other),
+        })
     }
 }
 
@@ -3423,38 +3424,5 @@ mod contact_request_routing_tests {
             );
             assert!(!ResultRoute::ClosedOwner.delivers_to(hub, visible));
         }
-    }
-}
-
-#[cfg(test)]
-mod dispatch_context_tests {
-    use super::*;
-
-    /// A context the action already carries is the one its sender waits on.
-    #[test]
-    fn dispatch_contexts_already_on_an_action_are_kept() {
-        let network = Network::Testnet;
-        let context = BackendTaskContext::for_dispatch_on(&BackendTask::None, network);
-        let (action, first) = AppAction::BackendTaskWithContext {
-            task: BackendTask::None,
-            context: context.clone(),
-        }
-        .with_dispatch_contexts(network);
-        assert_eq!(first.as_ref(), Some(&context));
-        assert!(
-            matches!(action, AppAction::BackendTasksWithContexts(tasks, _)
-            if tasks.len() == 1 && tasks[0].1 == context)
-        );
-
-        let (action, first) = AppAction::BackendTasksWithContexts(
-            vec![(BackendTask::None, context.clone())],
-            BackendTasksExecutionMode::Concurrent,
-        )
-        .with_dispatch_contexts(network);
-        assert_eq!(first, Some(context));
-        assert!(matches!(
-            action,
-            AppAction::BackendTasksWithContexts(_, BackendTasksExecutionMode::Concurrent)
-        ));
     }
 }

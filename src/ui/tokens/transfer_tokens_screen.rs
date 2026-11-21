@@ -23,6 +23,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Result
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -70,7 +71,7 @@ pub struct TransferTokensScreen {
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
     /// The transfer in flight; only its own result or error ends the wait.
-    transfer_request: Option<BackendTaskContext>,
+    transfer_request: PendingRequest,
 }
 
 impl TransferTokensScreen {
@@ -134,7 +135,7 @@ impl TransferTokensScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
-            transfer_request: None,
+            transfer_request: PendingRequest::default(),
         }
     }
 
@@ -225,7 +226,7 @@ impl TransferTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
-        if self.transfer_request.is_some() {
+        if self.transfer_request.is_pending() {
             return AppAction::None;
         }
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
@@ -293,20 +294,17 @@ impl TransferTokensScreen {
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
 
-        let (action, request) = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-            TokenTask::TransferTokens {
-                sending_identity: identity,
-                recipient_id: receiver_id,
-                amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
-                data_contract,
-                token_position: self.identity_token_balance.token_position,
-                signing_key,
-                public_note: self.public_note.clone(),
-            },
-        )))
-        .with_dispatch_contexts(self.app_context.network);
-        self.transfer_request = request;
-        action
+        let task = BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
+            sending_identity: identity,
+            recipient_id: receiver_id,
+            amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
+            data_contract,
+            token_position: self.identity_token_balance.token_position,
+            signing_key,
+            public_note: self.public_note.clone(),
+        }));
+        self.transfer_request
+            .dispatch_on(task, self.app_context.network)
     }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
         crate::ui::helpers::show_success_screen_with_info(
@@ -331,15 +329,13 @@ impl ScreenLike for TransferTokensScreen {
         }
     }
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.transfer_request.as_ref() == Some(context) {
-            self.transfer_request = None;
-        }
+        self.transfer_request.settle(context);
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         // After the transfer's own outcome, a later error changes nothing.
-        if self.transfer_request.is_none()
+        if !self.transfer_request.is_pending()
             && self.transfer_tokens_status != TransferTokensStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
@@ -351,7 +347,7 @@ impl ScreenLike for TransferTokensScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
         {
-            self.transfer_request = None;
+            self.transfer_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
@@ -623,7 +619,7 @@ impl ScreenLike for TransferTokensScreen {
 
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
-                let in_flight = self.transfer_request.is_some();
+                let in_flight = self.transfer_request.is_pending();
                 let ready = self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()

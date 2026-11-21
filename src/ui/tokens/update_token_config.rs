@@ -26,6 +26,7 @@ use crate::ui::helpers::{
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -86,7 +87,7 @@ pub struct UpdateTokenConfigScreen {
     // Banner handle for elapsed time display
     refresh_banner: Option<crate::ui::components::BannerHandle>,
     /// The update in flight; only its own result or error ends the wait.
-    update_request: Option<BackendTaskContext>,
+    update_request: PendingRequest,
 }
 
 impl UpdateTokenConfigScreen {
@@ -140,7 +141,7 @@ impl UpdateTokenConfigScreen {
             group_action_id: None,
             completed_fee_result: None,
             refresh_banner: None,
-            update_request: None,
+            update_request: PendingRequest::default(),
         }
     }
 
@@ -728,7 +729,7 @@ impl UpdateTokenConfigScreen {
             )
         {
             ui.add_space(20.0);
-            let in_flight = self.update_request.is_some();
+            let in_flight = self.update_request.is_pending();
             if ComponentStyles::add_primary_button_enabled(ui, !in_flight, &button_text)
                 .disabled_tooltip("Wait for the current update to finish.")
                 .clicked()
@@ -761,22 +762,20 @@ impl UpdateTokenConfigScreen {
                     );
                     handle.with_elapsed();
                     self.refresh_banner = Some(handle);
-                    let (update, request) = AppAction::BackendTask(BackendTask::TokenTask(
-                        Box::new(TokenTask::UpdateTokenConfig {
-                            identity_token_info: Box::new(self.identity_token_info.clone()),
-                            change_item: self.change_item.clone(),
-                            signing_key,
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
-                            },
-                            group_info,
-                        }),
-                    ))
-                    .with_dispatch_contexts(self.app_context.network);
-                    self.update_request = request;
-                    action |= update;
+                    let update = BackendTask::TokenTask(Box::new(TokenTask::UpdateTokenConfig {
+                        identity_token_info: Box::new(self.identity_token_info.clone()),
+                        change_item: self.change_item.clone(),
+                        signing_key,
+                        public_note: if self.group_action_id.is_some() {
+                            None
+                        } else {
+                            self.public_note.clone()
+                        },
+                        group_info,
+                    }));
+                    action |= self
+                        .update_request
+                        .dispatch_on(update, self.app_context.network);
                 }
             }
         }
@@ -914,15 +913,13 @@ impl UpdateTokenConfigScreen {
 
 impl ScreenLike for UpdateTokenConfigScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.update_request.as_ref() == Some(context) {
-            self.update_request = None;
-        }
+        self.update_request.settle(context);
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         // After the update's own outcome, a later error changes nothing.
-        if self.update_request.is_none()
+        if !self.update_request.is_pending()
             && self.update_status != UpdateTokenConfigStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
@@ -935,7 +932,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
         if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result) =
             backend_task_success_result
         {
-            self.update_request = None;
+            self.update_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.update_status = UpdateTokenConfigStatus::Complete;

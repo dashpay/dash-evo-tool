@@ -34,6 +34,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -77,7 +78,7 @@ pub struct PurchaseTokenScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     /// The purchase in flight; only its own result or error ends the wait.
-    purchase_request: Option<BackendTaskContext>,
+    purchase_request: PendingRequest,
     refresh_banner: Option<BannerHandle>,
 }
 
@@ -118,7 +119,7 @@ impl PurchaseTokenScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
             completed_fee_result: None,
-            purchase_request: None,
+            purchase_request: PendingRequest::default(),
             refresh_banner: None,
         }
     }
@@ -300,7 +301,7 @@ impl PurchaseTokenScreen {
 
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
-                if self.purchase_request.is_some() {
+                if self.purchase_request.is_pending() {
                     self.confirmation_dialog = None;
                     return AppAction::None;
                 }
@@ -330,14 +331,13 @@ impl PurchaseTokenScreen {
                     amount: amount.value(),
                     total_agreed_price: total_price_credits,
                 }));
-                let network = self.app_context.network;
-                let request = BackendTaskContext::for_dispatch_on(&purchase, network);
                 let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
-                let refresh_request = BackendTaskContext::for_dispatch_on(&refresh, network);
-                self.purchase_request = Some(request.clone());
-                AppAction::BackendTasksWithContexts(
-                    vec![(purchase, request), (refresh, refresh_request)],
-                    BackendTasksExecutionMode::Sequential,
+                self.purchase_request.dispatch_action_on(
+                    AppAction::BackendTasks(
+                        vec![purchase, refresh],
+                        BackendTasksExecutionMode::Sequential,
+                    ),
+                    self.app_context.network,
                 )
             }
             Some(ConfirmationStatus::Canceled) => {
@@ -363,7 +363,7 @@ impl PurchaseTokenScreen {
     /// A price result only sets the status of a screen with no purchase in
     /// flight or completed; otherwise it would reopen the purchase form.
     fn price_may_change_status(&self) -> bool {
-        self.purchase_request.is_none() && self.status != PurchaseTokensStatus::Complete
+        !self.purchase_request.is_pending() && self.status != PurchaseTokensStatus::Complete
     }
 }
 
@@ -402,7 +402,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
             }
             BackendTaskSuccessResult::PurchasedTokens(fee_result) => {
-                self.purchase_request = None;
+                self.purchase_request.clear();
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.status = PurchaseTokensStatus::Complete;
@@ -412,15 +412,13 @@ impl ScreenLike for PurchaseTokenScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.purchase_request.as_ref() == Some(context) {
-            self.purchase_request = None;
-        }
+        self.purchase_request.settle(context);
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         // After the purchase's own outcome, a later error (its balance refresh) changes nothing.
-        if self.purchase_request.is_none()
+        if !self.purchase_request.is_pending()
             && self.status != PurchaseTokensStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
@@ -634,7 +632,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 ui.add_space(10.0);
 
                 // Purchase button (disabled if no valid amounts are available)
-                let in_flight = self.purchase_request.is_some();
+                let in_flight = self.purchase_request.is_pending();
                 let can_purchase = !in_flight
                     && self.fetched_pricing_schedule.is_some()
                     && self.calculated_price_credits.unwrap_or_default() > 0

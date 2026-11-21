@@ -24,6 +24,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -126,7 +127,7 @@ pub struct SetTokenPriceScreen {
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
     /// The price change in flight; only its own result or error ends the wait.
-    set_price_request: Option<BackendTaskContext>,
+    set_price_request: PendingRequest,
 }
 
 /// 1 Dash = 100,000,000,000 credits
@@ -294,7 +295,7 @@ impl SetTokenPriceScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
-            set_price_request: None,
+            set_price_request: PendingRequest::default(),
         }
     }
 
@@ -724,7 +725,7 @@ impl SetTokenPriceScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         self.show_confirmation_popup = false;
         self.confirmation_dialog = None; // Reset the dialog for next use
-        if self.set_price_request.is_some() {
+        if self.set_price_request.is_pending() {
             return AppAction::None;
         }
 
@@ -773,24 +774,21 @@ impl SetTokenPriceScreen {
         };
 
         // Create and return the backend task
-        let (action, request) = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-            TokenTask::SetDirectPurchasePrice {
-                identity: self.identity_token_info.identity.clone(),
-                data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
-                token_position: self.identity_token_info.token_position,
-                signing_key,
-                public_note: if self.group_action_id.is_some() {
-                    None
-                } else {
-                    self.public_note.clone()
-                },
-                token_pricing_schedule: token_pricing_schedule_opt,
-                group_info,
+        let task = BackendTask::TokenTask(Box::new(TokenTask::SetDirectPurchasePrice {
+            identity: self.identity_token_info.identity.clone(),
+            data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
+            token_position: self.identity_token_info.token_position,
+            signing_key,
+            public_note: if self.group_action_id.is_some() {
+                None
+            } else {
+                self.public_note.clone()
             },
-        )))
-        .with_dispatch_contexts(self.app_context.network);
-        self.set_price_request = request;
-        action
+            token_pricing_schedule: token_pricing_schedule_opt,
+            group_info,
+        }));
+        self.set_price_request
+            .dispatch_on(task, self.app_context.network)
     }
 
     /// Handle the cancel action when user clicks Cancel or closes dialog
@@ -853,14 +851,12 @@ impl ScreenLike for SetTokenPriceScreen {
         }
     }
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.set_price_request.as_ref() == Some(context) {
-            self.set_price_request = None;
-        }
+        self.set_price_request.settle(context);
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if self.set_price_request.is_none()
+        if !self.set_price_request.is_pending()
             && self.status != SetTokenPriceStatus::Complete
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
@@ -871,7 +867,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
-            self.set_price_request = None;
+            self.set_price_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = SetTokenPriceStatus::Complete;
@@ -1158,7 +1154,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
-                let in_flight = self.set_price_request.is_some();
+                let in_flight = self.set_price_request.is_pending();
                 let button_active = validation_result.is_ok() && !in_flight;
 
                 let button_response =

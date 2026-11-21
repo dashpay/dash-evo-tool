@@ -2777,6 +2777,8 @@ impl ScreenLike for TokensScreen {
                 .into_iter()
                 .map(|identity| (identity.identity.id(), identity))
                 .collect();
+            self.token_action_availability =
+                token_action_availability(&self.app_context, &self.identities);
         }
         // My Tokens joins both: one recomputation after whichever side changed.
         self.my_tokens = my_tokens(
@@ -2841,6 +2843,9 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        // A wallet may have loaded or locked while the user was away.
+        self.token_action_availability =
+            token_action_availability(&self.app_context, &self.identities);
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -3361,6 +3366,44 @@ mod tests {
                 std::env::set_var("LOCAL_core_rpc_password", "password");
             }
         });
+    }
+
+    /// An identity that appears while My Tokens is open, or whose wallet
+    /// state changed while it was away, gets a fresh token-action
+    /// availability on a cache update and on arrival, never a stale or
+    /// missing (enabled) one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_action_availability_follows_identity_changes_and_arrival() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::bare_user_identity;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        let waiting = |byte: u8| {
+            let identity = bare_user_identity(Identifier::from([byte; 32]), app_context.network);
+            app_context
+                .insert_local_qualified_identity(&identity, &Some(([0x4E; 32], 0)))
+                .expect("store the identity of an unloaded wallet");
+            identity.identity.id()
+        };
+
+        let added = waiting(0x51);
+        screen.cached_data_changed(CacheUpdate {
+            network: app_context.network,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(
+            screen.token_action_availability.get(&added),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
+
+        let arrived = waiting(0x52);
+        screen.refresh_on_arrival();
+        assert_eq!(
+            screen.token_action_availability.get(&arrived),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
     }
 
     #[test]

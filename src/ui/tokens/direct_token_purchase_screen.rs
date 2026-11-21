@@ -663,6 +663,10 @@ impl ScreenLike for PurchaseTokenScreen {
                         .map(|v| v.value())
                         .unwrap_or_default()
                         > 0;
+                if !can_purchase {
+                    // A confirmation hidden now would return later with stale terms.
+                    self.confirmation_dialog = None;
+                }
                 let purchase_text = "Purchase".to_string();
 
                 if can_purchase {
@@ -931,5 +935,66 @@ mod tests {
         };
         assert_eq!((*amount, *total_agreed_price), (10, 50));
         assert!(screen.confirmation_dialog.is_none());
+    }
+
+    /// Regression: a confirmation open when Purchase became unavailable was
+    /// only hidden, and popped up again with its old terms once Purchase
+    /// returned.
+    #[test]
+    fn a_confirmation_hidden_by_an_unavailable_purchase_does_not_return() {
+        use super::*;
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::model::qualified_contract::QualifiedContract;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]),
+            data_contract: QualifiedContract {
+                contract: ctx.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let pricing = |price| BackendTaskSuccessResult::TokenPricing {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            prices: Some(TokenPricingSchedule::SinglePrice(price)),
+        };
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut PurchaseTokenScreen| {
+                    screen.ui(ui);
+                },
+                PurchaseTokenScreen::new(info, &ctx),
+            );
+        harness.run();
+        let amount_field = "Amount to Purchase:";
+        let text_input = egui::accesskit::Role::TextInput;
+        harness
+            .get_by_role_and_label(text_input, amount_field)
+            .focus();
+        harness.run();
+        harness
+            .get_by_role_and_label(text_input, amount_field)
+            .type_text("10");
+        harness.run();
+        harness.state_mut().display_task_result(pricing(5));
+        harness.state_mut().open_purchase_confirmation();
+        harness.run_steps(2);
+        assert!(harness.state().confirmation_dialog.is_some());
+
+        harness.state_mut().display_task_result(pricing(0));
+        harness.run_steps(2);
+        harness.state_mut().display_task_result(pricing(5));
+        harness.run_steps(2);
+        assert!(harness.state().confirmation_dialog.is_none());
+        assert!(harness.query_by_label("Confirm Purchase").is_none());
     }
 }

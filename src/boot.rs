@@ -136,7 +136,7 @@ pub enum BootApp {
     /// Startup failed. Only the failure dialog is shown; no part of the app
     /// is built.
     Failed(StartupFailure),
-    /// The failure dialog closed through the macOS menu Quit; exits when
+    /// The failure dialog closed on macOS, by any route; reports and exits when
     /// eframe drops the app.
     Exiting(FailureExit),
 }
@@ -296,9 +296,10 @@ impl eframe::App for BootApp {
     fn on_exit(&mut self) {
         match self {
             BootApp::Running(app) => app.on_exit(),
-            // After the macOS menu Quit, eframe never returns to `main`, so the
-            // failure is reported and the status set when this app is dropped.
-            // Elsewhere `main` does both after eframe finishes its teardown.
+            // On macOS, every close is handled here: after the menu Quit eframe
+            // never returns to `main`, so the failure is reported and the
+            // status set when this app is dropped. Elsewhere `main` does both
+            // after eframe finishes its teardown.
             BootApp::Failed(failure) if cfg!(target_os = "macos") => {
                 let notice = FailureNotice(failure.clone());
                 *self = BootApp::Exiting(FailureExit(notice));
@@ -728,8 +729,9 @@ mod tests {
         );
     }
 
-    /// The exit `on_exit` takes after the macOS menu Quit, where eframe never
-    /// returns to `main`: a failure status and the cause on the terminal.
+    /// The exit a closed failure dialog takes on macOS, where the menu Quit
+    /// never returns to `main`: dropping the app reports the cause on the
+    /// terminal and exits with a failure status.
     #[test]
     fn exit_from_failure_dialog_reports_failure() {
         const CHILD_ENV: &str = "DET_FAILED_BOOT_EXIT_CHILD";

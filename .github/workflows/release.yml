@@ -141,11 +141,11 @@ jobs:
         run: |
           mkdir -p dash-evo-tool/
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+      # rust-toolchain.toml selects the toolchain; add the target to that one.
+      - name: Add Rust target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "$TARGET"
 
       - name: Install essentials
         if: ${{ runner.os == 'Linux' }}
@@ -616,14 +616,17 @@ jobs:
           set -euo pipefail
           app='build/Dash Evo Tool.app'
           # This app contains two executables, one icon and one plist; no links or helpers.
+          reject() { echo 'Unexpected entry in unsigned app bundle.' >&2; exit 1; }
           while IFS= read -r -d '' entry; do
+            # `set -e` ignores a failed test inside an `&&` list, so fail explicitly.
+            if [ -L "$entry" ]; then reject; fi
             case "$entry" in
               "$app"|"$app/Contents"|"$app/Contents/MacOS"|"$app/Contents/Resources")
-                test -d "$entry" && test ! -L "$entry" ;;
+                [ -d "$entry" ] || reject ;;
               "$app/Contents/MacOS/dash-evo-tool"|"$app/Contents/MacOS/det-cli"|\
               "$app/Contents/Resources/AppIcon.icns"|"$app/Contents/Info.plist")
-                test -f "$entry" && test ! -L "$entry" ;;
-              *) echo 'Unexpected entry in unsigned app bundle.' >&2; exit 1 ;;
+                [ -f "$entry" ] || reject ;;
+              *) reject ;;
             esac
           done < <(find "$app" -print0)
           test -s "$app/Contents/Info.plist"
@@ -774,32 +777,54 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-linux-x86_64.zip
+          path: dist
       - name: Download Linux Arm64 Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-linux-arm64.zip
+          path: dist
       - name: Download macOS ARM64 Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-macos-arm64.dmg
+          path: dist
       - name: Download macOS x86_64 Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-macos-x86_64.dmg
+          path: dist
       - name: Download Windows Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-windows.zip
+          path: dist
+
+      # Artifacts extract outside the release-policy checkout; only these files publish.
+      - name: Check the downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(printf '%s\n' dash-evo-tool-linux-arm64.zip dash-evo-tool-linux-x86_64.zip \
+            dash-evo-tool-macos-arm64.dmg dash-evo-tool-macos-x86_64.dmg dash-evo-tool-windows.zip)
+          actual=$(find dist -mindepth 1 -printf '%P\n' | LC_ALL=C sort)
+          if [ "$actual" != "$expected" ]; then
+            echo 'Unexpected release files.' >&2; exit 1
+          fi
+          for file in dist/*; do
+            if [ -L "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then
+              echo 'Unexpected release file.' >&2; exit 1
+            fi
+          done
 
       - name: Attest completed release artifacts
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
         with:
           subject-path: |
-            dash-evo-tool-linux-x86_64.zip
-            dash-evo-tool-linux-arm64.zip
-            dash-evo-tool-windows.zip
-            dash-evo-tool-macos-arm64.dmg
-            dash-evo-tool-macos-x86_64.dmg
+            dist/dash-evo-tool-linux-x86_64.zip
+            dist/dash-evo-tool-linux-arm64.zip
+            dist/dash-evo-tool-windows.zip
+            dist/dash-evo-tool-macos-arm64.dmg
+            dist/dash-evo-tool-macos-x86_64.dmg
 
       - name: Recheck the publication tag
         if: needs.authorize.outputs.tag != ''
@@ -807,7 +832,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
           RELEASE_TAG: ${{ needs.authorize.outputs.tag }}
-        run: python3 release-policy/scripts/ci/release_source.py --verify-remote-tag --allow-new-tag
+          # Only a direct dispatch creates its tag; every other caller pushed it first.
+          ALLOW_NEW_TAG: ${{ github.event_name == 'workflow_dispatch' && !inputs.weekly }}
+        run: |
+          args=(--verify-remote-tag)
+          if [ "$ALLOW_NEW_TAG" = true ]; then args+=(--allow-new-tag); fi
+          python3 release-policy/scripts/ci/release_source.py "${args[@]}"
 
       - name: Publish weekly draft
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
@@ -820,11 +850,11 @@ jobs:
           tag_name: ${{ needs.authorize.outputs.tag }}
           target_commitish: ${{ needs.authorize.outputs.source_sha }}
           files: |
-            ./dash-evo-tool-linux-x86_64.zip
-            ./dash-evo-tool-linux-arm64.zip
-            ./dash-evo-tool-macos-arm64.dmg
-            ./dash-evo-tool-macos-x86_64.dmg
-            ./dash-evo-tool-windows.zip
+            ./dist/dash-evo-tool-linux-x86_64.zip
+            ./dist/dash-evo-tool-linux-arm64.zip
+            ./dist/dash-evo-tool-macos-arm64.dmg
+            ./dist/dash-evo-tool-macos-x86_64.dmg
+            ./dist/dash-evo-tool-windows.zip
           draft: ${{ inputs.draft || false }}
           prerelease: true
 
@@ -837,10 +867,10 @@ jobs:
           tag_name: ${{ needs.authorize.outputs.tag }}
           target_commitish: ${{ needs.authorize.outputs.source_sha }}
           files: |
-            ./dash-evo-tool-linux-x86_64.zip
-            ./dash-evo-tool-linux-arm64.zip
-            ./dash-evo-tool-macos-arm64.dmg
-            ./dash-evo-tool-macos-x86_64.dmg
-            ./dash-evo-tool-windows.zip
+            ./dist/dash-evo-tool-linux-x86_64.zip
+            ./dist/dash-evo-tool-linux-arm64.zip
+            ./dist/dash-evo-tool-macos-arm64.dmg
+            ./dist/dash-evo-tool-macos-x86_64.dmg
+            ./dist/dash-evo-tool-windows.zip
           draft: ${{ inputs.draft || false }}
           prerelease: true

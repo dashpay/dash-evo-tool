@@ -57,6 +57,53 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertNotEqual(self.bundle_check(replace_icon), 0)
 
+    def test_dangling_or_directory_symlink_cannot_reach_the_signer(self):
+        def link_icon_to(target):
+            def mutate(app):
+                icon = app / "Contents/Resources/AppIcon.icns"
+                icon.unlink()
+                icon.symlink_to(target)
+
+            return mutate
+
+        for target in ("missing.icns", ".."):
+            with self.subTest(target=target):
+                self.assertNotEqual(self.bundle_check(link_icon_to(target)), 0)
+
+    def test_publisher_extracts_artifacts_outside_its_policy_checkout(self):
+        job = workflow("release.yml")["jobs"]["release"]
+        downloads = [
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        ]
+        self.assertEqual(len(downloads), 5)
+        for step in downloads:
+            self.assertEqual(step["with"]["path"], "dist")
+        for step in job["steps"]:
+            published = step.get("with", {}).get("files") or step.get("with", {}).get(
+                "subject-path"
+            )
+            if published:
+                for line in published.split():
+                    self.assertTrue(line.removeprefix("./").startswith("dist/"))
+
+    def test_release_builds_add_their_target_to_the_pinned_toolchain(self):
+        job = workflow("release.yml")["jobs"]["build-and-release"]
+        self.assertNotIn("dtolnay/rust-toolchain", str(job))
+        self.assertIn('rustup target add "$TARGET"', str(job))
+
+    def test_only_a_direct_dispatch_may_create_its_tag(self):
+        job = workflow("release.yml")["jobs"]["release"]
+        step = next(
+            s for s in job["steps"] if s["name"] == "Recheck the publication tag"
+        )
+        self.assertEqual(
+            step["env"]["ALLOW_NEW_TAG"],
+            "${{ github.event_name == 'workflow_dispatch' && !inputs.weekly }}",
+        )
+        self.assertNotIn("--allow-new-tag", step["run"].split("then")[0])
+
     def test_jobs_executing_cargo_have_no_signing_or_repository_write_authority(self):
         for filename in ("release.yml", "flatpak.yml"):
             document = workflow(filename)

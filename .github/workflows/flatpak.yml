@@ -115,7 +115,7 @@ jobs:
           if [ -n "${{ github.event.release.published_at }}" ]; then
             DATE=$(echo "${{ github.event.release.published_at }}" | cut -dT -f1)
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            DATE=$(git log -1 --format=%cs "${{ github.ref }}")
+            DATE=$(git log -1 --format=%cs HEAD)
           else
             DATE=$(date +%Y-%m-%d)
           fi

@@ -72,7 +72,10 @@ fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> 
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
         (
             QualifiedIdentityPublicKey::from(key),
-            PrivateKeyData::Clear(rand::random()),
+            PrivateKeyData::Clear(dash_evo_tool::test_support::keys::labelled_secret(
+                "token_creator_identity",
+                u64::from(byte),
+            )),
         ),
     )]));
     let qi = QualifiedIdentity {

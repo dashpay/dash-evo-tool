@@ -5,6 +5,7 @@
 
 use clap::{Parser, Subcommand};
 use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
+use platform_wallet_storage::secrets::SecretString;
 use rmcp::RoleClient;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
@@ -179,11 +180,15 @@ enum Action {
 /// `http_addr` is the server address in HTTP mode and `None` in-process; a
 /// password is only sent over HTTP to a destination that keeps it private.
 ///
+/// `read_phrase` reads the recovery phrase for `--mnemonic-stdin`; it is
+/// called only once every check has passed.
+///
 /// Returns `None` when the invocation only asked for the tool's help, which is
 /// printed here.
 fn prepare_tool_call(
     args: &[String],
     http_addr: Option<&str>,
+    read_phrase: impl FnOnce() -> Result<SecretString, mnemonic::MnemonicReadError>,
 ) -> Result<Option<CallToolRequestParams>, String> {
     let tool_name = args.first().ok_or("tool name required".to_string())?;
     let mcp_name = tool_name.replace('-', "_");
@@ -207,7 +212,7 @@ fn prepare_tool_call(
             tool_name,
             &arguments,
             password_source == Some(password::PasswordSource::Stdin),
-            help::cached_tool_takes_param(&mcp_name, mnemonic::MNEMONIC_PARAM),
+            help::tool_takes_param(&mcp_name, mnemonic::MNEMONIC_PARAM, http_addr.is_none()),
         )
         .map_err(|e| password::describe(&e))?;
     }
@@ -221,9 +226,11 @@ fn prepare_tool_call(
     }
     if let Some(source) = password_source {
         // Checked before reading, so a mistyped command never consumes stdin.
-        // An unknown (uncached) tool is let through: the server is the
+        // Over HTTP an uncached tool is let through: the server is the
         // authority on its parameters.
-        if help::cached_tool_takes_param(&mcp_name, password::PASSWORD_PARAM) == Some(false) {
+        if help::tool_takes_param(&mcp_name, password::PASSWORD_PARAM, http_addr.is_none())
+            == Some(false)
+        {
             let error = password::PasswordArgError::ToolTakesNoPassword {
                 tool: tool_name.clone(),
             };
@@ -236,7 +243,7 @@ fn prepare_tool_call(
         password::insert_password(&mut arguments, &secret);
     }
     if mnemonic_from_stdin {
-        let phrase = mnemonic::read_mnemonic_stdin().map_err(|e| password::describe(&e))?;
+        let phrase = read_phrase().map_err(|e| password::describe(&e))?;
         mnemonic::insert_mnemonic(&mut arguments, &phrase);
     }
 
@@ -267,10 +274,12 @@ async fn run(cli: Cli) -> Result<(), String> {
 
     let action = match command.unwrap_or(Commands::Tools) {
         Commands::Tools => Action::ListTools,
-        Commands::Tool(args) => match prepare_tool_call(&args, http_addr.as_deref())? {
-            Some(request) => Action::CallTool(Box::new(request)),
-            None => return Ok(()),
-        },
+        Commands::Tool(args) => {
+            match prepare_tool_call(&args, http_addr.as_deref(), mnemonic::read_mnemonic_stdin)? {
+                Some(request) => Action::CallTool(Box::new(request)),
+                None => return Ok(()),
+            }
+        }
         Commands::Serve | Commands::Completion { .. } => unreachable!(),
         #[cfg(feature = "headless")]
         Commands::Headless => unreachable!(),
@@ -317,7 +326,70 @@ mod tests {
         http_addr: Option<&str>,
     ) -> Result<Option<CallToolRequestParams>, String> {
         let args: Vec<String> = list.iter().map(|arg| (*arg).to_owned()).collect();
-        prepare_tool_call(&args, http_addr)
+        prepare_tool_call(&args, http_addr, || {
+            panic!("the recovery phrase must not be read for this call")
+        })
+    }
+
+    /// Hermetic: in-process the compiled tool router answers, never the disk
+    /// cache, so a cold or stale cache cannot let a secret through.
+    #[test]
+    fn a_secret_for_a_tool_that_does_not_take_it_is_refused_before_reading() {
+        let no_phrase = call(
+            &["core-wallets-list", "--mnemonic-stdin", "network=testnet"],
+            None,
+        );
+        assert_eq!(
+            no_phrase.expect_err("tool without a mnemonic parameter"),
+            mnemonic::MnemonicArgError::ToolTakesNoMnemonic {
+                tool: "core-wallets-list".to_owned()
+            }
+            .to_string()
+        );
+
+        let no_password = call(
+            &[
+                "core-wallet-import",
+                "--mnemonic-stdin",
+                "--password-file",
+                "/nonexistent/det-cli-test-password",
+                "network=testnet",
+            ],
+            None,
+        );
+        assert_eq!(
+            no_password.expect_err("tool without a password parameter"),
+            password::describe(&password::PasswordArgError::ToolTakesNoPassword {
+                tool: "core-wallet-import".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_piped_mnemonic_reaches_the_tool_call_with_the_other_arguments() {
+        // Not a valid BIP-39 phrase: the CLI passes it on, the tool validates it.
+        let phrase = "alpha bravo canary delta echo foxtrot";
+        let args: Vec<String> = [
+            "core-wallet-import",
+            "--mnemonic-stdin",
+            "network=testnet",
+            "alias=e2e",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+        let request = prepare_tool_call(&args, None, || {
+            mnemonic::read_mnemonic(std::io::Cursor::new(format!("{phrase}\n")))
+        })
+        .expect("piped phrase")
+        .expect("a tool call");
+        assert_eq!(request.name, "core_wallet_import");
+        let arguments = request.arguments.expect("arguments");
+        let text = |key: &str| arguments.get(key).and_then(serde_json::Value::as_str);
+        assert_eq!(text(mnemonic::MNEMONIC_PARAM), Some(phrase));
+        assert_eq!(text("network"), Some("testnet"));
+        assert_eq!(text("alias"), Some("e2e"));
+        assert_eq!(arguments.len(), 3);
     }
 
     /// Refusals land before standard input is read, so none of these

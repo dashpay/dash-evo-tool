@@ -6,10 +6,10 @@
 # The phrase goes from the env file straight to det-cli's stdin: never echoed,
 # never an argument, never written to a file.
 #
-# Release zips ship only the GUI binary. DET_CLI must be built from the same
-# commit or tag as the GUI under test: both open the same database, and a
-# different build may write a schema the GUI cannot read. Neither binary
-# embeds its commit, so this script cannot check it.
+# DET_CLI must come from the same build as the GUI under test: the det-cli in
+# the same release zip, or one built from the same commit. Both open the same
+# database, and a different build may write a schema the GUI cannot read.
+# Neither binary embeds its commit, so this script cannot check it.
 set -euo pipefail
 usage() {
   echo "usage: provision-wallet.sh DET_CLI DATA_DIR [--env-file FILE] [--alias NAME]" >&2
@@ -17,6 +17,11 @@ usage() {
 }
 [ $# -ge 2 ] || usage
 DET_CLI="$1"
+# A bare name runs the file checked below, not one found on PATH.
+case "$DET_CLI" in
+  */*) ;;
+  *) DET_CLI="./$DET_CLI" ;;
+esac
 DATA_DIR="$2"
 shift 2
 ENV_FILE=""
@@ -36,10 +41,11 @@ done
 # Standalone mode on DATA_DIR only: never the real config dirs, never a server.
 det() { env -u MCP_API_KEY DASH_EVO_DATA_DIR="$DATA_DIR" RUST_LOG=off "$DET_CLI" --standalone "$@"; }
 
-echo "provision-wallet: using $DET_CLI; it must be built from the same commit as the GUI under test" >&2
+echo "provision-wallet: using $DET_CLI; it must come from the same build as the GUI under test" >&2
 
 # Reads the variable without printing it; nothing on any form it cannot read.
-env_value() { awk -v name=E2E_WALLET_MNEMONIC -f "$(dirname "$0")/env-value.awk" "$ENV_FILE"; }
+# Redirected, not named: awk would read --source=... as an option.
+env_value() { awk -v name=E2E_WALLET_MNEMONIC -f "$(dirname "$0")/env-value.awk" <"$ENV_FILE"; }
 if ! env_value >/dev/null; then
   echo "provision-wallet: E2E_WALLET_MNEMONIC is not set, or not as NAME=value, NAME=\"value\" or NAME='value'" >&2
   exit 1

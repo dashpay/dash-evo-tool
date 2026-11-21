@@ -9,6 +9,7 @@ changing any script in this directory.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -207,11 +208,13 @@ class EnvValue(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".env", newline="", delete=False) as f:
             f.write(text)
         self.addCleanup(os.unlink, f.name)
-        r = subprocess.run(
-            ["awk", "-v", f"name={self.NAME}", "-f", os.path.join(HERE, "env-value.awk"), f.name],
-            capture_output=True,
-            text=True,
-        )
+        with open(f.name) as stdin:
+            r = subprocess.run(
+                ["awk", "-v", f"name={self.NAME}", "-f", os.path.join(HERE, "env-value.awk")],
+                stdin=stdin,
+                capture_output=True,
+                text=True,
+            )
         return r.returncode, r.stdout
 
     def test_accepted_forms_yield_the_bare_value(self):
@@ -239,10 +242,49 @@ class EnvValue(unittest.TestCase):
             f"{self.NAME}= alpha bravo\n",
             f'{self.NAME}= "alpha bravo"\n',
             f"{self.NAME}=\talpha bravo\n",
+            f"{self.NAME}=alpha\\ bravo\n",
+            f"{self.NAME}=alpha bravo\\\n",
+            f'{self.NAME}=alpha "bravo\n',
+            f"{self.NAME}=alpha bravo'\n",
         ]:
             code, out = self.value(text)
             self.assertNotEqual(code, 0, repr(text))
             self.assertEqual(out, "", repr(text))
+
+class ProvisionWallet(unittest.TestCase):
+    """provision-wallet.sh pipes the phrase to the det-cli it checked, read
+    from the env file it was given. A fake det-cli records what it receives."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.received = os.path.join(self.dir, "received")
+        fake = os.path.join(self.dir, "det-cli")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\ncase "$*" in *core-wallet-import*) cat >"$RECEIVED" ;; esac\n')
+        os.chmod(fake, 0o700)
+        os.mkdir(os.path.join(self.dir, "data"))
+
+    def provision(self, det_cli, env_file):
+        with open(os.path.join(self.dir, env_file), "w") as f:
+            f.write("E2E_WALLET_MNEMONIC=alpha bravo\n")
+        r = subprocess.run(
+            [os.path.join(HERE, "provision-wallet.sh"), det_cli, "data", "--env-file", env_file],
+            cwd=self.dir,
+            env={"PATH": "/usr/bin:/bin", "RECEIVED": self.received},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.received) as f:
+            return f.read()
+
+    def test_a_bare_det_cli_name_runs_the_checked_file(self):
+        self.assertEqual(self.provision("det-cli", "test.env"), "alpha bravo")
+
+    def test_an_option_shaped_env_file_is_read_as_a_file(self):
+        self.assertEqual(self.provision("./det-cli", "--version"), "alpha bravo")
+
 
 if __name__ == "__main__":
     unittest.main()

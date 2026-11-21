@@ -151,8 +151,8 @@ skill may still provide convenient screenshot and input tooling.
    `grep`/`env`, never paste them into a scenario doc, a report, or a commit.
    To start with the test wallet already imported, provision the data
    directory before launch with
-   `.claude/skills/visual-diff/scripts/provision-wallet.sh` (a `det-cli` built
-   from the same commit as the GUI pipes the phrase in with
+   `.claude/skills/visual-diff/scripts/provision-wallet.sh` (the `det-cli` from
+   the same release zip or commit as the GUI pipes the phrase in with
    `--mnemonic-stdin`).
 4. **Default to testnet.** Only use mainnet if a scenario explicitly requires
    it and says why — and if it does, treat every fund-moving step as

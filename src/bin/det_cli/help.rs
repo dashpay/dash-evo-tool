@@ -80,19 +80,31 @@ pub(super) fn print_tool_help(mcp_name: &str) -> bool {
     }
 }
 
-/// Whether the cached schema of `mcp_name` declares the parameter `param`.
+/// Whether the tool `mcp_name` declares the parameter `param`.
 ///
-/// `None` when the cache is missing or stale, or does not list the tool — the
-/// caller cannot tell, and must not guess.
-pub(super) fn cached_tool_takes_param(mcp_name: &str, param: &str) -> Option<bool> {
+/// In-process the compiled tool router is the server, so it answers for
+/// certain: a tool it does not list takes nothing. Over HTTP only the
+/// version-matched cache can answer, and `None` when it cannot: the caller
+/// must not guess.
+pub(super) fn tool_takes_param(mcp_name: &str, param: &str, in_process: bool) -> Option<bool> {
+    if in_process {
+        let router = dash_evo_tool::mcp::server::DashMcpService::tool_router();
+        return Some(
+            router
+                .get(mcp_name)
+                .is_some_and(|tool| declares(tool, param)),
+        );
+    }
     let cache = load_cache().filter(|c| c.version == PKG_VERSION)?;
     let tool = cache.tools.iter().find(|t| *t.name == *mcp_name)?;
-    Some(
-        tool.input_schema
-            .get("properties")
-            .and_then(|props| props.as_object())
-            .is_some_and(|props| props.contains_key(param)),
-    )
+    Some(declares(tool, param))
+}
+
+fn declares(tool: &Tool, param: &str) -> bool {
+    tool.input_schema
+        .get("properties")
+        .and_then(|props| props.as_object())
+        .is_some_and(|props| props.contains_key(param))
 }
 
 /// Print help output with integrated tool list.

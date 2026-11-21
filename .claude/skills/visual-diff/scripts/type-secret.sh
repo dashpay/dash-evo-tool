@@ -22,7 +22,9 @@ case "${1:-}" in
     ;;
 esac
 # Reads the variable without printing it; nothing on any form it cannot read.
-env_value() { awk -v name="$1" -f "$(dirname "$0")/env-value.awk" "$ENV_FILE"; }
+# The file is redirected, not named: awk would read a name like --source=...
+# as an option, or name=value as an assignment.
+env_value() { awk -v name="$1" -f "$(dirname "$0")/env-value.awk" <"$ENV_FILE"; }
 if ! env_value "$1" >/dev/null; then
   echo "type-secret: $1 is not set, or not as NAME=value, NAME=\"value\" or NAME='value'" >&2
   exit 1
@@ -33,6 +35,13 @@ if [ -n "$word" ]; then
     echo "type-secret: a word index (1..24) is valid only with E2E_WALLET_MNEMONIC" >&2
     exit 2
   fi
+fi
+# Only into the GUI under test, never a terminal or another app. Focus can
+# still move after this check: keep the GUI focused while it types.
+pid="$(xdotool getactivewindow getwindowpid 2>/dev/null)" || pid=""
+if [ -z "$pid" ] || [ "$(cat "/proc/$pid/comm" 2>/dev/null)" != dash-evo-tool ]; then
+  echo "type-secret: the focused window is not Dash Evo Tool; focus its field and retry" >&2
+  exit 1
 fi
 env_value "$1" |
   awk -v i="$word" '{ if (i == "") printf "%s", $0; else printf "%s", $i }' |

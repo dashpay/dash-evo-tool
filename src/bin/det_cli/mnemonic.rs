@@ -92,8 +92,8 @@ pub(super) fn take_stdin_flag(params: &mut Vec<String>) -> Result<bool, Mnemonic
 /// Checks a `--mnemonic-stdin` call before standard input is read, so a
 /// mistyped command never consumes it.
 ///
-/// `takes_mnemonic` is whether the cached schema of the tool declares the
-/// parameter, `None` when unknown: the server is then the authority.
+/// `takes_mnemonic` is whether the tool declares the parameter, `None` when
+/// unknown over HTTP: the server is then the authority.
 ///
 /// # Errors
 ///
@@ -154,8 +154,17 @@ pub(super) fn read_mnemonic_stdin() -> Result<SecretString, MnemonicReadError> {
     if std::io::stdin().is_terminal() {
         return Err(MnemonicReadError::StdinIsTerminal);
     }
-    let raw = password::raw_stdin()
-        .and_then(|stdin| password::read_bounded(stdin, READ_LIMIT))
+    let stdin = password::raw_stdin().map_err(|source| MnemonicReadError::ReadStdin { source })?;
+    read_mnemonic(stdin)
+}
+
+/// Reads the recovery phrase from a pipe: exactly one non-empty line.
+///
+/// # Errors
+///
+/// [`MnemonicReadError`] when `reader` fails or holds anything else.
+pub(super) fn read_mnemonic(reader: impl std::io::Read) -> Result<SecretString, MnemonicReadError> {
+    let raw = password::read_bounded(reader, READ_LIMIT)
         .map_err(|source| MnemonicReadError::ReadStdin { source })?;
     parse_phrase(&raw)
 }

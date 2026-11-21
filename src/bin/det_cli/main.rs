@@ -215,6 +215,13 @@ fn prepare_tool_call(
     {
         return Err(help::unknown_tool_message(tool_name));
     }
+    // Before any tool lookup, so an unsafe destination is refused without
+    // reading the tool cache.
+    if (mnemonic_from_stdin || arguments.contains_key(mnemonic::MNEMONIC_PARAM))
+        && let Some(addr) = http_addr
+    {
+        mnemonic::ensure_safe_destination(addr).map_err(|e| password::describe(&e))?;
+    }
     if mnemonic_from_stdin {
         mnemonic::check_stdin_request(
             tool_name,
@@ -223,11 +230,6 @@ fn prepare_tool_call(
             help::tool_takes_param(&mcp_name, mnemonic::MNEMONIC_PARAM, http_addr.is_none()),
         )
         .map_err(|e| password::describe(&e))?;
-    }
-    if (mnemonic_from_stdin || arguments.contains_key(mnemonic::MNEMONIC_PARAM))
-        && let Some(addr) = http_addr
-    {
-        mnemonic::ensure_safe_destination(addr).map_err(|e| password::describe(&e))?;
     }
     if !mnemonic_from_stdin && let Some(warning) = mnemonic::inline_mnemonic_warning(&arguments) {
         eprintln!("{warning}");

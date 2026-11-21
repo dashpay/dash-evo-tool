@@ -10,9 +10,8 @@
 //!
 //! The upstream readers (`all_state` / `state_for_identity`) are async, but
 //! DET reads token balances from the synchronous egui frame. So the backend
-//! refreshes a lock-free DET-typed snapshot off the UI thread (see
-//! [`WalletBackend::refresh_token_balances`](super::WalletBackend::refresh_token_balances))
-//! and the view reads that snapshot infallibly via [`ArcSwap`].
+//! refreshes a lock-free DET-typed snapshot off the UI thread after each
+//! requested sync pass. The frame reads that snapshot via [`ArcSwap`].
 //!
 //! ## Syncing vs zero
 //!
@@ -37,6 +36,8 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dash_sdk::platform::Identifier;
+use platform_wallet::manager::identity_sync::IdentitySyncManager;
+use platform_wallet_storage::SqlitePersister;
 
 /// One synced identity's token balances. Presence in
 /// [`TokenBalanceSnapshot::identities`] means the identity has completed at
@@ -50,6 +51,9 @@ pub struct TokenBalanceSnapshot {
     /// Synced identities → (token → balance). An identity absent here has
     /// not completed a sync pass yet and must be reported as "syncing".
     identities: BTreeMap<Identifier, IdentityBalances>,
+    /// Proof-derived updates and unwatch operations get distinct markers,
+    /// even when they leave the visible amount unchanged.
+    local_writes: BTreeMap<(Identifier, Identifier), Arc<()>>,
 }
 
 impl TokenBalanceSnapshot {
@@ -70,6 +74,29 @@ impl TokenBalanceSnapshot {
             })
             .collect()
     }
+
+    fn set(&mut self, identity_id: Identifier, token_id: Identifier, balance: Option<u64>) {
+        if let Some(balance) = balance {
+            self.identities
+                .entry(identity_id)
+                .or_default()
+                .insert(token_id, balance);
+        } else if let Some(tokens) = self.identities.get_mut(&identity_id) {
+            tokens.remove(&token_id);
+            if tokens.is_empty() {
+                self.identities.remove(&identity_id);
+            }
+        }
+    }
+
+    fn locally_written_since(&self, before: &Self, pair: (Identifier, Identifier)) -> bool {
+        self.local_writes.get(&pair).is_some_and(|current| {
+            before
+                .local_writes
+                .get(&pair)
+                .is_none_or(|old| !Arc::ptr_eq(old, current))
+        })
+    }
 }
 
 /// Lock-free store of the published [`TokenBalanceSnapshot`]. Held by
@@ -78,13 +105,14 @@ impl TokenBalanceSnapshot {
 #[derive(Debug, Default)]
 pub(super) struct TokenBalanceStore {
     snapshot: ArcSwap<TokenBalanceSnapshot>,
+    /// A local write [`Self::load_with`] makes as its upstream read starts.
+    #[cfg(test)]
+    write_during_baseline_read: std::sync::Mutex<Option<(Identifier, Identifier, u64)>>,
 }
 
 impl TokenBalanceStore {
     pub(super) fn new() -> Self {
-        Self {
-            snapshot: ArcSwap::from_pointee(TokenBalanceSnapshot::default()),
-        }
+        Self::default()
     }
 
     /// Read the current snapshot. Lock-free, infallible.
@@ -92,10 +120,39 @@ impl TokenBalanceStore {
         self.snapshot.load_full()
     }
 
-    /// Atomically publish a freshly-built snapshot. Called by the refresh
-    /// path after it has read upstream state and converted it to DET types.
-    pub(super) fn publish(&self, snapshot: TokenBalanceSnapshot) {
-        self.snapshot.store(Arc::new(snapshot));
+    /// Load the snapshot that [`Self::replace`] compares against, then run the
+    /// upstream `read`, so local writes made during the read are kept.
+    pub(super) async fn load_with<T>(
+        &self,
+        read: impl std::future::Future<Output = T>,
+    ) -> (Arc<TokenBalanceSnapshot>, T) {
+        let before = self.load();
+        #[cfg(test)]
+        if let Some((identity_id, token_id, balance)) =
+            crate::wallet_backend::poison::MutexRecover::lock_recover(
+                &self.write_during_baseline_read,
+            )
+            .take()
+        {
+            self.apply(identity_id, token_id, balance);
+        }
+        (before, read.await)
+    }
+
+    /// Replace the snapshot after explicit refresh. Keep local writes that
+    /// landed after this network read started.
+    pub(super) fn replace(&self, incoming: TokenBalanceSnapshot, before: &TokenBalanceSnapshot) {
+        self.snapshot.rcu(|current| {
+            let mut next = incoming.clone();
+            for (&pair, marker) in &current.local_writes {
+                if current.locally_written_since(before, pair) {
+                    let (identity_id, token_id) = pair;
+                    next.set(identity_id, token_id, current.get(&identity_id, &token_id));
+                    next.local_writes.insert(pair, Arc::clone(marker));
+                }
+            }
+            next
+        });
     }
 
     /// Assemble a [`TokenBalanceSnapshot`] from already-converted, per-synced
@@ -106,7 +163,25 @@ impl TokenBalanceStore {
     ) -> TokenBalanceSnapshot {
         TokenBalanceSnapshot {
             identities: synced.into_iter().collect(),
+            ..Default::default()
         }
+    }
+
+    /// Read the upstream cache and expose only its DET-facing balance fields.
+    pub(super) async fn read_upstream(
+        sync: &IdentitySyncManager<SqlitePersister>,
+    ) -> TokenBalanceSnapshot {
+        Self::snapshot_from(sync.all_state().await.into_values().filter_map(|state| {
+            if state.last_sync_unix == 0 {
+                return None;
+            }
+            let balances = state
+                .tokens
+                .into_iter()
+                .map(|info| (info.token_id, info.balance))
+                .collect();
+            Some((state.identity_id, balances))
+        }))
     }
 
     /// Surgically set one `(identity, token)` balance in the published
@@ -115,12 +190,20 @@ impl TokenBalanceStore {
     /// upstream sync pass confirms it. The identity becomes present
     /// (no longer "syncing") for that token.
     pub(super) fn apply(&self, identity_id: Identifier, token_id: Identifier, balance: u64) {
+        self.write_local(identity_id, token_id, Some(balance));
+    }
+
+    /// Drop an unwatched pair without waiting for an in-flight network read.
+    pub(super) fn remove(&self, identity_id: Identifier, token_id: Identifier) {
+        self.write_local(identity_id, token_id, None);
+    }
+
+    fn write_local(&self, identity_id: Identifier, token_id: Identifier, amount: Option<u64>) {
         self.snapshot.rcu(|current| {
             let mut next = (**current).clone();
-            next.identities
-                .entry(identity_id)
-                .or_default()
-                .insert(token_id, balance);
+            next.set(identity_id, token_id, amount);
+            next.local_writes
+                .insert((identity_id, token_id), Arc::new(()));
             next
         });
     }
@@ -160,12 +243,77 @@ mod tests {
         Identifier::from([b; 32])
     }
 
+    /// A refresh takes its baseline before the upstream pass, so a local
+    /// write made during the pass wins over the balances it read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_keeps_a_local_write_made_during_its_upstream_read() {
+        use crate::context::test_support::test_app_context_for_network;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::platform::tokens::identity_token_balances::{
+            IdentityTokenBalances, IdentityTokenBalancesQuery,
+        };
+
+        let directory = tempfile::tempdir().expect("app data directory");
+        let network = Network::Regtest;
+        let ctx = test_app_context_for_network(directory.path(), network);
+        let (identity_id, token_id) = (id(1), id(2));
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_network(network)
+            .build()
+            .expect("mock Platform SDK");
+        sdk.mock()
+            .expect_fetch_many::<Identifier, u64, _, IdentityTokenBalances>(
+                IdentityTokenBalancesQuery {
+                    identity_id,
+                    token_ids: vec![token_id],
+                },
+                Some([(token_id, Some(10))].into_iter().collect()),
+            )
+            .await
+            .expect("token balance mock response");
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, ctx.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        backend.mark_masternodes_ready_for_test();
+
+        *crate::wallet_backend::poison::MutexRecover::lock_recover(
+            &backend.inner.token_balances.write_during_baseline_read,
+        ) = Some((identity_id, token_id, 20));
+        backend
+            .sync_token_balances_now(vec![(identity_id, vec![token_id])])
+            .await
+            .expect("refresh");
+        let refreshed = backend.token_balances().get(&identity_id, &token_id);
+        backend.shutdown().await;
+        assert_eq!(refreshed, Some(20));
+    }
+
     fn store_with(
         synced: impl IntoIterator<Item = (Identifier, IdentityBalances)>,
     ) -> TokenBalanceStore {
         let store = TokenBalanceStore::new();
-        store.publish(TokenBalanceStore::snapshot_from(synced));
+        store.replace(TokenBalanceStore::snapshot_from(synced), &store.load());
         store
+    }
+
+    /// A local write that lands while upstream is read is newer than the
+    /// balances that read returns.
+    #[tokio::test]
+    async fn a_local_write_during_the_baseline_read_survives_the_pass() {
+        let (identity, token) = (id(1), id(2));
+        let initial = [(identity, BTreeMap::from([(token, 5)]))];
+        let fetched = TokenBalanceStore::snapshot_from([(identity, BTreeMap::from([(token, 10)]))]);
+
+        let store = store_with(initial);
+        let (before, _) = store
+            .load_with(async { store.apply(identity, token, 20) })
+            .await;
+        store.replace(fetched, &before);
+        assert_eq!(store.load().get(&identity, &token), Some(20));
     }
 
     /// TB1: a synced identity's balance is readable through the view.
@@ -248,10 +396,10 @@ mod tests {
     fn view_is_a_point_in_time_read() {
         let store = TokenBalanceStore::new();
         let view = UpstreamTokenBalances::new(&store);
-        store.publish(TokenBalanceStore::snapshot_from([(
-            id(1),
-            BTreeMap::from([(id(2), 99)]),
-        )]));
+        store.replace(
+            TokenBalanceStore::snapshot_from([(id(1), BTreeMap::from([(id(2), 99)]))]),
+            &store.load(),
+        );
         // The pre-publish view still sees nothing.
         assert_eq!(view.get(&id(1), &id(2)), None);
         // A freshly-built view sees the new snapshot.

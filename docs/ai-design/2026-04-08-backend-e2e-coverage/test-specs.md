@@ -615,13 +615,13 @@
 - **Shared fixture dependency**: SHARED_IDENTITY, SHARED_TOKEN
 - **Estimated runtime**: 10s
 
-### TC-047: QueryIdentityTokenBalance
-- **BackendTask variant**: `BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(iti)))`
+### TC-047: TrackTokenBalancesAgain
+- **BackendTask variant**: `BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![iti])))`
 - **Group**: TokenTask
 - **Preconditions**: SHARED_TOKEN registered, SHARED_IDENTITY has base_supply tokens
 - **Steps**:
   1. Setup: build `IdentityTokenIdentifier` with SHARED_IDENTITY's ID and SHARED_TOKEN's token ID
-  2. Execute: `run_task(ctx, BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(iti))))`
+  2. Execute: `run_task(ctx, BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![iti]))))`
   3. Assert: result matches `FetchedTokenBalances` (or a typed variant showing the balance)
 - **Expected outcome**: `FetchedTokenBalances`
 - **Shared fixture dependency**: SHARED_TOKEN

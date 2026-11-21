@@ -114,7 +114,7 @@ async fn tc_046_query_my_token_balances() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-047: QueryIdentityTokenBalance
+// TC-047: TrackTokenBalancesAgain
 // ---------------------------------------------------------------------------
 
 #[ignore]
@@ -129,10 +129,10 @@ async fn tc_047_query_identity_token_balance() {
         token_id: st.token_id,
     };
 
-    let task = BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(iti)));
+    let task = BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![iti])));
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-047: QueryIdentityTokenBalance failed");
+        .expect("TC-047: TrackTokenBalancesAgain failed");
 
     assert!(
         matches!(result, BackendTaskSuccessResult::FetchedTokenBalances),

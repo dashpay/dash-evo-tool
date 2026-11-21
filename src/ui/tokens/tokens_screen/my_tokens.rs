@@ -480,7 +480,7 @@ impl TokensScreen {
                                             if let Some(balance) = itb.balance {
                                                 ui.label(itb.amount_of(balance).to_string_without_unit());
                                             } else if ui.button("Check").clicked() {
-                                                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(itb.clone().into()))));
+                                                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![itb.clone().into()]))));
                                             }
                                         });
                                         if shows_estimation_column {

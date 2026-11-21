@@ -4,8 +4,8 @@
 
 All twelve token state transitions (mint, transfer, burn, freeze, unfreeze,
 destroy frozen funds, pause, resume, claim, set price, purchase, settings
-update) take one of two routes, chosen by the identity's DET wallet link
-(`AppContext::stored_identity_wallet_link`):
+update) take one of two routes, chosen by `AppContext::token_action_wallet`
+from the identity's DET wallet link:
 
 - **Wallet-linked identity:** the upstream `platform-wallet` crate,
   `IdentityWallet::token_*_with_signer` of the wallet that holds it. DET never
@@ -14,9 +14,14 @@ update) take one of two routes, chosen by the identity's DET wallet link
 - **Wallet-less identity** (masternode, evonode and key-only identities): DET
   builds the same `Token*TransitionBuilder` through the SDK and signs with the
   identity's own keys. At the pinned revision `_with_signer` is exactly this SDK
-  call, so both routes send the same transition. User decision (PROJ-002),
-  following platform audit R-14; drop the route once upstream offers a
-  wallet-independent token handle (U-19).
+  call, so both routes send the same transition. The user chose to keep this
+  route because upstream offers no token handle outside a wallet; drop it once
+  upstream does.
+- **Removed wallet:** once storage is prepared, a link to an HD wallet the app
+  no longer knows (it was removed) counts as no link, so the identity takes the
+  SDK route. Before that the wallet list may still be filling, so the link is
+  kept. A known wallet that is locked or still loading keeps the identity
+  waiting.
 
 - **Seam:** `src/wallet_backend/tokens.rs`. `TokenActor` pairs a route (the
   holding `PlatformWallet`, or the SDK) with the acting `QualifiedIdentity` (the
@@ -35,8 +40,8 @@ update) take one of two routes, chosen by the identity's DET wallet link
 - **UI:** `AppContext::token_action_availability` blocks actions only for a
   linked wallet that is not loaded yet: My Tokens shows "View only" with the
   transaction buttons disabled, and token action screens show the reason
-  instead of the form. Read-only token data stays visible. Wallet-less
-  identities are never blocked.
+  instead of the form, re-checking each frame while they wait. Read-only token
+  data stays visible. Wallet-less identities are never blocked.
 - **Mint recipient:** upstream drops a chosen recipient when the token does not
   allow choosing one. `model::token::MintRecipient` applies the same rule up
   front, so the confirmation names the identity that actually receives the
@@ -44,7 +49,8 @@ update) take one of two routes, chosen by the identity's DET wallet link
 
 ## Upstream gaps
 
-1. **No wallet-independent token handle (U-19).** Wallet-less identities use
+1. **No token handle outside a wallet.** `platform-wallet` exposes token
+   actions only on an identity held by a wallet, so wallet-less identities use
    DET's SDK route instead.
 2. **`_with_signer` returns `dash_sdk::Error`.** DET labels the operation itself.
 3. **The mint recipient is normalised silently** (only a `debug!` log upstream).

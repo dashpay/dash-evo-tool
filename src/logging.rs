@@ -233,7 +233,7 @@ impl TerminalBacktrace {
 
 /// What a panic report may say about a panic message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PanicMessage {
+pub(crate) enum PanicMessage {
     /// A compile-time literal (`&'static str` payload): no runtime value in it.
     Literal(&'static str),
     /// Formatted at runtime (`String` payload); may embed any value.
@@ -247,7 +247,7 @@ impl PanicMessage {
     /// a message without format arguments; anything formatted arrives as a
     /// `String`, whatever it contains. (`panic_any` with a leaked runtime
     /// `&'static str` would defeat this; nothing in DET does that.)
-    fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
+    pub(crate) fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
         if let Some(literal) = payload.downcast_ref::<&'static str>() {
             Self::Literal(literal)
         } else if let Some(formatted) = payload.downcast_ref::<String>() {

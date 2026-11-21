@@ -38,21 +38,27 @@ use crate::ui::components::startup_error_dialog::{StartupErrorDialog, StartupErr
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
 /// A panic caught while the app was being built. Never shown as the message:
-/// the dialog falls back to the generic one and shows this in the details.
-#[derive(Debug, thiserror::Error)]
-#[error("startup panicked: {payload}")]
+/// the dialog falls back to the generic one and shows this in the details. A
+/// formatted panic message is redacted as the panic hook redacts it.
+#[derive(thiserror::Error)]
+#[error("startup panicked: {message}")]
 pub struct BootPanic {
-    payload: String,
+    message: crate::logging::PanicMessage,
 }
 
 impl BootPanic {
     fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
-        let payload = payload
-            .downcast_ref::<&str>()
-            .map(|text| (*text).to_owned())
-            .or_else(|| payload.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "non-text panic payload".to_owned());
-        Self { payload }
+        Self {
+            message: crate::logging::PanicMessage::from_payload(payload),
+        }
+    }
+}
+
+impl std::fmt::Debug for BootPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootPanic")
+            .field("message", &format_args!("{}", self.message))
+            .finish()
     }
 }
 
@@ -667,6 +673,23 @@ mod tests {
             failure.report().details()
         );
         assert!(outcome.failed());
+    }
+
+    /// A formatted panic message can embed any runtime value, so like the
+    /// panic hook the dialog, log and terminal get only its length.
+    #[test]
+    fn formatted_boot_panic_message_is_redacted() {
+        const MARKER: &str = "runtime-value-marker";
+        let outcome = StartupOutcome::default();
+
+        let app = BootApp::guarded(&outcome, || panic!("boot exploded with {MARKER}"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a boot panic must be fatal");
+        };
+        let details = failure.report().details();
+        assert!(!details.contains(MARKER), "{details}");
+        assert!(details.contains("redacted"), "{details}");
     }
 
     /// The failure dialog keeps no egui memory, so closing it writes nothing to

@@ -6,6 +6,7 @@ use crate::model::amount::Amount;
 use crate::model::identity_name::shorten_id;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::copyable_id::copy_with_confirmation;
 use crate::ui::helpers::clicked_outside_window_after_open;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
@@ -1066,8 +1067,7 @@ fn short_id_cell(ui: &mut Ui, id: Identifier, is_contract_owner: bool) {
         .clickable_tooltip(tooltip)
         .clicked()
     {
-        ui.ctx().copy_text(full);
-        MessageBanner::set_global(ui.ctx(), ID_COPIED, MessageType::Success);
+        copy_with_confirmation(ui.ctx(), &full, ID_COPIED);
     }
 }
 

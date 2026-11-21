@@ -250,24 +250,22 @@ pub fn arrival_refresh_due(arriving: bool, now_ms: u64, last_refreshed_at_ms: Op
         })
 }
 
-/// Why the last balance refresh the hub asked for failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshFailure {
-    /// The network took too long.
-    TooSlow,
-    /// The network connection stopped during the refresh.
-    Disconnected,
-    /// Anything else; the technical detail is in the log.
-    Failed,
+/// Why the last balance refresh the hub asked for failed: the error's own
+/// message, the text its default banner shows too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshFailure {
+    message: String,
 }
 
 impl RefreshFailure {
     fn from_error(error: &TaskError) -> Self {
-        match error {
-            TaskError::TokenBalanceRefreshTimeout { .. } => RefreshFailure::TooSlow,
-            TaskError::TokenBalanceRefreshDisconnected => RefreshFailure::Disconnected,
-            _ => RefreshFailure::Failed,
+        Self {
+            message: error.to_string(),
         }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 
@@ -310,8 +308,6 @@ pub struct IdentityTokensState {
     refresh_failure: Option<RefreshFailure>,
     arriving: bool,
     prefs: Option<IdentityTokensViewPrefs>,
-    /// The list controls changed since they were last written to the device.
-    prefs_dirty: bool,
     /// The Stop tracking confirmation, with the pair it is about.
     pub stop_tracking_dialog: Option<(ConfirmationDialog, IdentityTokenIdentifier)>,
     /// The refresh error banner was dismissed; rows keep their stale time.
@@ -337,7 +333,6 @@ impl IdentityTokensState {
     pub fn reset_for_identity_change(&mut self) {
         *self = Self {
             prefs: self.prefs.take(),
-            prefs_dirty: self.prefs_dirty,
             refresh: std::mem::take(&mut self.refresh),
             pair_checks: std::mem::take(&mut self.pair_checks),
             stop_tracking: std::mem::take(&mut self.stop_tracking),
@@ -348,7 +343,7 @@ impl IdentityTokensState {
             retry_owed: self.retry_owed,
             last_refreshed_at_ms: self.last_refreshed_at_ms,
             refresh_covers: std::mem::take(&mut self.refresh_covers),
-            refresh_failure: self.refresh_failure,
+            refresh_failure: self.refresh_failure.take(),
             failure_dismissed: self.failure_dismissed,
             full_refresh_failed: self.full_refresh_failed,
             arriving: true,
@@ -357,12 +352,9 @@ impl IdentityTokensState {
     }
 
     /// Bind the rows to the identity on screen, dropping another identity's.
-    /// List controls not yet written are written to the device first, so a
-    /// switch never loses them.
-    fn reconcile_owner(&mut self, app_context: &AppContext, identity: &QualifiedIdentity) {
+    fn reconcile_owner(&mut self, identity: &QualifiedIdentity) {
         let owner = Some((identity.network, identity.identity.id()));
         if self.owner != owner {
-            self.save_prefs(app_context);
             self.reset_for_identity_change();
             self.owner = owner;
         }
@@ -385,7 +377,7 @@ impl IdentityTokensState {
         app_context: &AppContext,
         identity: &QualifiedIdentity,
     ) -> Arc<[TokenRow]> {
-        self.reconcile_owner(app_context, identity);
+        self.reconcile_owner(identity);
         let stale = self
             .rows_read_at
             .is_none_or(|read_at| read_at.elapsed() >= ROWS_TTL);
@@ -504,37 +496,19 @@ impl IdentityTokensState {
             .get_or_insert_with(|| app_context.identity_tokens_view_prefs())
     }
 
-    /// Change the list controls for this session; [`save_prefs`](Self::save_prefs)
-    /// writes them to the device. The tab saves when a control changes, the
-    /// hub when the tab is left, and the state itself when the identity changes.
-    pub fn edit_prefs(&mut self, mut prefs: IdentityTokensViewPrefs) {
+    /// Change the list controls and remember them on this device.
+    pub fn set_prefs(&mut self, app_context: &AppContext, mut prefs: IdentityTokensViewPrefs) {
         prefs.clamp_filter();
-        if self.prefs.as_ref() != Some(&prefs) {
-            self.prefs = Some(prefs);
-            self.prefs_dirty = true;
-        }
-    }
-
-    /// Remember the list controls on this device, if they changed.
-    pub fn save_prefs(&mut self, app_context: &AppContext) {
-        if !self.prefs_dirty {
+        if self.prefs.as_ref() == Some(&prefs) {
             return;
         }
-        let Some(prefs) = &self.prefs else {
-            return;
-        };
-        if let Err(error) = app_context.save_identity_tokens_view_prefs(prefs) {
+        if let Err(error) = app_context.save_identity_tokens_view_prefs(&prefs) {
             tracing::warn!(
                 error = ?error,
                 "Could not save the Identity Hub token list preferences; keeping them for this session"
             );
         }
-        self.prefs_dirty = false;
-    }
-
-    /// The list controls changed since they were last written to the device.
-    pub fn prefs_dirty(&self) -> bool {
-        self.prefs_dirty
+        self.prefs = Some(prefs);
     }
 
     /// When balances were last refreshed while this tab was watching (Unix ms).
@@ -543,12 +517,10 @@ impl IdentityTokensState {
     }
 
     /// Why the last refresh failed, until the next success or dismissal.
-    pub fn refresh_failure(&self) -> Option<RefreshFailure> {
-        if self.failure_dismissed {
-            None
-        } else {
-            self.refresh_failure
-        }
+    pub fn refresh_failure(&self) -> Option<&RefreshFailure> {
+        self.refresh_failure
+            .as_ref()
+            .filter(|_| !self.failure_dismissed)
     }
 
     /// This tab is waiting on a refresh it asked for.
@@ -834,8 +806,10 @@ impl IdentityTokensState {
     /// Note a failure of this tab's requests. A refresh already running
     /// elsewhere, or a read held back until the network has synced, is not a
     /// failure: the request is owed again once it can go out, and no banner
-    /// shows. Anything else is shown inline and by the default banner.
-    pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+    /// shows. A full refresh that read this identity counts though it could
+    /// not read others. Anything else is shown inline, with the default
+    /// banner's own text.
+    pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError, now_ms: u64) {
         let in_progress = Self::is_deferred_balance_read(error);
         if let Some(mut pairs) = self.track_again.settle(context) {
             if in_progress {
@@ -857,9 +831,19 @@ impl IdentityTokensState {
             self.invalidate_rows();
             return;
         }
-        if self.refresh.settle(context).is_some() {
+        if let Some(covers) = self.refresh.settle(context) {
             if in_progress {
                 self.retry_owed = true;
+            } else if let TaskError::TokenBalancesNotChecked { identities } = error
+                && self
+                    .owner
+                    .is_some_and(|(_, owner)| !identities.contains(&owner))
+            {
+                let read = covers
+                    .into_iter()
+                    .filter(|identity_id| !identities.contains(identity_id))
+                    .collect();
+                self.note_full_refresh(now_ms, read);
             } else {
                 self.note_full_refresh_failed(error);
             }
@@ -1089,7 +1073,7 @@ mod tests {
             state.reset_for_identity_change();
             state.owner = Some((Network::Testnet, Identifier::from([2; 32])));
             assert!(state.should_suppress_error(&request, &error));
-            state.record_error(&request, &error);
+            state.record_error(&request, &error, 0);
             assert!(!state.track_again.is_pending());
             assert_eq!(state.track_again_owed, None);
             assert_eq!(state.arrival(1_001, true, false), Arrival::NotDue);
@@ -1108,7 +1092,7 @@ mod tests {
             ..Default::default()
         };
         let request = dispatched(state.dispatch_track_again(vec![pair, other]));
-        state.record_error(&request, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&request, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert_eq!(state.track_again_owed, Some(vec![pair]));
     }
 
@@ -1176,13 +1160,13 @@ mod tests {
         };
         let check = dispatched(state.dispatch_pair_check(cached.pair()));
         assert!(!state.should_suppress_error(&check, &TaskError::NoIdentitiesFound));
-        state.record_error(&check, &TaskError::NoIdentitiesFound);
+        state.record_error(&check, &TaskError::NoIdentitiesFound, 0);
         let check = dispatched(state.dispatch_pair_check(unknown.pair()));
         assert!(
             !state.should_suppress_error(&check, &TaskError::NoIdentitiesFound),
             "the row says it could not check, and the banner says so too"
         );
-        state.record_error(&check, &TaskError::NoIdentitiesFound);
+        state.record_error(&check, &TaskError::NoIdentitiesFound, 0);
     }
 
     #[test]
@@ -1313,7 +1297,7 @@ mod tests {
         assert_eq!(state.last_refreshed_at_ms(), None);
 
         let context = dispatched(state.dispatch_refresh(Vec::new()));
-        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert!(!state.refresh_pending());
     }
 
@@ -1335,19 +1319,50 @@ mod tests {
         );
     }
 
-    /// A disconnect asks to reconnect, and anything else asks to check the
-    /// connection; a timeout is pinned with the refresh it ends.
+    /// The inline notice says what the error (and so the banner) says, so
+    /// one failure shows one text.
     #[test]
-    fn each_refresh_failure_names_its_cause() {
-        for (error, failure) in [
-            (
-                TaskError::TokenBalanceRefreshDisconnected,
-                RefreshFailure::Disconnected,
-            ),
-            (TaskError::NoIdentitiesFound, RefreshFailure::Failed),
-        ] {
-            assert_eq!(RefreshFailure::from_error(&error), failure, "{error:?}");
-        }
+    fn a_failed_refresh_shows_the_error_text_inline() {
+        let mut state = IdentityTokensState::default();
+        let error = TaskError::TokenBalanceRefreshDisconnected;
+        let context = dispatched(state.dispatch_refresh(Vec::new()));
+        state.record_error(&context, &error, 0);
+        assert_eq!(
+            state.refresh_failure().map(RefreshFailure::message),
+            Some(error.to_string().as_str())
+        );
+    }
+
+    /// A refresh that could not read the selected identity is a failure: no
+    /// "Last updated", and unknown balances could not be checked.
+    #[test]
+    fn a_refresh_that_could_not_read_this_identity_fails() {
+        let mut state = owned_state();
+        let owner = state.owner.expect("owned").1;
+        let context = dispatched(state.dispatch_refresh(everyone()));
+        let error = TaskError::TokenBalancesNotChecked {
+            identities: vec![owner],
+        };
+        state.record_error(&context, &error, 5);
+        assert_eq!(state.last_refreshed_at_ms(), None);
+        assert!(state.full_refresh_failed);
+        assert!(state.refresh_failure().is_some());
+    }
+
+    /// Another identity's unread balances do not fail this identity's tab.
+    #[test]
+    fn a_refresh_that_read_this_identity_counts_though_others_failed() {
+        let mut state = owned_state();
+        let owner = state.owner.expect("owned").1;
+        let other = Identifier::from([0xEE; 32]);
+        let context = dispatched(state.dispatch_refresh(vec![owner, other]));
+        let error = TaskError::TokenBalancesNotChecked {
+            identities: vec![other],
+        };
+        state.record_error(&context, &error, 5);
+        assert_eq!(state.refreshed_at_ms_for(owner), Some(5));
+        assert_eq!(state.refreshed_at_ms_for(other), None);
+        assert!(state.refresh_failure().is_none());
     }
 
     #[test]
@@ -1355,7 +1370,7 @@ mod tests {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
-        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert_eq!(state.refresh_failure(), None);
 
         let context = dispatched(state.dispatch_refresh(Vec::new()));
@@ -1368,8 +1383,9 @@ mod tests {
         state.record_error(
             &context,
             &TaskError::TokenBalanceRefreshTimeout { source: timeout },
+            0,
         );
-        assert_eq!(state.refresh_failure(), Some(RefreshFailure::TooSlow));
+        assert!(state.refresh_failure().is_some());
         state.failure_dismissed = true;
         assert_eq!(state.refresh_failure(), None);
     }
@@ -1388,8 +1404,8 @@ mod tests {
         );
 
         let context = dispatched(state.dispatch_refresh(Vec::new()));
-        state.record_error(&context, &TaskError::NoIdentitiesFound);
-        assert_eq!(state.refresh_failure(), Some(RefreshFailure::Failed));
+        state.record_error(&context, &TaskError::NoIdentitiesFound, 0);
+        assert!(state.refresh_failure().is_some());
         assert!(state.full_refresh_failed);
         assert!(!state.first_load_shown(&rows, true));
 
@@ -1404,7 +1420,7 @@ mod tests {
         let pair = row("T", None).pair();
         let context = dispatched(state.dispatch_pair_check(pair));
         assert!(!state.should_suppress_error(&context, &TaskError::NoIdentitiesFound));
-        state.record_error(&context, &TaskError::NoIdentitiesFound);
+        state.record_error(&context, &TaskError::NoIdentitiesFound, 0);
         assert_eq!(
             state.pair_check_results.get(&pair),
             Some(&PairCheckResult::Failed)
@@ -1456,7 +1472,7 @@ mod tests {
         let mut state = IdentityTokensState::default();
         let pair = row("T", None).pair();
         let refresh = dispatched(state.dispatch_refresh(Vec::new()));
-        state.record_error(&refresh, &TaskError::NoIdentitiesFound);
+        state.record_error(&refresh, &TaskError::NoIdentitiesFound, 0);
         assert!(state.full_refresh_failed);
         let check = dispatched(state.dispatch_pair_check(pair));
         state.record_result(&check, &BackendTaskSuccessResult::FetchedTokenBalances, 2);
@@ -1518,7 +1534,7 @@ mod tests {
         state.record_result(&check, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
         assert!(!state.check_failed_for(pair));
         let refresh = dispatched(state.dispatch_refresh(everyone()));
-        state.record_error(&refresh, &TaskError::NoIdentitiesFound);
+        state.record_error(&refresh, &TaskError::NoIdentitiesFound, 0);
         assert!(state.check_failed_for(pair));
     }
 
@@ -1529,7 +1545,7 @@ mod tests {
         let mut state = IdentityTokensState::default();
         let pair = row("T", None).pair();
         let check = dispatched(state.dispatch_pair_check(pair));
-        state.record_error(&check, &TaskError::NoIdentitiesFound);
+        state.record_error(&check, &TaskError::NoIdentitiesFound, 0);
         assert!(state.check_failed_for(pair));
         state.balances_refreshed_elsewhere(5, vec![Identifier::from([3; 32])]);
         assert!(state.check_failed_for(pair), "another identity's refresh");
@@ -1603,7 +1619,7 @@ mod tests {
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         state.reset_for_identity_change();
         assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
-        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress, 0);
     }
 
     /// A balance refresh covers every identity it found stored, so switching
@@ -1630,11 +1646,11 @@ mod tests {
             state.should_suppress_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress),
             "the first check is still ours, so its refusal stays quiet"
         );
-        state.record_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert!(
             state.should_suppress_error(&second_ctx, &TaskError::TokenBalanceRefreshInProgress)
         );
-        state.record_error(&second_ctx, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&second_ctx, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert!(
             !state.pair_checks.is_pending(),
             "nothing of this tab is outstanding"
@@ -1649,7 +1665,7 @@ mod tests {
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_pair_check(row("T", None).pair()));
         assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
-        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
     }
@@ -1666,7 +1682,7 @@ mod tests {
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
         assert!(state.should_suppress_error(&context, &TaskError::TokenBalanceRefreshInProgress));
-        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert_eq!(state.track_again_owed, Some(pairs.clone()));
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
@@ -1680,7 +1696,7 @@ mod tests {
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         assert!(state.should_suppress_error(&context, &TaskError::MasternodeListSyncPending));
-        state.record_error(&context, &TaskError::MasternodeListSyncPending);
+        state.record_error(&context, &TaskError::MasternodeListSyncPending, 0);
         assert_eq!(state.refresh_failure(), None, "waiting is not a failure");
         assert_eq!(state.arrival(1_001, false, false), Arrival::Owed);
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
@@ -1713,7 +1729,7 @@ mod tests {
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
         assert!(!state.should_suppress_error(&context, &TaskError::NoIdentitiesFound));
-        state.record_error(&context, &TaskError::NoIdentitiesFound);
+        state.record_error(&context, &TaskError::NoIdentitiesFound, 0);
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
         assert!(
@@ -1732,7 +1748,7 @@ mod tests {
         );
 
         let context = dispatched(state.dispatch_track_again(pairs));
-        state.record_error(&context, &TaskError::NoIdentitiesFound);
+        state.record_error(&context, &TaskError::NoIdentitiesFound, 0);
         state.reset_for_identity_change();
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
@@ -1763,7 +1779,7 @@ mod tests {
                 !state.should_suppress_error(&context, &error),
                 "{error:?} must reach the banner"
             );
-            state.record_error(&context, &error);
+            state.record_error(&context, &error, 0);
             assert!(!state.full_refresh_failed);
             assert_eq!(state.refresh_failure(), None);
             assert!(
@@ -1791,7 +1807,7 @@ mod tests {
         };
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_track_again(vec![row("A", None).pair()]));
-        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress, 0);
         assert!(state.track_again_owed.is_some());
 
         state.reset_for_identity_change();
@@ -1802,49 +1818,6 @@ mod tests {
             Arrival::NotDue,
             "nothing is owed for the new identity"
         );
-    }
-
-    /// List controls not yet written when the identity changes are written
-    /// to the device, never lost.
-    #[test]
-    fn switching_identity_saves_unsaved_list_controls() {
-        let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::test_app_context(dir.path());
-        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
-            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
-        )));
-        let identity = |byte: u8| {
-            crate::context::test_support::bare_user_identity(
-                Identifier::from([byte; 32]),
-                Network::Testnet,
-            )
-        };
-        let mut state = IdentityTokensState::default();
-        state.rows(&context, &identity(1));
-        state.prefs(&context);
-        state.edit_prefs(IdentityTokensViewPrefs {
-            hide_zero_balances: true,
-            ..Default::default()
-        });
-        assert!(!context.identity_tokens_view_prefs().hide_zero_balances);
-        state.rows(&context, &identity(2));
-        assert!(context.identity_tokens_view_prefs().hide_zero_balances);
-        assert!(!state.prefs_dirty());
-    }
-
-    #[test]
-    fn edited_prefs_are_dirty_until_saved() {
-        let mut state = IdentityTokensState::default();
-        assert!(!state.prefs_dirty());
-        state.edit_prefs(IdentityTokensViewPrefs {
-            hide_zero_balances: true,
-            ..Default::default()
-        });
-        assert!(state.prefs_dirty());
-        let same = state.prefs.clone().expect("edited");
-        state.prefs_dirty = false;
-        state.edit_prefs(same);
-        assert!(!state.prefs_dirty(), "an unchanged edit is not dirty");
     }
 
     /// A token cache notification re-reads the rows on the next frame, from

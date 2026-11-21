@@ -10,6 +10,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::spv_status::SpvStatus;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::copyable_id::copy_with_confirmation;
@@ -18,8 +19,7 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill::accent_pill;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::state::identity_tokens::{
-    IdentityTokensState, RefreshFailure, RowStatus, TokenRow, reward_beside_balance, row_is_listed,
-    sort_rows,
+    IdentityTokensState, RowStatus, TokenRow, reward_beside_balance, row_is_listed, sort_rows,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use crate::ui::{MessageType, RootScreenType, ScreenType};
@@ -40,6 +40,8 @@ const ROW_MONOGRAM_SIZE: f32 = 36.0;
 struct RowContext {
     /// Balance reads may go out: see [`IdentityTokensState::can_read`].
     synced: bool,
+    /// Why a read control is disabled.
+    block_reason: &'static str,
     /// The identity can sign nothing on this device.
     view_only: bool,
     identity_label: String,
@@ -49,6 +51,7 @@ impl RowContext {
     fn new(app_context: &AppContext, identity: &QualifiedIdentity) -> Self {
         Self {
             synced: IdentityTokensState::can_read(app_context),
+            block_reason: refresh_block_reason(app_context),
             view_only: identity.private_keys.is_empty(),
             identity_label: app_context.identity_display_label(identity),
         }
@@ -151,7 +154,7 @@ fn render_header(
                 ComponentStyles::secondary_button(REFRESH_LABEL, dark),
             );
             if refresh
-                .disabled_tooltip(refresh_block_reason(synced))
+                .disabled_tooltip(refresh_block_reason(app_context))
                 .clicked()
             {
                 action |= state.refresh_action(app_context);
@@ -164,12 +167,19 @@ fn render_header(
     action
 }
 
-/// Why a refresh control is disabled: the network, or a refresh already running.
-fn refresh_block_reason(synced: bool) -> &'static str {
-    if synced {
+/// Why a refresh control is disabled: a refresh already running, a network
+/// still syncing, or no connection (also while one stops).
+pub(super) fn refresh_block_reason(app_context: &AppContext) -> &'static str {
+    let status = app_context.connection_status().spv_status();
+    if IdentityTokensState::can_read(app_context) {
         REFRESHING_TOOLTIP
-    } else {
+    } else if matches!(
+        status,
+        SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running
+    ) {
         DISABLED_NOT_SYNCED
+    } else {
+        DISABLED_NOT_CONNECTED
     }
 }
 
@@ -223,16 +233,12 @@ fn render_failure(
     };
     let synced = IdentityTokensState::can_read(app_context);
     let refreshing = state.refreshing(app_context);
-    let text = match failure {
-        RefreshFailure::TooSlow => ERROR_REFRESH_SLOW,
-        RefreshFailure::Disconnected => ERROR_REFRESH_DISCONNECTED,
-        RefreshFailure::Failed => ERROR_REFRESH_FAILED,
-    };
+    let text = failure.message().to_owned();
     ui.add_space(Spacing::SM);
-    let response = InlineNotice::new(MessageType::Error, text)
+    let response = InlineNotice::new(MessageType::Error, &text)
         .with_link_unless(
             TRY_AGAIN_LABEL,
-            (!synced || refreshing).then_some(refresh_block_reason(synced)),
+            (!synced || refreshing).then_some(refresh_block_reason(app_context)),
         )
         .with_link(DISMISS_LABEL)
         .show(ui);
@@ -289,8 +295,7 @@ fn render_controls(
         }
     });
     if prefs != before {
-        state.edit_prefs(prefs);
-        state.save_prefs(app_context);
+        state.set_prefs(app_context, prefs);
     }
 }
 
@@ -448,7 +453,7 @@ fn render_row_status(
                         context.synced && !refreshing,
                         egui::Button::new(TRY_AGAIN_LABEL).small(),
                     )
-                    .disabled_tooltip(refresh_block_reason(context.synced))
+                    .disabled_tooltip(context.block_reason)
                     .clicked()
                 {
                     action = state.check_pair_action(app_context, row.pair());
@@ -502,7 +507,7 @@ fn render_row_menu(
                 context.synced && !refreshing,
                 egui::Button::new(CHECK_NOW_LABEL),
             )
-            .disabled_tooltip(refresh_block_reason(context.synced))
+            .disabled_tooltip(context.block_reason)
             .clicked()
         {
             action |= state.check_pair_action(app_context, row.pair());
@@ -621,7 +626,7 @@ fn render_all_dismissed(
                     ComponentStyles::primary_button(TRACK_AGAIN_LABEL),
                 );
                 if track_again
-                    .disabled_tooltip(refresh_block_reason(synced))
+                    .disabled_tooltip(refresh_block_reason(app_context))
                     .clicked()
                 {
                     action = match state.track_again_action(app_context, identity) {
@@ -639,4 +644,28 @@ fn render_all_dismissed(
         });
     });
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A disabled read control names what the user waits for: a refresh, a
+    /// sync, or a connection (also while one stops).
+    #[test]
+    fn a_disabled_read_control_names_its_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let status = context.connection_status();
+        for (spv, masternodes_ready, reason) in [
+            (SpvStatus::Running, true, REFRESHING_TOOLTIP),
+            (SpvStatus::Syncing, false, DISABLED_NOT_SYNCED),
+            (SpvStatus::Stopping, true, DISABLED_NOT_CONNECTED),
+            (SpvStatus::Stopped, false, DISABLED_NOT_CONNECTED),
+        ] {
+            status.set_spv_status(spv);
+            status.set_masternodes_ready(masternodes_ready);
+            assert_eq!(refresh_block_reason(&context), reason, "{spv:?}");
+        }
+    }
 }

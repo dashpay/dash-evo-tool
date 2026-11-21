@@ -2071,7 +2071,7 @@ pub enum TaskError {
 
     /// Refreshing token balances exceeded the app's network-request deadline.
     #[error(
-        "Token balances could not be refreshed because the network took too long to respond. Check your connection and refresh the Tokens screen."
+        "Token balances could not be refreshed because the network took too long to respond. Check your connection, then refresh the balances."
     )]
     TokenBalanceRefreshTimeout {
         #[source]

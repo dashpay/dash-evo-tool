@@ -52,6 +52,14 @@ impl<T> Clone for SenderAsync<T> {
         }
     }
 }
+
+impl<T> std::fmt::Debug for SenderAsync<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderAsync")
+            .field("closed", &self.sender.is_closed())
+            .finish_non_exhaustive()
+    }
+}
 pub trait EguiMpscAsync<T> {
     fn with_egui_ctx(self, ctx: egui::Context) -> (SenderAsync<T>, mpsc::Receiver<T>);
 }

@@ -88,8 +88,11 @@ impl AutoAcceptProofData {
             key_data_base58.ok_or("Missing proof key data in QR code".to_string())?;
 
         // Decode the key data from base58
-        let key_data = dash_sdk::dpp::dashcore::base58::decode(&key_data_base58)
-            .map_err(|e| format!("Invalid base58 key data: {}", e))?;
+        let key_data = dash_sdk::dpp::platform_value::string_encoding::decode(
+            &key_data_base58,
+            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+        )
+        .map_err(|e| format!("Invalid base58 key data: {}", e))?;
 
         // Parse key data format: key_type (1) + timestamp (4) + key_size (1) + key (32-64)
         if key_data.len() < 38 {
@@ -319,7 +322,7 @@ mod tests {
     /// low half the time on its own, so this signs for many accounts.
     #[test]
     fn proof_signature_verifies_and_has_low_r() {
-        let key_bytes = [0x2Bu8; 32];
+        let key_bytes = crate::test_support::keys::secret_bytes();
         let public_key =
             PublicKey::from_secret_key(&SecretKey::from_secret_bytes(key_bytes).expect("valid"));
         let sender = Identifier::from([0x01; 32]);

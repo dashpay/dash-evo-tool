@@ -309,6 +309,17 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         );
     }
 
+    // Screen readers get a short button name; the explanation is its description.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::accesskit::Role::Button,
+            ui.is_enabled(),
+            "More information",
+        )
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_description(hover_text));
+
     response.clickable_tooltip(hover_text)
 }
 
@@ -474,10 +485,12 @@ fn render_no_eligible_key_group(
 /// Renders a ComboBox listing `identity`'s loaded private keys eligible for the transaction.
 ///
 /// With `identity` `None`, prompts the user to pick an identity first. Developer mode also
-/// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`].
+/// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`]. `label_id` is the
+/// label that names the combo box.
 #[allow(clippy::too_many_arguments)]
 fn render_key_combo(
     ui: &mut Ui,
+    label_id: egui::Id,
     combo_id: &str,
     width: f32,
     identity: Option<&QualifiedIdentity>,
@@ -532,7 +545,9 @@ fn render_key_combo(
                     *selected_key = Some(key.clone());
                 }
             }
-        });
+        })
+        .response
+        .labelled_by(label_id);
 }
 
 /// Renders a centered title + description block (used above success-screen buttons).
@@ -606,12 +621,15 @@ pub fn add_key_chooser_with_doc_type(
         );
     } else {
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.add_space(15.0);
-                ui.label("Key:");
-            });
+            let label = ui
+                .vertical(|ui| {
+                    ui.add_space(15.0);
+                    ui.label("Key:")
+                })
+                .inner;
             render_key_combo(
                 ui,
+                label.id,
                 "key_chooser_combo",
                 300.0,
                 Some(identity),
@@ -670,7 +688,7 @@ where
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Identity:");
+            let identity_label = ui.label("Identity:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("identity_combo")
                     .width(220.0)
@@ -691,12 +709,14 @@ where
                                 *selected_key = None; // Clear key selection when identity changes
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(identity_label.id);
             });
 
             ui.end_row();
 
-            ui.label("Key:");
+            let key_label = ui.label("Key:");
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 let allowed_purposes = transaction_type.allowed_purposes();
@@ -724,6 +744,7 @@ where
                 if show_combo {
                     render_key_combo(
                         ui,
+                        key_label.id,
                         "key_combo",
                         220.0,
                         selected_identity.as_ref(),
@@ -764,6 +785,22 @@ pub fn add_contract_doc_type_chooser_with_filtering(
     );
 }
 
+/// Selects `contract` in the contract/document-type chooser and drops a
+/// document type that belongs to another contract.
+fn select_contract(
+    selected_contract: &mut Option<QualifiedContract>,
+    selected_doc_type: &mut Option<DocumentType>,
+    contract: &QualifiedContract,
+) {
+    if selected_doc_type
+        .as_ref()
+        .is_some_and(|doc_type| doc_type.data_contract_id() != contract.contract.id())
+    {
+        *selected_doc_type = None;
+    }
+    *selected_contract = Some(contract.clone());
+}
+
 /// Extremely compact chooser: just two combo-boxes (Contract ▸ Doc-Type)
 ///
 /// * No collapsible tree.
@@ -783,11 +820,12 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            let filter_label = ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term)
+                .labelled_by(filter_label.id);
             ui.end_row();
 
-            ui.label("Contract:");
+            let contract_label = ui.label("Contract:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("contract_combo")
                     .width(220.0)
@@ -804,15 +842,17 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                                 .selectable_label(selected_contract.as_ref() == Some(qc), label)
                                 .clicked()
                             {
-                                *selected_contract = Some(qc.clone());
+                                select_contract(selected_contract, selected_doc_type, qc);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(contract_label.id);
             });
 
             ui.end_row();
 
-            ui.label("Doc Type:");
+            let doc_type_label = ui.label("Doc Type:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("doctype_combo")
                     .width(220.0)
@@ -842,7 +882,9 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                         } else {
                             dui.label("Pick a contract first");
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(doc_type_label.id);
             });
             ui.end_row();
         });
@@ -865,11 +907,12 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            let filter_label = ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term)
+                .labelled_by(filter_label.id);
             ui.end_row();
 
-            ui.label("Contract:");
+            let contract_label = ui.label("Contract:");
             ComboBox::from_id_salt("contract_chooser")
                 .width(220.0)
                 .selected_text(
@@ -888,7 +931,9 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
                             *selected_contract = Some(qc.clone());
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(contract_label.id);
 
             ui.end_row();
         });
@@ -1108,6 +1153,54 @@ pub fn show_group_token_success_screen_with_fee(
 mod tests {
     use super::*;
 
+    /// Screen readers announce the info icon as a button with a short name,
+    /// and its explanation as the description.
+    #[test]
+    fn info_icon_is_a_named_button_described_by_its_explanation() {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        const EXPLANATION: &str = "Explains what this option does.";
+        let harness = Harness::new_ui(|ui| {
+            info_icon_button(ui, EXPLANATION);
+        });
+        let icon = harness.get_by_role_and_label(Role::Button, "More information");
+        assert_eq!(
+            icon.accesskit_node().description().as_deref(),
+            Some(EXPLANATION)
+        );
+    }
+
+    /// Switching contract drops a document type of the previous contract, so
+    /// no action pairs one contract with another contract's type; a type of
+    /// the newly selected contract stays selected.
+    #[test]
+    fn selecting_a_contract_drops_another_contracts_document_type() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let load = |c| QualifiedContract {
+            contract: load_system_data_contract(c, PlatformVersion::latest()).expect("contract"),
+            alias: None,
+        };
+        let dpns = load(SystemDataContract::DPNS);
+        let dashpay = load(SystemDataContract::Dashpay);
+        let domain = dpns.contract.document_type_cloned_for_name("domain").ok();
+
+        let mut contract = Some(dpns.clone());
+        let mut doc_type = domain.clone();
+        select_contract(&mut contract, &mut doc_type, &dpns);
+        assert_eq!(doc_type, domain, "a type of the selected contract stays");
+
+        select_contract(&mut contract, &mut doc_type, &dashpay);
+        assert_eq!(contract, Some(dashpay));
+        assert!(
+            doc_type.is_none(),
+            "the previous contract's type is dropped"
+        );
+    }
+
     fn outside_press() -> egui::RawInput {
         let outside_pos = egui::pos2(0.0, 0.0);
         egui::RawInput {
@@ -1132,7 +1225,7 @@ mod tests {
         let ctx = egui::Context::default();
         let window_rect =
             egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
-        let id = egui::Id::new("test_modal_outside_click_pass");
+        let id = egui::Id::unique("test_modal_outside_click_pass");
 
         // Opening frame (first render): the outside press must be ignored.
         let mut closed = true;
@@ -1160,7 +1253,7 @@ mod tests {
         let ctx = egui::Context::default();
         let window_rect =
             egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
-        let id = egui::Id::new("test_modal_rearm_pass");
+        let id = egui::Id::unique("test_modal_rearm_pass");
 
         // First open + a continuation pass so the guard is disarmed.
         ctx.run_ui(outside_press(), |ui| {

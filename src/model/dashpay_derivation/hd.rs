@@ -106,16 +106,16 @@ pub fn calculate_account_reference(
     account: u32,
     version: u32,
 ) -> u32 {
-    use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
+    use dash_sdk::dpp::dashcore::hashes::hmac::HmacEngine;
     use dash_sdk::dpp::dashcore::hashes::sha256;
 
     // Serialize the extended public key
     let xpub_bytes = extended_public_key.encode();
 
     // Create HMAC-SHA256(senderSecretKey, extendedPublicKey)
-    let mut engine = HmacEngine::<sha256::Hash>::new(sender_secret_key);
+    let mut engine = HmacEngine::<sha256::HashEngine>::new(sender_secret_key);
     engine.input(&xpub_bytes);
-    let ask = Hmac::<sha256::Hash>::from_engine(engine);
+    let ask = engine.finalize();
 
     // Take the 28 most significant bits
     let ask_bytes = ask.to_byte_array();
@@ -143,9 +143,9 @@ mod tests {
     #[test]
     fn test_account_reference_calculation() {
         // Test account reference calculation
-        let secret_key = [1u8; 32];
+        let secret_key = crate::test_support::keys::secret_bytes();
         let network = Network::Testnet;
-        let master_seed = [2u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
@@ -160,7 +160,7 @@ mod tests {
     fn test_derive_payment_address_deterministic() {
         // Test that deriving the same address index gives the same address
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         // Create two test identity IDs
         let sender_bytes = [0x11u8; 32];
@@ -191,7 +191,7 @@ mod tests {
     fn test_derive_payment_address_different_indices() {
         // Test that different indices produce different addresses
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];
@@ -225,7 +225,7 @@ mod tests {
     fn test_auto_accept_key_derivation() {
         // Test auto-accept key derivation
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
         let timestamp = 1700000000u32;
 
         let key = derive_auto_accept_key(&master_seed, network, timestamp)
@@ -240,7 +240,7 @@ mod tests {
     fn test_auto_accept_key_different_timestamps() {
         // Different timestamps should produce different keys
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let key1 =
             derive_auto_accept_key(&master_seed, network, 1700000000).expect("Should derive key 1");
@@ -259,7 +259,7 @@ mod tests {
     fn test_generate_contact_xpub_data() {
         // Test generating contact xpub data
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];
@@ -286,12 +286,36 @@ mod tests {
         );
     }
 
+    /// Pins DET's DIP-15 account reference: DIP-15 publishes no vector, so the
+    /// inputs are DIP-14 Test Vector 1's published seed and final private key.
+    #[test]
+    fn account_reference_matches_golden_values() {
+        let seed = hex::decode(
+            "b16d3782e714da7c55a397d5f19104cfed7ffa8036ac514509bbb50807f8ac598eeb26f0797bd8cc221a6cbff2168d90a5e9ee025a5bd977977b9eccd97894bb",
+        )
+        .unwrap();
+        let sender_secret =
+            hex::decode("e8781fdef72862968cd9a4d2df34edaf9dcc5b17629ec505f0d2d1a8ed6f9f09")
+                .unwrap();
+        let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).unwrap();
+        let xpub = ExtendedPubKey::from_priv(&master);
+
+        assert_eq!(
+            [
+                calculate_account_reference(&sender_secret, &xpub, 0, 0),
+                calculate_account_reference(&sender_secret, &xpub, 7, 0),
+                calculate_account_reference(&sender_secret, &xpub, 0x0ABC_DEF1, 1),
+            ],
+            [0x08AE_C8F7, 0x08AE_C8F0, 0x1212_1606]
+        );
+    }
+
     #[test]
     fn test_account_reference_version_bits() {
         // Test that version bits are correctly placed
-        let secret_key = [1u8; 32];
+        let secret_key = crate::test_support::keys::secret_bytes();
         let network = Network::Testnet;
-        let master_seed = [2u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
@@ -313,7 +337,7 @@ mod tests {
     fn test_dashpay_xpub_different_accounts() {
         // Different accounts should produce different xpubs
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];
@@ -337,7 +361,7 @@ mod tests {
     #[test]
     fn test_dashpay_xpub_different_networks() {
         // Different networks should produce different xpubs
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];

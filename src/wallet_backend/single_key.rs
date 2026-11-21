@@ -255,10 +255,7 @@ impl<'a> SingleKeyView<'a> {
         if !priv_key.compressed {
             return Err(TaskError::UncompressedWifUnsupported);
         }
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
 
@@ -874,13 +871,7 @@ fn parse_locked_address_and_pubkey(
             return None;
         }
     };
-    Some((
-        address,
-        PublicKey {
-            compressed: true,
-            inner: inner.into(),
-        },
-    ))
+    Some((address, PublicKey::new(inner)))
 }
 
 /// SHA-256 of `domain || material`, used as a stable per-entry BTreeMap handle
@@ -1066,7 +1057,7 @@ mod tests {
         let path = dir.path().join("secrets").join("det-secrets.pwsvault");
         let scope = single_key_namespace_id();
         let label = "single_key_priv.roundtrip";
-        let secret = [7u8; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         // Seed a passphrase-protected vault, then release its exclusive lock.
         {
@@ -1106,7 +1097,11 @@ mod tests {
         {
             let store = open_secret_store(&path).expect("create keyless vault");
             store
-                .set(&scope, "k", &SecretBytes::from_slice(&[1u8; 32]))
+                .set(
+                    &scope,
+                    "k",
+                    &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
+                )
                 .expect("write");
         }
         // Re-open keyless — the default boot path is unchanged.
@@ -1128,11 +1123,17 @@ mod tests {
         (store, index, network)
     }
 
+    /// A testnet WIF that is stable for the whole test process, so a test can
+    /// import the same key twice.
     fn known_wif() -> &'static str {
-        // Testnet WIF with deterministic, all-zero-except-last-byte key
-        // bytes. Generated locally with `PrivateKey::new(SecretKey::from_secret_bytes([0;31].chain(&[1])).unwrap(), Testnet).to_wif()`
-        // and pinned here to keep tests offline + reproducible.
-        "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
+        static WIF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        WIF.get_or_init(|| {
+            crate::test_support::keys::labelled_wif(
+                "wallet_backend::single_key::known_wif",
+                0,
+                Network::Testnet,
+            )
+        })
     }
 
     #[test]
@@ -2094,13 +2095,14 @@ mod tests {
         assert_eq!(view.list()[0].alias.as_deref(), Some("old name"));
     }
 
-    /// A deterministic throwaway testnet WIF distinct per `byte`.
+    /// A throwaway testnet WIF, distinct per `byte` and stable within the
+    /// test process.
     fn wif_for_byte(byte: u8) -> String {
-        let secret = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([byte; 32])
-            .expect("valid scalar");
-        PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
-            .expect("valid secret key")
-            .to_wif()
+        crate::test_support::keys::labelled_wif(
+            "wallet_backend::single_key::wif_for_byte",
+            byte.into(),
+            Network::Testnet,
+        )
     }
 
     fn transient_view<'a>(
@@ -2542,10 +2544,7 @@ mod tests {
         // Pretend a pre-per-key-passphrase install wrote a raw 32-byte
         // payload under the canonical label, with a matching sidecar entry.
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, network).to_string();
         let label = label_for_address(&address);
         let raw = SecretBytes::from_slice(&priv_key.inner.to_bytes()[..]);
@@ -2986,10 +2985,7 @@ mod tests {
         assert!(view.list().is_empty(), "nothing indexed");
         let address = PrivateKey::from_wif(known_wif())
             .map(|key| {
-                let public = PublicKey {
-                    compressed: true,
-                    inner: key.inner.public_key(),
-                };
+                let public = PublicKey::new(key.inner.public_key());
                 Address::p2pkh(&public, Network::Testnet).to_string()
             })
             .expect("address");
@@ -3021,10 +3017,7 @@ mod tests {
         assert!(view.list().is_empty(), "nothing indexed");
         let address = PrivateKey::from_wif(known_wif())
             .map(|key| {
-                let public = PublicKey {
-                    compressed: true,
-                    inner: key.inner.public_key(),
-                };
+                let public = PublicKey::new(key.inner.public_key());
                 Address::p2pkh(&public, Network::Testnet).to_string()
             })
             .expect("address");

@@ -114,6 +114,9 @@ fn registered_wallet_screen_harness() -> Harness<'static, WalletsBalancesScreen>
     build_wallet_screen_harness(runtime, app_context)
 }
 
+/// Press and release `label` within one frame, then step once more: a dialog
+/// it opens spends its first frame in an invisible sizing pass, which egui keeps
+/// out of the accessibility tree.
 fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &str) {
     let pos = harness.get_by_label(label).rect().center();
     harness.input_mut().events.extend([
@@ -131,6 +134,7 @@ fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &
             modifiers: egui::Modifiers::default(),
         },
     ]);
+    harness.step();
     harness.step();
 }
 
@@ -1168,6 +1172,50 @@ fn rename_dialog_counter_counts_cleaned_characters() {
         assert!(
             harness.query_by_label("3 of 64 characters used.").is_some(),
             "the counter must count the cleaned name"
+        );
+    });
+}
+
+/// Power users see which network the wallet is on next to its name. The old
+/// "[DEV]" marker said nothing about the network and confused mainnet users.
+#[test]
+fn wallet_header_names_the_network_instead_of_dev() {
+    use dash_evo_tool::model::user_role::UserRole;
+    use dash_sdk::dashcore_rpc::dashcore::Network as CoreNetwork;
+    let seed_7 = dash_evo_tool::test_support::keys::seed();
+
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        app_context.set_user_role(UserRole::Power);
+        let expected = match app_context.network() {
+            CoreNetwork::Mainnet => "[mainnet]",
+            CoreNetwork::Testnet => "[testnet]",
+            CoreNetwork::Devnet => "[devnet]",
+            CoreNetwork::Regtest => "[local]",
+        };
+        let wallet = Wallet::new_from_seed(
+            seed_7,
+            app_context.network(),
+            Some("Badge wallet".to_string()),
+            None,
+        )
+        .expect("create wallet fixture");
+        app_context
+            .wallet_context()
+            .insert_test_wallet(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
+        let harness = build_wallet_screen_harness(runtime, app_context);
+
+        assert!(
+            harness.query_all_by_label("Badge wallet").next().is_some(),
+            "precondition: the wallet's header is shown"
+        );
+        assert!(
+            harness.query_all_by_label(expected).next().is_some(),
+            "the header must name the wallet's network as {expected}"
+        );
+        assert!(
+            harness.query_all_by_label("[DEV]").next().is_none(),
+            "the header must not show the old [DEV] marker"
         );
     });
 }

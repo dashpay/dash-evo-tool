@@ -16,7 +16,10 @@ use dash_sdk::{
     },
     platform::{
         DataContract, Identifier, IdentityPublicKey,
-        transition::broadcast::BroadcastStateTransition,
+        transition::{
+            broadcast::BroadcastStateTransition,
+            put_contract::ensure_private_document_entries_fit_on_update,
+        },
     },
 };
 
@@ -42,6 +45,16 @@ impl AppContext {
         // Estimate fee for contract update
         let estimated_fee = self.fee_estimator().estimate_contract_update();
 
+        // Platform registers a private document type whose entries are too
+        // small for its documents, and the entry size can never change after.
+        // Contract creation is checked inside the SDK; this transition is
+        // built here, so the same check runs here, before anything is signed
+        // or changed. It reads the stored contract only when the update
+        // declares a private type, and leaves unchanged types alone.
+        ensure_private_document_entries_fit_on_update(sdk, data_contract)
+            .await
+            .map_err(TaskError::from)?;
+
         // Increment the version of the data contract
         data_contract.increment_version();
         let contract_id = data_contract.id();
@@ -54,7 +67,8 @@ impl AppContext {
 
         // Update UI
         sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::FetchedNonce,
             ))
             .await
@@ -115,6 +129,141 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use dash_sdk::dpp::data_contract::conversion::value::v0::DataContractValueConversionMethodsV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::{KeyType, Purpose};
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use dash_sdk::dpp::platform_value::{BinaryData, platform_value};
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    /// A contract with the private type `request` of 375-byte entries. Its
+    /// required fields need 376 bytes; with `label`, an optional string of at
+    /// most 20 bytes, its largest document needs 398.
+    fn private_contract(label: bool) -> DataContract {
+        let id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        let owner_id = Identifier::from([8; 32]).to_string(Encoding::Base58);
+        let mut properties = platform_value!({
+            "reference": { "type": "integer", "position": 0 },
+            "key": {
+                "type": "array", "byteArray": true,
+                "minItems": 69, "maxItems": 69, "position": 1
+            }
+        });
+        if label {
+            properties
+                .set_value(
+                    "label",
+                    platform_value!({ "type": "string", "maxBytes": 20, "position": 2 }),
+                )
+                .expect("a map");
+        }
+        DataContract::from_value(
+            platform_value!({
+                "$formatVersion": "1",
+                "id": id,
+                "ownerId": owner_id,
+                "version": 1,
+                "documentSchemas": {
+                    "request": {
+                        "type": "object",
+                        "private": { "entrySize": 375 },
+                        "documentsMutable": false,
+                        "canBeDeleted": false,
+                        "properties": properties,
+                        "required": ["reference", "key"],
+                        "additionalProperties": false
+                    }
+                }
+            }),
+            true,
+            PlatformVersion::latest(),
+        )
+        .expect("the contract registers")
+    }
+
+    /// An update that changes a private document type so that its entries can
+    /// no longer hold its largest document is refused before the nonce is
+    /// read or anything is signed, and the caller's contract is left as it
+    /// was. Platform would accept the update, and the entry size can never
+    /// change afterwards.
+    #[tokio::test]
+    async fn an_update_whose_private_type_cannot_hold_its_documents_is_refused_before_signing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let stored = private_contract(false);
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("a mock SDK");
+        // The only answer the mock holds: reading the nonce would fail it.
+        sdk.mock()
+            .expect_fetch(stored.id(), Some(stored.clone()))
+            .await
+            .expect("stored contract expectation");
+
+        let identity = QualifiedIdentity {
+            identity: dash_sdk::dpp::identity::Identity::create_basic_identity(
+                Identifier::from([8; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: context.network(),
+        };
+        let signing_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: BinaryData::new(vec![2; 33]),
+            disabled_at: None,
+        });
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let mut update = private_contract(true);
+        let version_before = update.version();
+        let result = context
+            .update_data_contract(&mut update, identity, signing_key, &sdk, sender)
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::PrivateDocumentEntrySizeTooSmall {
+                    entry_size: 375,
+                    minimum_entry_size: 398,
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+        assert_eq!(update.version(), version_before);
+        // `request` is already registered, so raising its entry size is not
+        // open to the user: the update would fail Platform's own validation.
+        // The message must say what is.
+        let message = result.expect_err("refused").to_string();
+        assert!(
+            message.contains(
+                "For a type that is already registered, the entry size cannot change: make the added fields smaller, remove them, or define a new type."
+            ),
+            "{message}"
+        );
+    }
 
     #[test]
     fn returned_contract_id_mismatch_is_rejected_before_caching() {

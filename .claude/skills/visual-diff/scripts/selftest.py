@@ -52,23 +52,21 @@ class Case(unittest.TestCase):
 
 
 class RenderSelfCheck(Case):
-    def render(self, old_patch, new_patch, pill=PILL):
+    def render(self, old_patch, new_patch, pill=PILL, old=True, inset=None):
         image(self.path("old", "s.png"), *old_patch)
         image(self.path("new", "s.png"), *new_patch)
-        spec = {
-            "s": [
-                {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": pill}
-            ]
-        }
+        el = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": pill}
+        if inset:
+            el["inset"] = inset
         with open(self.path("spec.json"), "w") as f:
-            json.dump(spec, f)
+            json.dump({"s": [el]}, f)
+        old_args = ["--old-dir", self.path("old")] if old else []
         return run(
             "render.py",
             self.path("spec.json"),
             "--new-dir",
             self.path("new"),
-            "--old-dir",
-            self.path("old"),
+            *old_args,
             "--out-dir",
             self.path("out"),
         )
@@ -106,6 +104,19 @@ class RenderSelfCheck(Case):
         self.assertEqual(code, 0, out)
         self.assertTrue(os.path.exists(self.path("out", "s.png")))
         self.assertTrue(os.path.exists(self.path("out", "clean", "s.png")))
+
+    def test_new_only_mode_skips_the_selfcheck(self):
+        code, out = self.render([], [], old=False)
+        self.assertEqual(code, 0, out)
+        self.assertIn("NEW-only mode", out)
+        self.assertTrue(os.path.exists(self.path("out", "s.png")))
+        self.assertTrue(os.path.exists(self.path("out", "clean", "s.png")))
+
+    def test_new_only_mode_refuses_an_inset(self):
+        inset = {"old": "s", "crop": [0, 0, 20, 20], "xy": [300, 150]}
+        code, out = self.render([], [], old=False, inset=inset)
+        self.assertEqual(code, 1, out)
+        self.assertIn("inset needs --old-dir", out)
 
 
 class Diff(Case):

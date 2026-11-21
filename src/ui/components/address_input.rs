@@ -13,7 +13,11 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{Color32, InnerResponse, Response, Ui, WidgetText};
 use std::ops::Bound;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+
+/// Source of each [`AddressInput`]'s instance id.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 /// Internal detection result including the `Unknown` state for unrecognized input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +361,9 @@ pub struct AddressInput {
     selected_from_autocomplete: bool,
     cached_detection: Option<(String, DetectedType)>,
     changed: bool,
+    /// Scope for this input's popup ids, fixed for its lifetime. Sibling inputs
+    /// share their parent's `scope_id`, so ids derived from it would collide.
+    instance_id: egui::Id,
 }
 
 impl AddressInput {
@@ -386,6 +393,10 @@ impl AddressInput {
             cached_detection: None,
             changed: false,
             exclude_change: false,
+            instance_id: egui::Id::unique((
+                "address_input",
+                NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            )),
         }
     }
 
@@ -466,7 +477,8 @@ impl AddressInput {
         self
     }
 
-    /// Set the label displayed above the input field.
+    /// Set the label displayed above the input field; it also names the field
+    /// for screen readers, which otherwise hear "Address".
     pub fn with_label(mut self, label: impl Into<WidgetText>) -> Self {
         self.label = Some(label.into());
         self
@@ -1006,9 +1018,7 @@ impl AddressInput {
         let hint_text = self.effective_hint_text();
         let resp = ui.vertical(|ui| {
             // Label
-            if let Some(label) = &self.label {
-                ui.label(label.clone());
-            }
+            let label_id = self.label.as_ref().map(|label| ui.label(label.clone()).id);
 
             // Input row
             let text_response = ui
@@ -1019,7 +1029,7 @@ impl AddressInput {
                             .selected_type_filter
                             .map(|t| t.display_name())
                             .unwrap_or("All");
-                        egui::ComboBox::from_id_salt(ui.id().with("address_type_filter"))
+                        egui::ComboBox::from_id_salt(self.instance_id.with("address_type_filter"))
                             .selected_text(current_label)
                             .width(120.0)
                             .show_ui(ui, |ui| {
@@ -1036,7 +1046,9 @@ impl AddressInput {
                                         self.selected_type_filter = Some(kind);
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .accessible_name("Address type");
                     }
 
                     // Text input
@@ -1050,7 +1062,11 @@ impl AddressInput {
                     } else {
                         text_edit = text_edit.desired_width(f32::INFINITY);
                     }
-                    ui.add(text_edit)
+                    let response = ui.add(text_edit);
+                    match label_id {
+                        Some(label_id) => response.labelled_by(label_id),
+                        None => response.accessible_name("Address"),
+                    }
                 })
                 .inner;
 
@@ -1076,9 +1092,14 @@ impl AddressInput {
                 self.has_blurred = true;
             }
 
-            // Autocomplete popup
+            // Autocomplete popup. A modal that blocks this field closes it: the
+            // popup's foreground layer would otherwise draw over the modal and
+            // its dimmed backdrop, and keep taking arrow keys and Enter.
+            let behind_modal = !ui
+                .ctx()
+                .memory(|memory| memory.is_above_modal_layer(ui.layer_id()));
             let mut selected_entry: Option<AddressEntry> = None;
-            if has_focus || self.autocomplete_open {
+            if !behind_modal && (has_focus || self.autocomplete_open) {
                 // Collect filtered entries into an owned snapshot to release the
                 // borrow on self: (balance, address text, entry).
                 let (filtered, total_entries) = self.filtered_entries();
@@ -1097,7 +1118,7 @@ impl AddressInput {
 
                 if !entries_snapshot.is_empty() {
                     self.autocomplete_open = true;
-                    let popup_id = ui.id().with("address_autocomplete");
+                    let popup_id = self.instance_id.with("address_autocomplete");
 
                     egui::Area::new(popup_id)
                         .order(egui::Order::Foreground)
@@ -1142,7 +1163,7 @@ impl AddressInput {
                                             );
                                             response.widget_info(|| {
                                                 egui::WidgetInfo::labeled(
-                                                    egui::WidgetType::Button,
+                                                    egui::Role::Button,
                                                     true,
                                                     label.clone(),
                                                 )
@@ -1488,7 +1509,8 @@ mod tests {
 
     /// Generate a valid testnet P2PKH address for testing.
     fn testnet_core_address() -> (String, Address) {
-        let sk = SecretKey::from_secret_bytes([1u8; 32]).unwrap();
+        let secret_1 = crate::test_support::keys::secret_bytes();
+        let sk = SecretKey::from_secret_bytes(secret_1).unwrap();
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
@@ -1513,7 +1535,8 @@ mod tests {
 
     /// Generate a valid mainnet P2PKH address for testing.
     fn mainnet_core_address() -> (String, Address) {
-        let sk = SecretKey::from_secret_bytes([2u8; 32]).unwrap();
+        let secret_2 = crate::test_support::keys::secret_bytes();
+        let sk = SecretKey::from_secret_bytes(secret_2).unwrap();
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Mainnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
@@ -2208,9 +2231,9 @@ mod tests {
     /// An input fed one snapshot-sourced BIP-44 receive address.
     fn core_wallet_input(alias: Option<&str>) -> AddressInput {
         use std::collections::BTreeMap;
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, alias.map(String::from), None)
-                .expect("wallet from seed");
+        let seed_7 = crate::test_support::keys::seed();
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, alias.map(String::from), None)
+            .expect("wallet from seed");
         let (_, address) = testnet_core_address();
         let paths = BTreeMap::from([(address, bip44_receive_path(0))]);
         AddressInput::new(Network::Testnet).with_wallets(&[(
@@ -2302,10 +2325,10 @@ mod tests {
     #[test]
     fn core_change_entry_gets_change_name_label() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
-                .expect("wallet from seed");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
+            .expect("wallet from seed");
         let (_, change_addr) = testnet_core_address();
         let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
 
@@ -2327,10 +2350,10 @@ mod tests {
     #[test]
     fn core_change_entry_excluded_when_requested() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
-                .expect("wallet from seed");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
+            .expect("wallet from seed");
         let (_, change_addr) = testnet_core_address();
         let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
 
@@ -2352,9 +2375,10 @@ mod tests {
     #[test]
     fn core_entries_are_sourced_from_the_snapshot_paths() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
         let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         wallet.known_addresses.clear();
         wallet.watched_addresses.clear();
@@ -2384,9 +2408,10 @@ mod tests {
     #[test]
     fn platform_entries_are_sourced_from_the_snapshot_paths() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
         let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         wallet.known_addresses.clear();
         wallet.watched_addresses.clear();
@@ -2425,11 +2450,12 @@ mod tests {
     fn legacy_maps_never_source_autocomplete_entries() {
         use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
         // `new_from_seed` seeds `known_addresses` with the first BIP-44 receive
         // address; add a platform-payment entry so both legacy branches are live.
         let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         assert!(
             !wallet.known_addresses.is_empty(),

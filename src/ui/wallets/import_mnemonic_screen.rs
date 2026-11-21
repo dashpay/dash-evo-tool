@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::key_input::decode_hex_secret;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -19,7 +20,7 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 use zxcvbn::zxcvbn;
 
 /// Shown under the recovery-phrase grid while the filled-in words are not a
@@ -215,20 +216,22 @@ impl ImportMnemonicScreen {
         // The single import path takes WIF only — normalise hex input to
         // WIF first so users can paste either shape while every import
         // still funnels through `AppContext::import_single_key_wif`.
+        // Every copy of the key, the WIF text included, is held in
+        // `Zeroizing`, so it is wiped when it is dropped.
         let wif = match PrivateKey::from_wif(input) {
-            Ok(_) => input.to_string(),
+            Ok(_) => Zeroizing::new(input.to_string()),
             Err(_) => {
-                let bytes =
-                    hex::decode(input).map_err(|_| ImportSaveError::PrivateKeyUnrecognized)?;
+                let bytes = decode_hex_secret(input)
+                    .map_err(|_| ImportSaveError::PrivateKeyUnrecognized)?;
                 if bytes.len() != 32 {
                     return Err(ImportSaveError::PrivateKeyWrongLength {
                         byte_count: bytes.len(),
                     });
                 }
-                let mut buf = [0u8; 32];
+                let mut buf = Zeroizing::new([0u8; 32]);
                 buf.copy_from_slice(&bytes);
                 match PrivateKey::from_byte_array(&buf, self.app_context.network) {
-                    Ok(private_key) => private_key.to_wif(),
+                    Ok(private_key) => Zeroizing::new(private_key.to_wif()),
                     Err(error) => {
                         tracing::debug!(?error, "Imported hexadecimal private key was rejected");
                         return Err(ImportSaveError::PrivateKeyInvalid);
@@ -252,7 +255,7 @@ impl ImportMnemonicScreen {
 
     fn save_wallet(&mut self) -> Result<AppAction, ImportSaveError> {
         if let Some(mnemonic) = &self.seed_phrase {
-            let seed = mnemonic.to_seed("");
+            let seed = Zeroizing::new(mnemonic.to_seed(""));
 
             let password = if self.password_input.is_empty() {
                 None
@@ -264,7 +267,7 @@ impl ImportMnemonicScreen {
             // a blank name with the smallest unused "Wallet N", and rejects a
             // name another wallet already uses.
             let wallet = Wallet::new_from_seed(
-                seed,
+                *seed,
                 self.app_context.network,
                 Some(self.alias_input.text().to_owned()),
                 password.as_ref(),
@@ -365,7 +368,7 @@ impl ImportMnemonicScreen {
         ui.vertical_centered(|ui| {
             // Select the seed phrase length
             ui.horizontal(|ui| {
-                ui.label("Seed Phrase Length:");
+                let length_label = ui.label("Seed Phrase Length:");
 
                 ComboBox::from_label("")
                     .selected_text(self.selected_seed_phrase_length.to_string())
@@ -378,7 +381,9 @@ impl ImportMnemonicScreen {
                                 length.to_string(),
                             );
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(length_label.id);
             });
 
             ui.add_space(10.0);
@@ -409,6 +414,9 @@ impl ImportMnemonicScreen {
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
                             );
+                            let word_number = i + 1;
+                            let response = response
+                                .accessible_name(format!("Recovery phrase word {word_number}"));
 
                             if response.changed() {
                                 // Update the seed_phrase_words[i]
@@ -632,8 +640,9 @@ impl ScreenLike for ImportMnemonicScreen {
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Optional Password:");
+                        let label = ui.label("Optional Password:");
                         let pw_response = self.password_input.show(ui);
+                        pw_response.response.labelled_by(label.id);
                         if pw_response.changed {
                             if !self.password_input.is_empty() {
                                 let estimate = zxcvbn(self.password_input.text(), &[]);
@@ -739,5 +748,67 @@ impl ScreenLike for ImportMnemonicScreen {
 
         action |= pending_action;
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hex input keeps its outcomes: input that is neither WIF nor hex is
+    /// unrecognised, and valid hex of the wrong length names its byte count.
+    #[test]
+    fn hex_private_key_rejections_are_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+
+        screen.set_private_key_for_test(&"ab".repeat(31));
+        assert!(matches!(
+            screen.save_private_key_wallet(),
+            Err(ImportSaveError::PrivateKeyWrongLength { byte_count: 31 })
+        ));
+
+        for input in ["abc".to_owned(), "zz".repeat(32)] {
+            screen.set_private_key_for_test(&input);
+            assert!(
+                matches!(
+                    screen.save_private_key_wallet(),
+                    Err(ImportSaveError::PrivateKeyUnrecognized)
+                ),
+                "input {input:?}"
+            );
+        }
+        assert!(!screen.wallet_imported, "nothing was imported");
+    }
+
+    /// A 32-byte hex key is converted to WIF and imported: the imported key
+    /// is the one the hex names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_32_byte_hex_private_key_is_imported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let key_bytes = crate::test_support::keys::secret_bytes();
+        let expected_address = {
+            use dash_sdk::dpp::dashcore::{Address, PrivateKey};
+            let private_key = PrivateKey::from_byte_array(&key_bytes, app_context.network())
+                .expect("valid private key");
+            Address::p2pkh(&private_key.public_key(), app_context.network()).to_string()
+        };
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+
+        screen.set_private_key_for_test(&hex::encode(key_bytes));
+        assert!(screen.save_private_key_wallet().is_ok());
+
+        assert!(screen.wallet_imported, "the key was imported");
+        let backend = app_context.wallet_backend().expect("wired backend");
+        let addresses: Vec<String> = backend
+            .single_key()
+            .list()
+            .into_iter()
+            .map(|key| key.address)
+            .collect();
+        assert_eq!(addresses, [expected_address]);
+        backend.shutdown().await;
     }
 }

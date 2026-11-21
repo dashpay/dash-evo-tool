@@ -313,6 +313,17 @@ impl TransferTokensScreen {
 }
 
 impl ScreenLike for TransferTokensScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(
+                update.domain,
+                CacheDomain::Tokens | CacheDomain::Identities | CacheDomain::All
+            )
+        {
+            self.refresh();
+        }
+    }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
@@ -429,10 +440,16 @@ impl ScreenLike for TransferTokensScreen {
                 return AppAction::None;
             };
 
-            ui.heading(format!(
-                "Transfer {}",
-                self.identity_token_balance.token_alias
-            ));
+            // The page heading shares its row with the Advanced Options toggle.
+            ui.horizontal(|ui| {
+                ui.heading(format!(
+                    "Transfer {}",
+                    self.identity_token_balance.token_alias
+                ));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                });
+            });
             ui.add_space(10.0);
 
             if super::show_token_actions_unavailable(ui, self.token_action_availability) {
@@ -512,15 +529,6 @@ impl ScreenLike for TransferTokensScreen {
                         return AppAction::None;
                     }
                 }
-
-                // Header with Advanced Options checkbox
-                ui.horizontal(|ui| {
-                    ui.heading("Transfer Tokens");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-                    });
-                });
-                ui.add_space(10.0);
 
                 // Key selection (only in advanced mode)
                 if self.show_advanced_options {

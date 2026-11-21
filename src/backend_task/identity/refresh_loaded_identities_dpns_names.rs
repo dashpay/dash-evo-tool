@@ -1,5 +1,5 @@
 use super::BackendTaskSuccessResult;
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::DPNSNameInfo;
@@ -22,10 +22,8 @@ impl AppContext {
             .refresh_owned_names_of(&sdk, qualified_identities)
             .await;
 
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+            .await;
 
         refreshed.map(|()| BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
     }

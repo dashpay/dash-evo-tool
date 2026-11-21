@@ -123,7 +123,9 @@ pub mod helpers;
 pub mod identity;
 pub mod masternodes;
 pub mod network_chooser_screen;
+pub mod primary_selection_guard;
 pub mod state;
+pub(crate) mod task_feedback;
 pub mod theme;
 pub mod tokens;
 pub mod tools;
@@ -749,6 +751,11 @@ impl Screen {
                 screen.invalidate_address_input();
                 return;
             }
+            Screen::TokensScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
             Screen::DashPayScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.contacts_list.app_context = app_context.clone();
@@ -771,6 +778,11 @@ impl Screen {
                 screen.app_context = app_context;
                 // The shown result and any fetch in flight describe the old network.
                 screen.reset_for_network_switch();
+                return;
+            }
+            Screen::DocumentActionScreen(screen) => {
+                // Selections and any fetch or broadcast in flight belong to the old network.
+                screen.reset_for_network_switch(app_context);
                 return;
             }
             Screen::MasternodesScreen(screen) => {
@@ -800,13 +812,11 @@ impl Screen {
             UsernameRequestScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
-            DocumentActionScreen,
             GroupActionsScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
             GroveSTARKScreen,
-            TokensScreen,
             TransferTokensScreen,
             ClaimTokensScreen,
             ViewTokenClaimsScreen,
@@ -830,6 +840,7 @@ impl Screen {
             PauseTokensScreen,
             ResumeTokensScreen;
             skip:
+            DocumentActionScreen,
             MasternodesScreen,
             NetworkChooserScreen,
             AddNewWalletScreen,
@@ -842,6 +853,7 @@ impl Screen {
             SingleKeyWalletSendScreen,
             CreateAssetLockScreen,
             AddressBalanceScreen,
+            TokensScreen,
             PlatformInfoScreen,
             DashPayScreen,
             IdentityHubScreen,
@@ -858,6 +870,18 @@ pub enum MessageType {
 }
 
 pub trait ScreenLike {
+    /// Re-read affected cached data without resetting input or pending requests.
+    fn cached_data_changed(&mut self, _update: crate::backend_task::CacheUpdate) {}
+
+    /// Observe another screen's completion when persistent domain state needs it.
+    fn observe_backend_result(
+        &mut self,
+        _context: &BackendTaskContext,
+        _result: &BackendTaskSuccessResult,
+    ) {
+    }
+    /// Observe another screen's failure without treating it as this screen's request.
+    fn observe_backend_error(&mut self, _context: &BackendTaskContext, _error: &TaskError) {}
     fn refresh(&mut self) {}
     fn refresh_on_arrival(&mut self) {
         self.refresh()
@@ -905,10 +929,11 @@ pub trait ScreenLike {
     /// a [`BackendTaskContext::Dispatched`] context reports here even while
     /// the screen is hidden behind another one, so the screen must not assume
     /// it is in view. A dispatched task whose screen was closed reports to no
-    /// screen. Undispatched results go to the screen in view, and `AppState`'s
-    /// dedicated routers bring some of them to hidden roots as well (the
-    /// identity hub, the voting panel, identity removals, the network chooser,
-    /// legacy-recovery hosts).
+    /// screen. Undispatched results go to the screen in view. A persistent
+    /// root that needs another screen's outcome takes it through
+    /// [`observe_backend_result`](Self::observe_backend_result); the banners
+    /// a result earns are decided in its domain's `task_feedback` module,
+    /// wherever the result went.
     fn display_backend_task_result(
         &mut self,
         _context: &BackendTaskContext,
@@ -1197,6 +1222,19 @@ macro_rules! delegate_to_screen {
 }
 
 impl ScreenLike for Screen {
+    fn observe_backend_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        delegate_to_screen!(self, screen => screen.observe_backend_result(context, result))
+    }
+    fn observe_backend_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        delegate_to_screen!(self, screen => screen.observe_backend_error(context, error))
+    }
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        delegate_to_screen!(self, screen => screen.cached_data_changed(update))
+    }
     fn refresh(&mut self) {
         delegate_to_screen!(self, screen => screen.refresh())
     }

@@ -1,5 +1,5 @@
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::{AppContext, BackupPruneReport};
 use crate::model::backup_retention::BackupRetention;
@@ -48,7 +48,12 @@ impl AppContext {
 
         self.clear_user_contracts()?;
 
-        Ok(BackendTaskSuccessResult::Refresh)
+        Ok(BackendTaskSuccessResult::CacheUpdated(
+            crate::backend_task::CacheUpdate {
+                network: self.network,
+                domain: crate::backend_task::CacheDomain::All,
+            },
+        ))
     }
 
     /// Backend-task handler for `SystemTask::UpdateThemePreference`.

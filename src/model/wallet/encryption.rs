@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_seed() {
-        let seed = [42u8; 64]; // A 64-byte seed filled with the value 42
+        let seed = crate::test_support::keys::seed();
         let password = "securepassword";
 
         // Encrypt the seed using the encrypt_seed method
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_incorrect_password() {
-        let seed = [42u8; 64]; // A 64-byte seed
+        let seed = crate::test_support::keys::seed();
         let password = "securepassword";
         let wrong_password = "wrongpassword";
 
@@ -391,6 +391,8 @@ mod tests {
             .try_into()
             .expect("12-byte nonce");
         let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher init");
+        // The fixed plaintext pins DET's at-rest seed format: a compatibility
+        // vector, exempt from runtime key generation.
         let ciphertext = cipher
             .encrypt((&nonce).into(), [0x2au8; 64].as_slice())
             .expect("encrypt");
@@ -399,6 +401,9 @@ mod tests {
 
     #[test]
     fn decrypt_seed_opens_golden_envelope() {
+        // Fixed on purpose: this plaintext is what the committed ciphertext
+        // decrypts to, pinning DET's at-rest seed format. It is a
+        // compatibility vector, exempt from runtime key generation.
         let seed = [0x2au8; 64];
         let item = ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),

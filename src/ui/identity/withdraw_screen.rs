@@ -185,15 +185,16 @@ impl WithdrawalScreen {
         }
 
         ui.horizontal(|ui| {
-            ui.label("Address:");
+            let address_label = ui.label("Address:");
 
             let hint = if self.app_context.network == Network::Mainnet {
                 "Enter Core address (X.../7...)"
             } else {
                 "Enter Core address (y.../8...)"
             };
-            let response =
-                ui.add(egui::TextEdit::singleline(&mut self.withdrawal_address).hint_text(hint));
+            let response = ui
+                .add(egui::TextEdit::singleline(&mut self.withdrawal_address).hint_text(hint))
+                .labelled_by(address_label.id);
 
             // Validate address when it changes
             if response.changed() {
@@ -338,6 +339,14 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {

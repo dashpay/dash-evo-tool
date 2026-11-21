@@ -1,6 +1,6 @@
 //! Validated, in-place edits of unstarted DPNS schedules.
 
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::{BackendTaskSuccessResult, error::TaskError};
 use crate::context::AppContext;
 use crate::model::dpns_voting::{

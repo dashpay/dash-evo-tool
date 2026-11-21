@@ -44,7 +44,7 @@ and must never be forced into a no-network run (see `tests/backend-e2e/README.md
 - `NullSecretPrompt` — headless host; `is_interactive() == false`, every request resolves `SecretPromptCancelled` → `TaskError::SecretPromptUnavailable`.
 - `assert_no_leak(rendered, secret, context)` (in `encrypted_key_storage.rs::tests`) — asserts a secret appears in **neither** lowercase-hex **nor** decimal-array (`[160, 167, …]`) form. **Promote this to a shared test util** so the seam/sidecar/QI on-disk-leak cases can call it. The decimal-array check is load-bearing: a `#[derive(Debug)]` on `[u8; N]` leaks the decimal form, and the original `6a2818cd` bug leaked exactly that.
 - Offline `AppContext`: `offline_testnet_context()` and `seed_legacy_protected_hd_wallet_row(...)` (in `wallet_lifecycle.rs` tests / `database::test_helpers`) — the staging used by `protected_wallet_registers_upstream_on_unlock_without_restart`, the template for the lazy-migration integration case.
-- Deterministic key material: `known_wif()` / `known_testnet_wif()` (single-key tests); fixed seed bytes (`[0x42u8; 64]`) and a sentinel passphrase pattern (`SENTINEL_*`) for leak/confinement assertions.
+- Key material: generated at runtime by `crate::test_support::keys` — `known_wif()` / `known_testnet_wif()` (single-key tests) return a process-stable labelled WIF, seeds come from `keys::seed()` — plus a sentinel passphrase pattern (`SENTINEL_*`) for leak/confinement assertions. No fixed key bytes are committed.
 
 ### Leak-assertion discipline (applies to every no-leak case)
 

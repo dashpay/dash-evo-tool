@@ -1,7 +1,7 @@
-{"intro": "Visual diff of build A vs build B.",
+{"intro": "Visual diff, NEW build B against published build A. NEW-only mode: the OLD build was not run, so each image marks what the diff says is new or changed.",
  "images": [{"name": "05-load-identity-id", "title": "Load Identity"},
             {"name": "23-settings-advanced", "title": "Settings: Advanced"}],
  "coverage": [{"commit": "63434f6a4", "subject": "fix(identity): let users load an identity from the Identities page", "screen": "Identities", "images": ["05-load-identity-id"]},
               {"commit": "fd1cac819", "subject": "refactor(dpns): use the SDK", "screen": "-", "images": [], "note": "Backend refactor."}],
- "not_reached": ["Light/dark theme comparison."],
+ "not_reached": ["OLD build screenshots not taken (NEW-only mode).", "Light/dark theme comparison."],
  "presenter_notes": ["Error banners are timing, not changes."]}

@@ -5,7 +5,7 @@ log_dir="${1:?Usage: run-tests.sh LOG_DIRECTORY}"
 mkdir -p "$log_dir"
 
 run_migrations() {
-    : "${MIGRATION_FIXTURES_DIR:?Migration fixture download must succeed}"
+    : "${MIGRATION_FIXTURES_DIR:?Migration fixtures were not downloaded; see the Download migration fixtures step}"
     : "${MIGRATION_FIXTURES_MANIFEST:?Migration manifest must be supplied}"
     if [[ "${MIGRATION_MATRIX_SKIP_PASSWORDS:-false}" == true ]]; then
         echo '::notice::Fork PR: running password-free migration scenarios only.'

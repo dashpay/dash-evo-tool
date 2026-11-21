@@ -47,9 +47,7 @@ impl AppContext {
 
         // Before any signing or network work. The fee grows with the number
         // of recipients, so the one-recipient fee is the least it can be.
-        let minimum_duffs = self
-            .fee_estimator()
-            .address_funding_min_amount_duffs(true, self.sdk_platform_version());
+        let minimum_duffs = self.fee_estimator().address_funding_min_amount_duffs(true);
         ensure_existing_funding_covers_network_fee(
             &backend.list_tracked_asset_locks(&seed_hash).await?,
             &out_point,

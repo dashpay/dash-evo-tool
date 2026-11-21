@@ -14,10 +14,12 @@ pub mod mcp;
 pub mod model;
 pub mod platform;
 pub mod sdk_wrapper;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[cfg(any(test, feature = "testing", feature = "bench"))]
+pub mod test_support;
 pub mod ui;
 pub mod utils;
 pub mod wallet_backend;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Where users report problems they cannot solve themselves.
+pub const SUPPORT_URL: &str = "https://github.com/dashpay/dash-evo-tool/issues";

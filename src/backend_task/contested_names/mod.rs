@@ -5,8 +5,8 @@ mod query_ending_times;
 mod refresh_vote_states;
 mod vote_on_dpns_name;
 
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::context::{AppContext, DpnsVoterLifecycles, MAX_CONCURRENT_DPNS_VOTERS};
 use crate::model::contested_name::ContestedName;
@@ -317,11 +317,21 @@ impl AppContext {
             }
             ContestedResourceTask::ClearExecutedScheduledVotes => {
                 self.clear_executed_scheduled_votes()?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::Dpns,
+                    },
+                ))
             }
             ContestedResourceTask::CancelScheduledDpnsVote { operation_id, key } => {
                 self.cancel_scheduled_dpns_vote_target(operation_id, &key)?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::Dpns,
+                    },
+                ))
             }
             ContestedResourceTask::EditScheduledDpnsVote(edit) => {
                 self.edit_scheduled_dpns_vote(edit, sdk, sender).await
@@ -1240,7 +1250,8 @@ impl AppContext {
         let voters = self.load_local_voting_identities()?;
         // Tell the Scheduled view which votes are now in flight.
         let _ = sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::ScheduledVotesInProgress(in_progress),
             ))
             .await;
@@ -1696,11 +1707,13 @@ mod tests {
             result.is_ok(),
             "independent contest reads must survive journal errors: {result:?}"
         );
-        assert!(
-            std::iter::from_fn(|| rx.try_recv().ok()).any(|result| matches!(
-                result, TaskResult::Success { result, .. }
-                    if matches!(*result, BackendTaskSuccessResult::RefreshedDpnsContests)
-            ))
+        assert_eq!(
+            std::iter::from_fn(|| rx.try_recv().ok()).find_map(|sent| match sent {
+                TaskResult::Success { result, .. } => result.dpns_contests_refresh_network(),
+                _ => None,
+            }),
+            Some(context.network()),
+            "the refresh is published under its own network"
         );
         assert!(
             context.ensure_dpns_vote_recovery(&sdk).await.is_err(),
@@ -2367,12 +2380,13 @@ mod tests {
             "a pass with unread end times must stay open to an early retry"
         );
         let sent: Vec<TaskResult> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        assert!(
-            sent.iter().any(|sent| matches!(
-                sent, TaskResult::Success { result, .. }
-                    if matches!(**result, BackendTaskSuccessResult::RefreshedDpnsContests)
-            )),
-            "what the pass did refresh is still published"
+        assert_eq!(
+            sent.iter().find_map(|sent| match sent {
+                TaskResult::Success { result, .. } => result.dpns_contests_refresh_network(),
+                _ => None,
+            }),
+            Some(context.network()),
+            "what the pass did refresh is still published, under its own network"
         );
         assert!(
             !sent
@@ -3151,8 +3165,8 @@ mod tests {
 
     #[tokio::test]
     async fn scheduled_sweep_dispatch_wraps_recovery_failures() {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;
@@ -3160,7 +3174,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let database =
             Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("test database"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -3234,7 +3248,7 @@ mod tests {
             temp_dir.path(),
             Arc::new(crate::wallet_backend::DetKv::from_store(store.clone())),
         );
-        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(8);
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(8);
         context
             .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
                 sender,
@@ -3508,7 +3522,7 @@ mod tests {
         // Loading a local masternode needs the wallet backend wired offline.
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path().to_path_buf();
-        crate::app_dir::ensure_env_file(&data_dir);
+        crate::app_dir::ensure_env_file(&data_dir).expect("write .env");
         let context = AppContext::new(
             data_dir.clone(),
             Network::Testnet,

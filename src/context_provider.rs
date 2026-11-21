@@ -99,16 +99,17 @@ impl SpvProvider {
         }
     }
 
-    /// Attach the `AppContext` and register this provider with the SDK.
+    /// Attach the `AppContext`.
     ///
-    /// After this call the SDK uses this provider for proof verification and
-    /// quorum key resolution.
+    /// Every SDK the context runs is built with a clone of this provider
+    /// ([`initialize_sdk`](crate::sdk_wrapper::initialize_sdk)), and clones
+    /// share the attached context, so the SDK sees it without registering the
+    /// provider again.
     ///
     /// # Thread safety
     /// Called during init and mode-switch only — not on hot paths.
     pub fn bind_app_context(&self, app_context: Arc<AppContext>) {
-        self.app_context.store(Some(app_context.clone()));
-        app_context.sdk.load().set_context_provider(self.clone());
+        self.app_context.store(Some(app_context));
     }
 
     /// Load the bound `AppContext`, or a `Config` "not ready" error if this
@@ -154,13 +155,13 @@ impl ContextProvider for SpvProvider {
 
         // Before the SPV masternode list has synced, quorum keys are not yet
         // resolvable, so answer with a typed "not ready" diagnostic that DET
-        // maps to `TaskError::MasternodeListNotReady`. This does NOT spare the
-        // queried node: the SDK wraps every provider error, `Config` included,
-        // in `Error::Proof`, treats all proof errors as retryable, and bans the
-        // node before returning (`ban_failed_address: true`; pinned by
-        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_bans_the_node`).
-        // Callers must therefore hold proof-verifying reads until
-        // `masternodes_ready()`; this branch only names the failure.
+        // maps to `TaskError::MasternodeListNotReady`. The SDK returns a
+        // provider `Config` failure as a configuration error of its own: it
+        // does not retry the request and bans no node for it (pinned by
+        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_is_a_readiness_wait_and_bans_no_node`).
+        // The read still fails, so callers hold proof-verifying reads until
+        // `masternodes_ready()`; this branch names the failure for one that
+        // gets through.
         if !app_ctx.connection_status().masternodes_ready() {
             // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
             return Err(ContextProviderError::Config(

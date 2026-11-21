@@ -174,6 +174,10 @@ pub fn add_left_panel(
                         .vertical(|mut strip| {
                             // Top cell: scrollable list of buttons
                             strip.cell(|ui| {
+                                // On short windows the lower entries (e.g. Settings) sit
+                                // below the fold; a thin bar that stays visible shows the
+                                // list scrolls, unlike the default hover-only bar.
+                                ui.spacing_mut().scroll = egui::style::ScrollStyle::thin();
                                 egui::ScrollArea::vertical()
                                     .id_salt("left_panel_buttons_scroll")
                                     .auto_shrink([false, false])
@@ -242,7 +246,7 @@ pub fn add_left_panel(
                                                         );
                                                     }
                                                     // Provide an accessible name for the image-only button
-                                                    added.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
+                                                    added.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_selected, *label));
 
                                                     // Put the label beneath the icon
                                                     let color = if is_selected {
@@ -271,7 +275,7 @@ pub fn add_left_panel(
                                                             .min_width(60.0)
                                                             .show(ui)
                                                             .clickable_tooltip(tooltip);
-                                                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
+                                                        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }
@@ -288,7 +292,7 @@ pub fn add_left_panel(
                                                             .min_size(egui::vec2(60.0, 60.0));
 
                                                         let response = ui.add(button).clickable_tooltip(tooltip);
-                                                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
+                                                        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }

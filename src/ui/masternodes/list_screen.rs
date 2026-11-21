@@ -679,6 +679,42 @@ impl MasternodesScreen {
 }
 
 impl ScreenLike for MasternodesScreen {
+    fn observe_backend_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        if crate::ui::dpns::dpns_contested_names_screen::DPNSScreen::handles_result(result) {
+            self.votes
+                .display_backend_task_result(context, result.clone());
+        }
+        // A node removed from another screen may be the one open here.
+        if let BackendTaskSuccessResult::RemovedIdentities { .. } = result {
+            self.apply_node_result(result.clone());
+        }
+    }
+    fn observe_backend_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        error: &crate::backend_task::error::TaskError,
+    ) {
+        if context.is_dpns_vote_task() {
+            self.votes.display_backend_task_error(context, error);
+            self.votes.display_task_error(error);
+        }
+    }
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network != self.app_context.network {
+            return;
+        }
+        if matches!(update.domain, CacheDomain::Identities | CacheDomain::All) {
+            self.reload();
+        }
+        if matches!(update.domain, CacheDomain::Dpns | CacheDomain::All) {
+            self.votes.refresh();
+        }
+    }
     fn accepts_legacy_recovery_result(
         &self,
         context: &crate::backend_task::BackendTaskContext,
@@ -934,8 +970,10 @@ mod tests {
     use super::*;
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::BackendTaskContext;
     use crate::backend_task::identity::IdentityInputToLoad;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::QualifiedIdentity;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -952,7 +990,7 @@ mod tests {
     async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -1319,10 +1357,11 @@ mod tests {
                 cleanup_deferred: flags & 2 != 0,
                 local_data_cleanup_failed: flags & 4 != 0,
             };
-            // The app's delivery path has no dependency on root selection or its child stack.
-            let banner =
-                crate::app::deliver_identity_removal_result(ctx.egui_ctx(), &mut roots, &result)
-                    .unwrap();
+            // Hidden roots observe the removal; the identity feedback owns the banner.
+            for root in roots.values_mut() {
+                root.observe_backend_result(&BackendTaskContext::Unknown, &result);
+            }
+            let banner = crate::ui::identity::task_feedback::show(ctx.egui_ctx(), &result).unwrap();
             let Screen::MasternodesScreen(screen) = &roots[&RootScreenType::RootScreenMasternodes]
             else {
                 unreachable!()
@@ -1375,9 +1414,10 @@ mod tests {
             local_data_cleanup_failed: true,
             cleanup_deferred: true,
         };
-        let banner =
-            crate::app::deliver_identity_removal_result(ctx.egui_ctx(), &mut roots, &result)
-                .unwrap();
+        for root in roots.values_mut() {
+            root.observe_backend_result(&BackendTaskContext::Unknown, &result);
+        }
+        let banner = crate::ui::identity::task_feedback::show(ctx.egui_ctx(), &result).unwrap();
         assert!(banner.text().unwrap().contains("Mainnet"));
         let Screen::MasternodesScreen(screen) = &roots[&RootScreenType::RootScreenMasternodes]
         else {
@@ -1479,8 +1519,6 @@ mod tests {
 
     /// Write the voter association a completed restore stores for `node`.
     fn store_restored_voter_association(ctx: &Arc<AppContext>, node: Identifier) {
-        use dash_sdk::platform::IdentityPublicKey;
-
         let mut restored = ctx
             .get_local_qualified_identity(&node)
             .expect("read the node")
@@ -1491,17 +1529,12 @@ mod tests {
                 PlatformVersion::latest(),
             )
             .expect("voter identity"),
-            IdentityPublicKey::V0(
-                dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-                    id: 0,
-                    purpose: dash_sdk::dpp::identity::Purpose::VOTING,
-                    security_level: dash_sdk::dpp::identity::SecurityLevel::HIGH,
-                    contract_bounds: None,
-                    key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-                    read_only: false,
-                    data: dash_sdk::dpp::platform_value::BinaryData::new(vec![7u8; 20]),
-                    disabled_at: None,
-                },
+            identity_public_key(
+                0,
+                dash_sdk::dpp::identity::Purpose::VOTING,
+                dash_sdk::dpp::identity::SecurityLevel::HIGH,
+                dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+                dash_sdk::dpp::platform_value::BinaryData::new(vec![7u8; 20]),
             ),
         ));
         ctx.update_local_qualified_identity(&restored)

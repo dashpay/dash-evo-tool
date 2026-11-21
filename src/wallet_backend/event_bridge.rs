@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use dash_sdk::dash_spv::network::NetworkEvent;
-use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
+use dash_sdk::dash_spv::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::{
     PlatformAddressSyncSummary, WalletSyncOutcome,
@@ -21,8 +21,8 @@ use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShi
 
 use super::coordinator_gate::CoordinatorGate;
 use super::snapshot::{SnapshotStore, incoming_payment_candidates, received_outputs_for_record};
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::core::CoreItem;
 use crate::context::connection_status::{
     ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
@@ -30,17 +30,20 @@ use crate::context::connection_status::{
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
-/// Maximum number of bytes of an upstream SPV error message kept for the UI
-/// tooltip. The full message is logged; the stored snippet is truncated on a
-/// char boundary so it never splits a multibyte sequence.
-const SPV_ERROR_SNIPPET_MAX: usize = 200;
+/// Shown for an SPV error reported by a sync manager or the error callback,
+/// whose own text is withheld.
+const SPV_ERROR_GUIDANCE: &str = "Chain sync reported a problem. If it does not recover, disconnect and connect again in Settings, or restart Dash Evo Tool.";
 
 /// DET-authored handler registered with `PlatformWalletManager` at
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`
 /// and clone-free on the event hot path.
 pub struct EventBridge {
+    /// The network of the backend this bridge forwards for. Every forwarded
+    /// result names it, since the backend outlives a switch to another network.
+    network: Network,
     connection_status: Arc<ConnectionStatus>,
     task_result_sender: SenderAsync<TaskResult>,
     snapshots: Arc<SnapshotStore>,
@@ -68,17 +71,32 @@ pub struct EventBridge {
     platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
 }
 
+/// The frame-safe snapshots `AppContext` owns and the bridge writes on sync
+/// events, each read synchronously by the frame loop. See the fields of
+/// [`EventBridge`] of the same names.
+#[derive(Clone, Default)]
+pub(super) struct PushSnapshots {
+    pub(super) shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+    pub(super) platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+    pub(super) platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+}
+
 impl EventBridge {
     pub(super) fn new(
+        network: Network,
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
         snapshots: Arc<SnapshotStore>,
         coordinator_gate: Arc<CoordinatorGate>,
-        shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
-        platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
-        platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+        push: PushSnapshots,
     ) -> Self {
+        let PushSnapshots {
+            shielded_balances,
+            platform_balances,
+            platform_sync_cursors,
+        } = push;
         Self {
+            network,
             connection_status,
             task_result_sender,
             snapshots,
@@ -130,7 +148,7 @@ impl EventBridge {
                 );
                 let _ = self
                     .task_result_sender
-                    .try_send(TaskResult::unattributed_success(result));
+                    .try_send(TaskResult::wallet_event(self.network, result));
             }
         }
     }
@@ -158,7 +176,7 @@ impl EventBridge {
         let result = BackendTaskSuccessResult::DashPayIncomingDetected(candidates);
         let _ = self
             .task_result_sender
-            .try_send(TaskResult::unattributed_success(result));
+            .try_send(TaskResult::wallet_event(self.network, result));
     }
 
     fn apply_status(&self, status: SpvStatus) {
@@ -200,14 +218,15 @@ impl EventHandler for EventBridge {
                 self.nudge_refresh();
             }
             SyncEvent::ManagerError { manager, error } => {
-                // The manager id is a useful log dimension but internal jargon —
-                // keep it out of the stored error text the UI surfaces. The raw
-                // upstream message is stored verbatim (truncated) and shown only
-                // as a tooltip behind a fixed user-facing label.
-                tracing::error!(%manager, error, "SPV manager error");
-                let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
+                // The text can hold a manager task's formatted panic message,
+                // so only the manager and the text's length are logged.
+                tracing::error!(
+                    %manager,
+                    error_bytes = error.len(),
+                    "SPV manager error; its text is withheld"
+                );
                 self.connection_status
-                    .set_spv_last_error(Some(error[..limit].to_string()));
+                    .set_spv_last_error(Some(SPV_ERROR_GUIDANCE.to_string()));
                 self.apply_status(SpvStatus::Error);
                 self.nudge_refresh();
             }
@@ -222,12 +241,9 @@ impl EventHandler for EventBridge {
     }
 
     fn on_network_event(&self, event: &NetworkEvent) {
-        if let NetworkEvent::PeersUpdated {
-            connected_count, ..
-        } = event
-        {
+        if let NetworkEvent::PeersUpdated { addresses, .. } = event {
             self.connection_status
-                .set_spv_connected_peers((*connected_count).min(u16::MAX as usize) as u16);
+                .set_spv_connected_peers(addresses.len().min(u16::MAX as usize) as u16);
             self.connection_status.refresh_state();
             self.nudge_refresh();
         }
@@ -315,9 +331,15 @@ impl EventHandler for EventBridge {
     }
 
     fn on_error(&self, error: &str) {
-        let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
+        // The text can hold a worker's formatted panic message (dash-spv
+        // formats a `JoinError` into it and logs it itself), so DET keeps only
+        // its length and shows fixed guidance.
+        tracing::error!(
+            error_bytes = error.len(),
+            "Chain sync reported an error; its text is withheld"
+        );
         self.connection_status
-            .set_spv_last_error(Some(error[..limit].to_string()));
+            .set_spv_last_error(Some(SPV_ERROR_GUIDANCE.to_string()));
         self.apply_status(SpvStatus::Error);
         self.nudge_refresh();
     }
@@ -433,7 +455,7 @@ impl PlatformEventHandler for EventBridge {
             let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
             let _ = self
                 .task_result_sender
-                .try_send(TaskResult::unattributed_success(result));
+                .try_send(TaskResult::wallet_event(self.network, result));
         }
 
         self.nudge_refresh();
@@ -607,8 +629,8 @@ mod tests {
     type ShieldedBalancesHandle = Arc<Mutex<HashMap<WalletSeedHash, u64>>>;
     /// Shorthand for the platform sync-cursor snapshot handle the helpers wire.
     type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
+    use crate::backend_task::BackendTaskContext;
     use crate::utils::egui_mpsc::EguiMpscAsync;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -640,13 +662,12 @@ mod tests {
             tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
         let gate = Arc::new(CoordinatorGate::default());
         let bridge = EventBridge::new(
+            Network::Testnet,
             Arc::clone(&cs),
             tx,
             Arc::new(SnapshotStore::new()),
             Arc::clone(&gate),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
+            PushSnapshots::default(),
         );
         (bridge, cs, rx, gate)
     }
@@ -665,13 +686,15 @@ mod tests {
         let gate = Arc::new(CoordinatorGate::default());
         let balances = Arc::new(Mutex::new(HashMap::new()));
         let bridge = EventBridge::new(
+            Network::Testnet,
             Arc::clone(&cs),
             tx,
             Arc::new(SnapshotStore::new()),
             gate,
-            Arc::clone(&balances),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
+            PushSnapshots {
+                shielded_balances: Arc::clone(&balances),
+                ..Default::default()
+            },
         );
         (bridge, cs, rx, balances)
     }
@@ -693,13 +716,16 @@ mod tests {
         let platform_balances = Arc::new(Mutex::new(HashMap::new()));
         let platform_sync_cursors = Arc::new(Mutex::new(HashMap::new()));
         let bridge = EventBridge::new(
+            Network::Testnet,
             Arc::clone(&cs),
             tx,
             Arc::new(SnapshotStore::new()),
             gate,
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::clone(&platform_balances),
-            Arc::clone(&platform_sync_cursors),
+            PushSnapshots {
+                platform_balances: Arc::clone(&platform_balances),
+                platform_sync_cursors: Arc::clone(&platform_sync_cursors),
+                ..Default::default()
+            },
         );
         (bridge, cs, rx, platform_balances, platform_sync_cursors)
     }
@@ -796,28 +822,55 @@ mod tests {
         assert!(drained_repaint(&mut rx));
     }
 
+    /// A manager error's text can carry a formatted panic message, so the
+    /// error state shows fixed guidance and the log keeps only the manager.
     #[test]
-    fn manager_error_sets_error_status_and_records_message() {
+    fn manager_error_sets_error_with_fixed_guidance_and_withholds_its_text() {
+        let panic_text = "synthetic-seed-words-for-an-spv-manager";
         let (bridge, cs, mut rx) = make_bridge();
+        let log = crate::test_support::CapturedLog::start();
+
         bridge.on_sync_event(&SyncEvent::ManagerError {
-            manager: dash_sdk::dash_spv::sync::ManagerIdentifier::BlockHeader,
-            error: "boom".to_string(),
+            manager: dash_sdk::dash_spv::ManagerIdentifier::BlockHeader,
+            error: format!("Manager task panicked: task 3 panicked with message \"{panic_text}\""),
         });
+        let shown = cs
+            .spv_last_error()
+            .expect("the error state keeps a message");
+        let tooltip = cs.tooltip_text();
+        bridge.on_error("network down");
+
         assert_eq!(cs.spv_status(), SpvStatus::Error);
-        assert!(cs.spv_last_error().is_some_and(|e| e.contains("boom")));
+        assert!(!shown.contains(panic_text), "{shown}");
+        assert!(!tooltip.contains(panic_text), "{tooltip}");
+        let text = log.text();
+        assert!(!text.contains(panic_text), "{text}");
+        assert!(
+            text.contains("BlockHeader"),
+            "the log keeps the manager: {text}"
+        );
+        assert_eq!(
+            cs.spv_last_error().as_deref(),
+            Some(shown.as_str()),
+            "manager and callback errors show the same guidance"
+        );
         assert!(drained_repaint(&mut rx));
     }
 
+    /// The peer count comes from the length of the event's address list. A
+    /// bridge that stopped publishing it would leave a synced wallet showing
+    /// "Connecting", so the count is checked, not only the repaint.
     #[test]
-    fn peers_updated_nudges_refresh() {
-        let (bridge, _cs, mut rx) = make_bridge();
+    fn peers_updated_publishes_the_peer_count_and_nudges_refresh() {
+        let (bridge, cs, mut rx) = make_bridge();
         bridge.on_network_event(&NetworkEvent::PeersUpdated {
-            connected_count: 3,
-            addresses: Vec::new(),
-            best_height: None,
+            addresses: vec![
+                ([127, 0, 0, 1], 19999).into(),
+                ([127, 0, 0, 2], 19999).into(),
+            ],
+            best_height: 0,
         });
-        // ConnectionStatus has no public peer-count getter; its own tests
-        // cover the internal mutation. Here we assert the frame-loop nudge.
+        assert_eq!(cs.spv_connected_peers(), 2);
         assert!(drained_repaint(&mut rx));
     }
 
@@ -844,13 +897,13 @@ mod tests {
         assert!(
             !results
                 .iter()
-                .any(|result| matches!(result, TaskResult::Refresh))
+                .any(|result| matches!(result, TaskResult::CacheUpdated(_)))
         );
     }
 
     #[test]
     fn progress_publishes_per_phase_heights() {
-        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, ProgressPercentage};
+        use dash_sdk::dash_spv::{BlockHeadersProgress, ProgressPercentage};
 
         let (bridge, cs, mut rx) = make_bridge();
         let mut headers = BlockHeadersProgress::default();
@@ -873,7 +926,7 @@ mod tests {
     /// A `SyncProgress` whose masternode phase is in `state`, headers still
     /// mid-sync (so the overall pipeline is not yet "synced").
     fn progress_with_masternode_state(state: SyncState) -> SyncProgress {
-        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+        use dash_sdk::dash_spv::{BlockHeadersProgress, MasternodesProgress};
 
         let mut headers = BlockHeadersProgress::default();
         headers.set_state(SyncState::Syncing);
@@ -942,14 +995,31 @@ mod tests {
         );
     }
 
+    /// The callback text can carry a worker's formatted panic message, so the
+    /// error state shows fixed guidance and neither it nor the log holds that text.
     #[test]
-    fn on_error_sets_error_and_records_message() {
+    fn on_error_sets_error_with_fixed_guidance_and_withholds_the_callback_text() {
+        let panic_text = "synthetic-seed-words-for-an-spv-worker";
         let (bridge, cs, mut rx) = make_bridge();
+        let log = crate::test_support::CapturedLog::start();
+
+        bridge.on_error(&format!(
+            "Invalid state: Manager task panicked: task 7 panicked with message \"{panic_text}\""
+        ));
+        let shown = cs
+            .spv_last_error()
+            .expect("the error state keeps a message");
+        let tooltip = cs.tooltip_text();
         bridge.on_error("network down");
+
         assert_eq!(cs.spv_status(), SpvStatus::Error);
-        assert!(
-            cs.spv_last_error()
-                .is_some_and(|e| e.contains("network down"))
+        assert!(!shown.contains(panic_text), "{shown}");
+        assert!(!tooltip.contains(panic_text), "{tooltip}");
+        assert!(!log.text().contains(panic_text), "{}", log.text());
+        assert_eq!(
+            cs.spv_last_error().as_deref(),
+            Some(shown.as_str()),
+            "every callback error shows the same guidance"
         );
         assert!(drained_repaint(&mut rx));
     }
@@ -1111,6 +1181,38 @@ mod tests {
             .expect("a confirmed-first received output yields a candidate");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].amount_duffs, 33_000);
+    }
+
+    /// Every event the bridge forwards names the network of the backend that
+    /// raised it: the frame loop keeps a previous network's events off the
+    /// active network's screens by that name.
+    #[test]
+    fn forwarded_events_name_the_bridges_network() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        bridge.on_wallet_event(&transaction_detected(received_record(
+            &funding_address(),
+            100_000,
+        )));
+
+        let mut contexts = Vec::new();
+        while let Ok(result) = rx.try_recv() {
+            if let TaskResult::Success { context, .. } = result {
+                contexts.push(context);
+            }
+        }
+        assert_eq!(
+            contexts.len(),
+            2,
+            "a received payment forwards the UTXO and the DashPay candidate"
+        );
+        for context in contexts {
+            assert_eq!(
+                context,
+                BackendTaskContext::WalletSync {
+                    network: Network::Testnet
+                }
+            );
+        }
     }
 
     #[test]

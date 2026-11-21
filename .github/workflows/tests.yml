@@ -122,13 +122,14 @@ jobs:
           PROTOC: /usr/local/bin/protoc
 
       - name: Build all test targets and det-cli once
+        id: build
         run: cargo test --locked --all-features --workspace --no-run
 
-      # A failed download must fail the migration suite, but still let the
-      # ordinary suite report its result against the shared build.
+      # A failed download fails this step at once, naming the fixture and the
+      # reason. The next step still runs, so the ordinary suite reports its
+      # result against the shared build; the migration suite then fails too.
       - name: Download migration fixtures
         id: fixtures
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -150,6 +151,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       - name: Run tests and migration matrix in parallel
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
           MIGRATION_FIXTURES_MANIFEST: ${{ steps.fixtures.outputs.manifest }}

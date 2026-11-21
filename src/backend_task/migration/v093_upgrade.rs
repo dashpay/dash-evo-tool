@@ -24,15 +24,14 @@ use std::sync::{Arc, LazyLock};
 use rand::Rng;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-use dash_sdk::dpp::identity::v0::IdentityV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel,
 };
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::platform_value::BinaryData;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
+use dash_sdk::sdk::min_protocol_version;
 use rusqlite::{Connection, params};
 
 use crate::backend_task::migration::finish_unwire::{
@@ -132,7 +131,7 @@ const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 /// Populate only key payloads, preserving the captured v0.9.3 encoding layout.
 fn v093_masternode_blob() -> Vec<u8> {
-    use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
+    use dash_sdk::dpp::dashcore::hashes::hash160;
     use dash_sdk::dpp::secp256k1::PublicKey;
     let public_hash = |key: &[u8; 32]| {
         let key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*(key))
@@ -149,19 +148,16 @@ fn v093_masternode_blob() -> Vec<u8> {
 }
 
 fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+    crate::context::test_support::identity_public_key(
         id,
         purpose,
-        security_level: SecurityLevel::MASTER,
-        contract_bounds: None,
-        key_type: KeyType::ECDSA_HASH160,
-        read_only: false,
+        SecurityLevel::MASTER,
+        KeyType::ECDSA_HASH160,
         // 20 bytes: the shape of a hash160 key. The import never checks a key
         // against its public data, so a stand-in value is enough here — row A's
         // keys, the ones that matter, use matching public hashes in the v0.9.3 template instead.
-        data: BinaryData::new(vec![id as u8; 20]),
-        disabled_at: None,
-    })
+        vec![id as u8; 20],
+    )
 }
 
 /// Encode a `QualifiedIdentity` the way v0.9.3 did — same manual `Encode`, same
@@ -185,13 +181,16 @@ fn legacy_identity_blob(
         );
     }
 
+    // The protocol version a fresh context on `network` starts at.
+    let platform_version = PlatformVersion::get(min_protocol_version(network)).expect("version");
+    let mut identity =
+        Identity::new_with_id_and_keys(Identifier::from(id), public_keys, platform_version)
+            .expect("identity");
+    identity.set_balance(1_000_000);
+    identity.set_revision(1);
+
     QualifiedIdentity {
-        identity: Identity::V0(IdentityV0 {
-            id: Identifier::from(id),
-            public_keys,
-            balance: 1_000_000,
-            revision: 1,
-        }),
+        identity,
         associated_voter_identity: None,
         associated_operator_identity: None,
         associated_owner_key_id: None,
@@ -678,7 +677,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
 /// network, every downstream network filter in the wallet drain
 /// would silently target mainnet and find nothing.
 fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSettings) {
-    crate::app_dir::ensure_env_file(dir);
+    crate::app_dir::ensure_env_file(dir).expect("write .env");
     let db_file = dir.join("data.db");
 
     let db = Arc::new(Database::open_legacy_read_only(&db_file).expect("open data.db read-only"));
@@ -716,7 +715,7 @@ fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSett
 /// Wire the real wallet seam offline — the backend builds and hydrates its
 /// sidecars without touching the network.
 async fn wire_backend(ctx: &Arc<AppContext>) -> Arc<WalletBackend> {
-    let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
     ctx.ensure_wallet_backend(sender)
         .await
@@ -1632,21 +1631,21 @@ fn the_identity_sentinel_is_per_network_and_distinct_from_the_wallet_sentinel() 
 
 // ── Rows an earlier drain skipped ───────────────────────────────────────
 
-/// A raw single key the fixture stores under mainnet's `dash` spelling.
-const SKIPPED_SINGLE_KEY: [u8; 32] = [0x2A; 32];
+/// A raw single key the fixture stores under mainnet's `dash` spelling:
+/// generated at runtime, stable for the whole test process.
+fn skipped_single_key() -> [u8; 32] {
+    crate::test_support::keys::labelled_secret("migration::v093_upgrade::skipped_single_key", 0)
+}
 
 /// Address of the password-protected single key the fixture stores beside
-/// [`SKIPPED_SINGLE_KEY`]. Only its address and alias are ever read.
+/// [`skipped_single_key`]. Only its address and alias are ever read.
 const SKIPPED_PROTECTED_ADDRESS: &str = "XprotectedPaperKeyAddress";
 
-/// The P2PKH address of [`SKIPPED_SINGLE_KEY`] on mainnet.
+/// The P2PKH address of [`skipped_single_key`] on mainnet.
 fn skipped_single_key_address() -> String {
     use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
-    let key = PrivateKey::from_byte_array(&SKIPPED_SINGLE_KEY, Network::Mainnet).expect("key");
-    let public = PublicKey {
-        compressed: true,
-        inner: key.inner.public_key(),
-    };
+    let key = PrivateKey::from_byte_array(&skipped_single_key(), Network::Mainnet).expect("key");
+    let public = PublicKey::new(key.inner.public_key());
     Address::p2pkh(&public, Network::Mainnet).to_string()
 }
 
@@ -1678,7 +1677,7 @@ async fn affected_mainnet_profile(
     (ctx, backend, fixture)
 }
 
-/// Save [`SKIPPED_SINGLE_KEY`] (unprotected) and a password-protected key at
+/// Save [`skipped_single_key`] (unprotected) and a password-protected key at
 /// [`SKIPPED_PROTECTED_ADDRESS`] under mainnet's `dash` spelling.
 fn add_skipped_single_keys(conn: &Connection) {
     conn.execute_batch(
@@ -1701,7 +1700,7 @@ fn add_skipped_single_keys(conn: &Connection) {
          VALUES (?1, ?2, x'', x'', x'', ?3, 'Paper key', 0, 'dash')",
         params![
             [0x2Bu8; 32].as_slice(),
-            SKIPPED_SINGLE_KEY.as_slice(),
+            skipped_single_key().as_slice(),
             skipped_single_key_address()
         ],
     )
@@ -1825,7 +1824,7 @@ async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
         .put_secret_protected(
             &single_key_namespace_id(),
             &label,
-            &SecretBytes::from_slice(&SKIPPED_SINGLE_KEY),
+            &SecretBytes::from_slice(&skipped_single_key()),
             &password,
         )
         .expect("a protected secret without details");
@@ -1847,7 +1846,7 @@ async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
         .expect("the original password still opens the secret")
         .expect("the original secret is retained");
     assert!(
-        secret.expose_secret() == SKIPPED_SINGLE_KEY,
+        secret.expose_secret() == skipped_single_key(),
         "metadata recovery must preserve the original key material",
     );
     let keys = backend.single_key().list();

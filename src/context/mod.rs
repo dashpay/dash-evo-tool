@@ -282,6 +282,9 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: pause and observe the wallet backend build of this context.
+    #[cfg(test)]
+    pub(crate) test_wallet_backend_hooks: crate::wallet_backend::BuildTestHooks,
     /// Test seam: a paid task's background balance read waits here before
     /// it starts, so a test can hold it and observe the task finishing first.
     #[cfg(test)]
@@ -650,6 +653,8 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_wallet_backend_hooks: Default::default(),
             #[cfg(test)]
             test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),

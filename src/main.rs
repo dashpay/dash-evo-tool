@@ -11,6 +11,10 @@ use crate::logging::{
     install_panic_hook, report_startup_failure,
 };
 
+/// How long the process may outlive the closed window for blocking work that
+/// is still running. See the call site in [`main`].
+const POST_CLOSE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn main() -> ExitCode {
     // First, so a panic in environment setup, before the logger exists, does
     // not reach the default hook, which prints the formatted panic message.
@@ -61,6 +65,12 @@ fn main() -> ExitCode {
     // still reported if eframe fails before the app is created.
     let outcome = crate::boot::StartupOutcome::default();
     let result = runtime.block_on(start(&mut startup, outcome.clone()));
+    // Dropping the runtime would wait without limit for blocking work the app's
+    // own shutdown already gave up on, leaving a process with no window that
+    // can still hold the secret vault's lock and block a relaunch. Anything
+    // still running here has overrun its shutdown budget, and SQLite rolls
+    // back a transaction that process exit cuts short.
+    runtime.shutdown_timeout(POST_CLOSE_SHUTDOWN_TIMEOUT);
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
     }

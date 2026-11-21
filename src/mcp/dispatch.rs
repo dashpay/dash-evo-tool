@@ -322,6 +322,76 @@ mod tests {
         backend.shutdown().await;
     }
 
+    /// A dispatched task reports through the request's filtered sender: what
+    /// it sends while running stays off the GUI's frame loop, and its result
+    /// reaches the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dispatched_tasks_own_reports_stay_off_the_frame_loop() {
+        use crate::backend_task::contested_names::ContestedResourceTask;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
+        use dash_sdk::platform::Identifier;
+        use dash_sdk::query_types::{ContestedResource, ContestedResources};
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        // Wired before the frame loop is installed, so the backend's own
+        // reports go elsewhere and only the task's reach the frame loop.
+        let app_context =
+            crate::context::test_support::wired_test_app_context(temp_dir.path()).await;
+        let mut sdk = dash_sdk::Sdk::new_mock();
+        let dpns_contract = app_context.dpns_contract();
+        let document_type = dpns_contract
+            .document_type_for_name("domain")
+            .expect("domain");
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
+                VotePollsByDocumentTypeQuery {
+                    contract_id: dpns_contract.id(),
+                    document_type_name: document_type.name().to_owned(),
+                    index_name: document_type
+                        .find_contested_index()
+                        .expect("contested index")
+                        .name
+                        .clone(),
+                    start_at_value: None,
+                    start_index_values: vec!["dash".into()],
+                    end_index_values: vec![],
+                    limit: Some(100),
+                    order_ascending: true,
+                },
+                Some(ContestedResources::default()),
+            )
+            .await
+            .expect("mock contests");
+        app_context.sdk.store(Arc::new(sdk));
+        let (tx, mut frame_loop) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        app_context.install_frame_loop(SenderAsync::new(tx, app_context.egui_ctx().clone()));
+
+        // The task reports `RefreshedDpnsContests` while running and returns `None`.
+        let result = dispatch_task(
+            &app_context,
+            BackendTask::ContestedResourceTask(ContestedResourceTask::QueryDPNSContests),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Ok(BackendTaskSuccessResult::None)),
+            "{result:?}"
+        );
+        let reports = std::iter::from_fn(|| frame_loop.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            reports
+                .iter()
+                .all(|report| matches!(report, TaskResult::CacheUpdated(_) | TaskResult::Repaint)),
+            "{reports:?}"
+        );
+        app_context
+            .wallet_backend()
+            .expect("wired backend")
+            .shutdown()
+            .await;
+    }
+
     #[tokio::test]
     async fn dispatch_after_shutdown_is_rejected_without_running() {
         let task_manager = Arc::new(TaskManager::new());

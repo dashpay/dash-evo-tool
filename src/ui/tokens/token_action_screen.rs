@@ -8,7 +8,8 @@
 
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -30,6 +31,7 @@ use crate::ui::helpers::{
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -171,6 +173,8 @@ pub struct TokenActionCommon {
     wallet_open_attempted: bool,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
+    /// The action in flight; only its own result or error ends the wait.
+    request: PendingRequest,
     app_context: Arc<AppContext>,
 }
 
@@ -244,6 +248,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 wallet_open_attempted: false,
                 completed_fee_result: None,
                 refresh_banner: None,
+                request: PendingRequest::default(),
                 app_context: app_context.clone(),
             },
             action,
@@ -394,6 +399,9 @@ impl<A: TokenAction> TokenActionScreen<A> {
     }
 
     fn submit(&mut self) -> AppAction {
+        if self.common.request.is_pending() {
+            return AppAction::None;
+        }
         let Some(signing_key) =
             validate_signing_key(&self.common.app_context, self.common.selected_key.as_ref())
         else {
@@ -426,7 +434,9 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 );
                 handle.with_elapsed();
                 self.common.refresh_banner = Some(handle);
-                dispatch
+                self.common
+                    .request
+                    .dispatch_action_on(dispatch, self.common.app_context.network)
             }
             None => {
                 self.common.status = TokenActionStatus::Error;
@@ -445,8 +455,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.common.request.settle(context);
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the action's own outcome, a later error (its balance refresh) changes nothing.
+        if !self.common.request.is_pending()
+            && self.common.status != TokenActionStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.common.refresh_banner.take_and_clear();
             self.common.status = TokenActionStatus::Error;
         }
@@ -454,6 +472,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let Some(fee_result) = A::success_fee(&backend_task_success_result) {
+            self.common.request.clear();
             self.common.refresh_banner.take_and_clear();
             self.common.completed_fee_result = Some(fee_result);
             self.common.status = TokenActionStatus::Complete;
@@ -622,9 +641,14 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 || !button_text.contains("Test")
             {
                 ui.add_space(10.0);
-                let ready = self.action.inputs_ready();
+                let in_flight = self.common.request.is_pending();
+                let ready = self.action.inputs_ready() && !in_flight;
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
-                    .disabled_tooltip(self.action.disabled_reason())
+                    .disabled_tooltip(if in_flight {
+                        "Wait for the current action to finish."
+                    } else {
+                        self.action.disabled_reason()
+                    })
                     .clicked()
                 {
                     let message = self.action.confirm_message(&self.ctx());
@@ -658,5 +682,107 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::MintAction;
+    use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
+
+    /// A token action cannot be undone, so a second confirmation while the
+    /// first is in flight must not send it again.
+    #[test]
+    fn a_token_action_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut screen = TokenActionScreen::<MintAction>::new(info.clone(), &context);
+        screen.common.selected_key = Some(signing_key());
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+
+        use crate::ui::tokens::mint_tokens_screen::tests::{
+            report_error, sent_request, unrelated_request,
+        };
+        let request = sent_request(&screen.submit()).expect("the action is sent");
+        assert!(
+            sent_request(&screen.submit()).is_none(),
+            "a second confirmation while waiting must not send it again"
+        );
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(
+            sent_request(&screen.submit()).is_none(),
+            "another task's error does not end the wait"
+        );
+        report_error(&mut screen, &request.expect("the action's own context"));
+        assert!(
+            sent_request(&screen.submit()).is_some(),
+            "a failed action can be sent again"
+        );
+    }
+
+    /// The action and its balance refresh are sent together; the refresh
+    /// failing after the action succeeded must not bring the form back.
+    #[test]
+    fn a_completed_action_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut screen = TokenActionScreen::<MintAction>::new(info.clone(), &context);
+        screen.common.selected_key = Some(signing_key());
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+        screen.submit();
+        screen.display_task_result(BackendTaskSuccessResult::MintedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.common.status == TokenActionStatus::Complete);
+    }
+
+    /// A burn is sent with its balance refresh. Only the burn's own error
+    /// ends the wait, and the refresh failing after the burn went through
+    /// keeps the screen complete.
+    #[test]
+    fn only_the_burn_itself_settles_a_burn_and_its_refresh() {
+        use crate::ui::tokens::burn_tokens_screen::BurnAction;
+        use crate::ui::tokens::mint_tokens_screen::tests::report_error;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut screen = TokenActionScreen::<BurnAction>::new(info.clone(), &context);
+        screen.common.selected_key = Some(signing_key());
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+        let burn = |action: AppAction| {
+            let AppAction::BackendTasksWithContexts(tasks, _) = action else {
+                panic!("the burn and its refresh are sent together");
+            };
+            let [(_, burn), (_, refresh)] = tasks.as_slice() else {
+                panic!("expected the burn and its refresh, got {tasks:?}");
+            };
+            (burn.clone(), refresh.clone())
+        };
+        let (burn_request, refresh_request) = burn(screen.submit());
+
+        report_error(&mut screen, &refresh_request);
+        assert!(
+            matches!(screen.submit(), AppAction::None),
+            "the refresh's error does not end the burn's wait"
+        );
+        report_error(&mut screen, &burn_request);
+        let (_, refresh_request) = burn(screen.submit());
+
+        screen.display_task_result(BackendTaskSuccessResult::BurnedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        report_error(&mut screen, &refresh_request);
+        assert!(screen.common.status == TokenActionStatus::Complete);
     }
 }

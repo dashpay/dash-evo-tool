@@ -326,12 +326,13 @@ mod tests {
         );
 
         assert_eq!(returned.top_ups.get(&3), Some(&50_000));
-        let stored = staged
-            .ctx
-            .get_local_qualified_identity(&staged.id)
-            .unwrap()
-            .unwrap();
+        let stored = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
         assert_eq!(stored.identity.balance(), 777);
+        assert_eq!(
+            stored.top_ups.get(&3),
+            None,
+            "the history save must have failed"
+        );
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 

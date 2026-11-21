@@ -501,6 +501,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
             // An identity whose wallet is not loaded yet cannot send token
             // transactions: explain that under the heading instead of the form.
+            super::recheck_token_action_availability(
+                &self.common.app_context,
+                &self.common.identity_token_info.identity.identity.id(),
+                &mut self.common.token_action_availability,
+            );
             if self
                 .common
                 .token_action_availability

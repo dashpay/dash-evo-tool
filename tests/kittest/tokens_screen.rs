@@ -1504,3 +1504,92 @@ fn token_action_screen_of_a_wallet_less_identity_offers_the_form() {
         );
     });
 }
+
+/// A token action screen opened while the identity's wallet is still
+/// loading says to wait, then offers the form once the wallet has loaded,
+/// without leaving the screen.
+#[test]
+fn an_open_token_action_screen_offers_the_form_once_the_wallet_loads() {
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET;
+    use dash_evo_tool::model::wallet::Wallet;
+    use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+    use dash_evo_tool::ui::tokens::burn_tokens_screen::BurnTokensScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_evo_tool::ui::{RootScreenType, Screen};
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use egui_kittest::kittest::Queryable;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroize;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenMyTokenBalances);
+        let ctx = harness.state().current_app_context().clone();
+        ctx.set_user_role(UserRole::Developer);
+
+        // Link the identity to a wallet that is not registered yet.
+        let mut seed: [u8; 64] = rand::random();
+        let wallet = Wallet::new_from_seed(seed, ctx.network(), Some("Tokens".into()), None)
+            .expect("wallet fixture");
+        let identity = identity_with_critical_key(&ctx);
+        ctx.insert_local_qualified_identity(&identity, &Some((wallet.seed_hash(), 0)))
+            .expect("link the identity to the wallet");
+        let contract = token_contract(identity.identity.id());
+        let token_config = contract.tokens()[&0].clone();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x7E; 32]),
+            token_alias: "Delta".to_string(),
+            identity: identity.clone(),
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config,
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::BurnTokensScreen(BurnTokensScreen::new(info, &ctx)));
+        harness.run_steps(3);
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_WAIT_FOR_WALLET)
+                .count(),
+            1,
+            "the screen waits for the wallet"
+        );
+
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register the wallet");
+        seed.zeroize();
+        // Upstream registration runs in the background and is slow offline.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ctx
+            .token_action_availability(&identity.identity.id())
+            .expect("availability")
+            .is_available()
+        {
+            assert!(Instant::now() < deadline, "the wallet did not load");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_WAIT_FOR_WALLET)
+                .count(),
+            0,
+            "the wait is over"
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Amount to burn")
+                .count()
+                > 0,
+            "the burn form is offered"
+        );
+    });
+}

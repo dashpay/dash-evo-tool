@@ -54,6 +54,18 @@ pub fn load_token_action_availability(
         })
 }
 
+/// Re-reads `availability` while it waits for the identity's wallet, so an
+/// open screen offers its form once the wallet has loaded.
+pub fn recheck_token_action_availability(
+    app_context: &AppContext,
+    identity_id: &dash_sdk::platform::Identifier,
+    availability: &mut crate::model::token::TokenActionAvailability,
+) {
+    if *availability == crate::model::token::TokenActionAvailability::WalletNotOpen {
+        *availability = load_token_action_availability(app_context, identity_id);
+    }
+}
+
 /// Shows why token actions are unavailable, in place of an action form.
 /// Returns whether they are unavailable.
 pub fn show_token_actions_unavailable(

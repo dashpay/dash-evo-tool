@@ -980,6 +980,11 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 });
                 ui.add_space(10.0);
 
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_info.identity.identity.id(),
+                &mut self.token_action_availability,
+            );
             if super::show_token_actions_unavailable(ui, self.token_action_availability) {
                 return;
             }

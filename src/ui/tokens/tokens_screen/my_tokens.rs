@@ -23,11 +23,15 @@ use crate::ui::tokens::tokens_screen::{
     TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
     get_available_token_actions_for_identity,
 };
-use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
+use crate::ui::tokens::transfer_tokens_screen::{
+    DISABLED_BALANCE_UNKNOWN, DISABLED_NOT_TRANSFERABLE, DISABLED_NOTHING_TO_SEND, SEND_LABEL,
+    TransferTokensScreen,
+};
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{MessageType, Screen, ScreenType};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
@@ -700,7 +704,7 @@ impl TokensScreen {
                 TokenRowAction::Transfer => {
                     if itb.available_actions.can_transfer {
                         if let Some(balance) = itb.balance
-                            && ui.button("Transfer").clicked()
+                            && ui.button(SEND_LABEL).clicked()
                         {
                             action = AppAction::AddScreen(Screen::TransferTokensScreen(
                                 TransferTokensScreen::new(
@@ -710,16 +714,14 @@ impl TokensScreen {
                             ));
                         }
                     } else {
-                        // Disabled, grayed-out Transfer button
-                        let reason = if token_info.token_configuration.is_transferable() {
-                            "Transfer not available"
-                        } else {
-                            "This token cannot be sent to other identities."
-                        };
+                        let reason = send_disabled_reason(
+                            itb.balance,
+                            token_info.token_configuration.is_transferable(),
+                        );
                         ui.add_enabled(
                             false,
                             egui::Button::new(
-                                RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
+                                RichText::new(SEND_LABEL).color(DashColors::muted_color(dark_mode)),
                             ),
                         )
                         .disabled_tooltip(reason);
@@ -1030,6 +1032,18 @@ impl TokensScreen {
                 });
         });
         Ok(action)
+    }
+}
+
+/// Why a holder cannot send this token right now. An unknown balance is
+/// never called zero: it is still being checked.
+fn send_disabled_reason(balance: Option<TokenAmount>, transferable: bool) -> &'static str {
+    if !transferable {
+        DISABLED_NOT_TRANSFERABLE
+    } else if balance.is_none() {
+        DISABLED_BALANCE_UNKNOWN
+    } else {
+        DISABLED_NOTHING_TO_SEND
     }
 }
 
@@ -1351,7 +1365,7 @@ mod tests {
         };
         assert_eq!(
             rendered_action_labels(claim_and_emergency, 0..3),
-            ["Transfer", "Claim", "Pause"]
+            ["Send", "Claim", "Pause"]
         );
         assert_eq!(
             rendered_action_labels(claim_and_emergency, 3..128),
@@ -1372,12 +1386,12 @@ mod tests {
             ..none
         };
         let mut shown = rendered_action_labels(all, 0..3);
-        assert_eq!(shown, ["Transfer", "Claim", "Mint"]);
+        assert_eq!(shown, ["Send", "Claim", "Mint"]);
         shown.extend(rendered_action_labels(all, 3..128));
         assert_eq!(
             shown,
             [
-                "Transfer",
+                "Send",
                 "Claim",
                 "Mint",
                 "Burn",
@@ -1505,6 +1519,20 @@ mod tests {
         assert!(
             positions[0] < positions[1] && positions[1] < positions[2],
             "updated names use ID tie-breaks"
+        );
+    }
+
+    #[test]
+    fn a_disabled_send_never_calls_an_unknown_balance_zero() {
+        assert_eq!(send_disabled_reason(None, true), DISABLED_BALANCE_UNKNOWN);
+        assert_eq!(
+            send_disabled_reason(Some(0), true),
+            DISABLED_NOTHING_TO_SEND
+        );
+        assert_eq!(send_disabled_reason(None, false), DISABLED_NOT_TRANSFERABLE);
+        assert_eq!(
+            send_disabled_reason(Some(5), false),
+            DISABLED_NOT_TRANSFERABLE
         );
     }
 }

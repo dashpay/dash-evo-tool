@@ -947,7 +947,8 @@ fn push_action(ctx: &egui::Context, action_id: &str) {
     set_actions(ctx, queue);
 }
 
-fn icon_for_type(message_type: MessageType) -> &'static str {
+/// The leading icon for a message of `message_type`, shared with `InlineNotice`.
+pub(crate) fn icon_for_type(message_type: MessageType) -> &'static str {
     match message_type {
         MessageType::Error => "\u{26D4}",   // no entry (⛔)
         MessageType::Warning => "\u{26A0}", // warning sign (⚠)

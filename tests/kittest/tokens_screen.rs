@@ -1027,14 +1027,14 @@ fn token_forms_show_one_heading_and_number_steps_from_one() {
         let _guard = rt.enter();
         let mut f = token_fixture();
         let info = f.info.clone();
-        let transfer_heading = format!("Transfer {SMOKE_TOKEN}");
+        let transfer_heading = format!("Send {SMOKE_TOKEN}");
 
         // (screen, page heading, a heading that must no longer repeat it)
         let cases = [
             (
                 ScreenType::TransferTokensScreen(f.balance.clone()),
                 transfer_heading.as_str(),
-                "Transfer Tokens",
+                "Send tokens",
             ),
             (
                 ScreenType::PurchaseTokenScreen(info.clone()),

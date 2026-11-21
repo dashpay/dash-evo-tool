@@ -655,6 +655,7 @@ impl AppContext {
             test_network_switch_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             test_wallet_backend_hooks: Default::default(),
+            #[cfg(test)]
             test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             contact_info_writes: Default::default(),

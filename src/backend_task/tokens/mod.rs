@@ -910,7 +910,7 @@ mod tests {
             error,
             TaskError::TokenBalanceRefreshTimeout { .. }
         ));
-        assert!(error.to_string().contains("refresh the Tokens screen"));
+        assert!(error.to_string().contains("refresh the balances"));
     }
 
     #[tokio::test]

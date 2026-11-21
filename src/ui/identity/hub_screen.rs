@@ -22,6 +22,7 @@ use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionB
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
+use crate::ui::state::identity_tokens::IdentityTokensState;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -59,6 +60,9 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// Tokens-tab state: the selected identity's token rows, the balance
+    /// refresh it waits on, and the list controls.
+    tokens_state: IdentityTokensState,
     /// When a username status refresh was last dispatched (Unix ms). The cadence
     /// keys off dispatch time, so a result routed elsewhere never stalls it.
     usernames_refreshed_at: Option<u64>,
@@ -172,6 +176,7 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            tokens_state: IdentityTokensState::default(),
             usernames_refreshed_at: None,
             usernames_arriving: true,
             pending_unloads: BTreeSet::new(),
@@ -284,6 +289,7 @@ impl IdentityHubScreen {
             ),
         );
         self.home_state = HomeState::default();
+        self.tokens_state.reset_for_identity_change();
         self.contacts_state.reset_for_identity_change();
         // A write still running keeps its guard across the change, so it keeps
         // the records its outcome is matched against too.
@@ -344,6 +350,7 @@ impl IdentityHubScreen {
             self.avatar_cache.invalidate();
         }
         self.home_state.refresh_payments();
+        self.tokens_state.invalidate_rows();
         self.selection.clear_searches();
         self.pending_avatars.clear();
     }
@@ -354,6 +361,7 @@ impl IdentityHubScreen {
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
         self.settings_tab = SettingsTab::new();
+        self.tokens_state = IdentityTokensState::default();
         self.profile_cache.reset();
         self.selection.clear_picker_override();
         self.selection.clear_searches();
@@ -574,7 +582,10 @@ impl ScreenLike for IdentityHubScreen {
             | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
             // An identity removed from another screen may be the one the hub
             // shows, in view or not.
-            | BackendTaskSuccessResult::RemovedIdentities { .. } => true,
+            | BackendTaskSuccessResult::RemovedIdentities { .. }
+            // The completion decides from the context whether this was a full
+            // refresh, which settles a failure the hub still shows.
+            | BackendTaskSuccessResult::FetchedTokenBalances => true,
             BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
             _ => false,
         };
@@ -605,6 +616,9 @@ impl ScreenLike for IdentityHubScreen {
         {
             self.home_state.refresh_payments();
         }
+        if update.network == self.app_context.network {
+            self.tokens_state.cached_data_changed(update.domain);
+        }
         // Identity selection and balances are read from AppContext each frame.
     }
     fn refresh(&mut self) {
@@ -616,6 +630,7 @@ impl ScreenLike for IdentityHubScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload(true);
         self.usernames_arriving = true;
+        self.tokens_state.arrive();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -794,6 +809,13 @@ impl ScreenLike for IdentityHubScreen {
                                 &mut self.avatar_cache,
                                 &mut self.pending_avatars,
                             ),
+                            IdentityHubTab::Tokens => super::tokens_tab::render(
+                                ui,
+                                &self.app_context,
+                                selected.as_ref(),
+                                &mut self.tokens_state,
+                                &mut self.home_state,
+                            ),
                             IdentityHubTab::Activity => {
                                 super::activity::render(ui, &self.app_context)
                             }
@@ -883,6 +905,9 @@ impl ScreenLike for IdentityHubScreen {
                     &mut self.contacts_state,
                     &mut self.profile_cache,
                 ),
+                Some(IdentityHubTab::Tokens) => {
+                    super::tokens_tab::load_action(&self.app_context, &mut self.tokens_state)
+                }
                 _ => AppAction::None,
             };
         }
@@ -925,6 +950,27 @@ impl ScreenLike for IdentityHubScreen {
         if let Some((network, identity_id, _)) = context.contacts_load()
             && !self.contacts_state.owns_load((network, identity_id))
         {
+            return;
+        }
+        if self
+            .tokens_state
+            .record_result(context, &result, crate::utils::time::now_ms())
+        {
+            return;
+        }
+        // Another screen's token task changed the balances the hub shows. Pair
+        // checks and Stop tracking answer like a full refresh but read less, so
+        // only a full refresh ends a failure and satisfies the arrival rule.
+        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+            if matches!(context.operation(), BackendTaskContext::TokenBalanceRefresh) {
+                self.tokens_state.balances_refreshed_elsewhere(
+                    crate::utils::time::now_ms(),
+                    IdentityTokensState::roster(&self.app_context),
+                );
+            } else {
+                self.tokens_state
+                    .cached_data_changed(crate::backend_task::CacheDomain::Tokens);
+            }
             return;
         }
         self.home_state.record_payments(context, &result);
@@ -1000,7 +1046,6 @@ impl ScreenLike for IdentityHubScreen {
             }
             return;
         }
-
         if self.handle_contact_request_result(&result) {
             return;
         }
@@ -1089,6 +1134,8 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.tokens_state
+            .record_error(context, error, crate::utils::time::now_ms());
         self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
             && !self.is_own_contact_info_dispatch(context);
         // Wrapped errors retain the unreadable-details confirmation flow.
@@ -1135,6 +1182,14 @@ impl ScreenLike for IdentityHubScreen {
         if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
             offer.absorb_error(context);
         }
+    }
+
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) -> bool {
+        self.tokens_state.should_suppress_error(context, error)
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {

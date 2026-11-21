@@ -40,8 +40,13 @@ fn mount_hub(app_context: &Arc<AppContext>, width: f32) -> HubHarness {
     // The hub holds its proof-verifying reads until the masternode list is
     // synced; these tests start on a synced network.
     app_context.connection_status().set_masternodes_ready(true);
+    hub_harness(app_context, egui::vec2(width, 1100.0))
+}
+
+/// The hub at `size`, collecting the actions it returns.
+pub(crate) fn hub_harness(app_context: &Arc<AppContext>, size: egui::Vec2) -> HubHarness {
     crate::support::builder_with_app_fonts()
-        .with_size(egui::vec2(width, 1100.0))
+        .with_size(size)
         .build_ui_state(
             |ui, state: &mut (IdentityHubScreen, Vec<AppAction>)| {
                 let action = state.0.ui(ui);
@@ -622,7 +627,9 @@ fn header_identity_id_without_username_is_available_on_all_tabs() {
             .chain([IdentityHubTab::Home])
         {
             hub.state_mut().0.select_tab(tab);
-            hub.run();
+            // The Tokens tab's balance refresh never completes offline, so its
+            // spinner keeps repainting: step instead of waiting to settle.
+            hub.run_steps(4);
             let copy = hub.get_by_role_and_label(Role::Button, "Copy full identity ID");
             let copy_rect = copy.rect();
             let id_rect = hub
@@ -634,7 +641,7 @@ fn header_identity_id_without_username_is_available_on_all_tabs() {
             assert!(copy_rect.left() >= id_rect.right());
             assert!(copy_rect.right() <= 1280.0);
             copy.focus();
-            hub.run();
+            hub.run_steps(4);
             hub.key_down(egui::Key::Enter);
             hub.step();
             assert!(
@@ -644,7 +651,7 @@ fn header_identity_id_without_username_is_available_on_all_tabs() {
                 "the full identity ID must be copied on {tab:?}",
             );
             hub.key_up(egui::Key::Enter);
-            hub.run();
+            hub.run_steps(4);
         }
     });
 }

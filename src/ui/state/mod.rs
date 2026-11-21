@@ -18,6 +18,7 @@ pub mod dpns_vote_state;
 pub mod global_nav;
 pub mod hub_selection;
 pub mod identity_home;
+pub mod identity_tokens;
 pub mod legacy_recovery;
 pub mod masternodes_view;
 pub mod pending_request;

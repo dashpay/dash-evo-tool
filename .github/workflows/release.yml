@@ -777,54 +777,55 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-linux-x86_64.zip
-          path: dist
+          path: dist/dash-evo-tool-linux-x86_64.zip
       - name: Download Linux Arm64 Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-linux-arm64.zip
-          path: dist
+          path: dist/dash-evo-tool-linux-arm64.zip
       - name: Download macOS ARM64 Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-macos-arm64.dmg
-          path: dist
+          path: dist/dash-evo-tool-macos-arm64.dmg
       - name: Download macOS x86_64 Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-macos-x86_64.dmg
-          path: dist
+          path: dist/dash-evo-tool-macos-x86_64.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dash-evo-tool-windows.zip
-          path: dist
+          path: dist/dash-evo-tool-windows.zip
 
-      # Artifacts extract outside the release-policy checkout; only these files publish.
+      # Each artifact extracts into its own directory outside the release-policy
+      # checkout, so one archive cannot replace another's file; only these publish.
       - name: Check the downloaded release files
         shell: bash
         run: |
           set -euo pipefail
-          expected=$(printf '%s\n' dash-evo-tool-linux-arm64.zip dash-evo-tool-linux-x86_64.zip \
+          fail() { echo 'Unexpected release files.' >&2; exit 1; }
+          names=(dash-evo-tool-linux-arm64.zip dash-evo-tool-linux-x86_64.zip
             dash-evo-tool-macos-arm64.dmg dash-evo-tool-macos-x86_64.dmg dash-evo-tool-windows.zip)
-          actual=$(find dist -mindepth 1 -printf '%P\n' | LC_ALL=C sort)
-          if [ "$actual" != "$expected" ]; then
-            echo 'Unexpected release files.' >&2; exit 1
-          fi
-          for file in dist/*; do
-            if [ -L "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then
-              echo 'Unexpected release file.' >&2; exit 1
-            fi
+          actual=$(find dist -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
+          if [ "$actual" != "$(printf '%s\n' "${names[@]}")" ]; then fail; fi
+          for name in "${names[@]}"; do
+            if [ -L "dist/$name" ] || [ ! -d "dist/$name" ]; then fail; fi
+            if [ "$(find "dist/$name" -mindepth 1 -printf '%P\n')" != "$name" ]; then fail; fi
+            file="dist/$name/$name"
+            if [ -L "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then fail; fi
           done
 
       - name: Attest completed release artifacts
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
         with:
           subject-path: |
-            dist/dash-evo-tool-linux-x86_64.zip
-            dist/dash-evo-tool-linux-arm64.zip
-            dist/dash-evo-tool-windows.zip
-            dist/dash-evo-tool-macos-arm64.dmg
-            dist/dash-evo-tool-macos-x86_64.dmg
+            dist/dash-evo-tool-linux-x86_64.zip/dash-evo-tool-linux-x86_64.zip
+            dist/dash-evo-tool-linux-arm64.zip/dash-evo-tool-linux-arm64.zip
+            dist/dash-evo-tool-windows.zip/dash-evo-tool-windows.zip
+            dist/dash-evo-tool-macos-arm64.dmg/dash-evo-tool-macos-arm64.dmg
+            dist/dash-evo-tool-macos-x86_64.dmg/dash-evo-tool-macos-x86_64.dmg
 
       - name: Recheck the publication tag
         if: needs.authorize.outputs.tag != ''
@@ -850,11 +851,11 @@ jobs:
           tag_name: ${{ needs.authorize.outputs.tag }}
           target_commitish: ${{ needs.authorize.outputs.source_sha }}
           files: |
-            ./dist/dash-evo-tool-linux-x86_64.zip
-            ./dist/dash-evo-tool-linux-arm64.zip
-            ./dist/dash-evo-tool-macos-arm64.dmg
-            ./dist/dash-evo-tool-macos-x86_64.dmg
-            ./dist/dash-evo-tool-windows.zip
+            ./dist/dash-evo-tool-linux-x86_64.zip/dash-evo-tool-linux-x86_64.zip
+            ./dist/dash-evo-tool-linux-arm64.zip/dash-evo-tool-linux-arm64.zip
+            ./dist/dash-evo-tool-macos-arm64.dmg/dash-evo-tool-macos-arm64.dmg
+            ./dist/dash-evo-tool-macos-x86_64.dmg/dash-evo-tool-macos-x86_64.dmg
+            ./dist/dash-evo-tool-windows.zip/dash-evo-tool-windows.zip
           draft: ${{ inputs.draft || false }}
           prerelease: true
 
@@ -867,10 +868,10 @@ jobs:
           tag_name: ${{ needs.authorize.outputs.tag }}
           target_commitish: ${{ needs.authorize.outputs.source_sha }}
           files: |
-            ./dist/dash-evo-tool-linux-x86_64.zip
-            ./dist/dash-evo-tool-linux-arm64.zip
-            ./dist/dash-evo-tool-macos-arm64.dmg
-            ./dist/dash-evo-tool-macos-x86_64.dmg
-            ./dist/dash-evo-tool-windows.zip
+            ./dist/dash-evo-tool-linux-x86_64.zip/dash-evo-tool-linux-x86_64.zip
+            ./dist/dash-evo-tool-linux-arm64.zip/dash-evo-tool-linux-arm64.zip
+            ./dist/dash-evo-tool-macos-arm64.dmg/dash-evo-tool-macos-arm64.dmg
+            ./dist/dash-evo-tool-macos-x86_64.dmg/dash-evo-tool-macos-x86_64.dmg
+            ./dist/dash-evo-tool-windows.zip/dash-evo-tool-windows.zip
           draft: ${{ inputs.draft || false }}
           prerelease: true

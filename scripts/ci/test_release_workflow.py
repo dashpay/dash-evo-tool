@@ -88,7 +88,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
             dist = Path(scratch) / "dist"
             dist.mkdir()
             for name in RELEASE_FILES:
-                (dist / name).write_text("release test artifact")
+                (dist / name).mkdir()
+                (dist / name / name).write_text("release test artifact")
             if mutate:
                 mutate(dist)
             return subprocess.run(
@@ -98,21 +99,36 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_only_the_expected_release_files_can_be_published(self):
         self.assertEqual(self.release_files_check(), 0)
 
+        def file_of(dist, index):
+            return dist / RELEASE_FILES[index] / RELEASE_FILES[index]
+
         def replace_with_symlink(dist):
-            (dist / RELEASE_FILES[0]).unlink()
-            (dist / RELEASE_FILES[0]).symlink_to("/etc/hostname")
+            file_of(dist, 0).unlink()
+            file_of(dist, 0).symlink_to("/etc/hostname")
 
         def replace_with_directory(dist):
-            (dist / RELEASE_FILES[1]).unlink()
-            (dist / RELEASE_FILES[1]).mkdir()
-            (dist / RELEASE_FILES[1] / "inner").write_text("x")
+            file_of(dist, 1).unlink()
+            file_of(dist, 1).mkdir()
+            (file_of(dist, 1) / "inner").write_text("x")
+
+        def carry_another_artifacts_file(dist):
+            # A Windows archive that also carries the signed DMG's name.
+            (dist / RELEASE_FILES[4] / RELEASE_FILES[2]).write_text("swapped")
+
+        def link_an_artifact_directory(dist):
+            target = dist / RELEASE_FILES[3]
+            moved = dist.parent / "elsewhere"
+            target.rename(moved)
+            target.symlink_to(moved)
 
         for name, mutate in (
             ("extra file", lambda dist: (dist / "extra.zip").write_text("x")),
-            ("missing file", lambda dist: (dist / RELEASE_FILES[2]).unlink()),
-            ("empty file", lambda dist: (dist / RELEASE_FILES[3]).write_text("")),
+            ("missing file", lambda dist: file_of(dist, 2).unlink()),
+            ("empty file", lambda dist: file_of(dist, 3).write_text("")),
             ("symlink", replace_with_symlink),
             ("directory", replace_with_directory),
+            ("another artifact's file", carry_another_artifacts_file),
+            ("linked artifact directory", link_an_artifact_directory),
         ):
             with self.subTest(name):
                 self.assertNotEqual(self.release_files_check(mutate), 0)
@@ -126,14 +142,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
         ]
         self.assertEqual(len(downloads), 5)
         for step in downloads:
-            self.assertEqual(step["with"]["path"], "dist")
+            name = step["with"]["name"]
+            self.assertEqual(step["with"]["path"], f"dist/{name}")
         for step in job["steps"]:
             published = step.get("with", {}).get("files") or step.get("with", {}).get(
                 "subject-path"
             )
             if published:
                 for line in published.split():
-                    self.assertTrue(line.removeprefix("./").startswith("dist/"))
+                    name = line.rsplit("/", 1)[-1]
+                    self.assertEqual(line.removeprefix("./"), f"dist/{name}/{name}")
 
     def test_release_builds_add_their_target_to_the_pinned_toolchain(self):
         job = workflow("release.yml")["jobs"]["build-and-release"]

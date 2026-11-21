@@ -233,20 +233,30 @@ const UPSTREAM_PASS_POLL: std::time::Duration = std::time::Duration::from_millis
 /// request timeout, so an abandoned refresh stops polling on its own.
 const UPSTREAM_PASS_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Run one upstream token-balance `pass` that sees the current watch lists,
-/// first waiting out any pass upstream's own loop is running, unless a DET
-/// stop closes identity sync before or during the call. Waits at most
-/// `wait_limit`. Returns what the pass that ran returned.
-async fn run_token_balance_sync_if_idle<IsSyncing, Pass, PassFuture, T>(
+/// Run one upstream token-balance pass (`sync_now`) that sees the current
+/// watch lists, first waiting out any pass upstream's own loop is running,
+/// unless a DET stop closes identity sync before or during the call. Waits at
+/// most `wait_limit`. Returns the `baseline` read right before the pass that ran.
+async fn run_token_balance_sync_if_idle<
+    IsSyncing,
+    Baseline,
+    BaselineFuture,
+    T,
+    SyncNow,
+    SyncFuture,
+>(
     mut is_syncing: IsSyncing,
-    mut pass: Pass,
+    mut baseline: Baseline,
+    mut sync_now: SyncNow,
     admission: &TokenSyncAdmission,
     wait_limit: std::time::Duration,
 ) -> Result<T, TokenBalanceSyncError>
 where
     IsSyncing: FnMut() -> bool,
-    Pass: FnMut() -> PassFuture,
-    PassFuture: std::future::Future<Output = T>,
+    Baseline: FnMut() -> BaselineFuture,
+    BaselineFuture: std::future::Future<Output = T>,
+    SyncNow: FnMut() -> SyncFuture,
+    SyncFuture: std::future::Future<Output = ()>,
 {
     let admitted = admission.current();
     let stopped = || admission.current() != admitted;
@@ -272,12 +282,16 @@ where
         if stopped() {
             return Err(TokenBalanceSyncError::SyncStopped);
         }
-        let ran = pass().await;
+        let read = baseline().await;
+        if stopped() {
+            return Err(TokenBalanceSyncError::SyncStopped);
+        }
+        sync_now().await;
         if stopped() {
             return Err(TokenBalanceSyncError::SyncStopped);
         }
         if !is_syncing() {
-            return Ok(ran);
+            return Ok(read);
         }
     }
 }
@@ -3352,9 +3366,9 @@ impl WalletBackend {
                     || async {
                         let baseline = TokenBalanceStore::read_upstream(identity_sync).await;
                         token_balance::after_latest_stamp_second(&baseline.1).await;
-                        identity_sync.sync_now().await;
                         baseline
                     },
+                    || identity_sync.sync_now(),
                     &self.inner.token_sync_admission,
                     UPSTREAM_PASS_WAIT_LIMIT,
                 )
@@ -4597,6 +4611,7 @@ mod tests {
         let sync_calls = std::cell::Cell::new(0);
         let outcome = run_token_balance_sync_if_idle(
             || busy.borrow_mut().next().unwrap_or(false),
+            || async {},
             || async { sync_calls.set(sync_calls.get() + 1) },
             &TokenSyncAdmission::default(),
             UPSTREAM_PASS_WAIT_LIMIT,
@@ -4613,6 +4628,7 @@ mod tests {
         let admission = TokenSyncAdmission::default();
         let outcome = run_token_balance_sync_if_idle(
             || false,
+            || async {},
             || {
                 admission.close();
                 admission.reopen();
@@ -4633,6 +4649,7 @@ mod tests {
         admission.close();
         let outcome = run_token_balance_sync_if_idle(
             || false,
+            || async {},
             || async { sync_called.set(true) },
             &admission,
             UPSTREAM_PASS_WAIT_LIMIT,
@@ -4657,6 +4674,7 @@ mod tests {
                 }
                 true
             },
+            || async {},
             || async { pass_ran.set(true) },
             &admission,
             UPSTREAM_PASS_WAIT_LIMIT,
@@ -4668,6 +4686,27 @@ mod tests {
         assert!(!pass_ran.get());
     }
 
+    /// A stop while the baseline is read (or its stamp second waited out)
+    /// ends the refresh before upstream's pass runs.
+    #[tokio::test]
+    async fn a_stop_during_the_baseline_read_runs_no_pass() {
+        let admission = TokenSyncAdmission::default();
+        let sync_called = std::cell::Cell::new(false);
+        let outcome = run_token_balance_sync_if_idle(
+            || false,
+            || {
+                admission.close();
+                std::future::ready(())
+            },
+            || async { sync_called.set(true) },
+            &admission,
+            UPSTREAM_PASS_WAIT_LIMIT,
+        )
+        .await;
+        assert_eq!(outcome, Err(TokenBalanceSyncError::SyncStopped));
+        assert!(!sync_called.get());
+    }
+
     /// The wait for upstream's pass has its own limit, so an abandoned
     /// refresh stops polling.
     #[tokio::test]
@@ -4675,6 +4714,7 @@ mod tests {
         let admission = TokenSyncAdmission::default();
         let waited = run_token_balance_sync_if_idle(
             || true,
+            || async {},
             || async {},
             &admission,
             std::time::Duration::from_millis(300),

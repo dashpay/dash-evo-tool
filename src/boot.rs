@@ -773,7 +773,8 @@ mod tests {
     fn in_data_dir_child<G>(setup: impl FnOnce(&std::path::Path) -> G) -> Option<PathBuf> {
         const CHILD_ENV: &str = "DET_BOOT_DATA_DIR_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
-            return std::env::var_os("DASH_EVO_DATA_DIR").map(PathBuf::from);
+            let dir = std::env::var_os("DASH_EVO_DATA_DIR").expect("the parent sets the data dir");
+            return Some(PathBuf::from(dir));
         }
         let tmp = tempfile::tempdir().expect("tempdir");
         let _guard = setup(tmp.path());
@@ -784,11 +785,13 @@ mod tests {
             .env("DASH_EVO_DATA_DIR", tmp.path())
             .output()
             .expect("run child");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "child failed:\n{stdout}{stderr}");
+        // A filter that matches nothing also succeeds; the body must have run.
         assert!(
-            output.status.success(),
-            "child failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test:\n{stdout}"
         );
         None
     }

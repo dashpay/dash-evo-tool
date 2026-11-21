@@ -153,17 +153,19 @@ impl<'a> TokenActor<'a> {
                     )
                     .await
             }
-            TokenRoute::Sdk(sdk) => {
+            TokenRoute::Sdk(sdk) => 'sdk: {
                 // Platform refuses a named recipient when the token forbids
-                // choosing one; upstream drops it the same way.
-                let recipient = match common
+                // choosing one; upstream drops it the same way, and fails the
+                // same way when the contract has no token at that position.
+                let config = match common
                     .data_contract
                     .expected_token_configuration(common.token_position)
                 {
-                    Ok(config) => MintRecipient::resolve(config.distribution_rules(), recipient)
-                        .transition_recipient(),
-                    Err(_) => recipient,
+                    Ok(config) => config,
+                    Err(e) => break 'sdk Err(dash_sdk::Error::Protocol(e)),
                 };
+                let recipient = MintRecipient::resolve(config.distribution_rules(), recipient)
+                    .transition_recipient();
                 let builder = TokenMintTransitionBuilder::new(
                     common.data_contract,
                     common.token_position,

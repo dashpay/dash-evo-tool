@@ -1228,6 +1228,51 @@ mod token_action_routing_tests {
     /// and signed with the identity's own key, without borrowing a loaded
     /// wallet. Holding the key gets every action past signing; without it,
     /// the identity's signer refuses and says the key is missing.
+    /// A mint at a token position the contract does not have fails before
+    /// anything is signed, with the error the wallet route reports, instead
+    /// of sending the chosen recipient unchecked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_sdk_mint_at_a_missing_token_position_fails_like_the_wallet_route() {
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, sender, _rx) = offline_context(dir.path()).await;
+        let (identity, key) = actor_identity();
+        let (identity, key) = holding_its_key(identity, key);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the wallet-less identity");
+        let data_contract = token_contract(identity.identity.id());
+        let missing_position = 1;
+        let upstream_error = data_contract
+            .expected_token_configuration(missing_position)
+            .expect_err("the contract has no token at that position");
+        let sdk = (*ctx.sdk.load_full()).clone();
+
+        let err = ctx
+            .run_token_task(
+                TokenTask::MintTokens {
+                    sending_identity: identity.clone(),
+                    data_contract,
+                    token_position: missing_position,
+                    signing_key: key,
+                    public_note: None,
+                    amount: 5,
+                    recipient_id: Some(Identifier::random()),
+                    group_info: None,
+                },
+                &sdk,
+                sender,
+            )
+            .await
+            .expect_err("no token at that position");
+
+        let expected = TaskError::from_token_operation(
+            TokenOperationKind::Mint,
+            dash_sdk::Error::Protocol(upstream_error),
+        );
+        assert_eq!(format!("{err:?}"), format!("{expected:?}"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_actions_of_an_identity_no_wallet_holds_are_signed_by_the_identity() {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;

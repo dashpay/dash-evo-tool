@@ -359,6 +359,14 @@ impl PurchaseTokenScreen {
     }
 }
 
+impl PurchaseTokenScreen {
+    /// A price result only sets the status of a screen with no purchase in
+    /// flight or completed; otherwise it would reopen the purchase form.
+    fn price_may_change_status(&self) -> bool {
+        self.purchase_request.is_none() && self.status != PurchaseTokensStatus::Complete
+    }
+}
+
 impl ScreenLike for PurchaseTokenScreen {
     fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
         use crate::backend_task::CacheDomain;
@@ -378,12 +386,12 @@ impl ScreenLike for PurchaseTokenScreen {
                 if let Some(schedule) = prices {
                     self.fetched_pricing_schedule = Some(schedule);
                     self.recalculate_price();
-                    if self.purchase_request.is_none() {
+                    if self.price_may_change_status() {
                         self.status = PurchaseTokensStatus::NotStarted;
                     }
                 } else {
                     // No pricing schedule found - token is not for sale
-                    if self.purchase_request.is_none() {
+                    if self.price_may_change_status() {
                         self.status = PurchaseTokensStatus::Error;
                     }
                     MessageBanner::set_global(
@@ -988,5 +996,28 @@ mod tests {
         ));
         report_error(&mut screen, &unrelated_request(context.network));
         assert!(screen.status == PurchaseTokensStatus::Complete);
+    }
+
+    /// A price that arrives after the purchase went through must not bring
+    /// the purchase form back.
+    #[test]
+    fn a_late_price_keeps_a_completed_purchase_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+        screen.display_task_result(BackendTaskSuccessResult::PurchasedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        for prices in [Some(TokenPricingSchedule::SinglePrice(10)), None] {
+            screen.display_task_result(BackendTaskSuccessResult::TokenPricing {
+                token_id: info.token_id,
+                prices,
+            });
+            assert!(screen.status == PurchaseTokensStatus::Complete);
+        }
     }
 }

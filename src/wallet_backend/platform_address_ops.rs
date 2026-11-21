@@ -219,9 +219,10 @@ impl WalletBackend {
         Ok(changeset_platform_entries(&changeset))
     }
 
-    /// Top up `identity` from this wallet's Platform addresses. Returns the
-    /// identity's new balance, the height of the proof carrying it and what
-    /// platform-wallet committed for the paying addresses.
+    /// Top up `identity` from this wallet's Platform addresses through `sdk`,
+    /// the SDK the task was dispatched with. Returns the identity's new
+    /// balance, the height of the proof carrying it and what platform-wallet
+    /// committed for the paying addresses.
     ///
     /// The SDK submits the top-up; platform-wallet's public
     /// `reconcile_address_infos` then records the spent balances, pinned at
@@ -231,6 +232,7 @@ impl WalletBackend {
     /// the paying wallet, and it flattens SDK failures into a string.
     pub(crate) async fn top_up_identity_from_platform_addresses(
         &self,
+        sdk: &dash_sdk::Sdk,
         seed_hash: &WalletSeedHash,
         path_index: &PlatformPathIndex,
         identity: &dash_sdk::platform::Identity,
@@ -238,7 +240,6 @@ impl WalletBackend {
     ) -> Result<(Credits, u64, Vec<PlatformAddressEntry>), TaskError> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
-        let sdk = self.sdk().clone();
         let resolved = self.resolve_paying_wallet(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         // TODO(upstream): switch to
@@ -259,7 +260,7 @@ impl WalletBackend {
                     .await?;
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 let outcome = identity
-                    .top_up_from_addresses(&sdk, inputs, &signer, None)
+                    .top_up_from_addresses(sdk, inputs, &signer, None)
                     .await
                     .map_err(map_top_up_sdk_error)?;
                 Ok((wallet, outcome))
@@ -813,6 +814,7 @@ mod tests {
 
         let result = backend
             .top_up_identity_from_platform_addresses(
+                &ctx.sdk.load(),
                 &seed_hash,
                 &path_index,
                 &identity,

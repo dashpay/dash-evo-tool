@@ -944,7 +944,12 @@ impl AppContext {
                 wallet_seed_hash,
             } => {
                 let result = self
-                    .top_up_identity_from_platform_addresses(identity, inputs, wallet_seed_hash)
+                    .top_up_identity_from_platform_addresses(
+                        sdk,
+                        identity,
+                        inputs,
+                        wallet_seed_hash,
+                    )
                     .await?;
                 self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
                     .await;
@@ -1002,6 +1007,7 @@ impl AppContext {
     /// Top up an identity using credits from Platform addresses
     async fn top_up_identity_from_platform_addresses(
         &self,
+        sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
@@ -1038,6 +1044,7 @@ impl AppContext {
         let (new_balance, height, entries) = self
             .wallet_backend()?
             .top_up_identity_from_platform_addresses(
+                sdk,
                 &wallet_seed_hash,
                 &path_index,
                 &qualified_identity.identity,

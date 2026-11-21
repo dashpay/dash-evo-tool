@@ -111,7 +111,13 @@ pub enum TokenTask {
         params: Box<TokenContractParams>,
     },
     QueryMyTokenBalances,
-    QueryIdentityTokenBalance(IdentityTokenIdentifier),
+    /// [`Self::QueryMyTokenBalances`] after a token operation that already
+    /// published its proof-derived balance. Its failure is not reported.
+    RefreshBalancesAfterOperation,
+    /// Track these `(identity, token)` balances again after a "stop tracking":
+    /// forget every dismissal, then refresh the identities' balances in one
+    /// pass under the app-wide refresh guard.
+    TrackTokenBalancesAgain(Vec<IdentityTokenIdentifier>),
     /// Stop tracking one `(identity, token)` balance: un-watch it upstream so
     /// the background sync stops fetching it, drop it from the My Tokens
     /// ordering so the row disappears, and record the dismissal so later
@@ -320,7 +326,9 @@ impl AppContext {
                 .await
                 .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
             }
-            TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
+            TokenTask::QueryMyTokenBalances | TokenTask::RefreshBalancesAfterOperation => {
+                self.query_my_token_balances(sdk, sender).await
+            }
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
@@ -529,9 +537,8 @@ impl AppContext {
                 )
                 .await
             }
-            TokenTask::QueryIdentityTokenBalance(identity_token_pair) => {
-                self.query_token_balance(sdk, identity_token_pair, sender)
-                    .await
+            TokenTask::TrackTokenBalancesAgain(pairs) => {
+                self.track_token_balances_again(sdk, pairs, sender).await
             }
             TokenTask::StopTrackingTokenBalance(identity_token_pair) => {
                 self.stop_tracking_token_balance(identity_token_pair, sender)

@@ -203,8 +203,7 @@ fn completes_pending_operation(
     }
 
     match result {
-        BackendTaskSuccessResult::FetchedTokenBalances
-        | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
+        BackendTaskSuccessResult::FetchedTokenBalances => {
             *result_context.operation() == BackendTaskContext::TokenBalanceRefresh
         }
         BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
@@ -2485,7 +2484,7 @@ impl TokensScreen {
                     token_info.data_contract_id,
                 ]))),
                 BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                BackendTask::TokenTask(Box::new(TokenTask::RefreshBalancesAfterOperation)),
             ],
             BackendTasksExecutionMode::Sequential,
         ))
@@ -3169,8 +3168,7 @@ impl ScreenLike for TokensScreen {
                     &self.token_pricing_data,
                 );
             }
-            BackendTaskSuccessResult::FetchedTokenBalances
-            | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
+            BackendTaskSuccessResult::FetchedTokenBalances => {
                 if completes_pending {
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
                     self.pending_operation_context = None;

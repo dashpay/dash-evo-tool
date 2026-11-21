@@ -104,7 +104,7 @@ All token state-mutation variants require a registered token contract owned by a
 |---|---|---|
 | `RegisterTokenContract` | ✅ Testable | Creates + broadcasts a new token data contract |
 | `QueryMyTokenBalances` | ✅ Testable | Read-only; requires identities in DB |
-| `QueryIdentityTokenBalance` | ✅ Testable | Read-only |
+| `TrackTokenBalancesAgain` | ✅ Testable | Clears stop-tracking state for the given pairs, then reads balances |
 | `QueryDescriptionsByKeyword` | ✅ Testable | Read-only keyword search |
 | `FetchTokenByContractId` | ✅ Testable | Read-only; use a known testnet token contract ID |
 | `FetchTokenByTokenId` | ✅ Testable | Read-only; use known token ID |

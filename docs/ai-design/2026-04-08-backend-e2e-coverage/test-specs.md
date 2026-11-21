@@ -615,15 +615,16 @@
 - **Shared fixture dependency**: SHARED_IDENTITY, SHARED_TOKEN
 - **Estimated runtime**: 10s
 
-### TC-047: QueryIdentityTokenBalance
-- **BackendTask variant**: `BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(iti)))`
+### TC-047: TrackTokenBalancesAgain
+- **BackendTask variant**: `BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![iti])))`
 - **Group**: TokenTask
-- **Preconditions**: SHARED_TOKEN registered, SHARED_IDENTITY has base_supply tokens
+- **Preconditions**: SHARED_TOKEN registered
 - **Steps**:
-  1. Setup: build `IdentityTokenIdentifier` with SHARED_IDENTITY's ID and SHARED_TOKEN's token ID
-  2. Execute: `run_task(ctx, BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(iti))))`
-  3. Assert: result matches `FetchedTokenBalances` (or a typed variant showing the balance)
-- **Expected outcome**: `FetchedTokenBalances`
+  1. Setup: mint 1 unit to SHARED_IDENTITY; build `IdentityTokenIdentifier` with SHARED_IDENTITY's ID and SHARED_TOKEN's token ID; stop tracking it with `StopTrackingTokenBalance(iti)`
+  2. Execute: `run_task(ctx, BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(vec![iti]))))`
+  3. Assert: result matches `FetchedTokenBalances`
+  4. Assert: the pair is no longer in `untracked_token_balances()`, and `wallet_backend().token_balances().get(..)` equals the balance read directly from Platform
+- **Expected outcome**: `FetchedTokenBalances`; tracking restored and the balance published
 - **Shared fixture dependency**: SHARED_TOKEN
 - **Estimated runtime**: 5s
 

@@ -1422,3 +1422,123 @@ fn the_send_screen_reports_the_confirmed_recipient() {
         assert!(f.harness.query_by_label_contains("Transfer").is_none());
     });
 }
+
+/// Burn, Claim and Purchase run a balance refresh after the operation. Once
+/// the operation is reported done, an error from that refresh must not turn
+/// the screen back into its form, which invites a second, paid operation.
+#[test]
+fn a_completed_token_operation_stays_done_when_its_refresh_fails() {
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    use dash_evo_tool::ui::MessageType;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        let info = f.info.clone();
+        let basic = IdentityTokenBasicInfo {
+            token_id: info.token_id,
+            token_alias: info.token_alias.clone(),
+            identity_id: info.identity.identity.id(),
+            contract_id: f.balance.data_contract_id,
+            token_position: 0,
+        };
+        let fee = FeeResult::estimated_only(0);
+        let cases = [
+            (
+                ScreenType::BurnTokensScreen(info.clone()).create_screen(&f.app_context),
+                BackendTaskSuccessResult::BurnedTokens(fee.clone()),
+            ),
+            (
+                Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                    basic,
+                    info.data_contract.clone(),
+                    info.token_config.clone(),
+                    &f.app_context,
+                )),
+                BackendTaskSuccessResult::ClaimedTokens(fee.clone()),
+            ),
+            (
+                ScreenType::PurchaseTokenScreen(info.clone()).create_screen(&f.app_context),
+                BackendTaskSuccessResult::PurchasedTokens(fee.clone()),
+            ),
+        ];
+        for (screen, done) in cases {
+            f.show(screen);
+            let screen = f
+                .harness
+                .state_mut()
+                .screen_stack
+                .last_mut()
+                .expect("screen");
+            screen.display_task_result(done);
+            screen.display_message("The balance refresh failed.", MessageType::Error);
+            f.harness.run_steps(3);
+            assert!(
+                f.harness.query_by_label("Back to Tokens").is_some(),
+                "the success screen stays after a failed refresh"
+            );
+        }
+    });
+}
+
+/// Importing a token by ID refreshes balances after the import with the
+/// quiet post-operation refresh, so a refresh that misses adds no red
+/// banner beside the imported token.
+#[test]
+fn importing_a_token_by_id_refreshes_balances_quietly() {
+    use dash_evo_tool::app::AppAction;
+    use dash_evo_tool::backend_task::BackendTask;
+    use dash_evo_tool::backend_task::tokens::TokenTask;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let f = token_fixture();
+        let Screen::AddTokenById(screen) = ScreenType::AddTokenById.create_screen(&f.app_context)
+        else {
+            panic!("an import-by-ID screen");
+        };
+        // The import form's token ID field predates this test and has no
+        // accessible name on this base; naming it is not this change.
+        let mut import = crate::support::builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .with_accessibility_check(false)
+            .build_ui_state(
+                |ui,
+                 state: &mut (
+                    dash_evo_tool::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen,
+                    Vec<AppAction>,
+                )| {
+                    let action = state.0.ui(ui);
+                    state.1.push(action);
+                },
+                (screen, Vec::new()),
+            );
+        import.state_mut().0.display_task_result(
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedContractWithTokenPosition(
+                f.info.data_contract.contract.clone(),
+                0,
+            ),
+        );
+        import.run_steps(3);
+        import
+            .get_all_by_role_and_label(egui::accesskit::Role::Button, "Import Token")
+            .last()
+            .expect("import form button")
+            .click();
+        import.run_steps(2);
+        let tasks = import
+            .state_mut()
+            .1
+            .drain(..)
+            .find_map(|action| match action {
+                AppAction::BackendTasks(tasks, _) => Some(tasks),
+                _ => None,
+            })
+            .expect("the import is dispatched");
+        assert!(matches!(
+            tasks.last(),
+            Some(BackendTask::TokenTask(task))
+                if matches!(**task, TokenTask::RefreshBalancesAfterOperation)
+        ));
+    });
+}

@@ -446,7 +446,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
     }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the operation is done, an error can only come from the
+        // balance refresh that follows it; the operation stays reported done.
+        if matches!(message_type, MessageType::Error | MessageType::Warning)
+            && self.common.status != TokenActionStatus::Complete
+        {
             self.common.refresh_banner.take_and_clear();
             self.common.status = TokenActionStatus::Error;
         }

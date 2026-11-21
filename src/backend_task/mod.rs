@@ -365,7 +365,8 @@ impl BackendTask {
                     ..
                 } => &identity_token_info.identity,
                 TokenTask::QueryMyTokenBalances
-                | TokenTask::QueryIdentityTokenBalance(_)
+                | TokenTask::RefreshBalancesAfterOperation
+                | TokenTask::TrackTokenBalancesAgain(_)
                 | TokenTask::StopTrackingTokenBalance(_)
                 | TokenTask::ClearOncePerIdentityClaimHint(_)
                 | TokenTask::QueryDescriptionsByKeyword(..)
@@ -467,6 +468,8 @@ pub enum BackendTaskContext {
     FetchDocumentsPage(Box<DocumentQuery>),
     /// A refresh of all tracked token balances.
     TokenBalanceRefresh,
+    /// A refresh of all tracked token balances after a token operation.
+    TokenBalanceRefreshAfterOperation,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
     /// A direct contact-details write, including failures before its handler runs.
@@ -878,6 +881,11 @@ impl From<&BackendTask> for BackendTaskContext {
                 if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances) =>
             {
                 Self::TokenBalanceRefresh
+            }
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::RefreshBalancesAfterOperation) =>
+            {
+                Self::TokenBalanceRefreshAfterOperation
             }
             BackendTask::TokenTask(task) => match task.as_ref() {
                 TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
@@ -1298,9 +1306,6 @@ pub enum BackendTaskSuccessResult {
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
-    /// A requested foreground refresh found the upstream balance sync already
-    /// running, so no second pass was started.
-    TokenBalanceRefreshAlreadyInFlight,
     SavedToken,
 
     // Identity operation results (replacing string messages)
@@ -3182,6 +3187,12 @@ mod tests {
 
         let free = [
             token(TokenTask::QueryMyTokenBalances),
+            token(TokenTask::TrackTokenBalancesAgain(vec![
+                crate::model::token::IdentityTokenIdentifier {
+                    identity_id: payer_id,
+                    token_id: other,
+                },
+            ])),
             contract_task(ContractTask::FetchContracts(vec![contract.id()])),
             contract_task(ContractTask::FetchActiveGroupActions(
                 QualifiedContract {

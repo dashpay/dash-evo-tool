@@ -228,6 +228,11 @@ const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 /// Some expired upgrade backups remain after a retention setting save.
 pub(crate) const BACKUP_RETENTION_SAVED_CLEANUP_INCOMPLETE: &str = "Your backup retention setting was saved, but some old upgrade backups could not be deleted. The app tries again the next time it opens your wallet data.";
 
+/// Shown when a read must wait for the masternode list: the message of
+/// [`TaskError::MasternodeListNotReady`] and [`TaskError::MasternodeListSyncPending`].
+pub(crate) const NETWORK_STILL_SYNCING: &str =
+    "The network is still syncing. Please wait a moment and try again.";
+
 /// Shown whenever another window or session holds the wallet database.
 pub(crate) const WALLET_DATA_IN_USE: &str = "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again.";
 
@@ -2079,6 +2084,34 @@ pub enum TaskError {
     )]
     TokenBalanceRefreshInProgress,
 
+    /// The network connection stopped during a token-balance refresh, so no
+    /// fresh balances were fetched.
+    #[error(
+        "Token balances were not refreshed because the network connection stopped. Connect again, then refresh the balances. If this happens again, disconnect, wait a moment, and connect again."
+    )]
+    TokenBalanceRefreshDisconnected,
+
+    /// Upstream's own balance pass outlasted the refresh's wait for it.
+    #[error(
+        "Token balances are taking longer than usual to check. Wait a moment, then refresh the balances."
+    )]
+    TokenBalanceRefreshTookTooLong,
+
+    /// A token-balance refresh ran but could not read these identities'
+    /// balances, so their earlier balances stay on screen.
+    #[error(
+        "Some token balances could not be checked, so earlier balances are shown. Check your connection, then refresh the balances."
+    )]
+    TokenBalancesNotChecked {
+        identities: Vec<dash_sdk::platform::Identifier>,
+    },
+
+    /// A balance read was refused before the masternode list finished
+    /// syncing: sent now, its proof could not be verified and the queried
+    /// node would be banned.
+    #[error("{}", NETWORK_STILL_SYNCING)]
+    MasternodeListSyncPending,
+
     /// Connected server is behind (SdkError::StaleNode).
     #[error("The server you connected to is behind. Please retry.")]
     DapiStaleNode {
@@ -2214,7 +2247,7 @@ pub enum TaskError {
     },
 
     /// Proof verification ran before SPV had synchronized quorum keys.
-    #[error("The network is still syncing. Please wait a moment and try again.")]
+    #[error("{}", NETWORK_STILL_SYNCING)]
     MasternodeListNotReady {
         #[source]
         source_error: Box<SdkError>,

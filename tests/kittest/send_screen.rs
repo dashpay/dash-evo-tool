@@ -498,3 +498,68 @@ fn a_private_send_that_fails_to_build_leaves_send_usable() {
         press_send_expecting_confirmation(&mut harness, "Private Send");
     });
 }
+
+/// The value of the send form's amount field.
+fn amount_field_value(harness: &Harness<'_, WalletSendScreen>) -> f64 {
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Amount (DASH):")
+        .value()
+        .expect("amount field")
+        .trim()
+        .parse()
+        .expect("amount in DASH")
+}
+
+/// A Platform balance that changes while the send screen is open (a top-up
+/// from another screen, a sync pass) requotes Max on the next frame.
+#[test]
+fn platform_max_follows_a_balance_change_while_the_screen_is_open() {
+    use dash_evo_tool::ui::ScreenLike;
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let seed: [u8; 64] = rand::random();
+        let mut wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet fixture");
+        let core = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("Platform address");
+        let source = PlatformAddress::try_from(core.clone()).expect("Platform source");
+        wallet.set_platform_address_info(core.clone(), 3 * ONE_DASH_CREDITS, 1);
+        let wallet = Arc::new(RwLock::new(wallet));
+        let mut screen = WalletSendScreen::new(&app_context, Arc::clone(&wallet));
+        screen.set_simple_send_input_for_test(
+            Some(SourceSelection::PlatformAddresses(vec![(
+                source,
+                core.clone(),
+                3 * ONE_DASH_CREDITS,
+            )])),
+            Some(ValidatedAddress::Core(core_address())),
+            None,
+        );
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 1600.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.run();
+        let before = amount_field_value(&harness);
+
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(core, ONE_DASH_CREDITS, 2);
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.run();
+        let after = amount_field_value(&harness);
+
+        assert!(after < 1.0, "Max follows the lower balance: {after}");
+        assert!(after < before, "Max was requoted: {before} -> {after}");
+    });
+}

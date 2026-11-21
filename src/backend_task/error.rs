@@ -2595,6 +2595,23 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// Platform refused a payment whose addresses do not cover what it
+    /// requires. The message stays neutral: the refusal does not say whether
+    /// the requirement was a fee (on an input or, under `ReduceOutput`, on
+    /// the output) or the outputs' total of an asset-lock address funding.
+    #[error(
+        "The network refused this payment because the funds it spends do not cover it. \
+         Check the amount and your balance, then try again."
+    )]
+    PlatformAddressInsufficientFunds {
+        /// The most any one spending address would have left after the amount.
+        available: u64,
+        /// What Platform required: a fee or the outputs' total.
+        required: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The asset lock transaction outpoint does not have enough remaining balance.
     #[error(
         "Not enough funds in this transaction to complete the operation. \
@@ -4640,6 +4657,22 @@ impl From<SdkError> for TaskError {
                         let (available, required) = (e.balance(), e.required_balance());
                         Some(Box::new(move |source_error| {
                             TaskError::IdentityInsufficientBalance {
+                                available,
+                                required,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::AddressesNotEnoughFundsError(e)) => {
+                        let available = e
+                            .addresses_with_info()
+                            .values()
+                            .map(|(_, balance)| *balance)
+                            .max()
+                            .unwrap_or(0);
+                        let required = e.required_balance();
+                        Some(Box::new(move |source_error| {
+                            TaskError::PlatformAddressInsufficientFunds {
                                 available,
                                 required,
                                 source_error,
@@ -7168,6 +7201,99 @@ mod tests {
         assert!(
             msg.contains("funding source"),
             "Expected actionable guidance in message, got: {msg}"
+        );
+    }
+
+    /// Platform's refusal of a payment its addresses do not cover gets the
+    /// dedicated variant, with its amounts kept out of the jargon-free message.
+    #[test]
+    fn from_sdk_error_addresses_not_enough_funds() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        let consensus = ConsensusError::from(AddressesNotEnoughFundsError::new(
+            std::collections::BTreeMap::from([(
+                PlatformAddress::P2pkh([1u8; 20]),
+                (2, 15_200_400),
+            )]),
+            15_308_500,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+        let msg = err.to_string();
+        assert!(
+            matches!(
+                err,
+                TaskError::PlatformAddressInsufficientFunds {
+                    available: 15_200_400,
+                    required: 15_308_500,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        for jargon in [
+            "unexpected",
+            "consensus",
+            "SDK",
+            "state transition",
+            "input",
+        ] {
+            assert!(!msg.contains(jargon), "message contains {jargon}: {msg}");
+        }
+    }
+
+    /// The refusal's required amount is a fee for Drive's fee check (also
+    /// under `ReduceOutput`, where the fee comes from the output) but the
+    /// outputs' total for asset-lock address funding. The message claims
+    /// neither, names no amount and gives an action that fits both.
+    #[test]
+    fn addresses_not_enough_funds_message_does_not_call_the_requirement_a_fee() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        // A fee-check shortfall, then an asset-lock funding outputs' total.
+        for required in [15_308_500, 500_000_000] {
+            let consensus = ConsensusError::from(AddressesNotEnoughFundsError::new(
+                std::collections::BTreeMap::from([(
+                    PlatformAddress::P2pkh([1u8; 20]),
+                    (2, 15_200_400),
+                )]),
+                required,
+            ));
+            let msg = TaskError::from(SdkError::from(consensus)).to_string();
+            assert!(!msg.contains("fee"), "message calls it a fee: {msg}");
+            assert!(
+                !msg.contains(&format_credits_as_dash(required)),
+                "message names the required amount: {msg}"
+            );
+            assert!(
+                msg.contains("Check the amount"),
+                "message lacks an action: {msg}"
+            );
+        }
+    }
+
+    /// With several spending addresses, `available` is the most any one of
+    /// them would have left: one address pays the fee.
+    #[test]
+    fn addresses_not_enough_funds_reports_the_best_single_address() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        let consensus = ConsensusError::from(AddressesNotEnoughFundsError::new(
+            std::collections::BTreeMap::from([
+                (PlatformAddress::P2pkh([1u8; 20]), (2, 4_000_000)),
+                (PlatformAddress::P2pkh([2u8; 20]), (5, 9_000_000)),
+            ]),
+            15_308_500,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+        assert!(
+            matches!(
+                err,
+                TaskError::PlatformAddressInsufficientFunds {
+                    available: 9_000_000,
+                    ..
+                }
+            ),
+            "got {err:?}"
         );
     }
 

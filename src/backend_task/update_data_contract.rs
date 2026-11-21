@@ -193,26 +193,9 @@ mod tests {
         .expect("the contract registers")
     }
 
-    /// An update that changes a private document type so that its entries can
-    /// no longer hold its largest document is refused before the nonce is
-    /// read or anything is signed, and the caller's contract is left as it
-    /// was. Platform would accept the update, and the entry size can never
-    /// change afterwards.
-    #[tokio::test]
-    async fn an_update_whose_private_type_cannot_hold_its_documents_is_refused_before_signing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let context = crate::context::test_support::test_app_context(dir.path());
-        let stored = private_contract(false);
-        let mut sdk = dash_sdk::SdkBuilder::new_mock()
-            .with_version(PlatformVersion::latest())
-            .build()
-            .expect("a mock SDK");
-        // The only answer the mock holds: reading the nonce would fail it.
-        sdk.mock()
-            .expect_fetch(stored.id(), Some(stored.clone()))
-            .await
-            .expect("stored contract expectation");
-
+    /// An identity holding its unlimited signing key `1`, so the signing key
+    /// check passes without a network read.
+    fn owner_holding_unlimited_key(context: &AppContext) -> (QualifiedIdentity, IdentityPublicKey) {
         let signing_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
             id: 1,
             purpose: Purpose::AUTHENTICATION,
@@ -223,8 +206,6 @@ mod tests {
             data: BinaryData::new(vec![2; 33]),
             disabled_at: None,
         });
-        // The identity holds the unlimited signing key, so the key check
-        // passes without a network read and the entry check decides.
         let mut owner = dash_sdk::dpp::identity::Identity::create_basic_identity(
             Identifier::from([8; 32]),
             PlatformVersion::latest(),
@@ -247,6 +228,71 @@ mod tests {
             status: IdentityStatus::Active,
             network: context.network(),
         };
+        (identity, signing_key)
+    }
+
+    /// A contract registered with a private document type whose entries are
+    /// too small for its documents is refused before the nonce is read or
+    /// anything is signed: Platform would register it, and its entry size can
+    /// never change afterwards.
+    #[tokio::test]
+    async fn a_contract_whose_private_type_cannot_hold_its_documents_is_not_registered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        // The mock holds no answers: reading the nonce would fail it.
+        let sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("a mock SDK");
+        let (identity, signing_key) = owner_holding_unlimited_key(&context);
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let result = context
+            .register_data_contract(
+                private_contract(true),
+                String::new(),
+                identity,
+                signing_key,
+                &sdk,
+                sender,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::PrivateDocumentEntrySizeTooSmall {
+                    entry_size: 375,
+                    minimum_entry_size: 398,
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+    }
+
+    /// An update that changes a private document type so that its entries can
+    /// no longer hold its largest document is refused before the nonce is
+    /// read or anything is signed, and the caller's contract is left as it
+    /// was. Platform would accept the update, and the entry size can never
+    /// change afterwards.
+    #[tokio::test]
+    async fn an_update_whose_private_type_cannot_hold_its_documents_is_refused_before_signing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let stored = private_contract(false);
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("a mock SDK");
+        // The only answer the mock holds: reading the nonce would fail it.
+        sdk.mock()
+            .expect_fetch(stored.id(), Some(stored.clone()))
+            .await
+            .expect("stored contract expectation");
+
+        let (identity, signing_key) = owner_holding_unlimited_key(&context);
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
 

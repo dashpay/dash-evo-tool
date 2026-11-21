@@ -3,7 +3,10 @@ use dash_sdk::{
     dpp::data_contract::accessors::v0::DataContractV0Getters,
     platform::{
         DataContract, IdentityPublicKey,
-        transition::{broadcast::BroadcastStateTransition, waitable::Waitable},
+        transition::{
+            broadcast::BroadcastStateTransition, put_contract::ensure_private_document_entries_fit,
+            waitable::Waitable,
+        },
     },
 };
 
@@ -92,6 +95,9 @@ async fn prepare_contract_transition(
     use dash_sdk::dpp::state_transition::data_contract_create_transition::{
         DataContractCreateTransition, methods::DataContractCreateTransitionMethodsV0,
     };
+    // Platform registers a private document type whose entries are too small
+    // for its documents, and the entry size can never change after.
+    ensure_private_document_entries_fit(&contract, None)?;
     let nonce = sdk
         .get_identity_nonce(contract.owner_id(), true, None)
         .await?;

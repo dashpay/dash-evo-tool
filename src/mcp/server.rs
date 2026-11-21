@@ -170,9 +170,7 @@ impl DashMcpService {
                 .get_or_try_init(|| async {
                     let app_context = init_app_context().await.map_err(|e| {
                         tracing::error!("MCP context initialization failed: {e}");
-                        McpToolError::Internal(
-                            "Failed to initialize application context".to_owned(),
-                        )
+                        McpToolError::Internal(e.message.into_owned())
                     })?;
                     ctx_holder.store(app_context);
                     Ok::<(), McpToolError>(())
@@ -369,6 +367,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     if env_path.exists()
         && let Err(e) = dotenvy::from_path(&env_path)
     {
+        let e = crate::config::EnvFileError::from(e);
         tracing::warn!("Failed to load .env file at {}: {e}", env_path.display());
     }
 

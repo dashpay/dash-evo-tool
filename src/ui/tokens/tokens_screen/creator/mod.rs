@@ -439,7 +439,11 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 ui.small(format!("Administrator: {}", rule.administrator.label()));
                 // Allowances only bind an administrator; without one nothing can change.
                 if rule.administrator != ActorDraft::NoOne {
-                    ui.small("Later changes are allowed. Review the rule's three allowances.");
+                    if kind == RuleKind::Recurring {
+                        ui.small("The administrator can change who holds this authority, but the recurring distribution itself cannot change after creation.");
+                    } else {
+                        ui.small("Later changes are allowed. Review the rule's three allowances.");
+                    }
                 }
             }
         }
@@ -527,6 +531,50 @@ mod tests {
         changeable.rule_filter = RuleFilter::Changeable;
         let supply = render(changeable, supply_section);
         assert!(supply.query_by_label("Edit rule").is_none());
+    }
+
+    /// An administrator can appoint a performer without any allowance, so a
+    /// rule with an administrator stays open to later changes.
+    #[test]
+    fn a_rule_with_an_administrator_reads_as_changeable_without_allowances() {
+        let mut state = locked_workspace();
+        let mint = state.draft.permissions.get_mut(RuleKind::Mint);
+        mint.administrator = ActorDraft::Owner;
+        mint.allow_disable_action = false;
+        let summary = render(state, summary);
+        assert!(
+            summary
+                .query_by_label_contains("Later changes are allowed")
+                .is_some()
+        );
+    }
+
+    /// Recurring distribution never changes after creation; only who holds
+    /// the authority can.
+    #[test]
+    fn summary_never_promises_later_recurring_changes() {
+        let mut state = locked_workspace();
+        state
+            .draft
+            .permissions
+            .get_mut(RuleKind::Mint)
+            .allow_disable_action = false;
+        state
+            .draft
+            .permissions
+            .get_mut(RuleKind::Recurring)
+            .administrator = ActorDraft::Owner;
+        let summary = render(state, summary);
+        assert!(
+            summary
+                .query_by_label(RuleKind::Recurring.label())
+                .is_some()
+        );
+        assert!(
+            summary
+                .query_by_label_contains("Later changes are allowed")
+                .is_none()
+        );
     }
 
     /// The Supply card shows the removal permission the network will apply,

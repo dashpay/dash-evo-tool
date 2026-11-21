@@ -337,7 +337,14 @@ mod tests {
             .flatten()
             {
                 assert!(
-                    !text.contains("could be enabled") && !text.contains("can enable"),
+                    ![
+                        "could be enabled",
+                        "can enable",
+                        "be enabled later",
+                        "allowances permit"
+                    ]
+                    .iter()
+                    .any(|promise| text.contains(promise)),
                     "{key}: {text}"
                 );
             }
@@ -368,6 +375,40 @@ mod tests {
                 kind.label()
             );
         }
+    }
+
+    /// The comparison lists the removal permission the network will apply:
+    /// turning off the replace allowance also turns off removal.
+    #[test]
+    fn comparison_shows_the_effective_administrator_removal() {
+        use crate::ui::state::token_creator::Proposal;
+        use egui_kittest::kittest::Queryable;
+        let mut state = CreatorWorkspace::default();
+        let mint = state.draft.permissions.get_mut(RuleKind::Mint);
+        mint.administrator = ActorDraft::Owner;
+        mint.allow_remove_administrator = true;
+        mint.allow_replace_administrator = true;
+        let mut draft = state.draft.clone();
+        draft
+            .permissions
+            .get_mut(RuleKind::Mint)
+            .allow_replace_administrator = false;
+        state.proposal = Some(Proposal {
+            title: "Test",
+            draft,
+        });
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1200.0, 1600.0))
+            .build_ui_state(
+                |ui, state: &mut CreatorWorkspace| show(&ui.ctx().clone(), state),
+                state,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("Mint additional tokens · allow removing administrator")
+                .is_some()
+        );
     }
 
     #[test]

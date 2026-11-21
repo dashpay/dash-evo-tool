@@ -215,6 +215,13 @@ impl fmt::Display for BackendTaskJoinError {
 
 impl std::error::Error for BackendTaskJoinError {}
 
+/// Lets `?` on a joined task keep the panic message out of the error.
+impl From<tokio::task::JoinError> for TaskError {
+    fn from(source: tokio::task::JoinError) -> Self {
+        Self::JoinError(source.into())
+    }
+}
+
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
@@ -233,6 +240,31 @@ pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
+    #[error("The token creation check took too long. Check the connection and try checking again.")]
+    TokenCreatorReadTimeout { #[source] source: tokio::time::error::Elapsed },
+    #[error("The token draft needs a correction. Return to the indicated section and prepare it again.")]
+    InvalidTokenDraft { #[source] source: Box<crate::model::token_creator::DraftError> },
+    #[error("The creation details have changed. Prepare and review the token again before creating it.")]
+    TokenCreatorChanged,
+    #[error("The owner identity was not found on this network. Choose a different identity or refresh it and try again.")]
+    TokenCreatorOwnerNotFound,
+    #[error("This signing key is unavailable or no longer allowed. Unlock its wallet or choose a current authentication key.")]
+    TokenCreatorKeyUnavailable,
+    #[error("The owner has {available} credits and the registration charge alone is {required} credits. Add credits before creating the token.")]
+    TokenCreatorInsufficientCredits { available:u64,required:u64 },
+    #[error("A token creation is already running or awaiting confirmation. Check its status before starting another.")]
+    TokenCreatorBusy,
+    #[error("The token creation record could not be saved. Free space in the app's data folder and check the status before trying again.")]
+    TokenCreatorJournal { #[source] source: crate::wallet_backend::KvAdapterError },
+    #[error("The token creation could not be locked safely. Close other app instances and try again.")]
+    TokenCreatorLock { #[source] source: std::io::Error },
+    #[error("The creation request was not sent. Wait for a connection, then prepare and confirm the token again.")]
+    TokenCreatorNotSent { #[source] source: Box<dash_sdk::Error> },
+    #[error("Token creation is not yet confirmed for contract {contract_id}. Check its status before making another creation attempt.")]
+    TokenCreatorUnconfirmed { contract_id: dash_sdk::platform::Identifier, #[source] source: Box<dash_sdk::Error> },
+    #[error("Contract {contract_id} contains different settings from this review. Inspect the existing contract before preparing any new token.")]
+    TokenCreatorConflict { contract_id: dash_sdk::platform::Identifier },
+
     /// The wallet backend has not finished starting up yet. The lazy-init gate
     /// in [`AppContext::wallet_backend`](crate::context::AppContext::wallet_backend)
     /// returns this while the backend is still being built; every wallet and
@@ -442,6 +474,37 @@ pub enum TaskError {
     )]
     AssetLockTooManyInputs { count: usize, max: usize },
 
+    /// Upstream refused a built transfer or a resume; changing the requested
+    /// amount cannot change the inputs already selected for that transaction.
+    #[error(
+        "This transfer could not be sent or resumed because it combines {count} small amounts from your wallet; the network accepts at most {max}. Wait for your wallet to finish updating and check whether the transfer completed. If it did not, start a new transfer for a smaller amount, or combine part of your balance by sending it to yourself."
+    )]
+    AssetLockTransferTooManyInputs {
+        count: usize,
+        max: usize,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// An asset lock of this amount could only be funded together with coins
+    /// that are neither confirmed nor InstantSend locked yet. `waiting` is
+    /// the total value of those coins the build would spend, in duffs: not
+    /// the requested amount and not the shortfall. Nothing was built or sent,
+    /// and the same amount works once those coins confirm. Shared by every
+    /// asset-lock funding path, so the text names no single operation.
+    #[error(
+        "This amount would use {waiting_dash} of your funds that are still waiting to be confirmed. Wait a few minutes for the confirmation, then try again.",
+        waiting_dash = format_duffs_as_dash(*.waiting)
+    )]
+    AssetLockFundsAwaitingConfirmation {
+        waiting: u64,
+        /// The wallet's own refusal when a build or resume reported it. `None`
+        /// for the check made before the unlock prompt, which finds the same
+        /// condition on a trial build and has no wallet error to keep.
+        #[source]
+        source: Option<Box<platform_wallet::error::PlatformWalletError>>,
+    },
+
     /// The wallet's available amount is not quoted while another operation
     /// that moves the funds it is quoted from is in progress: one that can
     /// take or release its Core inputs (until it reserves them, no quote can
@@ -480,6 +543,19 @@ pub enum TaskError {
     )]
     ShieldFromPlatformCapacityExceeded {
         max_shieldable: u64,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Shielding from Platform was refused for capacity, but a later planner
+    /// snapshot covers the requested amount. The snapshot can miss a live
+    /// input shortfall or differ from the snapshot that rejected the request.
+    /// It does not establish which check failed, so no maximum is quoted and
+    /// the message does not claim the whole Platform balance fell short.
+    #[error(
+        "The wallet could not shield this amount with its current balance information. Wait for your Platform balance to refresh, then try again."
+    )]
+    ShieldFromPlatformBalanceChanged {
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
@@ -659,14 +735,14 @@ pub enum TaskError {
     )]
     WalletStorage {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// Another process currently owns the wallet database write lock.
     #[error("{}", WALLET_DATA_IN_USE)]
     WalletStorageInUse {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A wallet database migration failed because the app is not allowed to
@@ -677,7 +753,7 @@ pub enum TaskError {
     )]
     WalletStorageAccessDenied {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A pinned-PR wallet database could not be upgraded without losing data.
@@ -738,7 +814,7 @@ pub enum TaskError {
     )]
     WalletDataIncompatible {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// The wallet database refused to open because a folder on its path can be
@@ -755,7 +831,7 @@ pub enum TaskError {
     )]
     WalletDataFolderInsecure {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A vault passphrase or a Tier-2 object password was longer than the
@@ -1671,9 +1747,10 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
-    /// Tokio task join errors.
+    /// Tokio task join errors. Held redacted: a raw `JoinError` repeats the
+    /// task's panic message in its `Debug` and `Display`.
     #[error("An internal operation failed unexpectedly. Please restart the application.")]
-    JoinError(#[from] tokio::task::JoinError),
+    JoinError(#[source] BackendTaskJoinError),
 
     /// A backend task panicked or was cancelled before returning a result.
     #[error("The requested action stopped before it finished. Please try again. If it keeps stopping, restart the app.")]
@@ -1684,8 +1761,8 @@ pub enum TaskError {
 
     /// A caught task panic. The payload is kept out of this error, whose
     /// `Debug` reaches the banner's details panel. The process panic hook in
-    /// `logging.rs` still logs the payload, as it does for every panic, so a
-    /// panic message must never contain secrets.
+    /// `logging.rs` logs only a literal panic message; a formatted one is
+    /// redacted there.
     #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
     BackendTaskPanicked,
 
@@ -2034,6 +2111,16 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The request needs a Platform feature the network does not serve yet
+    /// (SdkError::ProtocolVersionNotActive); the SDK refused it without sending it.
+    #[error(
+        "This feature is not active on the network yet. Try again later, after the network upgrade."
+    )]
+    PlatformFeatureNotActive {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Platform rejected the request (StateTransitionBroadcastError, unclassified cause).
     #[error("The platform rejected this request. Please check your input and try again.")]
     PlatformRejected {
@@ -2100,6 +2187,18 @@ pub enum TaskError {
         "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
     )]
     PlatformResultUnconfirmed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The SDK refused the request before sending it, or no node can answer
+    /// it as asked: for example a document query no index of the contract
+    /// covers. Every node answers alike and waiting changes nothing; the
+    /// request itself has to change. The SDK's reason stays in the source.
+    #[error(
+        "This request cannot be answered the way it was entered, and waiting will not change that. Change the request, for example the query or its filters, and try again."
+    )]
+    PlatformRequestInvalid {
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2604,6 +2703,37 @@ pub enum TaskError {
         "The master key for this identity could not be found. Make sure the identity was created from this wallet."
     )]
     MasterKeyNotFound,
+
+    /// A private document type of a contract takes entries too small for its
+    /// largest document. Platform would register the type, but no full
+    /// document fits it and its entry size can never change, so the request
+    /// is refused before signing. Sizes are in bytes.
+    ///
+    /// The refusal does not say whether the type is new or already
+    /// registered, and the remedy differs: only a new type can take a larger
+    /// entry size. The message gives both.
+    #[error(
+        "The private document type {document_type} stores entries of {entry_size} bytes, but its largest document needs {minimum_entry_size}. For a new type, set its entry size to at least {minimum_entry_size}. For a type that is already registered, the entry size cannot change: make the added fields smaller, remove them, or define a new type."
+    )]
+    PrivateDocumentEntrySizeTooSmall {
+        document_type: String,
+        entry_size: u32,
+        minimum_entry_size: u32,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A field of a private document type sets no largest value, so no entry
+    /// size holds every document of the type. Refused before signing.
+    #[error(
+        "The field {property} of the private document type {document_type} has no maximum size. Give it a maximum size and try again."
+    )]
+    PrivateDocumentPropertyUnbounded {
+        document_type: String,
+        property: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// No withdrawal-capable key with locally-held private material was available
     /// to sign the operation (Platform requires a Transfer or Owner key you control).
@@ -3433,6 +3563,21 @@ pub enum TaskError {
         source: platform_wallet::wallet::shielded::FileShieldedStoreError,
     },
 
+    /// A shielded funding was resumed to a different shielded address than the
+    /// one recorded when its asset lock was built. Upstream pays nobody and
+    /// refuses the same request every time; only the recorded address works.
+    /// The outpoint and both addresses stay in the source chain.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::AssetLockRecipientMismatch`.
+    #[error(
+        "These funds were already set aside for a different shielded address, so nothing was sent. Shield them to the address you chose the first time."
+    )]
+    ShieldedFundingRecipientMismatch {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// An earlier identity-funded shielded payment is still unresolved, so the
     /// upstream coordinator refused to start this one. Nothing was built or
     /// broadcast; retrying immediately hits the same refusal.
@@ -3859,25 +4004,37 @@ impl TaskError {
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_in_use(&other) =>
             {
-                Self::WalletStorageInUse { source: other }
+                Self::WalletStorageInUse {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_resource_exhausted(&other) =>
             {
-                Self::WalletStorage { source: other }
+                Self::WalletStorage {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_access_denied(&other) =>
             {
-                Self::WalletStorageAccessDenied { source: other }
+                Self::WalletStorageAccessDenied {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
-                Self::WalletDataIncompatible { source: other }
+                Self::WalletDataIncompatible {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
-                Self::WalletDataFolderInsecure { source: other }
+                Self::WalletDataFolderInsecure {
+                    source: other.into(),
+                }
             }
-            other => Self::WalletStorage { source: other },
+            other => Self::WalletStorage {
+                source: other.into(),
+            },
         }
     }
 
@@ -4411,6 +4568,17 @@ impl From<SdkError> for TaskError {
             };
         }
 
+        // The broadcast went out and its result could not be read, so the
+        // request may have completed. This comes first: every mapping below
+        // that could match the cause, or the retry-exhaustion wrapper around
+        // it, advises a retry, and a retried payment is built anew and can pay
+        // twice.
+        if error.is_state_transition_result_unconfirmed() {
+            return TaskError::PlatformResultUnconfirmed {
+                source_error: Box::new(error),
+            };
+        }
+
         // Check DapiClientError for domain errors carried as gRPC Internal status.
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
@@ -4859,6 +5027,18 @@ impl From<SdkError> for TaskError {
             SdkError::StaleNode(_) => TaskError::DapiStaleNode {
                 source_error: boxed,
             },
+            // The SDK could not learn the network's version for a reason that
+            // can pass, so the feature may be active already: not an upgrade wait.
+            SdkError::ProtocolVersionNotActive { .. }
+                if boxed.is_transient_protocol_version_refusal() =>
+            {
+                TaskError::DapiUnavailable {
+                    source_error: boxed,
+                }
+            }
+            SdkError::ProtocolVersionNotActive { .. } => TaskError::PlatformFeatureNotActive {
+                source_error: boxed,
+            },
             SdkError::NoAvailableAddressesToRetry(_) => TaskError::DapiAllAddressesExhausted {
                 source: std::sync::Arc::new(TaskError::SdkError {
                     source_error: boxed,
@@ -4868,6 +5048,9 @@ impl From<SdkError> for TaskError {
                 source_error: boxed,
             },
             SdkError::AlreadyExists(_) => TaskError::PlatformAlreadyExists {
+                source_error: boxed,
+            },
+            SdkError::InvalidRequest(_) => TaskError::PlatformRequestInvalid {
                 source_error: boxed,
             },
             SdkError::NonceOverflow(_) => TaskError::IdentityNonceOverflow {
@@ -4883,6 +5066,26 @@ impl From<SdkError> for TaskError {
                     source_error: boxed,
                 }
             }
+            // The SDK refuses these before signing; the same contract is
+            // refused every time, so "try again later" would be wrong.
+            SdkError::Protocol(ProtocolError::PrivateDocumentEntrySizeTooSmall {
+                document_type_name,
+                entry_size,
+                minimum_entry_size,
+            }) => TaskError::PrivateDocumentEntrySizeTooSmall {
+                document_type: document_type_name.clone(),
+                entry_size: *entry_size,
+                minimum_entry_size: *minimum_entry_size,
+                source_error: boxed,
+            },
+            SdkError::Protocol(ProtocolError::UnboundedPrivateDocumentProperty {
+                document_type_name,
+                property_name,
+            }) => TaskError::PrivateDocumentPropertyUnbounded {
+                document_type: document_type_name.clone(),
+                property: property_name.clone(),
+                source_error: boxed,
+            },
             _ => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -4890,13 +5093,32 @@ impl From<SdkError> for TaskError {
     }
 }
 
+/// Whether `error` is `SpvProvider::get_quorum_public_key` answering that the
+/// masternode list has not synced yet (see `context_provider`).
+///
+/// The proof verifier wraps the provider's answer in `QuorumKeyUnavailable`,
+/// and the SDK's conversion lifts a provider `Config` failure out of the proof
+/// error to a top-level `ContextProviderError`, which it neither retries nor
+/// bans a node for. That top-level error is what a request returns. The two
+/// verifier shapes are matched as well, for an error that reaches DET without
+/// passing through that conversion. Only the provider's own readiness text
+/// counts: any other configuration failure is not a startup wait.
 fn sdk_error_is_masternode_list_not_ready(error: &SdkError) -> bool {
-    // Matches the `SpvProvider::get_quorum_public_key` payload from `context_provider`.
+    let provider_error = match error {
+        SdkError::ContextProviderError(provider_error)
+        | SdkError::Proof(
+            dash_sdk::ProofVerifierError::QuorumKeyUnavailable {
+                error: provider_error,
+                ..
+            }
+            | dash_sdk::ProofVerifierError::ContextProviderError(provider_error),
+        ) => provider_error,
+        _ => return false,
+    };
     matches!(
-        error,
-        SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
-            dash_sdk::error::ContextProviderError::Config(detail)
-        )) if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
+        provider_error,
+        dash_sdk::error::ContextProviderError::Config(detail)
+            if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
     )
 }
 
@@ -4945,6 +5167,40 @@ mod tests {
 
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    /// A joined task's panic message can embed any value. `TaskError`'s
+    /// `Debug` reaches the banner's details panel and the log, so neither it
+    /// nor anything in the error chain may repeat that message.
+    #[test]
+    fn join_error_never_repeats_the_panic_message() {
+        const SYNTHETIC_SECRET: &str = "synthetic-secret-4be1d2";
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let join_error = runtime
+            .block_on(async {
+                tokio::spawn(async {
+                    let secret = std::hint::black_box(SYNTHETIC_SECRET.to_owned());
+                    panic!("could not decrypt {secret}");
+                })
+                .await
+            })
+            .expect_err("the task panics");
+        assert!(join_error.is_panic());
+
+        let error = TaskError::from(join_error);
+        let mut rendered = vec![format!("{error:?}"), error.to_string()];
+        let mut source = std::error::Error::source(&error);
+        while let Some(cause) = source {
+            rendered.push(format!("{cause:?}"));
+            rendered.push(cause.to_string());
+            source = cause.source();
+        }
+        for text in &rendered {
+            assert!(!text.contains(SYNTHETIC_SECRET), "leaked: {text}");
+        }
+        assert!(format!("{error:?}").contains("panicked: true"), "{error:?}");
+    }
 
     /// The missing-wallet message offers both self-service paths: re-import
     /// from the recovery phrase on the same network, or the Settings restore.
@@ -5156,6 +5412,139 @@ mod tests {
                 assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
+        }
+    }
+
+    /// A request the SDK refuses as invalid, such as a document query no
+    /// index covers, cannot succeed later: every node would answer it alike.
+    /// Every task that passes SDK errors through `TaskError::from`, the
+    /// document fetches among them, must say to change the request, not to
+    /// try again later, and keep the SDK's refusal as the source. Matched on
+    /// the typed variant, never on the SDK's text.
+    #[test]
+    fn an_invalid_request_says_to_change_it_and_keeps_the_sdk_refusal() {
+        use std::error::Error;
+
+        let error = TaskError::from(SdkError::InvalidRequest(
+            "no index covers this query".to_string(),
+        ));
+
+        assert!(
+            matches!(error, TaskError::PlatformRequestInvalid { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This request cannot be answered the way it was entered, and waiting will not change that. Change the request, for example the query or its filters, and try again."
+        );
+        assert!(
+            matches!(
+                error
+                    .source()
+                    .and_then(|source| source.downcast_ref::<Box<SdkError>>())
+                    .map(Box::as_ref),
+                Some(SdkError::InvalidRequest(_))
+            ),
+            "the SDK's refusal must stay in the source chain"
+        );
+    }
+
+    /// The SDK refuses a contract whose private document type cannot hold its
+    /// own documents. The same contract is refused every time, so the message
+    /// names the type and what to change instead of advising a retry.
+    #[test]
+    fn private_document_refusals_name_the_type_and_the_fix() {
+        let too_small = TaskError::from(SdkError::Protocol(
+            ProtocolError::PrivateDocumentEntrySizeTooSmall {
+                document_type_name: "request".to_string(),
+                entry_size: 375,
+                minimum_entry_size: 398,
+            },
+        ));
+        assert!(
+            matches!(
+                &too_small,
+                TaskError::PrivateDocumentEntrySizeTooSmall {
+                    entry_size: 375,
+                    minimum_entry_size: 398,
+                    ..
+                }
+            ),
+            "{too_small:?}"
+        );
+        assert_eq!(
+            too_small.to_string(),
+            "The private document type request stores entries of 375 bytes, but its largest document needs 398. For a new type, set its entry size to at least 398. For a type that is already registered, the entry size cannot change: make the added fields smaller, remove them, or define a new type."
+        );
+
+        let unbounded = TaskError::from(SdkError::Protocol(
+            ProtocolError::UnboundedPrivateDocumentProperty {
+                document_type_name: "request".to_string(),
+                property_name: "label".to_string(),
+            },
+        ));
+        assert_eq!(
+            unbounded.to_string(),
+            "The field label of the private document type request has no maximum size. Give it a maximum size and try again."
+        );
+    }
+
+    /// What the SDK returns after a broadcast whose result could not be read
+    /// because no server answered: the unconfirmed result itself, and the same
+    /// wrapped by retry exhaustion.
+    fn unconfirmed_result_errors() -> [SdkError; 2] {
+        let unreachable = || {
+            SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::unavailable("connection refused"),
+            )))
+        };
+        [
+            SdkError::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            SdkError::NoAvailableAddressesToRetry(Box::new(
+                SdkError::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            )),
+        ]
+    }
+
+    /// A request that was broadcast and whose result is unknown may have
+    /// completed: a credit transfer retried on "try again" is built anew and
+    /// pays twice. It must tell the user to check first, and keep its source.
+    #[test]
+    fn unconfirmed_result_says_to_check_before_retrying() {
+        for sdk_error in unconfirmed_result_errors() {
+            let error = TaskError::from(sdk_error);
+            let TaskError::PlatformResultUnconfirmed { source_error } = &error else {
+                panic!("expected PlatformResultUnconfirmed, got {error:?}");
+            };
+            assert!(source_error.is_state_transition_result_unconfirmed());
+            assert_eq!(
+                error.to_string(),
+                "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
+            );
+        }
+    }
+
+    /// With every server unreachable the cause is a reachability failure, but
+    /// the request may still have completed, so the availability message
+    /// ("wait a minute and retry") must not replace the guidance. Nothing
+    /// special-cases this today: the cause sits behind the unconfirmed result
+    /// and is not seen as a reachability failure. This pins that outcome.
+    #[test]
+    fn dapi_availability_context_keeps_an_unconfirmed_result() {
+        for sdk_error in unconfirmed_result_errors() {
+            let direct =
+                TaskError::from(sdk_error).contextualize_dapi_availability(availability(1, 0));
+            assert!(
+                matches!(direct, TaskError::PlatformResultUnconfirmed { .. }),
+                "expected PlatformResultUnconfirmed, got {direct:?}"
+            );
+
+            let shared = std::sync::Arc::new(direct)
+                .contextualize_shared_dapi_availability(availability(1, 0));
+            assert!(
+                matches!(*shared, TaskError::PlatformResultUnconfirmed { .. }),
+                "expected PlatformResultUnconfirmed, got {shared:?}"
+            );
         }
     }
 
@@ -5800,6 +6189,63 @@ mod tests {
         }
     }
 
+    fn protocol_version_not_active(cause: Option<Box<SdkError>>) -> SdkError {
+        SdkError::ProtocolVersionNotActive {
+            method: "get_contract_fee_pots",
+            required: 15,
+            feature: None,
+            network: 14,
+            pinned: false,
+            cause,
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_protocol_version_not_active_maps_to_platform_feature_not_active() {
+        // The cause is this SDK's own setup: retrying cannot change the refusal.
+        let permanent_cause = Box::new(SdkError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config("no quorum source".to_string()),
+        ));
+        for sdk_err in [
+            protocol_version_not_active(None),
+            protocol_version_not_active(Some(permanent_cause)),
+        ] {
+            let err = TaskError::from(sdk_err);
+            match &err {
+                TaskError::PlatformFeatureNotActive { source_error } => assert!(
+                    matches!(**source_error, SdkError::ProtocolVersionNotActive { .. }),
+                    "source not preserved: {source_error:?}"
+                ),
+                other => panic!("expected PlatformFeatureNotActive, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_transient_protocol_version_refusal_maps_to_dapi_unavailable() {
+        let sdk_err = protocol_version_not_active(Some(Box::new(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))));
+        assert!(sdk_err.is_transient_protocol_version_refusal());
+        match TaskError::from(sdk_err) {
+            TaskError::DapiUnavailable { source_error } => assert!(
+                matches!(*source_error, SdkError::ProtocolVersionNotActive { .. }),
+                "source not preserved: {source_error:?}"
+            ),
+            other => panic!("expected DapiUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn platform_feature_not_active_display_is_user_friendly() {
+        let msg = TaskError::from(protocol_version_not_active(None)).to_string();
+        assert!(msg.contains("Try again"), "no action in: {msg}");
+        let lower = msg.to_lowercase();
+        for jargon in ["protocol", "sdk", "version", "get_contract_fee_pots", "15"] {
+            assert!(!lower.contains(jargon), "jargon {jargon:?} in: {msg}");
+        }
+    }
+
     #[test]
     fn from_sdk_error_missing_signing_key_maps_to_no_withdrawal_signing_key() {
         let sdk_err = SdkError::Protocol(
@@ -5898,11 +6344,41 @@ mod tests {
             crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL,
             sdk_detail
         );
-        let sdk_error = SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
-            dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
-        ));
+        // Through the SDK's own conversion of what the proof verifier returns
+        // when the provider cannot give a quorum key, not a hand-built shape.
+        let sdk_error = SdkError::from(dash_sdk::ProofVerifierError::QuorumKeyUnavailable {
+            quorum_type: 6,
+            quorum_hash: [0x51; 32],
+            core_chain_locked_height: 1_000,
+            error: dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
+        });
+        assert!(
+            matches!(
+                &sdk_error,
+                SdkError::ContextProviderError(dash_sdk::error::ContextProviderError::Config(_))
+            ),
+            "the SDK lifts a provider configuration failure out of the proof error: {sdk_error:?}"
+        );
 
         assert!(matches!(
+            TaskError::from(sdk_error),
+            TaskError::MasternodeListNotReady { .. }
+        ));
+    }
+
+    /// Only the provider's readiness answer is a startup wait. Another
+    /// configuration failure of the provider does not clear when sync catches
+    /// up, so it must not show the readiness banner.
+    #[test]
+    fn another_provider_configuration_failure_is_not_a_startup_wait() {
+        let sdk_error = SdkError::from(dash_sdk::ProofVerifierError::QuorumKeyUnavailable {
+            quorum_type: 6,
+            quorum_hash: [0x51; 32],
+            core_chain_locked_height: 1_000,
+            error: dash_sdk::error::ContextProviderError::Config("dump dir not set".to_string()),
+        });
+
+        assert!(!matches!(
             TaskError::from(sdk_error),
             TaskError::MasternodeListNotReady { .. }
         ));
@@ -6584,7 +7060,6 @@ mod tests {
     #[test]
     fn from_sdk_error_asset_lock_outpoint_insufficient_balance_via_consensus() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6612,7 +7087,6 @@ mod tests {
     #[test]
     fn from_sdk_error_asset_lock_outpoint_already_consumed_via_consensus() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6629,7 +7103,6 @@ mod tests {
     #[test]
     fn asset_lock_outpoint_already_consumed_display_is_actionable_and_non_retryable() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6650,7 +7123,6 @@ mod tests {
     #[test]
     fn from_sdk_error_asset_lock_outpoint_insufficient_balance_via_broadcast() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -6683,7 +7155,6 @@ mod tests {
     #[test]
     fn asset_lock_outpoint_insufficient_balance_display_includes_amounts() {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
-        use dashcore::hashes::Hash;
         let consensus = ConsensusError::from(
             IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
                 dashcore::Txid::from_byte_array([0u8; 32]),
@@ -7777,7 +8248,6 @@ mod tests {
 
     #[test]
     fn asset_lock_finality_timeout_display_is_user_friendly() {
-        use dashcore::hashes::Hash;
         let outpoint = dashcore::OutPoint::new(dashcore::Txid::from_byte_array([0u8; 32]), 0);
         let inner = platform_wallet::error::PlatformWalletError::FinalityTimeout(outpoint);
         let err = TaskError::AssetLockFinalityTimeout {
@@ -7928,12 +8398,8 @@ mod tests {
             assert!(
                 matches!(
                     &err,
-                    TaskError::WalletDataFolderInsecure {
-                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                            ancestor: a,
-                            ..
-                        },
-                    } if *a == ancestor
+                    TaskError::WalletDataFolderInsecure { source }
+                        if matches!(source.as_ref(), platform_wallet_storage::WalletStorageError::InsecureParentDir { ancestor: a, .. } if *a == ancestor)
                 ),
                 "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
             );

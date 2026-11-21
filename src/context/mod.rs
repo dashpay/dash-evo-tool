@@ -8,6 +8,7 @@ mod dpns_vote_operations;
 mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
+pub(crate) mod token_registration;
 pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub mod feature_gate;
@@ -78,7 +79,8 @@ use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
-pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
+/// Stack budget for SDK proof verification on worker and blocking threads.
+pub const SDK_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
 type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
@@ -178,6 +180,11 @@ pub struct AppContext {
     user_role: UserRoleCell,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
+    /// TEST SEAM (compiled only into `cargo test` builds): the protocol
+    /// version tests declare proven for the current SDK. See
+    /// [`test_support::ProvenProtocolVersionOverride`].
+    #[cfg(test)]
+    pub(crate) proven_protocol_version_for_tests: test_support::ProvenProtocolVersionOverride,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
@@ -609,6 +616,8 @@ impl AppContext {
             user_role,
             db,
             sdk: ArcSwap::from_pointee(sdk),
+            #[cfg(test)]
+            proven_protocol_version_for_tests: Default::default(),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
             system_contracts,
@@ -1148,7 +1157,15 @@ impl AppContext {
     /// version transitions are built at, and whether the proven version is
     /// newer than any this build defines.
     pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
-        self.sdk.load().protocol_version_info()
+        let sdk = self.sdk.load();
+        let info = sdk.protocol_version_info();
+        // TEST SEAM: compiled only into `cargo test` builds; every other build
+        // returns the SDK's answer unchanged.
+        // TODO(upstream): drop once the SDK offers a mock seam for a verified
+        // version (https://github.com/dashpay/platform/issues/5622).
+        #[cfg(test)]
+        let info = self.proven_protocol_version_for_tests.apply(&sdk, info);
+        info
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -1265,10 +1282,9 @@ impl AppContext {
         drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK. The
+        // Rebind the provider to hold the new AppContext reference. The
         // clone shares the provider's state, so binding it binds the one the
-        // context holds.
+        // context and the new SDK hold.
         provider.bind_app_context(self.clone());
 
         Ok(())
@@ -1362,7 +1378,8 @@ impl AppContext {
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::ProofErrorLogged,
             ))
             .await

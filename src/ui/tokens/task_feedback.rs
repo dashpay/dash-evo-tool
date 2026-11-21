@@ -20,6 +20,21 @@ impl DomainFeedback for TokensFeedback {
                 MessageType::Info,
             );
         }
+        if let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result {
+            use crate::model::token_creator::registration::RegistrationStatus;
+            let (text, kind) = if outcome.record.status == RegistrationStatus::Confirmed {
+                (
+                    "The token was created. Open Token Creator to view the saved receipt.",
+                    MessageType::Success,
+                )
+            } else {
+                (
+                    "Token creation is not yet confirmed. Open Token Creator and check its status before making another attempt.",
+                    MessageType::Info,
+                )
+            };
+            MessageBanner::set_global(feedback.ctx, text, kind).disable_auto_dismiss();
+        }
         Vec::new()
     }
 }

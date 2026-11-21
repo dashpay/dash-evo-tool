@@ -330,6 +330,7 @@ contract](#ab-build-comparison-contract) above applied in each file's own
 
 | Scenario | What it verifies |
 |---|---|
+| [`token-creator-workspace.md`](scenarios/token-creator-workspace.md) | Seven-section drafting, exact amounts, advanced settings, help/focus, final review and optional separately authorized testnet registration/recovery |
 | [`identity-key-recovery-migration.md`](scenarios/identity-key-recovery-migration.md) | Key-placement resolution and legacy-key recovery (#941, #945, #946, #948): keys found/signed/restored/removed correctly regardless of internal filing convention; Keys screen reachable from every interface level; same-numbered-key collisions never cross-contaminate |
 | [`wallet-max-send-asset-lock.md`](scenarios/wallet-max-send-asset-lock.md) | "Max" agrees with what the wallet can build/send across Shield/Fund-Platform-Address/Create-Identity/Top-Up/Transfer/Withdraw (#937, #927), including dust-wallet and rapid-UTXO-churn variants |
 | [`dpns-registration-flow.md`](scenarios/dpns-registration-flow.md) | Usernames in Identities: list, request, availability and review, contested-vs-registered messaging, request status, make-main, and DashPay social-profile save feedback (#918, #901) |

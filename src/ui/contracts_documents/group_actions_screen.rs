@@ -82,7 +82,7 @@ pub struct GroupActionsScreen {
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
     /// Whether `selected_identity` can send token transactions, read once per
-    /// selected identity rather than every frame.
+    /// selected identity and re-read only while it waits for its wallet.
     selected_identity_token_actions: Option<(Identifier, TokenActionAvailability)>,
 
     // Backend task status
@@ -164,8 +164,15 @@ impl GroupActionsScreen {
     /// Why the selected identity cannot sign group token actions, if it cannot.
     fn selected_identity_token_action_block(&mut self) -> Option<&'static str> {
         let identity_id = self.selected_identity.as_ref()?.identity.id();
-        let availability = match self.selected_identity_token_actions {
-            Some((cached_id, availability)) if cached_id == identity_id => availability,
+        let availability = match &mut self.selected_identity_token_actions {
+            Some((cached_id, availability)) if *cached_id == identity_id => {
+                crate::ui::tokens::recheck_token_action_availability(
+                    &self.app_context,
+                    &identity_id,
+                    availability,
+                );
+                *availability
+            }
             _ => {
                 let availability = crate::ui::tokens::load_token_action_availability(
                     &self.app_context,
@@ -738,6 +745,35 @@ mod sdk_adapter_tests {
         assert!(GroupActionsScreen::supports_token_event_action(
             &TokenEvent::Mint(12, identity, None)
         ));
+    }
+
+    /// The selected identity's cached block is re-read while it waits for its
+    /// wallet, so co-signing becomes possible once the wallet has loaded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn group_token_actions_unblock_once_the_wallet_loads() {
+        use crate::context::test_support::{bare_user_identity, wired_test_app_context};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let seed_hash = crate::model::wallet::Wallet::new_from_seed(seed, ctx.network, None, None)
+            .expect("build wallet")
+            .seed_hash();
+        let identity = bare_user_identity(Identifier::from([0x62; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let mut screen = GroupActionsScreen::new(&ctx);
+        screen.selected_identity = Some(identity);
+        assert_eq!(
+            screen.selected_identity_token_action_block(),
+            Some(crate::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET)
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        assert_eq!(screen.selected_identity_token_action_block(), None);
     }
 
     /// Co-signing a group token action is a token transaction. An identity no

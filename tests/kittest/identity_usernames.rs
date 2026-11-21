@@ -102,18 +102,17 @@ pub(crate) fn seed_username_identity(
 }
 
 fn mount(screen: RegisterDpnsNameScreen) -> Harness<'static, RegisterDpnsNameScreen> {
-    let mut harness =
-        crate::support::allowing_unnamed_widgets(crate::support::builder_with_app_fonts())
-            .with_size(egui::vec2(1280.0, 900.0))
-            .build_ui_state(
-                |ui, screen: &mut RegisterDpnsNameScreen| {
-                    if !crate::support::prepare_app_theme(ui) {
-                        return;
-                    }
-                    screen.ui(ui);
-                },
-                screen,
-            );
+    let mut harness = crate::support::builder_with_app_fonts()
+        .with_size(egui::vec2(1280.0, 900.0))
+        .build_ui_state(
+            |ui, screen: &mut RegisterDpnsNameScreen| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
+                screen.ui(ui);
+            },
+            screen,
+        );
     harness.run();
     harness
 }

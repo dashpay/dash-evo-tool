@@ -191,17 +191,20 @@ impl TransitionVisualizerScreen {
     }
 
     fn show_input_field(&mut self, ui: &mut Ui) {
-        ui.label("Enter hex, base64, or comma-separated integers for state transition:");
+        let input_label =
+            ui.label("Enter hex, base64, or comma-separated integers for state transition:");
         ui.add_space(5.0);
         let dark_mode = ui.style().visuals.dark_mode;
-        let response = ui.add(
-            styled_text_edit_multiline(&mut self.input_data)
-                .desired_rows(6)
-                .desired_width(ui.available_width())
-                .text_color(DashColors::text_primary(dark_mode))
-                .background_color(DashColors::input_background(dark_mode))
-                .code_editor(),
-        );
+        let response = ui
+            .add(
+                styled_text_edit_multiline(&mut self.input_data)
+                    .desired_rows(6)
+                    .desired_width(ui.available_width())
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode))
+                    .code_editor(),
+            )
+            .labelled_by(input_label.id);
 
         ui.add_space(10.0);
 
@@ -216,7 +219,7 @@ impl TransitionVisualizerScreen {
 
         ui.separator();
         ui.add_space(10.0);
-        ui.label("Parsed State Transition:");
+        let output_label = ui.label("Parsed State Transition:");
 
         // Show detected contract IDs if any
         if !self.detected_contract_ids.is_empty() {
@@ -259,7 +262,8 @@ impl TransitionVisualizerScreen {
                         .text_color(DashColors::text_primary(dark_mode))
                         .background_color(DashColors::input_background(dark_mode))
                         .font(egui::TextStyle::Monospace),
-                );
+                )
+                .labelled_by(output_label.id);
 
                 ui.add_space(10.0);
 
@@ -620,16 +624,15 @@ mod tests {
         );
         // Simulate a non-JSON fallback pane: broadcasting must ignore its text.
         parsed.rendered = "Debug representation:\nnot JSON".to_owned();
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
-            .build_ui_state(
-                |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
-                    let next = screen.show_output(ui);
-                    if !matches!(next, AppAction::None) {
-                        *action = next;
-                    }
-                },
-                (screen, AppAction::None),
-            );
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, (screen, action): &mut (TransitionVisualizerScreen, AppAction)| {
+                let next = screen.show_output(ui);
+                if !matches!(next, AppAction::None) {
+                    *action = next;
+                }
+            },
+            (screen, AppAction::None),
+        );
         harness.run();
         harness
             .get_by_label("Broadcast Transition to Platform")

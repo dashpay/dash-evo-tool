@@ -131,7 +131,7 @@ const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 /// Populate only key payloads, preserving the captured v0.9.3 encoding layout.
 fn v093_masternode_blob() -> Vec<u8> {
-    use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
+    use dash_sdk::dpp::dashcore::hashes::hash160;
     use dash_sdk::dpp::secp256k1::PublicKey;
     let public_hash = |key: &[u8; 32]| {
         let key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*(key))

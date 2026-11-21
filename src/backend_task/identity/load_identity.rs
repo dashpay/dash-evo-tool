@@ -3230,12 +3230,12 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
-    /// A load an MCP client requested reports its save warning to that client
-    /// alone: the result carries it, and a GUI hosting the server shows no
-    /// banner for a request its user did not start.
+    /// Load a stored masternode through the MCP dispatcher while the wallet
+    /// store cannot be read. Returns the load's result and the GUI's banners.
     #[cfg(any(feature = "mcp", feature = "cli"))]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_mcp_load_returns_its_save_warning_and_raises_no_gui_banner() {
+    async fn mcp_load_with_unreadable_wallet_store(
+        wallet_link: Option<(WalletSeedHash, u32)>,
+    ) -> (Result<BackendTaskSuccessResult, TaskError>, Vec<String>) {
         use crate::backend_task::BackendTask;
         use crate::backend_task::identity::IdentityTask;
         use dash_sdk::dpp::document::DocumentV0Getters;
@@ -3250,8 +3250,8 @@ mod tests {
         );
         node.identity_type = IdentityType::Masternode;
         let node_id = node.identity.id();
-        ctx.insert_local_qualified_identity(&node, &None)
-            .expect("the node is stored wallet-less");
+        ctx.insert_local_qualified_identity(&node, &wallet_link)
+            .expect("the node is stored");
         let name = crate::context::test_support::dpns_name_document(
             node_id,
             "node",
@@ -3299,6 +3299,19 @@ mod tests {
         .await;
         backend.set_unowned_read_test_failure(false);
 
+        let banners = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+        backend.shutdown().await;
+        (result, banners)
+    }
+
+    /// A load an MCP client requested reports its save warning to that client
+    /// alone: the result carries it, and a GUI hosting the server shows no
+    /// banner for a request its user did not start.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_mcp_load_returns_its_save_warning_and_raises_no_gui_banner() {
+        let (result, banners) = mcp_load_with_unreadable_wallet_store(None).await;
+
         assert!(
             matches!(
                 result,
@@ -3309,8 +3322,27 @@ mod tests {
             ),
             "{result:?}"
         );
-        let banners = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
         assert!(banners.is_empty(), "{banners:?}");
-        backend.shutdown().await;
+    }
+
+    /// The same for a node whose record keeps its wallet link: the client is
+    /// told why, in the wallet store's own words, and the GUI shows nothing.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_mcp_load_that_keeps_a_wallet_link_returns_it_and_raises_no_gui_banner() {
+        let (result, banners) = mcp_load_with_unreadable_wallet_store(Some(([7; 32], 0))).await;
+
+        let Ok(BackendTaskSuccessResult::LoadedIdentity {
+            warning: Some(warning @ IdentitySaveWarning::WalletLinkKept { .. }),
+            ..
+        }) = result
+        else {
+            panic!("expected a kept-link warning, got {result:?}");
+        };
+        assert_eq!(
+            warning.to_string(),
+            TaskError::WalletStorageNotReady.to_string()
+        );
+        assert!(banners.is_empty(), "{banners:?}");
     }
 }

@@ -6008,7 +6008,44 @@ async fn a_kept_wallet_link_warns_the_user() {
     backend.set_unowned_read_test_failure(false);
 
     let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
-    assert_eq!(banner_texts.len(), 1, "{banner_texts:?}");
+    assert_eq!(
+        banner_texts,
+        vec![TaskError::WalletStorageNotReady.to_string()],
+        "the banner says why, in the wallet store's own words"
+    );
+
+    backend.shutdown().await;
+}
+
+/// A kept link is reported only once the record is written: a save that then
+/// fails keeps no link worth reporting, so the user sees only its error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_wallet_link_whose_write_fails_raises_no_warning() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
+    let owned = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+    // Fail the record write, which runs after the mirror check.
+    let store = ctx.det_kv().expect("kv handle").failing_store();
+    store.fail_next_puts_containing("det:identity:v1", 1);
+    ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store));
+
+    backend.set_unowned_read_test_failure(true);
+    let outcome = ctx.insert_local_qualified_identity(&owned, &None);
+    backend.set_unowned_read_test_failure(false);
+
+    assert!(
+        outcome.is_err(),
+        "precondition: the write must fail, got {outcome:?}"
+    );
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    assert!(banner_texts.is_empty(), "{banner_texts:?}");
 
     backend.shutdown().await;
 }

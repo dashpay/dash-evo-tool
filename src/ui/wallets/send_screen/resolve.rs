@@ -134,7 +134,7 @@ impl WalletSendScreen {
 
     /// A wallet unlocked for its quotes is asked again once registered;
     /// until then its earlier failures read as still checking.
-    fn awaits_registration(&self, seed_hash: &WalletSeedHash) -> bool {
+    pub(super) fn awaits_registration(&self, seed_hash: &WalletSeedHash) -> bool {
         self.requote_on_registration.as_ref() == Some(seed_hash)
     }
 

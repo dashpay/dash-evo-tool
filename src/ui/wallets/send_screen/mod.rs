@@ -1200,10 +1200,14 @@ impl WalletSendScreen {
             ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
         } else if let Some(reason) = self.spend_limits.unavailable(&seed_hash, kind, revision) {
             ui.label(reason.message());
-        } else if self.spend_limits.is_failed(&seed_hash, kind, revision) {
-            ui.label("The available amount could not be checked.");
-            if ui.button("Retry available amount check").clicked() {
-                self.spend_limits.invalidate();
+        } else if self.spend_limits.is_failed(&seed_hash, kind, revision)
+            && !self.awaits_registration(&seed_hash)
+        {
+            if !self.render_quote_unlock(ui, false) {
+                ui.label("The available amount could not be checked.");
+                if ui.button("Retry available amount check").clicked() {
+                    self.spend_limits.invalidate();
+                }
             }
         } else if self.spend_limits.get(&seed_hash, kind, revision).is_none() {
             ui.label("Checking the available amount…");
@@ -1223,10 +1227,13 @@ impl WalletSendScreen {
             return;
         }
 
-        let failed = self.asset_lock_balance.is_failed(&seed_hash);
+        let failed =
+            self.asset_lock_balance.is_failed(&seed_hash) && !self.awaits_registration(&seed_hash);
         let loading = self.asset_lock_max_amount(&seed_hash).is_err();
         if self.asset_lock_balance.is_busy(&seed_hash) {
             ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if failed && self.render_quote_unlock(ui, false) {
+            return;
         } else if failed {
             ui.label("The available amount could not be checked.");
         } else if loading {

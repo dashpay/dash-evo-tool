@@ -524,21 +524,7 @@ impl WalletSendScreen {
     /// Auto's line for a balance whose quote failed, with the way out: unlock
     /// a wallet the backend registers only once unlocked, else retry.
     fn render_auto_quote_failed(&mut self, ui: &mut Ui, kind: PayFromKind) {
-        let locked = self
-            .quote_needs_unlock
-            .is_some_and(|seed_hash| Some(seed_hash) == self.selected_wallet_seed_hash)
-            && self
-                .selected_wallet
-                .as_ref()
-                .is_some_and(wallet_needs_unlock);
-        if locked {
-            let wallet = self.paying_wallet_name();
-            status_line(ui, format!("Auto: unlock {wallet} to check its balances."));
-            if ui.button("Unlock").clicked() {
-                self.unlock_target = self.selected_wallet.clone();
-                self.unlock_then_send = false;
-                self.wallet_unlock_popup.open();
-            }
+        if self.render_quote_unlock(ui, true) {
             return;
         }
         status_line(
@@ -552,6 +538,36 @@ impl WalletSendScreen {
             self.asset_lock_balance.invalidate();
             self.spend_limits.invalidate();
         }
+    }
+
+    /// When the paying wallet's quote waits for an unlock, say so and offer
+    /// it; true when it did.
+    pub(super) fn render_quote_unlock(&mut self, ui: &mut Ui, auto: bool) -> bool {
+        let locked = self
+            .quote_needs_unlock
+            .is_some_and(|seed_hash| Some(seed_hash) == self.selected_wallet_seed_hash)
+            && self
+                .selected_wallet
+                .as_ref()
+                .is_some_and(wallet_needs_unlock);
+        if !locked {
+            return false;
+        }
+        let wallet = self.paying_wallet_name();
+        status_line(
+            ui,
+            if auto {
+                format!("Auto: unlock {wallet} to check its balances.")
+            } else {
+                format!("Unlock {wallet} to check the available amount.")
+            },
+        );
+        if ui.button("Unlock").clicked() {
+            self.unlock_target = self.selected_wallet.clone();
+            self.unlock_then_send = false;
+            self.wallet_unlock_popup.open();
+        }
+        true
     }
 
     fn render_identity_picker(

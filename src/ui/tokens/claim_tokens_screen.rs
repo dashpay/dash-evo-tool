@@ -364,6 +364,9 @@ impl ClaimTokensScreen {
         let Some(pending) = self.confirmation_dialog.take() else {
             return AppAction::None;
         };
+        if self.status == ClaimTokensStatus::WaitingForResult {
+            return AppAction::None;
+        }
         self.status = ClaimTokensStatus::WaitingForResult;
         self.refresh_banner.take_and_clear();
         let handle = MessageBanner::set_global(
@@ -378,8 +381,9 @@ impl ClaimTokensScreen {
 
     /// Whether Claim may be pressed for the selected distribution.
     fn claim_allowed(&self) -> bool {
-        !(self.once_per_identity_refused
-            && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
+        self.status != ClaimTokensStatus::WaitingForResult
+            && !(self.once_per_identity_refused
+                && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -943,6 +947,23 @@ mod tests {
             panic!("a claim was confirmed");
         };
         assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
+
+    /// A claim is charged, so a second confirmation while the first is in
+    /// flight must not send it again.
+    #[test]
+    fn a_claim_in_flight_is_never_sent_twice() {
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.open_claim_confirmation();
+        assert!(
+            matches!(screen.confirm_claim(), AppAction::BackendTasks(..)),
+            "the first confirmation sends the claim"
+        );
+        screen.open_claim_confirmation();
+        assert!(
+            matches!(screen.confirm_claim(), AppAction::None),
+            "a second confirmation while waiting must not send it again"
+        );
     }
 
     /// Regression: a refused second claim left Claim enabled with no note, so

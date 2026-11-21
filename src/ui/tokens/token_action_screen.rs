@@ -394,6 +394,9 @@ impl<A: TokenAction> TokenActionScreen<A> {
     }
 
     fn submit(&mut self) -> AppAction {
+        if self.common.status == TokenActionStatus::WaitingForResult {
+            return AppAction::None;
+        }
         let Some(signing_key) =
             validate_signing_key(&self.common.app_context, self.common.selected_key.as_ref())
         else {
@@ -622,9 +625,14 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 || !button_text.contains("Test")
             {
                 ui.add_space(10.0);
-                let ready = self.action.inputs_ready();
+                let in_flight = self.common.status == TokenActionStatus::WaitingForResult;
+                let ready = self.action.inputs_ready() && !in_flight;
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
-                    .disabled_tooltip(self.action.disabled_reason())
+                    .disabled_tooltip(if in_flight {
+                        "Wait for the current action to finish."
+                    } else {
+                        self.action.disabled_reason()
+                    })
                     .clicked()
                 {
                     let message = self.action.confirm_message(&self.ctx());
@@ -658,5 +666,33 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::MintAction;
+    use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
+
+    /// A token action cannot be undone, so a second confirmation while the
+    /// first is in flight must not send it again.
+    #[test]
+    fn a_token_action_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut screen = TokenActionScreen::<MintAction>::new(info.clone(), &context);
+        screen.common.selected_key = Some(signing_key());
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+
+        assert!(
+            matches!(screen.submit(), AppAction::BackendTask(_)),
+            "the first confirmation sends the action"
+        );
+        assert!(
+            matches!(screen.submit(), AppAction::None),
+            "a second confirmation while waiting must not send it again"
+        );
     }
 }

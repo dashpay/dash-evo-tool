@@ -221,6 +221,9 @@ impl TransferTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        if self.transfer_tokens_status == TransferTokensStatus::WaitingForResult {
+            return AppAction::None;
+        }
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
@@ -602,11 +605,16 @@ impl ScreenLike for TransferTokensScreen {
 
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
+                let in_flight =
+                    self.transfer_tokens_status == TransferTokensStatus::WaitingForResult;
                 let ready = self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
-                    && has_enough_balance;
-                let hover_text = if !has_enough_balance {
+                    && has_enough_balance
+                    && !in_flight;
+                let hover_text = if in_flight {
+                    "Wait for the current transfer to finish.".to_string()
+                } else if !has_enough_balance {
                     format!(
                         "Insufficient identity balance for fee (need at least {})",
                         format_credits_as_dash(estimated_fee)
@@ -687,5 +695,72 @@ impl ScreenLike for TransferTokensScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_contract::InsertTokensToo;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    /// A transfer is irreversible, so a second confirmation while the first
+    /// is in flight must not send it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_transfer_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let contract = context.dpns_contract();
+        context
+            .insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
+            .unwrap();
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: contract.id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &context);
+        screen.identity = Some(identity);
+        screen.selected_key = Some(
+            IdentityPublicKeyV0 {
+                id: 0,
+                key_type: KeyType::ECDSA_HASH160,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::CRITICAL,
+                read_only: false,
+                data: BinaryData::new(vec![1; 20]),
+                disabled_at: None,
+                contract_bounds: None,
+            }
+            .into(),
+        );
+        screen.amount = Some(Amount::new(5, 0));
+        screen.receiver_identity_id = Identifier::from([5; 32]).to_string(Encoding::Base58);
+
+        assert!(
+            matches!(screen.confirmation_ok(), AppAction::BackendTask(_)),
+            "the first confirmation sends the transfer"
+        );
+        assert!(
+            matches!(screen.confirmation_ok(), AppAction::None),
+            "a second confirmation while waiting must not send it again"
+        );
     }
 }

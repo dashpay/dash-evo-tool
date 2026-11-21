@@ -273,7 +273,7 @@ impl TokenAction for MintAction {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::qualified_contract::QualifiedContract;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
@@ -283,7 +283,7 @@ mod tests {
     use dash_sdk::dpp::platform_value::BinaryData;
 
     /// Token info whose token sends new tokens to `destination` by default.
-    fn token_info(
+    pub(crate) fn token_info(
         context: &Arc<AppContext>,
         destination: Option<Identifier>,
         allow_choosing: bool,
@@ -316,7 +316,7 @@ mod tests {
         }
     }
 
-    fn signing_key() -> IdentityPublicKey {
+    pub(crate) fn signing_key() -> IdentityPublicKey {
         IdentityPublicKeyV0 {
             id: 0,
             key_type: KeyType::ECDSA_HASH160,

@@ -2595,19 +2595,18 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// A spend from Platform addresses would leave too little on them for the
-    /// network fee. The message names no amount left: which address pays
-    /// depends on the fee strategy, which the refusal does not carry.
+    /// Platform refused a payment whose addresses do not cover what it
+    /// requires. The message stays neutral: the refusal does not say whether
+    /// the requirement was a fee (on an input or, under `ReduceOutput`, on
+    /// the output) or the outputs' total of an asset-lock address funding.
     #[error(
-        "Not enough would be left on your Platform addresses to pay the network fee. \
-         The network needs {required_dash} available for this fee. \
-         Send a smaller amount, or add funds to your Platform addresses, and try again.",
-        required_dash = format_credits_as_dash(*.required)
+        "The network refused this payment because the funds it spends do not cover it. \
+         Check the amount and your balance, then try again."
     )]
     PlatformAddressInsufficientFunds {
         /// The most any one spending address would have left after the amount.
         available: u64,
-        /// The fee Platform requires to be left for it.
+        /// What Platform required: a fee or the outputs' total.
         required: u64,
         #[source]
         source_error: Box<SdkError>,
@@ -7205,8 +7204,8 @@ mod tests {
         );
     }
 
-    /// Platform's refusal of a Platform-address spend that leaves too little
-    /// on its inputs for the network fee states the amounts and what to do.
+    /// Platform's refusal of a payment its addresses do not cover gets the
+    /// dedicated variant, with its amounts kept out of the jargon-free message.
     #[test]
     fn from_sdk_error_addresses_not_enough_funds() {
         use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -7231,10 +7230,6 @@ mod tests {
             ),
             "got {err:?}"
         );
-        assert!(
-            msg.contains("0.000153085 DASH"),
-            "message lacks the fee: {msg}"
-        );
         for jargon in [
             "unexpected",
             "consensus",
@@ -7244,10 +7239,36 @@ mod tests {
         ] {
             assert!(!msg.contains(jargon), "message contains {jargon}: {msg}");
         }
-        assert!(
-            msg.contains("Send a smaller amount"),
-            "message lacks an action: {msg}"
-        );
+    }
+
+    /// The refusal's required amount is a fee for Drive's fee check (also
+    /// under `ReduceOutput`, where the fee comes from the output) but the
+    /// outputs' total for asset-lock address funding. The message claims
+    /// neither, names no amount and gives an action that fits both.
+    #[test]
+    fn addresses_not_enough_funds_message_does_not_call_the_requirement_a_fee() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressesNotEnoughFundsError;
+        // A fee-check shortfall, then an asset-lock funding outputs' total.
+        for required in [15_308_500, 500_000_000] {
+            let consensus = ConsensusError::from(AddressesNotEnoughFundsError::new(
+                std::collections::BTreeMap::from([(
+                    PlatformAddress::P2pkh([1u8; 20]),
+                    (2, 15_200_400),
+                )]),
+                required,
+            ));
+            let msg = TaskError::from(SdkError::from(consensus)).to_string();
+            assert!(!msg.contains("fee"), "message calls it a fee: {msg}");
+            assert!(
+                !msg.contains(&format_credits_as_dash(required)),
+                "message names the required amount: {msg}"
+            );
+            assert!(
+                msg.contains("Check the amount"),
+                "message lacks an action: {msg}"
+            );
+        }
     }
 
     /// With several spending addresses, `available` is the most any one of

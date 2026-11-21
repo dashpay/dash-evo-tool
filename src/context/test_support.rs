@@ -157,7 +157,8 @@ pub(crate) async fn wired_mock_sdk_test_app_context(dir: &Path) -> Arc<AppContex
     wire_wallet_backend(context).await
 }
 
-async fn wire_wallet_backend(context: Arc<AppContext>) -> Arc<AppContext> {
+/// Wire `context`'s wallet backend, as [`wired_test_app_context`] does.
+pub(crate) async fn wire_wallet_backend(context: Arc<AppContext>) -> Arc<AppContext> {
     let (tx, _rx) = tokio::sync::mpsc::channel(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
     context

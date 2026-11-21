@@ -386,7 +386,15 @@ impl TokensScreen {
             self.creator_workspace.notice = Some(format!("{}: {source}", source.field));
             self.creator_workspace.error_section = Some(source.section);
         }
-        self.creator_workspace.recovery_loaded = false;
+        // A creation Platform already confirmed stays shown; the journal may still lag it.
+        let confirmed = self
+            .creator_workspace
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.record.status == RegistrationStatus::Confirmed);
+        if !confirmed {
+            self.creator_workspace.recovery_loaded = false;
+        }
     }
 }
 
@@ -592,5 +600,82 @@ mod tests {
         assert_eq!(screen.creator_workspace.pending, Some(request.clone()));
         screen.workspace_error(&request, &TaskError::TokenCreatorChanged);
         assert!(screen.creator_workspace.pending.is_none());
+    }
+
+    /// A creation Platform confirmed, with the receipt journal still at
+    /// `Submitted` because saving it failed.
+    fn confirmed_but_unsaved(
+        context: &std::sync::Arc<crate::context::AppContext>,
+    ) -> (
+        TokensScreen,
+        crate::model::token_creator::registration::RegistrationRecord,
+    ) {
+        use crate::model::token_creator::registration::{RegistrationOutcome, RegistrationRecord};
+        use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
+        let version = PlatformVersion::latest();
+        let contract = prepared(context).contract;
+        let mut record = RegistrationRecord {
+            attempt_id: [5; 32],
+            network: context.network,
+            owner: contract.owner_id(),
+            contract_id: contract.id(),
+            token_id: contract.token_id(0).unwrap(),
+            nonce: 3,
+            key_id: 0,
+            protocol_version: version.protocol_version,
+            contract_bytes: contract
+                .serialize_to_bytes_with_platform_version(version)
+                .unwrap(),
+            alias: "Fixture".into(),
+            status: RegistrationStatus::Submitted,
+        };
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record)
+            .unwrap();
+        record.status = RegistrationStatus::Confirmed;
+        let mut screen =
+            TokensScreen::new(context, super::super::super::TokensSubscreen::TokenCreator);
+        screen.creator_workspace.recovery = Some(record.clone());
+        screen.creator_workspace.recovery_loaded = true;
+        screen.creator_workspace.outcome = Some(RegistrationOutcome {
+            record: record.clone(),
+            local_cache_saved: false,
+            journal_saved: false,
+        });
+        (screen, record)
+    }
+
+    fn render_review(screen: TokensScreen) -> egui_kittest::Harness<'static, TokensScreen> {
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1000.0, 1600.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    screen.render_workspace_review(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    /// A failed retry must not hide a creation Platform already confirmed.
+    #[test]
+    fn a_failed_receipt_retry_keeps_the_confirmed_token_shown() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (mut screen, record) = confirmed_but_unsaved(&context);
+        let request = BackendTaskContext::for_dispatch_on(&BackendTask::None, context.network);
+        screen.creator_workspace.pending = Some(request.clone());
+        screen.workspace_error(&request, &TaskError::TokenCreatorChanged);
+        let harness = render_review(screen);
+        assert!(harness.query_by_label("Token created").is_some());
+        assert!(
+            harness
+                .query_by_label_contains(&record.token_id.to_string(Encoding::Base58))
+                .is_some()
+        );
     }
 }

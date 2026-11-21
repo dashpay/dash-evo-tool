@@ -20,7 +20,6 @@
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
@@ -216,7 +215,6 @@ impl BootApp {
     /// and shows it in the startup failure dialog with this run's log file.
     pub fn failed(error: &(dyn std::error::Error + 'static), outcome: &StartupOutcome) -> Self {
         tracing::error!(error = ?error, "Startup failed; showing the startup failure dialog");
-        outcome.mark_failed();
         // A data folder step names itself; a typed task error in the chain
         // still takes precedence over this fallback.
         let fallback = std::iter::successors(Some(error), |&error| error.source())
@@ -225,11 +223,10 @@ impl BootApp {
                 crate::model::error_report::GENERIC_STARTUP_FAILURE,
                 PrepareEnvironmentError::user_message,
             );
-        BootApp::Failed(StartupFailure::with_fallback(
-            error,
-            fallback,
-            crate::logging::log_file_path(),
-        ))
+        let failure =
+            StartupFailure::with_fallback(error, fallback, crate::logging::log_file_path());
+        outcome.mark_failed(&failure);
+        BootApp::Failed(failure)
     }
 
     /// Attempt to open the vault with the supplied passphrase and, on success,
@@ -309,8 +306,8 @@ impl eframe::App for BootApp {
             // failure is reported and the status set when this app is dropped.
             // Elsewhere `main` does both after eframe finishes its teardown.
             BootApp::Failed(failure) if cfg!(target_os = "macos") => {
-                let failure = failure.clone();
-                *self = BootApp::Exiting(FailureExit(failure));
+                let notice = FailureNotice(failure.clone());
+                *self = BootApp::Exiting(FailureExit(notice));
             }
             BootApp::Failed(_) | BootApp::Unlocking(_) | BootApp::Exiting(_) => {}
         }
@@ -320,31 +317,32 @@ impl eframe::App for BootApp {
 /// Reports a failed startup and exits with `main`'s failure status when
 /// dropped. eframe drops its storage, joining the profile save, before the
 /// app, so the exit cannot cut that save short.
-pub struct FailureExit(StartupFailure);
+pub struct FailureExit(FailureNotice);
 
 impl Drop for FailureExit {
     fn drop(&mut self) {
-        crate::logging::report_startup_failure(&[&FailureNotice(&self.0)]);
+        crate::logging::report_startup_failure(&[&self.0]);
         std::process::exit(1);
     }
 }
 
-/// A shown startup failure as a terminal cause: its message and details.
-struct FailureNotice<'a>(&'a StartupFailure);
+/// A shown startup failure as a reported cause: its message and details.
+#[derive(Clone)]
+pub struct FailureNotice(StartupFailure);
 
-impl std::fmt::Display for FailureNotice<'_> {
+impl std::fmt::Display for FailureNotice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0.report().message())
     }
 }
 
-impl std::fmt::Debug for FailureNotice<'_> {
+impl std::fmt::Debug for FailureNotice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0.report().details())
     }
 }
 
-impl std::error::Error for FailureNotice<'_> {}
+impl std::error::Error for FailureNotice {}
 
 /// The boot steps that need no window: data folder, database and the seed
 /// vault open. `main` runs them before the window opens, so a failure here,
@@ -475,18 +473,28 @@ impl Startup {
 /// of a failed boot open until `main` drops it.
 #[derive(Clone, Default)]
 pub struct StartupOutcome {
-    failed: Arc<AtomicBool>,
+    shown: Arc<Mutex<Option<FailureNotice>>>,
     held_vault: Arc<Mutex<Option<Arc<SecretStore>>>>,
 }
 
 impl StartupOutcome {
-    fn mark_failed(&self) {
-        self.failed.store(true, Ordering::Relaxed);
+    fn mark_failed(&self, failure: &StartupFailure) {
+        *self.shown.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(FailureNotice(failure.clone()));
     }
 
     /// Whether the app entered [`BootApp::Failed`].
     pub fn failed(&self) -> bool {
-        self.failed.load(Ordering::Relaxed)
+        self.shown_failure().is_some()
+    }
+
+    /// The failure the dialog showed, kept for `main`'s notice after eframe
+    /// tears the window down.
+    pub fn shown_failure(&self) -> Option<FailureNotice> {
+        self.shown
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Keep `vault`, and so its lock, open until [`Self::release_vault`] or the
@@ -731,7 +739,7 @@ mod tests {
             let BootApp::Failed(failure) = app else {
                 panic!("expected the failure dialog");
             };
-            drop(FailureExit(failure));
+            drop(FailureExit(FailureNotice(failure)));
             return;
         }
         let test_name = std::thread::current().name().expect("test name").to_owned();
@@ -870,6 +878,18 @@ mod tests {
             startup.error().is_some(),
             "the error stays for the terminal notice"
         );
+    }
+
+    /// The failure the dialog showed stays with `main` after eframe tears the
+    /// window down, so its notice names the cause even when the boot steps
+    /// had already been handed over.
+    #[test]
+    fn shown_failure_reaches_main() {
+        const MARKER: &str = "shown-failure-marker";
+        let outcome = StartupOutcome::default();
+        drop(BootApp::failed(&std::io::Error::other(MARKER), &outcome));
+        let shown = outcome.shown_failure().expect("the shown failure");
+        assert!(format!("{shown:?}").contains(MARKER), "{shown:?}");
     }
 
     /// A failure while building the app after a successful preparation keeps

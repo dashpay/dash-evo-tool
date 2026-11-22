@@ -19,7 +19,7 @@ Read by AI reviewers and raters (claudius `severity` skill, `system-rating.md` ย
 - Users run a standard OS configuration: defaults changed only as far as normal use changes them. Findings that need a non-standard setup (hand-edited or crafted files in the profile directory, symlinked databases, unusual data-directory locations, broken permissions) are not in scope.
 - In: secrets reaching logs, diagnostics, shell traces or committed files, test code included (AGENTS.md ยง Never commit secrets).
 - In: what is signed differs from what the user confirmed (amount, recipient, fee, double send).
-- Out: an attacker already running as the same OS user (reads the process environment or the X11 screen, plants files in the profile directory).
+- Out: an attacker already running as the same OS user (reads the process environment or the X11 screen, plants files in the profile directory). Applies to the whole application, developer tooling included.
   - Exception: secrets stored on disk are in scope. Defects in how `platform-wallet` storage (dashpay/platform) protects them are filed upstream, not worked around in DET. DET's own choices stay in scope here: which secrets it stores protected or unprotected, and how imports and migrations pick that path.
 - Out: hostile Platform data. DET trusts data from Platform and the SDK; validation and proofs are dashpay/platform's responsibility, and DET does not re-implement their checks.
 - One interactive human per profile; concurrency is that human plus background tasks. Races that need unusual timing and lose neither funds nor local wallet or identity data are declined.

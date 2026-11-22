@@ -420,3 +420,16 @@ fn invalid_recovery_phrase_message_follows_the_words() {
         );
     });
 }
+
+/// Screen readers announce the optional password field by its visible label,
+/// and its reveal control as a button.
+#[test]
+fn optional_password_field_and_reveal_control_are_named() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let harness = import_harness(runtime, &app_context, with_test_phrase);
+
+        harness.get_by_role_and_label(egui::accesskit::Role::PasswordInput, "Optional Password:");
+        harness.get_by_role_and_label(egui::accesskit::Role::Button, "Hold to reveal");
+    });
+}

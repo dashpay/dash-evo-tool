@@ -65,6 +65,7 @@ use crate::model::fee_estimation::{
     TokenRegistrationFeatures, estimate_token_contract_registration,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::token::TokenActionAvailability;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -1075,6 +1076,8 @@ pub struct TokensScreen {
     pub tokens_subscreen: TokensSubscreen,
     all_known_tokens: IndexMap<Identifier, TokenInfoWithDataContract>,
     identities: IndexMap<Identifier, QualifiedIdentity>,
+    /// Whether each identity in `identities` can send token transactions.
+    token_action_availability: BTreeMap<Identifier, TokenActionAvailability>,
     my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions>,
     pub selected_token: Option<Identifier>,
     token_pricing_data: IndexMap<
@@ -1435,6 +1438,22 @@ fn my_tokens(
         .collect()
 }
 
+/// Whether each of `identities` can send token transactions.
+fn token_action_availability(
+    app_context: &AppContext,
+    identities: &IndexMap<Identifier, QualifiedIdentity>,
+) -> BTreeMap<Identifier, TokenActionAvailability> {
+    identities
+        .keys()
+        .map(|id| {
+            (
+                *id,
+                crate::ui::tokens::load_token_action_availability(app_context, id),
+            )
+        })
+        .collect()
+}
+
 impl TokensScreen {
     #[cfg(feature = "testing")]
     #[doc(hidden)]
@@ -1504,9 +1523,11 @@ impl TokensScreen {
             load_formula_image(LINEAR_FORMULA_PNG),
         );
 
+        let token_action_availability = token_action_availability(app_context, &identities);
         let mut screen = Self {
             app_context: app_context.clone(),
             identities,
+            token_action_availability,
             all_known_tokens,
             my_tokens,
             selected_token: None,
@@ -2365,6 +2386,8 @@ impl TokensScreen {
                 self.identities.clear();
             }
         }
+        self.token_action_availability =
+            token_action_availability(&self.app_context, &self.identities);
     }
 
     /// Replaces the creator's copy of its selected identity with the one just read
@@ -2872,6 +2895,7 @@ impl ScreenLike for TokensScreen {
             .app_context
             .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
+        // A wallet may have loaded or locked while the user was away.
         self.reload_identities();
 
         // Clear pricing data to force re-fetching when tokens are selected
@@ -3025,7 +3049,7 @@ impl ScreenLike for TokensScreen {
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
                         let mut popup = InfoPopup::new(
-                            egui::Id::new("tokens_screen_info_popup"),
+                            egui::Id::unique("tokens_screen_info_popup"),
                             "Information",
                             &info_text,
                         );
@@ -3377,7 +3401,7 @@ mod tests {
     fn ensure_test_env() {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            copy_env_file_if_not_exists(); // required by AppContext::new()
+            copy_env_file_if_not_exists().expect("write .env"); // required by AppContext::new()
 
             // Ensure minimum required configs exist even if .env isn't loaded.
             // Safety: tests set env vars once to ensure deterministic config.
@@ -3396,6 +3420,44 @@ mod tests {
                 std::env::set_var("LOCAL_core_rpc_password", "password");
             }
         });
+    }
+
+    /// An identity that appears while My Tokens is open, or whose wallet
+    /// state changed while it was away, gets a fresh token-action
+    /// availability on a cache update and on arrival, never a stale or
+    /// missing (enabled) one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_action_availability_follows_identity_changes_and_arrival() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::bare_user_identity;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        let waiting = |byte: u8| {
+            let identity = bare_user_identity(Identifier::from([byte; 32]), app_context.network);
+            app_context
+                .insert_local_qualified_identity(&identity, &Some(([0x4E; 32], 0)))
+                .expect("store the identity of an unloaded wallet");
+            identity.identity.id()
+        };
+
+        let added = waiting(0x51);
+        screen.cached_data_changed(CacheUpdate {
+            network: app_context.network,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(
+            screen.token_action_availability.get(&added),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
+
+        let arrived = waiting(0x52);
+        screen.refresh_on_arrival();
+        assert_eq!(
+            screen.token_action_availability.get(&arrived),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
     }
 
     #[test]

@@ -1787,12 +1787,11 @@ impl PendingConfirmation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
     fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-        crate::app_dir::ensure_env_file(dir);
+        crate::app_dir::ensure_env_file(dir).expect("write .env");
         let db = Arc::new(crate::database::Database::new(dir.join("data.db")).expect("db"));
         db.create_tables(true).expect("create tables");
         db.set_default_version().expect("set version");
@@ -2638,7 +2637,6 @@ mod tests {
 #[cfg(test)]
 mod pending_confirmation_tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
 
     fn seen(status: TransactionStatus, height: Option<u32>) -> Option<TransactionConfirmation> {
         Some(TransactionConfirmation { status, height })

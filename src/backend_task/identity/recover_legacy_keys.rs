@@ -451,7 +451,7 @@ mod tests {
         async fn new(prompt: Option<Arc<dyn SecretPrompt>>) -> Self {
             let data_dir_guard = tempfile::tempdir().expect("tempdir");
             let data_dir = data_dir_guard.path().to_path_buf();
-            ensure_env_file(&data_dir);
+            ensure_env_file(&data_dir).expect("write .env");
             let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
             let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
             let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");

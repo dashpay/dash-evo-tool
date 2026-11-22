@@ -167,6 +167,14 @@ impl TokensScreen {
     }
 
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
+        // A wallet that finishes loading sends no cache notice.
+        for (identity_id, availability) in &mut self.token_action_availability {
+            crate::ui::tokens::recheck_token_action_availability(
+                &self.app_context,
+                identity_id,
+                availability,
+            );
+        }
         let mut action = AppAction::None;
         if self.all_known_tokens.is_empty() {
             // If no tokens, show a "no tokens found" message
@@ -463,6 +471,17 @@ impl TokensScreen {
                                     body.row(30.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
+                                            if let Some(reason) = self
+                                                .token_action_availability
+                                                .get(&itb.identity_id)
+                                                .and_then(|availability| availability.unavailable_reason())
+                                            {
+                                                ui.label(
+                                                    RichText::new("View only")
+                                                        .color(DashColors::muted_color(ui.style().visuals.dark_mode)),
+                                                )
+                                                .info_tooltip(reason);
+                                            }
                                         });
                                         row.col(|ui| {
                                             short_id_cell(
@@ -574,7 +593,7 @@ impl TokensScreen {
                 let screen_rect = ui.ctx().content_rect();
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Background,
-                    egui::Id::new("reward_explanation_overlay"),
+                    egui::Id::unique("reward_explanation_overlay"),
                 ));
                 painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
@@ -691,6 +710,10 @@ impl TokensScreen {
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
         let dark_mode = ui.style().visuals.dark_mode;
+        let blocked = self
+            .token_action_availability
+            .get(&itb.identity_id)
+            .and_then(|availability| availability.unavailable_reason());
 
         for (pos, row_action) in token_row_actions(&itb.available_actions).enumerate() {
             if !range.contains(&pos) {
@@ -700,7 +723,7 @@ impl TokensScreen {
                 TokenRowAction::Transfer => {
                     if itb.available_actions.can_transfer {
                         if let Some(balance) = itb.balance
-                            && ui.button("Transfer").clicked()
+                            && token_action_button(ui, "Transfer", blocked).clicked()
                         {
                             action = AppAction::AddScreen(Screen::TransferTokensScreen(
                                 TransferTokensScreen::new(
@@ -726,7 +749,7 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Claim => {
-                    if ui.button("Claim").clicked() {
+                    if token_action_button(ui, "Claim", blocked).clicked() {
                         match self.app_context.get_contract_by_token_id(&itb.token_id) {
                             Ok(Some(contract)) => {
                                 action = AppAction::AddScreen(Screen::ClaimTokensScreen(
@@ -758,28 +781,29 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Mint => {
-                    if ui.button("Mint").clicked() {
+                    if token_action_button(ui, "Mint", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::MintTokensScreen(MintTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::Burn => {
-                    if ui.button("Burn").clicked() {
+                    if token_action_button(ui, "Burn", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::BurnTokensScreen(BurnTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::Freeze => {
-                    if ui.button("Freeze").clicked() {
+                    if token_action_button(ui, "Freeze", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::FreezeTokensScreen(FreezeTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::DestroyFrozenFunds => {
-                    if ui.button("Destroy Frozen Identity Tokens").clicked() {
+                    if token_action_button(ui, "Destroy Frozen Identity Tokens", blocked).clicked()
+                    {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
                                 info,
@@ -789,7 +813,7 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Unfreeze => {
-                    if ui.button("Unfreeze").clicked() {
+                    if token_action_button(ui, "Unfreeze", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::UnfreezeTokensScreen(UnfreezeTokensScreen::new(
                                 info,
@@ -799,14 +823,14 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Pause => {
-                    if ui.button("Pause").clicked() {
+                    if token_action_button(ui, "Pause", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::PauseTokensScreen(PauseTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::Resume => {
-                    if ui.button("Resume").clicked() {
+                    if token_action_button(ui, "Resume", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::ResumeTokensScreen(ResumeTokensScreen::new(info, app_context))
                         });
@@ -821,7 +845,7 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::UpdateConfig => {
-                    if ui.button("Update Config").clicked() {
+                    if token_action_button(ui, "Update Config", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::UpdateTokenConfigScreen(Box::new(UpdateTokenConfigScreen::new(
                                 info,
@@ -831,10 +855,10 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Purchase => {
-                    action |= self.render_purchase_action(itb, dark_mode, ui);
+                    action |= self.render_purchase_action(itb, dark_mode, blocked, ui);
                 }
                 TokenRowAction::SetPrice => {
-                    if ui.button("Set Price").clicked() {
+                    if token_action_button(ui, "Set Price", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::SetTokenPriceScreen(SetTokenPriceScreen::new(info, app_context))
                         });
@@ -876,6 +900,7 @@ impl TokensScreen {
         &self,
         itb: &IdentityTokenMaybeBalanceWithActions,
         dark_mode: bool,
+        blocked: Option<&'static str>,
         ui: &mut Ui,
     ) -> AppAction {
         // Check if we have pricing data
@@ -913,7 +938,7 @@ impl TokensScreen {
 
             if has_credits {
                 // Purchase button enabled
-                if ui.button("Purchase").clicked() {
+                if token_action_button(ui, "Purchase", blocked).clicked() {
                     return self.open_with_token_info(itb, ui, |info, app_context| {
                         Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(info, app_context))
                     });
@@ -986,7 +1011,6 @@ impl TokensScreen {
                         body.row(30.0, |mut row| {
                             row.col(|ui| {
                                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                    ui.add_space(-1.0);
                                     // By making the label into a button or using `ui.selectable_label`,
                                     // we can respond to clicks.
                                     if ui.button(token_name).clicked() {
@@ -1101,6 +1125,17 @@ fn token_row_actions(
     .filter_map(|(offered, row_action)| offered.then_some(row_action))
 }
 
+/// A token-action button, disabled with `blocked_reason` as its tooltip when
+/// the identity cannot send token transactions.
+fn token_action_button(
+    ui: &mut Ui,
+    label: &str,
+    blocked_reason: Option<&'static str>,
+) -> egui::Response {
+    ui.add_enabled(blocked_reason.is_none(), egui::Button::new(label))
+        .disabled_tooltip(blocked_reason.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1110,6 +1145,183 @@ mod tests {
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::platform::Identifier;
     use egui_kittest::{Harness, kittest::Queryable};
+
+    type TokenListHarness = Harness<'static, (TokensScreen, Vec<AppAction>)>;
+
+    fn token_list_fixture(
+        mode: crate::model::settings::ThemeMode,
+        width: f32,
+        font_scale: f32,
+        pixels_per_point: f32,
+    ) -> (tempfile::TempDir, TokenListHarness) {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        for (index, name) in ["Border one", "Border two", "Border three"]
+            .into_iter()
+            .enumerate()
+        {
+            let token_id = Identifier::from([index as u8 + 1; 32]);
+            screen.all_known_tokens.insert(
+                token_id,
+                TokenInfoWithDataContract {
+                    token_id,
+                    token_name: name.into(),
+                    data_contract: context.dpns_contract().as_ref().clone(),
+                    token_position: 0,
+                    token_configuration: TokenConfigurationV0::default_most_restrictive().into(),
+                    description: None,
+                },
+            );
+        }
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(width, 500.0))
+            .with_pixels_per_point(pixels_per_point)
+            .build_ui_state(
+                |ui, (screen, actions): &mut (TokensScreen, Vec<AppAction>)| {
+                    let action = screen.render_my_tokens_subscreen(ui);
+                    if action != AppAction::None {
+                        actions.push(action);
+                    }
+                },
+                (screen, Vec::new()),
+            );
+        harness.ctx.set_fonts(crate::bundled::fonts().unwrap());
+        crate::ui::theme::apply_theme(&harness.ctx, mode);
+        harness.ctx.global_style_mut(|style| {
+            for font in style.text_styles.values_mut() {
+                font.size *= font_scale;
+            }
+            if font_scale > 1.0 {
+                style.spacing.interact_size.y = 40.0;
+            }
+        });
+        harness.run_steps(5);
+        (dir, harness)
+    }
+
+    fn painted_button_bounds(shape: &egui::Shape, button: egui::Rect) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Rect(rect)
+                if !rect.stroke.is_empty()
+                    && rect.rect.center().distance(button.center()) < 0.1
+                    && (rect.rect.width() - button.width()).abs() < 0.1 =>
+            {
+                Some(rect.visual_bounding_rect())
+            }
+            egui::Shape::Vec(shapes) => shapes
+                .iter()
+                .find_map(|shape| painted_button_bounds(shape, button)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn token_list_button_borders_are_visible_in_every_row_and_theme() {
+        use crate::model::settings::ThemeMode;
+        let mut failures = Vec::new();
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            for (width, font_scale, pixels_per_point) in [
+                (600.0, 1.0, 1.0),
+                (1000.0, 1.0, 1.0),
+                (600.0, 1.5, 1.5),
+                (1000.0, 1.5, 2.0),
+            ] {
+                let (_dir, harness) = token_list_fixture(mode, width, font_scale, pixels_per_point);
+                let actions: Vec<_> = harness
+                    .query_all_by_role_and_label(egui::accesskit::Role::Button, "More Info")
+                    .map(|node| node.rect())
+                    .collect();
+                assert_eq!(actions.len(), 3);
+                for (row, name) in ["Border one", "Border two", "Border three"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let button = harness.get_by_label(name).rect();
+                    let (paint, clip) = harness
+                        .output()
+                        .shapes
+                        .iter()
+                        .find_map(|clipped| {
+                            painted_button_bounds(&clipped.shape, button)
+                                .map(|paint| (paint, clipped.clip_rect))
+                        })
+                        .expect("A token name must have a painted button border");
+                    if !clip.expand(0.01).contains_rect(paint) {
+                        failures.push(format!("{mode:?}/{width}/{font_scale}/{pixels_per_point}, row {row}: painted border {paint:?} exceeds clip {clip:?}"));
+                    }
+                    if (button.center().y - actions[row].center().y).abs() > 1.0 {
+                        failures.push(format!("{mode:?}/{width}/{font_scale}/{pixels_per_point}, row {row}: name and action buttons are not vertically aligned"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn token_list_button_borders_keep_name_buttons_selectable() {
+        let (_dir, mut harness) =
+            token_list_fixture(crate::model::settings::ThemeMode::Dark, 600.0, 1.0, 1.0);
+        harness.get_by_label("Border one").click();
+        harness.run_steps(3);
+        let (screen, actions) = harness.state();
+        let expected = Identifier::from([1; 32]);
+        assert_eq!(screen.selected_token, Some(expected));
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], AppAction::BackendTask(BackendTask::TokenTask(task))
+            if matches!(task.as_ref(), TokenTask::QueryTokenPricing(id) if *id == expected))
+        );
+    }
+
+    /// An identity waiting for its wallet gets its token actions back on the
+    /// next frame once the wallet has loaded; registration sends no cache
+    /// notice, so My Tokens re-checks waiting entries as it draws.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn my_tokens_offers_token_actions_once_the_wallet_loads() {
+        use crate::model::token::TokenActionAvailability;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let seed_hash =
+            crate::model::wallet::Wallet::new_from_seed(seed, context.network, None, None)
+                .expect("build wallet")
+                .seed_hash();
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([0x63; 32]),
+            context.network,
+        );
+        context
+            .insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let id = identity.identity.id();
+        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        assert_eq!(
+            screen.token_action_availability.get(&id),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
+
+        context
+            .wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut TokensScreen| {
+                screen.render_my_tokens_subscreen(ui);
+            },
+            screen,
+        );
+        harness.run();
+
+        assert_eq!(
+            harness.state().token_action_availability.get(&id),
+            Some(&TokenActionAvailability::Available)
+        );
+    }
 
     /// A shortened ID is copied from the keyboard (Tab, then Enter) as well as
     /// by mouse, and the copy is confirmed, since the cell itself shows no change.
@@ -1150,9 +1362,28 @@ mod tests {
         actions: IdentityTokenAvailableActions,
         range: Range<usize>,
     ) -> Vec<String> {
+        rendered_actions(actions, range, None)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect()
+    }
+
+    /// The buttons `render_actions` draws for `actions` within `range`, in
+    /// order, with whether each is enabled, for an identity whose token
+    /// actions have `availability`.
+    fn rendered_actions(
+        actions: IdentityTokenAvailableActions,
+        range: Range<usize>,
+        availability: Option<crate::model::token::TokenActionAvailability>,
+    ) -> Vec<(String, bool)> {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        if let Some(availability) = availability {
+            screen
+                .token_action_availability
+                .insert(Identifier::from([1; 32]), availability);
+        }
         let token_id = Identifier::from([42; 32]);
         let token_configuration: dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration =
             TokenConfigurationV0::default_most_restrictive().into();
@@ -1191,8 +1422,40 @@ mod tests {
         use egui_kittest::kittest::NodeT;
         harness
             .query_all_by_role(egui::accesskit::Role::Button)
-            .filter_map(|button| button.accesskit_node().label())
+            .filter_map(|button| {
+                let node = button.accesskit_node();
+                Some((node.label()?, !node.is_disabled()))
+            })
             .collect()
+    }
+
+    /// While the identity's wallet is not open, every transaction button of
+    /// its row is disabled; viewing claims sends nothing and stays enabled.
+    #[test]
+    fn every_token_transaction_button_waits_for_the_identitys_wallet() {
+        let all = IdentityTokenAvailableActions {
+            can_claim: true,
+            can_estimate: false,
+            can_mint: true,
+            can_burn: true,
+            can_freeze: true,
+            can_unfreeze: true,
+            can_destroy: true,
+            can_do_emergency_action: true,
+            can_maybe_purchase: false,
+            can_set_price: true,
+            can_transfer: true,
+            can_update_config: true,
+        };
+        let shown = rendered_actions(
+            all,
+            0..128,
+            Some(crate::model::token::TokenActionAvailability::WalletNotOpen),
+        );
+        assert_eq!(shown.len(), 12, "{shown:?}");
+        for (label, enabled) in shown {
+            assert_eq!(enabled, label == "View Claims", "{label}");
+        }
     }
 
     /// Regression: Pause and Resume took a position only when shown, so with

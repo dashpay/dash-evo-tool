@@ -113,6 +113,7 @@ pub struct SetTokenPriceScreen {
 
     /// Basic references
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
 
     /// Confirmation popup
     show_confirmation_popup: bool,
@@ -273,6 +274,10 @@ impl SetTokenPriceScreen {
                 },
             );
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
         Self {
             identity_token_info: identity_token_info.clone(),
             selected_key: possible_key.cloned(),
@@ -287,6 +292,7 @@ impl SetTokenPriceScreen {
             single_price_input: None,
             tiered_prices: vec![(None, None)],
             status: SetTokenPriceStatus::NotStarted,
+            token_action_availability,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             confirmation_dialog: None,
@@ -875,6 +881,10 @@ impl ScreenLike for SetTokenPriceScreen {
     }
 
     fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_info.identity.identity.id(),
+        );
         // If you need to reload local identity data or re-check keys:
         if let Ok(all_identities) = self.app_context.load_local_user_identities()
             && let Some(updated_identity) = all_identities
@@ -941,6 +951,15 @@ impl ScreenLike for SetTokenPriceScreen {
                 });
             });
             ui.add_space(10.0);
+
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_info.identity.identity.id(),
+                &mut self.token_action_availability,
+            );
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
@@ -1128,7 +1147,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()

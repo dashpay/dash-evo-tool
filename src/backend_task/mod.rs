@@ -1296,7 +1296,9 @@ pub enum BackendTaskSuccessResult {
     ClaimedTokens(FeeResult),
     /// The once-per-identity claim note of this pair was forgotten.
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
-    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
+    /// The config item that was updated, the fee, and whether the update took
+    /// effect or was recorded as a group proposal.
+    UpdatedTokenConfig(String, FeeResult, crate::model::token::ConfigUpdateOutcome),
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
     /// running, so no second pass was started.
@@ -1806,8 +1808,20 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        // Closing the app cancels the token, which this process does only at
+        // exit. The switch then stops between its steps instead of holding the
+        // exit for the task manager's whole shutdown budget: the test hold
+        // point and the wallet backend build stop at their next await, and a
+        // backend that was built is torn down through the upstream shutdown,
+        // never a plain drop.
+        let cancellation_token = self.subtasks.cancellation_token.clone();
+
         #[cfg(feature = "testing")]
-        drop(self.test_network_switch_gate.lock().await);
+        tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => return Err(TaskError::TaskManagerShuttingDown),
+            gate = self.test_network_switch_gate.lock() => drop(gate),
+        }
 
         // Create a new AppContext for the target network, reusing shared
         // resources (db, subtasks, connection_status) from the current context.
@@ -1841,13 +1855,27 @@ impl AppContext {
             network,
             source: Box::new(source),
         })?;
+        // Never shown: shutdown drains task results without displaying them.
+        if cancellation_token.is_cancelled() {
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
         new_ctx.install_secret_prompt(self.secret_prompt());
         // The switch runs on the frame loop of the context it leaves; the new
         // context reports to the same one, and its backend is built on it
         // below, before anyone else is handed the context.
         new_ctx.install_frame_loop(sender.clone());
 
-        let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+        // Stops on its own when the app closes, tearing down a backend it had
+        // not finished building.
+        let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
+        if cancellation_token.is_cancelled() {
+            if let Ok(backend) = new_ctx.wallet_backend() {
+                backend.shutdown_bounded().await;
+            }
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
+
+        let backend_wired = match wiring {
             Ok(()) => {
                 if let Err(error) = sender
                     .send(TaskResult::unattributed_success(
@@ -1876,7 +1904,6 @@ impl AppContext {
             }
         };
 
-        let cancellation_token = self.subtasks.cancellation_token.clone();
         let mut spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
             tokio::select! {
                 biased;
@@ -1904,8 +1931,7 @@ impl AppContext {
         if cancellation_token.is_cancelled()
             && let Ok(backend) = new_ctx.wallet_backend()
         {
-            backend.forget_all_secrets();
-            backend.shutdown().await;
+            backend.shutdown_bounded().await;
             spv_started = false;
         }
         Ok(BackendTaskSuccessResult::NetworkContextCreated {
@@ -2259,6 +2285,14 @@ mod tests {
         assert!(
             !secret_access.is_session_cached(&scope),
             "cancellation teardown clears secrets on the registered backend"
+        );
+        assert_eq!(
+            completed_context
+                .test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "cancellation teardown runs the bounded upstream shutdown"
         );
     }
 

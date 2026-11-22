@@ -90,6 +90,7 @@ pub struct TransferTokensScreen {
     transfer_tokens_status: TransferTokensStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     /// The open send confirmation and the send it was opened for.
     confirmation_dialog: Option<PendingSend>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -158,6 +159,8 @@ impl TransferTokensScreen {
 
         let amount = Some(Amount::from(&identity_token_balance).with_value(0));
 
+        let token_action_availability =
+            super::load_token_action_availability(app_context, &identity_token_balance.identity_id);
         Self {
             identity,
             identity_token_balance,
@@ -170,6 +173,7 @@ impl TransferTokensScreen {
             amount_input: None,
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,
+            token_action_availability,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -415,6 +419,10 @@ impl ScreenLike for TransferTokensScreen {
     }
 
     fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_balance.identity_id,
+        );
         // Refresh the identity because there might be new keys
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
             let all_ids = self
@@ -517,6 +525,15 @@ impl ScreenLike for TransferTokensScreen {
                 });
             });
             ui.add_space(10.0);
+
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_balance.identity_id,
+                &mut self.token_action_availability,
+            );
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return AppAction::None;
+            }
 
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
@@ -651,7 +668,7 @@ impl ScreenLike for TransferTokensScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token transfers are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))

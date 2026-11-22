@@ -13,11 +13,11 @@ GitHub CLI login. The expected operator is `lklimek`; the agent is
 credentials, so the commands unset both overrides for these reads only.
 
 ```bash
-cd /data/git-worktrees/dash-evo-tool-ai-writer-hardening
+cd <checkout-of-this-branch>
 env -u GH_TOKEN -u GITHUB_TOKEN gh api user --jq .login
 env -u GH_TOKEN -u GITHUB_TOKEN python3 scripts/github/collect_access.py \
   --expected-user lklimek \
-  --output /data/artifacts/dash-evo-tool/2026-10-28/ai-writer-hardening/admin-access.json
+  --output <new-output-dir>/admin-access.json
 ```
 
 If the first command identifies another account, authenticate in the operator's

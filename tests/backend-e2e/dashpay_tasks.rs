@@ -626,16 +626,16 @@ async fn step_update_contact_info(
         new_ipk.set_security_level(SecurityLevel::HIGH);
         new_ipk.set_key_type(KeyType::ECDSA_SECP256K1);
         new_ipk.set_data({
-                use dash_sdk::dpp::dashcore::PrivateKey;
-                let secret_key =
-                    dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
-                        .expect("Step 5: invalid secret key");
-                let pk = PrivateKey::from_byte_array(
-                    secret_key.as_secret_bytes(),
-                    dash_sdk::dpp::dashcore::Network::Testnet,
-                )
-                .expect("valid secret key");
-                pk.public_key().to_bytes().into()
+            use dash_sdk::dpp::dashcore::PrivateKey;
+            let secret_key =
+                dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
+                    .expect("Step 5: invalid secret key");
+            let pk = PrivateKey::from_byte_array(
+                secret_key.as_secret_bytes(),
+                dash_sdk::dpp::dashcore::Network::Testnet,
+            )
+            .expect("valid secret key");
+            pk.public_key().to_bytes().into()
         });
 
         let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
@@ -850,7 +850,9 @@ async fn tc_045_detect_incoming_contact_payment() {
     // that are not on the curve, so a hand-written `[0x02; 33]` is no longer a
     // usable public key.
     let derive_pubkey = || {
-        dash_sdk::dpp::dashcore::PublicKey::new(dash_evo_tool::test_support::keys::secret_key().public_key())
+        dash_sdk::dpp::dashcore::PublicKey::new(
+            dash_evo_tool::test_support::keys::secret_key().public_key(),
+        )
     };
     let pubkey_0 = derive_pubkey();
     let pubkey_1 = derive_pubkey();
@@ -979,8 +981,7 @@ async fn tc_043_reject_contact_request() {
     // Create a third DashPay identity (C) from a fresh funded wallet
     tracing::info!("TC-043: creating third DashPay identity (C)...");
     let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(30_000_000).await;
-    let qi_c =
-        dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c).await;
+    let qi_c = dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c).await;
 
     // Register a DPNS name for C so A can send a contact request
     // >= 20 chars to avoid DPNS contest voting period
@@ -992,7 +993,7 @@ async fn tc_043_reject_contact_request() {
             dash_evo_tool::backend_task::identity::RegisterDpnsNameInput {
                 qualified_identity: qi_c.clone(),
                 name_input: username_c.clone(),
-        approved_contest_fee: 0,
+                approved_contest_fee: 0,
                 signing_key_id: None,
             },
         ),

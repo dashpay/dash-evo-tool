@@ -16,13 +16,13 @@ Read by AI reviewers and raters (claudius `severity` skill, `system-rating.md` ย
 - Reach (measured 2026-11-21, GitHub release downloads): stable v0.9.3 = 368; recent weekly pre-releases = 373โ€“1108 each. A defect merged to `v1.0-dev` reaches weekly-build users within about 7 days.
 
 **Threat model:**
-- Users run a standard OS configuration: defaults changed only as far as normal use changes them. Findings that need a non-standard setup (hand-edited or crafted files in the profile directory, symlinked databases, unusual data-directory locations, broken permissions) are not in scope.
+- Users run a standard OS configuration: defaults changed only as far as normal use changes them. Findings that need a non-standard setup (hand-edited or crafted files in the profile directory, symlinked databases, unusual data-directory locations, broken permissions) are not in scope. Applies to the whole application.
 - In: secrets reaching logs, diagnostics, shell traces or committed files, test code included (AGENTS.md ยง Never commit secrets).
 - In: what is signed differs from what the user confirmed (amount, recipient, fee, double send).
 - Out: an attacker already running as the same OS user (reads the process environment or the X11 screen, plants files in the profile directory). Applies to the whole application, developer tooling included.
   - Exception: secrets stored on disk are in scope. Defects in how `platform-wallet` storage (dashpay/platform) protects them are filed upstream, not worked around in DET. DET's own choices stay in scope here: which secrets it stores protected or unprotected, and how imports and migrations pick that path.
-- Out: hostile Platform data. DET trusts data from Platform and the SDK; validation and proofs are dashpay/platform's responsibility, and DET does not re-implement their checks.
-- One interactive human per profile; concurrency is that human plus background tasks. Races that need unusual timing and lose neither funds nor local wallet or identity data are declined.
+- Out: hostile Platform data. DET trusts data from Platform and the SDK; validation and proofs are dashpay/platform's responsibility, and DET does not re-implement their checks. Applies to every path that reads Platform or SDK data.
+- One interactive human per profile; concurrency is that human plus background tasks. Races that need unusual timing and lose neither funds nor local wallet or identity data are declined. Applies to the whole application.
 
 **Critical assets** (most important first):
 1. Secret confidentiality: seed, private keys, passwords.
@@ -36,11 +36,11 @@ Read by AI reviewers and raters (claudius `severity` skill, `system-rating.md` ย
 
 **Accepted risks:**
 - AR1 Hardening developer or internal tooling against its own operator or a same-user process.
-- AR2 Non-standard OS or profile setup: hand-placed or crafted local files, database symlinks, oversized values in local databases, a transient SQLite `-shm` sidecar, a data directory outside the defaults.
+- AR2 Non-standard OS or profile setup: hand-placed or crafted local files, database symlinks, oversized values in local databases, a transient SQLite `-shm` sidecar, a data directory outside the defaults. Applies to the whole application.
 - AR3 Devnet-only failures, e.g. a Devnet wipe racing an edit: a Devnet reset is a developer problem.
-- AR4 Narrow races that lose neither funds nor local wallet or identity data.
+- AR4 Narrow races that lose neither funds nor local wallet or identity data. Applies to the whole application.
 - AR5 A form edited through assistive technology behind an open confirmation modal; the send uses the confirmed snapshot.
-- AR6 Limitations owned by platform-wallet, the SDK or rust-dashcore: documented as a Known limitation with an upstream link, not worked around in DET.
+- AR6 Limitations owned by platform-wallet, the SDK or rust-dashcore: documented as a Known limitation with an upstream link, not worked around in DET. Applies to every DET path that calls those crates.
 - AR7 A full path in diagnostics the user chooses to share, when the data directory is outside the home directory (a non-standard setup); the home directory itself is redacted.
 - AR8 Secrets stored without a password stay in the keyless vault until the user opts in to protection (AGENTS.md ยง wallet_backend).
 - AR9 Behaviour identical to the base branch does not block a PR.

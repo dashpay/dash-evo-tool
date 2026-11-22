@@ -2,15 +2,12 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::request_type::RequestType;
 use crate::utils::time::now_ms;
-use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::claim::TokenClaimTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::ClaimResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -25,24 +22,9 @@ impl AppContext {
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
-        sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Build
-        let mut builder = TokenClaimTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            actor_identity.identity.id(),
-            distribution_type,
-        );
-
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        let maybe_options = self.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
+        let actor = self.token_actor(actor_identity).await?;
+        let common = self.token_action_common(data_contract.clone(), token_position, &signing_key);
 
         let token_id = data_contract.token_id(token_position);
         let claimer_id = actor_identity.identity.id();
@@ -50,13 +32,7 @@ impl AppContext {
         let mut proved_claim_time: Option<u64> = None;
         let result = self
             .execute_token_op(
-            async {
-                sdk.token_claim(builder, &signing_key, actor_identity)
-                    .await
-                    .map_err(|e| {
-                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                    })
-            },
+            actor.claim(common, distribution_type, public_note),
             |result| {
                 // Using the result, update the balance of the claimer identity
                 proved_claim_time = match &result {

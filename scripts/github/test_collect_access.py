@@ -221,6 +221,45 @@ class CollectAccessTests(unittest.TestCase):
             )
             return code, json.loads(output.read_text())["checks"]
 
+    def test_immutable_releases_setting_is_reported(self):
+        code, checks = self.collect(
+            {
+                "immutable-releases": {
+                    "ok": True,
+                    "data": {"enabled": True, "enforced_by_owner": False},
+                }
+            },
+            [{"number": 1, "draft": False}],
+        )
+        self.assertEqual(
+            checks["immutable_releases"]["data"],
+            {"enabled": True, "enforced_by_owner": False},
+        )
+        self.assertEqual(code, 0)
+
+    def test_unreadable_immutable_releases_setting_is_incomplete(self):
+        code, checks = self.collect(
+            {"immutable-releases": {"ok": False, "error": {"status": "404"}}},
+            [{"number": 1, "draft": False}],
+        )
+        self.assertFalse(checks["immutable_releases"]["ok"])
+        self.assertEqual(code, 2)
+
+    def test_immutable_releases_reply_keeps_only_the_setting(self):
+        reply = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout='{"enabled":true,"enforced_by_owner":true,"url":"x"}',
+            stderr="",
+        )
+        with patch.object(collect_access.subprocess, "run", return_value=reply):
+            result = collect_access.api_get(
+                "immutable", "repos/owner/repo/immutable-releases"
+            )
+        self.assertEqual(
+            result, {"ok": True, "data": {"enabled": True, "enforced_by_owner": True}}
+        )
+
     def test_each_actions_policy_is_read_from_its_detail_endpoint(self):
         rules = [{"type": "workflow_actor", "parameters": {"actors": ["x"]}}]
         code, checks = self.collect(

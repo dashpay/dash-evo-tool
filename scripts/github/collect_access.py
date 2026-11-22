@@ -62,6 +62,8 @@ def project(kind, data):
         return fields(data, ("name", "value"))
     if kind == "pulls":
         return [fields(pr, ("number", "draft")) for pr in data]
+    if kind == "immutable":
+        return fields(data, ("enabled", "enforced_by_owner"))
     # The remaining endpoints return access rules and policy metadata, not values.
     return data
 
@@ -242,6 +244,7 @@ def main(argv=None):
             f"{prefix}/actions/organization-secrets?per_page=100",
         ),
         "deploy_keys": ("keys", f"{prefix}/keys?per_page=100"),
+        "immutable_releases": ("immutable", f"{prefix}/immutable-releases"),
         "runners": ("runners", f"{prefix}/actions/runners?per_page=100"),
         "collaborators": ("collaborators", f"{prefix}/collaborators?per_page=100"),
         "light_runner": ("variable", f"{prefix}/actions/variables/DASH_LIGHT_RUNNER"),

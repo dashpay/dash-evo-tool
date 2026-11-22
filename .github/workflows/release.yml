@@ -55,17 +55,19 @@ on:
         type: string
         default: ""
 
+    # Optional: the macOS signing job reads these from the release-signing
+    # environment, so callers need not hold them as repository secrets.
     secrets:
       APPLE_CERTIFICATE:
-        required: true
+        required: false
       APPLE_CERTIFICATE_PASSWORD:
-        required: true
+        required: false
       APPLE_ID:
-        required: true
+        required: false
       APPLE_TEAM_ID:
-        required: true
+        required: false
       APPLE_APP_SPECIFIC_PASSWORD:
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -606,7 +608,7 @@ jobs:
         arch: [arm64, x86_64]
     steps:
       - name: Download unsigned app from this run
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: unsigned-macos-${{ matrix.arch }}
           path: build/Dash Evo Tool.app
@@ -774,27 +776,27 @@ jobs:
           sparse-checkout-cone-mode: false
           path: release-policy
       - name: Download Linux AMD64 Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dash-evo-tool-linux-x86_64.zip
           path: dist/dash-evo-tool-linux-x86_64.zip
       - name: Download Linux Arm64 Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dash-evo-tool-linux-arm64.zip
           path: dist/dash-evo-tool-linux-arm64.zip
       - name: Download macOS ARM64 Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dash-evo-tool-macos-arm64.dmg
           path: dist/dash-evo-tool-macos-arm64.dmg
       - name: Download macOS x86_64 Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dash-evo-tool-macos-x86_64.dmg
           path: dist/dash-evo-tool-macos-x86_64.dmg
       - name: Download Windows Artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dash-evo-tool-windows.zip
           path: dist/dash-evo-tool-windows.zip

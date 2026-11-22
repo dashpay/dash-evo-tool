@@ -17,6 +17,9 @@ on:
       - .github/workflows/release*.yml
       - .github/workflows/flatpak*.yml
       - .github/workflows/weekly-build.yml
+      - .github/workflows/tests.yml
+      - .github/workflows/clippy.yml
+      - .github/workflows/claude-code-review.yml
       - scripts/ci/**
       - scripts/github/**
   workflow_dispatch:

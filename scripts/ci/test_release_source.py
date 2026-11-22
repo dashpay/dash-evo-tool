@@ -1,5 +1,6 @@
 """Release authorization uses immutable commits from reviewed branch history."""
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -13,9 +14,23 @@ from release_source import (
     verify_remote_tag,
 )
 
+# Git variables inherited from a hook or worktree would redirect the temporary
+# repositories' commands to the developer's checkout.
+GIT_LOCATION_VARIABLES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+)
+
 
 class ReleaseSourceTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in GIT_LOCATION_VARIABLES:
+            os.environ.pop(name, None)
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
         self.repo = Path(self.scratch.name)

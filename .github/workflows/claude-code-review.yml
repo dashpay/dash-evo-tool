@@ -49,7 +49,9 @@ jobs:
 
       - name: Claudius Review
         if: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
-        uses: lklimek/claudius-review-action@a1f82e335895ea1627bc2a010abfb43ef632d5f7 # main
+        # Intentionally unpinned: the maintainer controls this action, so
+        # tracking main is an accepted, limited risk.
+        uses: lklimek/claudius-review-action@main
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
           github_token: ${{ steps.app-token.outputs.token }}

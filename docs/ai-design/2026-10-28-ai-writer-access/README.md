@@ -35,7 +35,9 @@ It never requests secret values, prints tokens, changes settings or starts CI.
 
 Output is created with mode `0600` and is never overwritten. Exit code 2 means
 some reads were unavailable; the report still contains the successful reads and
-the errors. A 403/404 is not evidence that a protection is disabled. The report
+the errors. A 403/404 is not evidence that a protection is disabled; for
+`immutable_releases` a 404 means the setting is off or the operator lacks admin
+read, so check it in the repository settings. The report
 can be shared for follow-up; it contains infrastructure/account metadata but no
 secret values. Use a new output filename when repeating collection.
 

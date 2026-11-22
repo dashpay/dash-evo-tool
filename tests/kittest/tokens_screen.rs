@@ -180,6 +180,41 @@ fn layout_token_info(app_context: &Arc<AppContext>) -> IdentityTokenInfo {
     }
 }
 
+/// Registers a fresh wallet, links `identity` to it at index 0 and waits until
+/// the wallet backend has loaded the wallet, so token actions are available
+/// for the identity.
+fn hold_in_a_loaded_wallet(app_context: &Arc<AppContext>, identity: &QualifiedIdentity) {
+    use dash_evo_tool::model::wallet::Wallet;
+    use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroize;
+
+    let mut seed: [u8; 64] = rand::random();
+    let wallet = Wallet::new_from_seed(seed, app_context.network(), Some("Tokens".into()), None)
+        .expect("wallet fixture");
+    let (seed_hash, _) = app_context
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register wallet fixture");
+    seed.zeroize();
+    app_context
+        .insert_local_qualified_identity(identity, &Some((seed_hash, 0)))
+        .expect("link the identity to the wallet");
+
+    // Upstream registration runs in the background and is slow offline.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !app_context
+        .token_action_availability(&identity.identity.id())
+        .expect("availability")
+        .is_available()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the wallet holding the identity did not load"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Mint, burn, freeze, unfreeze, destroy-frozen-funds, pause and resume share
 /// one screen scaffold. Its "Advanced Options" checkbox must sit on the page
 /// heading's row and the first form step must follow right below — not be
@@ -197,6 +232,9 @@ fn token_action_forms_start_right_under_the_heading() {
         // so no private key material is needed.
         app_context.set_user_role(UserRole::Developer);
         let info = layout_token_info(&app_context);
+        // Token actions go through the wallet holding the identity; without
+        // one, the scaffold shows why instead of the form under test.
+        hold_in_a_loaded_wallet(&app_context, &info.identity);
 
         let screens = [
             ("Mint Tokens", ScreenType::MintTokensScreen(info.clone())),
@@ -404,10 +442,10 @@ fn seed_owned_token(
     use dash_sdk::dpp::data_contract::config::DataContractConfig;
     use dash_sdk::dpp::data_contract::v1::DataContractV1;
 
+    // Token actions go through the wallet holding the identity, so the
+    // identity is held in a loaded wallet for the action screens to open.
     let identity = identity_with_critical_key(app_context);
-    app_context
-        .insert_local_qualified_identity(&identity, &None)
-        .expect("seed identity");
+    hold_in_a_loaded_wallet(app_context, &identity);
 
     let token_config = TokenConfigurationPreset {
         features: TokenConfigurationPresetFeatures::WithExtremeActions,
@@ -942,11 +980,22 @@ fn power_user_gets_no_recipient_field_when_the_token_forbids_choosing() {
         f.show(Screen::MintTokensScreen(screen));
         f.harness.get_by_label("Recipient:");
 
-        let rules = f.info.token_config.distribution_rules_mut();
-        rules.set_minting_allow_choosing_destination(false);
-        rules.set_new_tokens_destination_identity(Some(Identifier::from(
-            rand::random::<[u8; 32]>(),
-        )));
+        // The mint follows the contract it is signed with; keep the token
+        // registry's copy in step with it.
+        let destination = Identifier::from(rand::random::<[u8; 32]>());
+        let dash_sdk::platform::DataContract::V1(contract) = &mut f.info.data_contract.contract
+        else {
+            panic!("a version 1 contract");
+        };
+        let signed = contract
+            .tokens
+            .get_mut(&0)
+            .expect("the token's configuration");
+        for config in [signed, &mut f.info.token_config] {
+            let rules = config.distribution_rules_mut();
+            rules.set_minting_allow_choosing_destination(false);
+            rules.set_new_tokens_destination_identity(Some(destination));
+        }
 
         for role in [UserRole::Power, UserRole::Developer] {
             f.app_context.set_user_role(role);
@@ -1360,5 +1409,176 @@ fn token_subnav_labels_stay_on_one_line() {
                  {panel_widths:?}"
             );
         }
+    });
+}
+
+/// A contract holding one most-restrictive token at position 0, owned by
+/// `owner_id`.
+fn token_contract(owner_id: Identifier) -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::v1::DataContractV1;
+    let mut contract = DataContractV1 {
+        id: Identifier::from([0x7C; 32]),
+        version: 1,
+        owner_id,
+        document_types: BTreeMap::new(),
+        config: DataContractConfig::default_for_version(PlatformVersion::latest())
+            .expect("contract config"),
+        schema_defs: None,
+        groups: BTreeMap::new(),
+        tokens: BTreeMap::new(),
+        keywords: Vec::new(),
+        created_at: None,
+        updated_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        created_at_epoch: None,
+        updated_at_epoch: None,
+        description: None,
+    };
+    contract.tokens.insert(
+        0,
+        TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+    );
+    dash_sdk::platform::DataContract::V1(contract)
+}
+
+/// An identity no wallet holds (a masternode or key-only identity) signs
+/// token transactions with its own keys, so its action screen offers the
+/// form instead of a reason to wait.
+#[test]
+fn token_action_screen_of_a_wallet_less_identity_offers_the_form() {
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET;
+    use dash_evo_tool::ui::tokens::burn_tokens_screen::BurnTokensScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_evo_tool::ui::{RootScreenType, Screen};
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use egui_kittest::kittest::Queryable;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenMyTokenBalances);
+        let ctx = harness.state().current_app_context().clone();
+        // Every burn rule allows a developer through to the form.
+        ctx.set_user_role(UserRole::Developer);
+
+        let identity = identity_with_critical_key(&ctx);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the wallet-less identity");
+        let contract = token_contract(identity.identity.id());
+        let token_config = contract.tokens()[&0].clone();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x7D; 32]),
+            token_alias: "Gamma".to_string(),
+            identity,
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config,
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::BurnTokensScreen(BurnTokensScreen::new(info, &ctx)));
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_WAIT_FOR_WALLET)
+                .count(),
+            0,
+            "a wallet-less identity has no wallet to wait for"
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Amount to burn")
+                .count()
+                > 0,
+            "the burn form is offered"
+        );
+    });
+}
+
+/// A token action screen opened while the identity's wallet is not open
+/// says to wait, and offers the form as soon as there is nothing to wait
+/// for, without leaving the screen: here the wallet is removed, so the
+/// identity acts without one.
+#[test]
+fn an_open_token_action_screen_offers_the_form_once_it_need_not_wait() {
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET;
+    use dash_evo_tool::model::wallet::Wallet;
+    use dash_evo_tool::ui::tokens::burn_tokens_screen::BurnTokensScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_evo_tool::ui::{RootScreenType, Screen};
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use egui_kittest::kittest::Queryable;
+    use std::sync::{Arc, RwLock};
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenMyTokenBalances);
+        let ctx = harness.state().current_app_context().clone();
+        ctx.set_user_role(UserRole::Developer);
+
+        // Link the identity to a wallet the app knows but has not loaded.
+        let wallet = Wallet::new_from_seed(rand::random(), ctx.network(), None, None)
+            .expect("wallet fixture");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let identity = identity_with_critical_key(&ctx);
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let contract = token_contract(identity.identity.id());
+        let token_config = contract.tokens()[&0].clone();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x7E; 32]),
+            token_alias: "Delta".to_string(),
+            identity: identity.clone(),
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config,
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::BurnTokensScreen(BurnTokensScreen::new(info, &ctx)));
+        harness.run_steps(3);
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_WAIT_FOR_WALLET)
+                .count(),
+            1,
+            "the screen waits for the wallet"
+        );
+
+        ctx.remove_wallet(&seed_hash).expect("remove the wallet");
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_WAIT_FOR_WALLET)
+                .count(),
+            0,
+            "the wait is over"
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Amount to burn")
+                .count()
+                > 0,
+            "the burn form is offered"
+        );
     });
 }

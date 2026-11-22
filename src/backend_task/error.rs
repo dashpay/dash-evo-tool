@@ -5,6 +5,7 @@
 
 use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::request_type::RequestType;
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
@@ -141,6 +142,64 @@ impl TokenOperationKind {
             }
             Self::Unrecognized { .. } => {
                 "The token operation did not complete. Check your connection and try again."
+            }
+        }
+    }
+
+    /// The user-facing sentence for Platform refusing this operation.
+    fn rejection_message(self) -> &'static str {
+        match self {
+            Self::Claim => {
+                "The platform did not accept this token claim. Check that this identity has \
+                 rewards to claim, then try again."
+            }
+            Self::Mint => {
+                "The platform did not accept this mint. Check the amount and that this identity is \
+                 allowed to mint this token, then try again."
+            }
+            Self::Burn => {
+                "The platform did not accept this burn. Check the amount against your balance and \
+                 that this identity is allowed to burn this token, then try again."
+            }
+            Self::Transfer => {
+                "The platform did not accept this token transfer. Check the recipient and the \
+                 amount against your balance, then try again."
+            }
+            Self::Freeze => {
+                "The platform did not accept this freeze. Check the identity to freeze and that \
+                 this identity is allowed to freeze this token, then try again."
+            }
+            Self::Unfreeze => {
+                "The platform did not accept this unfreeze. Check that the identity's tokens are \
+                 frozen and that this identity is allowed to unfreeze them, then try again."
+            }
+            Self::DestroyFrozenFunds => {
+                "The platform did not accept destroying the frozen tokens. Check that the \
+                 identity's tokens are frozen and that this identity is allowed to destroy them, \
+                 then try again."
+            }
+            Self::Pause => {
+                "The platform did not accept pausing this token. Check that the token is active \
+                 and that this identity is allowed to pause it, then try again."
+            }
+            Self::Resume => {
+                "The platform did not accept resuming this token. Check that the token is paused \
+                 and that this identity is allowed to resume it, then try again."
+            }
+            Self::SetPrice => {
+                "The platform did not accept the new token price. Check the price and that this \
+                 identity is allowed to set it, then try again."
+            }
+            Self::Purchase => {
+                "The platform did not accept this token purchase. Check the current price, the \
+                 amount and your credit balance, then try again."
+            }
+            Self::ConfigUpdate => {
+                "The platform did not accept this token settings change. Check the new value and \
+                 that this identity is allowed to change it, then try again."
+            }
+            Self::Unrecognized { .. } => {
+                "The platform did not accept this token action. Check your input, then try again."
             }
         }
     }
@@ -855,6 +914,18 @@ pub enum TaskError {
         "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then open the app again."
     )]
     SecretStore {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// The seed vault's folder, or a folder above it, is writable by other
+    /// accounts or owned by one, so the vault is refused. Only fixing those
+    /// folders' permissions or owner helps; the folder and reason travel in
+    /// `source`.
+    #[error(
+        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make sure these folders belong to your account and that only your account can change them, then restart the application."
+    )]
+    SecretStoreFolderInsecure {
         #[source]
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
@@ -1692,6 +1763,65 @@ pub enum TaskError {
     UpgradeBackupCleanup {
         #[source]
         source: std::io::Error,
+    },
+
+    /// The app may not write to its data folder: missing permissions or a
+    /// read-only disk. Distinct from [`Self::FileSystem`] because freeing disk
+    /// space or restarting never fixes it.
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    DataFolderAccessDenied {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app data folder's location could not be determined: the account
+    /// has no home folder.
+    #[error(
+        "Dash Evo Tool could not find a place for its data because your user account has no home folder. Sign in with an account that has one, or set DASH_EVO_DATA_DIR to a folder you can change, then start the application again."
+    )]
+    DataFolderNotFound {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// A file or link occupies the app data folder's place.
+    #[error(
+        "The app data location {path} is a file or a link, not a folder. Move or rename it, then start the application again.",
+        path = .path.display()
+    )]
+    DataFolderNotADirectory {
+        path: std::path::PathBuf,
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The disk holding the app data folder is full.
+    #[error(
+        "There is not enough free disk space for the app data. Free up some space, then start the application again."
+    )]
+    DataFolderDiskFull {
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app data folder or its settings file at `path` could not be
+    /// prepared for another reason; `source` names the step.
+    #[error(
+        "Dash Evo Tool could not prepare its data at {path}. Check that this location exists and that you can change it, then start the application again.",
+        path = .path.display()
+    )]
+    DataFolderSetupFailed {
+        path: std::path::PathBuf,
+        #[source]
+        source: crate::boot::PrepareEnvironmentError,
+    },
+
+    /// The app may not open or write its database in the data folder: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`], seen by SQLite.
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    DatabaseAccessDenied {
+        #[source]
+        source: rusqlite::Error,
     },
 
     /// A local filesystem operation failed (e.g. creating a data directory).
@@ -2938,12 +3068,20 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// A token operation run by the wallet runtime failed for a reason the
-    /// SDK error classification has no specific variant for. Built by
-    /// [`TaskError::from_token_operation_failure`], which prefers the specific
-    /// variant whenever there is one.
+    /// A token operation failed for a reason the SDK error classification has
+    /// no specific variant for. Built by [`TaskError::from_token_operation`],
+    /// which prefers the specific variant whenever there is one.
     #[error("{}", operation.failure_message())]
     TokenOperationFailed {
+        operation: TokenOperationKind,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused a token operation for a reason with no dedicated
+    /// variant. Built by [`TaskError::from_token_operation`].
+    #[error("{}", operation.rejection_message())]
+    TokenOperationRejected {
         operation: TokenOperationKind,
         #[source]
         source_error: Box<SdkError>,
@@ -3013,7 +3151,10 @@ pub enum TaskError {
     #[error(
         "Could not connect to the Dash network. Please check your network settings and restart the application."
     )]
-    SdkInitializationFailed { detail: String },
+    SdkInitializationFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
 
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
@@ -3589,7 +3730,21 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network },
+    NetworkContextCreationFailed {
+        network: Network,
+        #[source]
+        source: Box<crate::context::NetworkContextError>,
+    },
+
+    /// No network context could be created at startup, so the app cannot open.
+    /// `source` is why the saved network could not be set up.
+    #[error(
+        "Dash Evo Tool could not set up a connection to any Dash network. Check the network settings in the .env file in the app data folder, then restart the application."
+    )]
+    NoNetworkAvailable {
+        #[source]
+        source: Box<crate::context::NetworkContextError>,
+    },
 
     /// A DAPI refresh completed after its network context was removed.
     #[error(
@@ -3792,7 +3947,65 @@ pub enum TaskError {
     SecretPromptUnavailable,
 }
 
+/// Message for a data folder or database the app is not allowed to change.
+const DATA_FOLDER_ACCESS_DENIED: &str = "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application.";
+
 impl TaskError {
+    /// A failure to open or prepare the app database at `path`: read-only,
+    /// permission and access-refused codes get [`Self::DatabaseAccessDenied`],
+    /// the rest, and a directory in the file's place, [`Self::Database`].
+    pub fn from_database_open_error(source: rusqlite::Error, path: &std::path::Path) -> Self {
+        use rusqlite::{ErrorCode, ffi};
+        let is_dir = matches!(&source, rusqlite::Error::SqliteFailure(e, _)
+            if e.extended_code == ffi::SQLITE_CANTOPEN_ISDIR);
+        if is_dir || path.is_dir() {
+            return Self::Database { source };
+        }
+        match source.sqlite_error_code() {
+            Some(
+                ErrorCode::ReadOnly
+                | ErrorCode::CannotOpen
+                | ErrorCode::PermissionDenied
+                | ErrorCode::AuthorizationForStatementDenied,
+            ) => Self::DatabaseAccessDenied { source },
+            _ => Self::Database { source },
+        }
+    }
+
+    /// A failure to prepare the app data folder, with advice for its step and
+    /// kind: access problems, a full disk, no home folder, a file in the
+    /// folder's place, or [`Self::DataFolderSetupFailed`] for anything else.
+    /// Every variant keeps the failed step as source.
+    pub fn from_prepare_environment_error(source: crate::boot::PrepareEnvironmentError) -> Self {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::ErrorKind;
+        match StorageFailure::of_io(source.io_error()) {
+            Some(StorageFailure::AccessDenied) => return Self::DataFolderAccessDenied { source },
+            Some(StorageFailure::Full) => return Self::DataFolderDiskFull { source },
+            _ => {}
+        }
+        match &source {
+            Step::Locate { .. } => Self::DataFolderNotFound { source },
+            Step::CreateDataFolder { path, source: io }
+                if matches!(
+                    io.kind(),
+                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
+                ) =>
+            {
+                Self::DataFolderNotADirectory {
+                    path: path.clone(),
+                    source,
+                }
+            }
+            Step::CreateDataFolder { path, .. } | Step::WriteSettingsFile { path, .. } => {
+                Self::DataFolderSetupFailed {
+                    path: path.clone(),
+                    source,
+                }
+            }
+        }
+    }
+
     /// Reclassifies SDK reachability failures when every configured DAPI address is exhausted.
     pub(crate) fn contextualize_dapi_availability(
         self,
@@ -4050,8 +4263,9 @@ impl TaskError {
 }
 
 /// Wrap a vault failure in its caller's class variant, except the
-/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`]
-/// whichever class hit it.
+/// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
+/// and an insecure vault folder, which becomes
+/// [`TaskError::SecretStoreFolderInsecure`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4062,16 +4276,18 @@ pub(crate) fn vault_error(
     source: platform_wallet_storage::secrets::SecretStoreError,
     class: impl FnOnce(Box<platform_wallet_storage::secrets::SecretStoreError>) -> TaskError,
 ) -> TaskError {
-    // `max` is `usize`, so binding it here copies rather than moves `source`.
-    if let platform_wallet_storage::secrets::SecretStoreError::PassphraseTooLong { max, .. } =
-        source
-    {
-        return TaskError::PassphraseTooLong {
+    use platform_wallet_storage::secrets::SecretStoreError;
+    match source {
+        // `max` is `usize`, so binding it here copies rather than moves `source`.
+        SecretStoreError::PassphraseTooLong { max, .. } => TaskError::PassphraseTooLong {
             max,
             source: Box::new(source),
-        };
+        },
+        SecretStoreError::InsecureParentDir { .. } => TaskError::SecretStoreFolderInsecure {
+            source: Box::new(source),
+        },
+        source => class(Box::new(source)),
     }
-    class(Box::new(source))
 }
 
 /// User-facing text for [`TaskError::ShieldedRecoveryCorrupted`]. Upstream
@@ -4398,21 +4614,58 @@ impl From<dashcore_rpc::Error> for TaskError {
 }
 
 impl TaskError {
-    /// The error for a token operation the wallet runtime reported as failed
-    /// (`PlatformWalletError::TokenOperationFailed`).
+    /// The error for a token operation of `operation` that failed with `source`.
     ///
-    /// The SDK source is classified exactly like any other SDK error, so a
-    /// rejection with a specific meaning (insufficient balance, a claim already
-    /// taken, …) keeps its specific message. Only an otherwise unclassified
-    /// failure becomes [`TaskError::TokenOperationFailed`], which at least names
-    /// the operation.
-    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
-        match TaskError::from(source) {
+    /// The source is classified like any broadcast error, so a proof failure is
+    /// logged and a rejection with a specific meaning (insufficient balance, a
+    /// claim already taken, …) keeps its specific message. Both generic
+    /// fallbacks keep the operation: an unclassified failure becomes
+    /// [`TaskError::TokenOperationFailed`], an unclassified Platform refusal
+    /// [`TaskError::TokenOperationRejected`].
+    pub fn from_token_operation(operation: TokenOperationKind, source: SdkError) -> Self {
+        match TaskError::from_broadcast_sdk_error(source, RequestType::BroadcastStateTransition) {
             TaskError::SdkError { source_error } => TaskError::TokenOperationFailed {
-                operation: TokenOperationKind::from_upstream_label(operation),
+                operation,
+                source_error,
+            },
+            TaskError::PlatformRejected { source_error } => TaskError::TokenOperationRejected {
+                operation,
                 source_error,
             },
             classified => classified,
+        }
+    }
+
+    /// [`Self::from_token_operation`] for a failure the wallet runtime reported
+    /// with its operation label (`PlatformWalletError::TokenOperationFailed`).
+    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
+        Self::from_token_operation(TokenOperationKind::from_upstream_label(operation), source)
+    }
+
+    /// Classify an SDK error from a request to Platform, logging a failed
+    /// Drive proof check (with its proof size and block) before reporting it
+    /// as [`TaskError::ProofError`].
+    pub(crate) fn from_broadcast_sdk_error(error: SdkError, request_type: RequestType) -> Self {
+        match error {
+            SdkError::DriveProofError(proof_error, proof_bytes, block_info) => {
+                tracing::error!(
+                    target: "proof_log",
+                    request_type = ?request_type,
+                    height = block_info.height,
+                    time_ms = block_info.time_ms,
+                    proof_bytes_len = proof_bytes.len(),
+                    %proof_error,
+                    "drive proof verification failed",
+                );
+                TaskError::ProofError {
+                    source_error: Box::new(SdkError::DriveProofError(
+                        proof_error,
+                        proof_bytes,
+                        block_info,
+                    )),
+                }
+            }
+            error => TaskError::from(error),
         }
     }
 }
@@ -5106,6 +5359,139 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A data folder the app may not write to gets its own advice; any other
+    /// file failure keeps the general one.
+    #[test]
+    fn data_folder_errors_name_permission_problems() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        use std::path::PathBuf;
+        let settings_file = |kind| Step::WriteSettingsFile {
+            path: PathBuf::from("/data/.env"),
+            source: Error::from(kind),
+        };
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            assert!(matches!(
+                TaskError::from_prepare_environment_error(settings_file(kind)),
+                TaskError::DataFolderAccessDenied { .. }
+            ));
+        }
+        let other = TaskError::from_prepare_environment_error(settings_file(ErrorKind::NotFound));
+        assert!(
+            matches!(other, TaskError::DataFolderSetupFailed { .. }),
+            "{other:?}"
+        );
+        assert!(other.to_string().contains("/data/.env"), "{other}");
+        assert!(!other.to_string().contains("disk space"), "{other}");
+        assert!(
+            format!("{other:?}").contains("WriteSettingsFile"),
+            "{other:?}"
+        );
+    }
+
+    /// Each data folder step and failure kind gets advice that can fix it:
+    /// no home folder, a file in the folder's place, a full disk.
+    #[test]
+    fn data_folder_errors_give_step_specific_advice() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        use std::path::PathBuf;
+
+        let locate = TaskError::from_prepare_environment_error(Step::Locate {
+            source: Error::from(ErrorKind::NotFound),
+        });
+        assert!(
+            matches!(locate, TaskError::DataFolderNotFound { .. }),
+            "{locate:?}"
+        );
+        assert!(locate.to_string().contains("home folder"), "{locate}");
+
+        let occupied = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+            path: PathBuf::from("/data/det"),
+            source: Error::from(ErrorKind::InvalidInput),
+        });
+        assert!(
+            matches!(occupied, TaskError::DataFolderNotADirectory { .. }),
+            "{occupied:?}"
+        );
+        assert!(occupied.to_string().contains("/data/det"), "{occupied}");
+        assert!(
+            occupied.to_string().contains("Move or rename"),
+            "{occupied}"
+        );
+
+        let full = TaskError::from_prepare_environment_error(Step::WriteSettingsFile {
+            path: PathBuf::from("/data/.env"),
+            source: Error::from(ErrorKind::StorageFull),
+        });
+        assert!(
+            matches!(full, TaskError::DataFolderDiskFull { .. }),
+            "{full:?}"
+        );
+        assert!(full.to_string().contains("disk space"), "{full}");
+    }
+
+    /// A database the app may not open or write (read-only, no permission,
+    /// access refused) gets the same advice as an unwritable data folder; any
+    /// other database failure keeps the general one.
+    #[test]
+    fn database_open_errors_name_permission_problems() {
+        use rusqlite::ffi;
+        let sqlite = |code| rusqlite::Error::SqliteFailure(ffi::Error::new(code), None);
+        let no_dir = std::path::Path::new("missing/data.db");
+        let folder_message = TaskError::DataFolderAccessDenied {
+            source: crate::boot::PrepareEnvironmentError::Locate {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            },
+        }
+        .to_string();
+        for code in [
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_PERM,
+            ffi::SQLITE_AUTH,
+        ] {
+            let error = TaskError::from_database_open_error(sqlite(code), no_dir);
+            assert!(
+                matches!(error, TaskError::DatabaseAccessDenied { .. }),
+                "{code}: {error:?}"
+            );
+            assert_eq!(error.to_string(), folder_message);
+        }
+        for source in [sqlite(ffi::SQLITE_FULL), rusqlite::Error::InvalidQuery] {
+            assert!(matches!(
+                TaskError::from_database_open_error(source, no_dir),
+                TaskError::Database { .. }
+            ));
+        }
+    }
+
+    /// A directory in the database file's place is not a permission problem,
+    /// so it keeps the general database advice.
+    #[test]
+    fn database_path_that_is_a_directory_is_not_access_denied() {
+        use rusqlite::ffi;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir
+            .path()
+            .join(crate::database::legacy_backups::LEGACY_DATABASE);
+        std::fs::create_dir(&db_path).expect("directory at the database path");
+        let source = crate::database::Database::open_legacy_read_only(&db_path)
+            .expect_err("a directory cannot be opened as a database");
+        let error = TaskError::from_database_open_error(source, &db_path);
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+
+        let is_dir =
+            rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CANTOPEN_ISDIR), None);
+        let error =
+            TaskError::from_database_open_error(is_dir, std::path::Path::new("missing/data.db"));
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+
+        let cant_open = rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_CANTOPEN), None);
+        let error = TaskError::from_database_open_error(cant_open, &db_path);
+        assert!(matches!(error, TaskError::Database { .. }), "{error:?}");
+    }
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;
     use dash_sdk::dpp::consensus::basic::data_contract::{
@@ -8095,6 +8481,146 @@ mod tests {
                 "{label}"
             );
         }
+    }
+
+    const ALL_TOKEN_OPERATION_KINDS: [TokenOperationKind; 13] = [
+        TokenOperationKind::Claim,
+        TokenOperationKind::Mint,
+        TokenOperationKind::Burn,
+        TokenOperationKind::Transfer,
+        TokenOperationKind::Freeze,
+        TokenOperationKind::Unfreeze,
+        TokenOperationKind::DestroyFrozenFunds,
+        TokenOperationKind::Pause,
+        TokenOperationKind::Resume,
+        TokenOperationKind::SetPrice,
+        TokenOperationKind::Purchase,
+        TokenOperationKind::ConfigUpdate,
+        TokenOperationKind::Unrecognized { label: "new" },
+    ];
+
+    /// A broadcast rejection whose consensus cause has no dedicated variant.
+    fn unmapped_token_rejection() -> SdkError {
+        use dash_sdk::dpp::consensus::basic::UnsupportedVersionError;
+        SdkError::StateTransitionBroadcastError(dash_sdk::error::StateTransitionBroadcastError {
+            code: 40001,
+            message: "unsupported version".to_string(),
+            cause: Some(ConsensusError::from(UnsupportedVersionError::new(1, 2, 3))),
+        })
+    }
+
+    /// Platform refusing a token action for a reason with no dedicated
+    /// message still names the action, with rejection (not connection) advice.
+    #[test]
+    fn token_operation_rejection_without_a_specific_cause_names_the_operation() {
+        assert!(matches!(
+            TaskError::from(unmapped_token_rejection()),
+            TaskError::PlatformRejected { .. }
+        ));
+
+        let err = TaskError::from_token_operation_failure("mint", unmapped_token_rejection());
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenOperationRejected {
+                    operation: TokenOperationKind::Mint,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "The platform did not accept this mint. Check the amount and that this identity is \
+             allowed to mint this token, then try again."
+        );
+    }
+
+    /// The typed entry point and the upstream-label one agree for every
+    /// operation, on both generic fallbacks.
+    #[test]
+    fn token_operation_kind_survives_both_generic_fallbacks() {
+        for kind in ALL_TOKEN_OPERATION_KINDS {
+            let failed =
+                TaskError::from_token_operation(kind, SdkError::Generic("boom".to_string()));
+            assert!(
+                matches!(failed, TaskError::TokenOperationFailed { operation, .. } if operation == kind),
+                "{kind:?}: {failed:?}"
+            );
+            let rejected = TaskError::from_token_operation(kind, unmapped_token_rejection());
+            assert!(
+                matches!(rejected, TaskError::TokenOperationRejected { operation, .. } if operation == kind),
+                "{kind:?}: {rejected:?}"
+            );
+        }
+    }
+
+    /// Each operation has its own complete sentence per outcome, so the
+    /// banner never reads the same for a rejection and a lost connection.
+    #[test]
+    fn token_operation_messages_are_distinct_sentences() {
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in ALL_TOKEN_OPERATION_KINDS {
+            for message in [kind.failure_message(), kind.rejection_message()] {
+                assert!(message.ends_with('.'), "{message}");
+                assert!(seen.insert(message), "repeated: {message}");
+            }
+        }
+    }
+
+    /// A failed proof check is logged and reported as unverified, not as a
+    /// failed operation the user might retry and pay for twice.
+    #[test]
+    fn token_operation_proof_failure_stays_a_proof_error() {
+        use dash_sdk::drive::error::proof::ProofError;
+        let err = TaskError::from_token_operation(
+            TokenOperationKind::Transfer,
+            SdkError::DriveProofError(
+                ProofError::CorruptedProof("bad".to_string()),
+                Vec::new(),
+                dash_sdk::dpp::block::block_info::BlockInfo::default(),
+            ),
+        );
+        assert!(matches!(err, TaskError::ProofError { .. }), "got {err:?}");
+    }
+
+    /// Dedicated outcomes keep their own message: an unconfirmed broadcast
+    /// and a refused once-per-identity claim are not folded into the
+    /// operation's generic sentence.
+    #[test]
+    fn token_operation_keeps_dedicated_outcomes() {
+        let unconfirmed = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 0,
+                message: "no result".to_string(),
+                cause: None,
+            },
+        );
+        let err = TaskError::from_token_operation(TokenOperationKind::Burn, unconfirmed);
+        assert!(
+            matches!(err, TaskError::PlatformResultUnconfirmed { .. }),
+            "got {err:?}"
+        );
+
+        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
+        let claimed = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40722,
+                message: "already claimed".to_string(),
+                cause: Some(ConsensusError::from(
+                    TokenOncePerIdentityDistributionAlreadyClaimedError::new(
+                        Identifier::random(),
+                        Identifier::random(),
+                        1,
+                    ),
+                )),
+            },
+        );
+        let err = TaskError::from_token_operation(TokenOperationKind::Claim, claimed);
+        assert!(
+            matches!(err, TaskError::TokenOncePerIdentityAlreadyClaimed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

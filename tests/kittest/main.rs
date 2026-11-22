@@ -41,6 +41,7 @@ mod secret_prompt;
 #[cfg(feature = "testing")]
 mod send_screen;
 mod startup;
+mod startup_error;
 mod support;
 mod tokens_screen;
 mod tools_screen;

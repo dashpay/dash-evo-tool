@@ -65,6 +65,7 @@ pub mod single_key_entry;
 mod snapshot;
 mod spend_activity;
 mod token_balance;
+mod tokens;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_context;
@@ -97,6 +98,7 @@ pub use secret_prompt::{
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
 pub use secret_seam::SecretSeam;
+pub(crate) use tokens::{TokenActionCommon, TokenActor};
 
 use coordinator_gate::CoordinatorGate;
 use identity_ops::Funding;
@@ -399,6 +401,8 @@ struct Inner {
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
+    bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
@@ -572,6 +576,20 @@ pub(crate) fn all_networks() -> [Network; 4] {
 /// — that directory holds the disposable, resyncable chain cache, while this file
 /// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
 /// created and locked down at boot, so no directory work happens here.
+/// Test seam for pausing and observing a wallet backend build.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct BuildTestHooks {
+    /// When set, the build signals it once its upstream manager exists, then
+    /// waits for good, standing in for a slow initialization.
+    pub(crate) pause_initialization: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// Bounded teardowns that finished for backends built by this context.
+    pub(crate) bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Upper bound for [`WalletBackend::shutdown_bounded`].
+const BOUNDED_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
 }
@@ -670,20 +688,10 @@ impl WalletBackend {
             },
         ));
 
+        // From here on the manager runs its wallet-event adapter, so every
+        // failure below tears it down through `Self::shutdown_bounded`, never a
+        // plain drop.
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
-
-        // Wire the upstream shielded coordinator into the manager.
-        //
-        // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
-        // entirely by the upstream coordinator — the single source of truth for
-        // all Orchard state. The coordinator starts empty — no wallets are bound
-        // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
-        // calls with the same path are idempotent (upstream no-ops).
-        pwm.configure_shielded(shielded_database_path(ctx.data_dir(), network))
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })?;
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
 
@@ -714,6 +722,8 @@ impl WalletBackend {
                 registration_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
                 #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -758,18 +768,91 @@ impl WalletBackend {
             }),
         };
 
-        // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
-        // seed-envelope sidecars before the loader runs. The legacy
-        // `db.get_wallets` row → `Wallet` mapping moved here once the
-        // sidecars became the authoritative source. `register_persisted_wallets`
-        // expects the wallet context's HD registry to be populated so it can re-provision
-        // identity funding accounts (a5538dc8) for every persisted
-        // identity, so hydration must precede registration.
-        backend.hydrate_context_wallets(ctx)?;
+        let initialize = async {
+            #[cfg(test)]
+            let pause = ctx
+                .test_wallet_backend_hooks
+                .pause_initialization
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            #[cfg(test)]
+            if let Some(reached) = pause {
+                reached.notify_one();
+                std::future::pending::<()>().await;
+            }
 
-        backend.register_persisted_wallets(ctx).await?;
+            // Wire the upstream shielded coordinator into the manager.
+            //
+            // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
+            // entirely by the upstream coordinator — the single source of truth for
+            // all Orchard state. The coordinator starts empty — no wallets are bound
+            // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
+            // calls with the same path are idempotent (upstream no-ops).
+            backend
+                .inner
+                .pwm
+                .configure_shielded(shielded_database_path(ctx.data_dir(), network))
+                .await
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+
+            // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
+            // seed-envelope sidecars before the loader runs. The legacy
+            // `db.get_wallets` row → `Wallet` mapping moved here once the
+            // sidecars became the authoritative source. `register_persisted_wallets`
+            // expects the wallet context's HD registry to be populated so it can re-provision
+            // identity funding accounts (a5538dc8) for every persisted
+            // identity, so hydration must precede registration.
+            backend.hydrate_context_wallets(ctx)?;
+
+            backend.register_persisted_wallets(ctx).await
+        };
+        // Closing the app stops the build at its next await. Stopping there
+        // is safe: no step here writes the wallet database itself. Opening
+        // the shielded store is synchronous, and the persisted-wallet load
+        // only reads.
+        // Whatever the load left half-done lives only in this manager, and
+        // the manager is torn down below.
+        let cancellation_token = ctx.subtasks.cancellation_token.clone();
+        let initialized = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => Err(TaskError::TaskManagerShuttingDown),
+            initialized = initialize => initialized,
+        };
+        if let Err(error) = initialized {
+            backend.shutdown_bounded().await;
+            return Err(error);
+        }
 
         Ok(backend)
+    }
+
+    /// Forget cached secrets and tear the backend down through the upstream
+    /// shutdown, bounded by [`BOUNDED_SHUTDOWN_TIMEOUT`].
+    ///
+    /// Use it instead of dropping the backend: the upstream manager's `Drop`
+    /// only cancels its wallet-event adapter and may lose buffered events.
+    /// [`Self::shutdown`] stops chain sync, drains the sync passes and joins
+    /// the adapter. A backend that never started has only the adapter to
+    /// drain. One that started and overruns the bound is reported. A later
+    /// shutdown, such as the app's exit drain for a registered context, joins
+    /// what is left.
+    pub(crate) async fn shutdown_bounded(&self) {
+        self.forget_all_secrets();
+        match tokio::time::timeout(BOUNDED_SHUTDOWN_TIMEOUT, self.shutdown()).await {
+            Ok(()) => {
+                #[cfg(test)]
+                self.inner
+                    .bounded_shutdowns
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(_) => tracing::warn!(
+                timeout_secs = BOUNDED_SHUTDOWN_TIMEOUT.as_secs(),
+                "Wallet backend teardown timed out; continuing"
+            ),
+        }
     }
 
     /// Refill the wallet context's HD and imported-key registries from the
@@ -1232,6 +1315,28 @@ impl WalletBackend {
         })
         .await
         .expect("track the funding transaction");
+    }
+
+    /// Give `address` on the registered wallet's Platform-payment account 0
+    /// a balance of `credits`, as if a sync pass had found it.
+    #[cfg(test)]
+    pub(crate) async fn set_platform_address_balance_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: dash_sdk::dpp::key_wallet::PlatformP2PKHAddress,
+        credits: u64,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        let wallet_id = wallet.wallet_id();
+        let mut manager = wallet.wallet_manager().write().await;
+        manager
+            .get_wallet_info_mut(&wallet_id)
+            .and_then(|info| {
+                info.core_wallet
+                    .first_platform_payment_managed_account_mut()
+            })
+            .expect("platform-payment account 0")
+            .set_address_credit_balance(address, credits, None);
     }
 
     #[cfg(test)]
@@ -3496,21 +3601,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
 
-        other @ P::AssetLockTooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(other),
-            }
-        }
-
-        // Only coins that are not final yet could fund the lock. Nothing was
-        // built for the wire, and the same request works once they confirm.
-        other @ P::AssetLockFundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(other)),
-            }
+        other @ (P::AssetLockTooManyInputs { .. } | P::AssetLockFundsAwaitingFinality { .. }) => {
+            payments::map_asset_lock_refusal_or(other, |other| TaskError::WalletBackend {
+                source: Arc::new(other),
+            })
         }
 
         // Only shielding from Platform raises this, and
@@ -3755,20 +3849,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::TooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(e),
-            }
-        }
-        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(e)),
-            }
-        }
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
         },
@@ -3786,7 +3867,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Same as [`map_identity_register_error`] but for the top-up façade —
@@ -3809,20 +3890,7 @@ fn map_identity_top_up_error(
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::TooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(e),
-            }
-        }
-        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(e)),
-            }
-        }
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
             source: Box::new(e),
@@ -3843,7 +3911,7 @@ fn map_identity_top_up_error(
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Classify an SDK error from a directly-submitted identity top-up — the path a
@@ -3899,20 +3967,7 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::TooManyInputs { count, max } => {
-            TaskError::AssetLockTransferTooManyInputs {
-                count,
-                max,
-                source: Box::new(e),
-            }
-        }
-        IdentityOpErrorKind::FundsAwaitingFinality { waiting } => {
-            TaskError::AssetLockFundsAwaitingConfirmation {
-                waiting,
-                source: Some(Box::new(e)),
-            }
-        }
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
@@ -3931,16 +3986,11 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
-    /// The built transaction exceeds the input cap and cannot be re-sent.
-    TooManyInputs { count: usize, max: usize },
-    /// Only coins that are not final yet could fund the asset lock; nothing
-    /// was built for the wire.
-    FundsAwaitingFinality { waiting: u64 },
     /// Network or broadcast rejected the submission (SDK error or asset-lock
     /// transaction broadcast failure).
     Rejected,
@@ -3966,15 +4016,6 @@ enum IdentityOpErrorKind {
 fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> IdentityOpErrorKind {
     use platform_wallet::error::PlatformWalletError as P;
     match e {
-        P::AssetLockTooManyInputs { count, max } => IdentityOpErrorKind::TooManyInputs {
-            count: *count,
-            max: *max,
-        },
-
-        P::AssetLockFundsAwaitingFinality { waiting } => {
-            IdentityOpErrorKind::FundsAwaitingFinality { waiting: *waiting }
-        }
-
         // Network / broadcast rejections. A failed token operation carries the
         // SDK rejection that caused it.
         P::Sdk(_) | P::TransactionBroadcast(_) | P::TokenOperationFailed { .. } => {
@@ -3999,7 +4040,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         P::TransactionBroadcastUnconfirmed(_) => IdentityOpErrorKind::ConfirmationUnknown,
 
         // Everything else — preconditions, wallet state, builder errors.
-        P::WalletCreation(_)
+        // Asset-lock refusals never get here: callers classify them first via
+        // `payments::map_asset_lock_refusal_or`.
+        P::AssetLockTooManyInputs { .. }
+        | P::AssetLockFundsAwaitingFinality { .. }
+        | P::WalletCreation(_)
         | P::StaleReservation
         | P::InputMidBroadcast { .. }
         | P::AssetLockInputConflict { .. }
@@ -4183,6 +4228,93 @@ fn redact_worker_status(status: &WorkerStatus) -> WorkerStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wallet backend still being built when the app closes stops instead
+    /// of finishing, and releases the wallet database it opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_by_exit_stops_and_releases_its_storage() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        ctx.subtasks.cancellation_token.cancel();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let error = ctx
+            .ensure_wallet_backend(sender)
+            .await
+            .expect_err("closing the app stops the build");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
+
+    /// The same holds when the app closes while the build is initializing:
+    /// it stops there, its manager goes through the upstream shutdown, and
+    /// the wallet database is released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_mid_initialization_stops_and_shuts_down() {
+        use crate::context::test_support::test_app_context;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        *ctx.test_wallet_backend_hooks
+            .pause_initialization
+            .lock()
+            .expect("hooks lock") = Some(Arc::clone(&reached));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let mut build = Box::pin(ctx.ensure_wallet_backend(sender));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                _ = build.as_mut() => panic!("the build finished instead of pausing"),
+                () = reached.notified() => {}
+            }
+        })
+        .await
+        .expect("the build reaches its initialization");
+
+        ctx.subtasks.cancellation_token.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(10), build)
+            .await
+            .expect("closing the app stops the paused build")
+            .expect_err("a stopped build reports the exit");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
 
     #[test]
     fn upstream_asset_lock_input_limit_preserves_counts_source_and_restart_guidance() {

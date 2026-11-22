@@ -30,7 +30,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     address_list: AddressList,
     network: Network,
     context_provider: P,
-) -> Result<Sdk, String> {
+) -> Result<Sdk, Box<dash_sdk::Error>> {
     let request_settings = request_settings();
 
     let sdk = SdkBuilder::new(address_list)
@@ -39,7 +39,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         .with_context_provider(context_provider)
         .with_settings(request_settings)
         .build()
-        .map_err(|e| format!("Failed to build SDK: {e}"))?;
+        .map_err(Box::new)?;
 
     info!(
         ?network,

@@ -20,9 +20,9 @@ Read by AI reviewers and raters (claudius `severity` skill, `system-rating.md` ย
 - In: secrets reaching logs, diagnostics, shell traces or committed files, test code included (AGENTS.md ยง Never commit secrets).
 - In: what is signed differs from what the user confirmed (amount, recipient, fee, double send).
 - Out: an attacker already running as the same OS user (reads the process environment or the X11 screen, plants files in the profile directory).
-  - Exception: secrets stored on disk are in scope, but `platform-wallet` storage in dashpay/platform owns them. File such findings upstream; do not work around them in DET.
+  - Exception: secrets stored on disk are in scope. Defects in how `platform-wallet` storage (dashpay/platform) protects them are filed upstream, not worked around in DET. DET's own choices stay in scope here: which secrets it stores protected or unprotected, and how imports and migrations pick that path.
 - Out: hostile Platform data. DET trusts data from Platform and the SDK; validation and proofs are dashpay/platform's responsibility, and DET does not re-implement their checks.
-- One interactive human per profile; concurrency is that human plus background tasks. Races that need unusual timing and lose no funds are declined.
+- One interactive human per profile; concurrency is that human plus background tasks. Races that need unusual timing and lose neither funds nor local wallet or identity data are declined.
 
 **Critical assets** (most important first):
 1. Secret confidentiality: seed, private keys, passwords.
@@ -38,7 +38,7 @@ Read by AI reviewers and raters (claudius `severity` skill, `system-rating.md` ย
 - AR1 Hardening developer or internal tooling against its own operator or a same-user process.
 - AR2 Non-standard OS or profile setup: hand-placed or crafted local files, database symlinks, oversized values in local databases, a transient SQLite `-shm` sidecar, a data directory outside the defaults.
 - AR3 Devnet-only failures, e.g. a Devnet wipe racing an edit: a Devnet reset is a developer problem.
-- AR4 Narrow races with no fund loss.
+- AR4 Narrow races that lose neither funds nor local wallet or identity data.
 - AR5 A form edited through assistive technology behind an open confirmation modal; the send uses the confirmed snapshot.
 - AR6 Limitations owned by platform-wallet, the SDK or rust-dashcore: documented as a Known limitation with an upstream link, not worked around in DET.
 - AR7 A full path in diagnostics the user chooses to share, when the data directory is outside the home directory (a non-standard setup); the home directory itself is redacted.

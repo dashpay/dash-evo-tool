@@ -48,7 +48,7 @@ Always run `cargo fmt --all` when finalizing your work — this honors the `rust
 
 CI is the full-suite backstop. Do not reproduce it locally. (This section covers your own machine — an agent running *inside* the Claude Code review GitHub Action should follow "CI: Safe Cargo Wrapper" below instead.)
 
-On every **non-draft** PR that touches Rust code, and on pushes to `v*-dev`, GitHub Actions runs the full non-ignored-test gate:
+On every **non-draft** PR that changes more than documentation, and on such pushes to `v*-dev`, GitHub Actions runs the full non-ignored-test gate:
 
 | Workflow | Runs |
 |---|---|

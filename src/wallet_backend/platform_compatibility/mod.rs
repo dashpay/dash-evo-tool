@@ -127,9 +127,11 @@ fn open_for_history(path: &Path) -> rusqlite::Result<Connection> {
     }
 }
 
-/// `file:` URI opening `path` read-only and immutable; `None` for paths a URI
-/// cannot carry plainly (not UTF-8, or a Windows network or verbatim path).
+/// `file:` URI opening `path` (made absolute) read-only and immutable; `None`
+/// for paths a URI cannot carry plainly (not UTF-8, or a Windows network or
+/// verbatim path).
 fn immutable_uri(path: &Path) -> Option<String> {
+    let path = std::path::absolute(path).ok()?;
     let path = path.to_str()?;
     let path = if cfg!(windows) {
         path.replace('\\', "/")
@@ -432,6 +434,19 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(tree(&folder), before, "no file may be created");
+    }
+
+    /// A relative path (e.g. a relative `DASH_EVO_DATA_DIR`) is resolved against
+    /// the working directory, not read as a path from the filesystem root.
+    #[test]
+    fn platform_compatibility_immutable_uri_resolves_relative_paths() {
+        let relative = std::path::Path::new("data dir/det-app.sqlite");
+        let absolute = std::env::current_dir().unwrap().join(relative);
+
+        let uri = immutable_uri(relative).expect("a UTF-8 relative path has a URI");
+
+        assert_ne!(uri, "file:///data%20dir/det-app.sqlite?mode=ro&immutable=1");
+        assert_eq!(Some(uri), immutable_uri(&absolute));
     }
 
     /// A history still only in the `-wal` file of an open writer is seen.

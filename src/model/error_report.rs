@@ -38,19 +38,26 @@ impl WindowFailureKind {
 }
 
 /// The system dialog text for a window failure: the message for `kind`, the
-/// log file location when known, and where to report the problem.
+/// log file location when known, and where to report the problem, which is
+/// public.
 pub fn window_failure_text(kind: WindowFailureKind, log_file: Option<&Path>) -> String {
     let mut text = kind.message().to_owned();
-    if let Some(log_file) = log_file {
-        text.push_str(&format!(
-            "\n\nThe log file is at {path}.",
-            path = log_file.display()
-        ));
+    match log_file {
+        Some(log_file) => {
+            text.push_str(&format!(
+                "\n\nThe log file is at {path}.",
+                path = log_file.display()
+            ));
+            text.push_str(&format!(
+                "\n\nIf you cannot solve this yourself, report the problem at {url} and include the log file. The issue page is public, and the log file can include folder names from your computer, so read it before posting and remove anything you do not want to share.",
+                url = crate::SUPPORT_URL
+            ));
+        }
+        None => text.push_str(&format!(
+            "\n\nIf you cannot solve this yourself, report the problem at {url}. The issue page is public, so do not post anything you do not want to share.",
+            url = crate::SUPPORT_URL
+        )),
     }
-    text.push_str(&format!(
-        "\n\nIf you cannot solve this yourself, report the problem at {url} and include the log file.",
-        url = crate::SUPPORT_URL
-    ));
     text
 }
 
@@ -176,6 +183,21 @@ mod tests {
 
         let text = window_failure_text(kind, None);
         assert!(!text.contains("log file is at"), "{text}");
+    }
+
+    /// The text asks for the log file only when there is one, and warns in
+    /// both cases that the issue page is public.
+    #[test]
+    fn window_failure_text_asks_for_the_log_only_when_it_exists() {
+        let kind = WindowFailureKind::Other;
+        let text = window_failure_text(kind, Some(Path::new("/logs/det.log")));
+        assert!(text.contains("include the log file"), "{text}");
+        assert!(text.contains("public"), "{text}");
+
+        let text = window_failure_text(kind, None);
+        assert!(!text.contains("log file"), "{text}");
+        assert!(text.contains(crate::SUPPORT_URL), "{text}");
+        assert!(text.contains("public"), "{text}");
     }
 
     /// Only a graphics failure sends the user to their graphics drivers; a

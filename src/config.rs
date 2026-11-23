@@ -32,6 +32,9 @@ pub struct Config {
     pub testnet_config: Option<NetworkConfig>,
     pub devnet_config: Option<NetworkConfig>,
     pub local_config: Option<NetworkConfig>,
+    /// Networks whose saved settings were rejected, and why.
+    #[serde(skip)]
+    pub(crate) invalid_networks: Vec<(Network, envy::Error)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -162,6 +165,13 @@ impl Config {
             Network::Devnet => &self.devnet_config,
             Network::Regtest => &self.local_config,
         }
+    }
+
+    /// Why `network`'s saved settings were rejected, if they were.
+    pub fn network_settings_error(&self, network: Network) -> Option<&envy::Error> {
+        self.invalid_networks
+            .iter()
+            .find_map(|(rejected, error)| (*rejected == network).then_some(error))
     }
 
     /// Write the current configuration back to the `.env` file so that
@@ -297,6 +307,7 @@ impl Config {
             testnet_config,
             devnet_config,
             local_config,
+            invalid_networks: Vec::new(),
         })
     }
 
@@ -668,6 +679,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
         assert!(config.config_for_network(Network::Mainnet).is_some());
         assert!(config.config_for_network(Network::Testnet).is_none());
@@ -682,6 +694,7 @@ mod tests {
             testnet_config: Some(make_network_config("https://2.2.2.2:1443", 19998)),
             devnet_config: Some(make_network_config("http://3.3.3.3:1443", 29998)),
             local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
+            invalid_networks: Vec::new(),
         };
         let main = config
             .config_for_network(Network::Mainnet)
@@ -711,6 +724,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
         assert!(config.mainnet_config.is_none());
         let new_cfg = make_network_config("https://1.1.1.1:443", 9998);
@@ -729,6 +743,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
         let new_cfg = make_network_config("https://new.example.com:443", 2222);
         config.update_config_for_network(Network::Mainnet, new_cfg);
@@ -747,6 +762,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
         config.update_config_for_network(
             Network::Testnet,
@@ -796,6 +812,7 @@ mod tests {
             testnet_config: Some(make_network_config("https://2.2.2.2:1443", 19998)),
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
 
         // Simulate what save() writes by formatting env lines
@@ -935,6 +952,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
 
         let error = config
@@ -1147,6 +1165,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         };
         let cloned = config.clone();
         assert_eq!(

@@ -20,6 +20,16 @@ pub enum NetworkContextError {
     )]
     NotConfigured { network: Network },
 
+    /// A saved setting for this network has a value that cannot be used.
+    #[error(
+        "A setting saved for {network} has a value that is not valid. Correct it in the .env file in the app data folder, then restart the application."
+    )]
+    InvalidSettings {
+        network: Network,
+        #[source]
+        source: envy::Error,
+    },
+
     /// No node addresses are saved for this network.
     #[error(
         "No node addresses are set up for {network}. Add them to the .env file in the app data folder, then restart the application."

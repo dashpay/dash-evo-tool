@@ -131,6 +131,24 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
+    /// A storage lock the app may not open gets the data-folder permission
+    /// advice; a held lock stays "not ready".
+    #[test]
+    fn lock_error_gives_access_failures_the_data_folder_advice() {
+        use std::io::{Error, ErrorKind};
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            let error = lock_error(Error::from(kind));
+            assert!(
+                matches!(error, TaskError::WalletStorageLockAccessDenied { .. }),
+                "{error:?}"
+            );
+        }
+        let held = lock_error(Error::from(ErrorKind::WouldBlock));
+        assert!(matches!(held, TaskError::WalletStorageNotReady), "{held:?}");
+        let other = lock_error(Error::from(ErrorKind::NotFound));
+        assert!(matches!(other, TaskError::FileSystem { .. }), "{other:?}");
+    }
+
     /// Every failed open of an unsupported database makes upstream write another
     /// `pre-migration-*` copy of the unchanged database; the open's own tidying
     /// collapses them to the newest, even when the open fails.

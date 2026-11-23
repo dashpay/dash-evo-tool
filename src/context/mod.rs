@@ -1980,54 +1980,21 @@ mod tests {
         }
     }
 
-    /// A network whose saved node addresses cannot be parsed reports that
-    /// reason instead of an unexplained failure.
-    #[test]
-    fn app_context_reports_invalid_node_addresses() {
+    /// `AppContext::new`'s error for `network` over a data folder whose
+    /// `.env` holds `env`.
+    fn app_context_error(env: &str, network: Network) -> NetworkContextError {
         use crate::database::test_helpers::create_database_at_path;
-
-        // Loading the .env sets process variables, so run in a child process
-        // that inherits no network settings.
-        const CHILD_MARKER: &str = "DET_INVALID_NODE_ADDRESSES_TEST_CHILD";
-        if std::env::var_os(CHILD_MARKER).is_none() {
-            let mut command =
-                std::process::Command::new(std::env::current_exe().expect("test executable"));
-            command
-                .args([
-                    "context::tests::app_context_reports_invalid_node_addresses",
-                    "--exact",
-                ])
-                .env(CHILD_MARKER, "1");
-            for (key, _) in std::env::vars_os() {
-                let key = key.to_string_lossy();
-                if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
-                    .iter()
-                    .any(|prefix| key.starts_with(prefix))
-                {
-                    command.env_remove(key.as_ref());
-                }
-            }
-            let output = command.output().expect("run isolated test");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(output.status.success(), "isolated test failed: {stdout}");
-            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
-            return;
-        }
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        std::fs::write(
-            data_dir.join(".env"),
-            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
-        )
-        .expect("write .env");
+        std::fs::write(data_dir.join(".env"), env).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
 
         let result = AppContext::new(
             data_dir,
-            Network::Testnet,
+            network,
             db,
             Arc::new(TaskManager::new()),
             Arc::new(ConnectionStatus::new()),
@@ -2037,13 +2004,56 @@ mod tests {
             crate::model::user_role::UserRoleCell::default(),
         );
         let Err(error) = result else {
-            panic!("invalid node addresses must fail");
+            panic!("the settings must be refused");
         };
+        error
+    }
 
+    /// A network whose saved node addresses cannot be parsed reports that
+    /// reason instead of an unexplained failure.
+    #[test]
+    fn app_context_reports_invalid_node_addresses() {
+        // Loading the .env sets process variables, so run in a child process.
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_node_addresses",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error(
+            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
+            Network::Testnet,
+        );
         assert!(
             matches!(
                 error,
                 NetworkContextError::InvalidDapiAddresses {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A network whose saved setting has an unusable value is reported as
+    /// invalid, not as missing.
+    #[test]
+    fn app_context_reports_invalid_network_settings() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_network_settings",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error(
+            "MAINNET_core_host=127.0.0.1\nTESTNET_core_rpc_port=invalid\n",
+            Network::Testnet,
+        );
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidSettings {
                     network: Network::Testnet,
                     ..
                 }

@@ -1026,6 +1026,20 @@ mod tests {
     use super::*;
     use crate::model::wallet::passphrase::MIN_SINGLE_KEY_PASSPHRASE_LEN;
 
+    /// A vault folder that cannot be created keeps its file-system cause.
+    #[test]
+    fn open_secret_store_keeps_the_folder_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file"), "").expect("write file");
+        let Err(error) = open_secret_store(&dir.path().join("file").join("vault")) else {
+            panic!("a file blocks the vault folder");
+        };
+        assert!(
+            matches!(error, SecretStoreError::Io(ref io) if io.source.kind() == std::io::ErrorKind::NotADirectory),
+            "{error:?}"
+        );
+    }
+
     /// The hand-written `ImportPassphrase` `Debug` must redact the
     /// passphrase so it can never leak through `{:?}` into logs or panic
     /// backtraces.

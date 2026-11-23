@@ -655,6 +655,8 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         TransactionType::TokenClaim,
                         self.identity_token_basic_info.contract_id,
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                 }

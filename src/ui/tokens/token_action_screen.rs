@@ -639,6 +639,8 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &self.common.identity_token_info.identity,
                     TransactionType::TokenAction,
                     self.common.identity_token_info.data_contract.contract.id(),
+                    &mut self.common.selected_wallet,
+                    &mut self.common.wallet_open_attempted,
                 );
                 ui.add_space(10.0);
                 ui.separator();
@@ -848,6 +850,77 @@ mod tests {
             assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
             assert!(!screen.common.wallet_open_attempted);
         }
+    }
+
+    /// Regression: picking a key by hand left the signing wallet as it was,
+    /// so with only a contract-group key held by a wallet the form showed no
+    /// unlock prompt and Confirm failed at signing.
+    #[test]
+    fn picking_a_key_by_hand_follows_its_wallet() {
+        use crate::context::test_support::{
+            auth_key, bound_to, identity_holding, test_app_context,
+        };
+        use crate::ui::helpers::format_key_label;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let key = bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([6; 32]),
+            },
+        );
+        let mut identity = identity_holding(std::slice::from_ref(&key));
+        let wallet = crate::model::wallet::test_support::open_wallet_on(
+            crate::test_support::keys::labelled_seed("manual_pick_wallet", 0),
+        );
+        let seed_hash = wallet.seed_hash();
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        identity
+            .associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let screen = MintTokensScreen::new(info, &context);
+        assert!(screen.common.selected_key.as_ref().is_none());
+        assert!(screen.common.selected_wallet.is_none());
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_value("Select Key…").click();
+        harness.run();
+        harness
+            .get_by_label(&format!("{} (contract group)", format_key_label(&key)))
+            .click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(screen.common.selected_key.as_ref().map(|k| k.id()), Some(1));
+        let wallet = screen
+            .common
+            .selected_wallet
+            .as_ref()
+            .expect("the chosen key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
     }
 
     #[test]

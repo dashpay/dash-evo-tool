@@ -607,6 +607,8 @@ impl ScreenLike for PurchaseTokenScreen {
                         &self.identity_token_info.identity,
                         TransactionType::TokenAction,
                         self.identity_token_info.data_contract.contract.id(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();

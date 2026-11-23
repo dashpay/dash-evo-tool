@@ -590,6 +590,8 @@ impl ScreenLike for TransferTokensScreen {
                         identity,
                         TransactionType::TokenTransfer,
                         self.identity_token_balance.data_contract_id,
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();

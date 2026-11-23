@@ -142,6 +142,12 @@ impl TokenSigningKey {
         self.selected.as_ref()
     }
 
+    /// Shows the key chooser; a key the user picks also moves the signing
+    /// wallet to that key's wallet, so its unlock prompt follows the choice.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the form's chooser inputs and its signing wallet"
+    )]
     fn show_chooser(
         &mut self,
         ui: &mut Ui,
@@ -149,6 +155,8 @@ impl TokenSigningKey {
         identity: &QualifiedIdentity,
         transaction_type: TransactionType,
         contract_id: Identifier,
+        selected_wallet: &mut Option<Arc<RwLock<Wallet>>>,
+        wallet_open_attempted: &mut bool,
     ) -> AppAction {
         let (action, picked) = add_key_chooser_with_selection(
             ui,
@@ -159,7 +167,15 @@ impl TokenSigningKey {
             &transaction_type.allowed_security_levels(),
             SigningScope::ContractWide { contract_id },
         );
-        self.manually_selected |= picked;
+        if picked {
+            self.manually_selected = true;
+            crate::ui::identity::sync_signing_wallet(
+                Some(identity),
+                self.as_ref(),
+                selected_wallet,
+                wallet_open_attempted,
+            );
+        }
         action
     }
 

@@ -288,7 +288,7 @@ impl QRCodeGeneratorScreen {
                     );
                     ui.label(
                         RichText::new(
-                            "WARNING: Anyone who has this QR code before it expires can send you a contact request.",
+                            "WARNING: Anyone who has this QR code before it expires can send you a contact request that DashPay wallets can accept automatically. Share it only with people you want as contacts.",
                         )
                         .small()
                         .color(DashColors::warning_color(dark_mode)),
@@ -466,7 +466,12 @@ mod tests {
                 .is_some(),
             "the labels say what scanning the code does"
         );
-        assert!(harness.query_by_label_contains("WARNING:").is_some());
+        assert!(
+            harness
+                .query_by_label_contains("Share it only with people you want as contacts.")
+                .is_some(),
+            "the warning names the risk and what to do"
+        );
         drop(harness);
         context.wallet_backend().unwrap().shutdown().await;
     }

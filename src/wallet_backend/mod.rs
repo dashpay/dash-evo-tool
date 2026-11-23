@@ -2967,12 +2967,9 @@ impl WalletBackend {
     /// matching incoming entry and auto-establishes the contact
     /// in-process — no `dashpay_sync` round-trip required.
     ///
-    /// Without this call the accept path has a dead-end: after
-    /// `record_sent_contact_request` populates `sent[A]`,
-    /// `sync_contact_requests` sees `sent[A]` and skips A's incoming
-    /// document (its skip guard is `sent || incoming || established`),
-    /// so `add_incoming_contact_request` is never called and
-    /// `established_contacts` stays empty.
+    /// If this call fails, the accept path syncs after the reply:
+    /// `sync_contact_requests` also takes in requests from senders the owner
+    /// already sent to, which establishes the contact.
     ///
     /// Non-fatal when the managed identity is absent — logs a warning
     /// and returns `Ok(())`.

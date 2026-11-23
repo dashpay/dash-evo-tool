@@ -1260,6 +1260,28 @@ impl WalletBackend {
             .is_some_and(|managed| managed.is_sender_ignored(sender))
     }
 
+    /// Whether platform-wallet holds `owner`'s contact with `peer`, or, unless
+    /// `contact` is set, `owner`'s request sent to them.
+    pub(crate) async fn dashpay_request_recorded(
+        &self,
+        owner: &Identifier,
+        peer: &Identifier,
+        contact: bool,
+    ) -> bool {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return false;
+        };
+        let state = wallet.state().await;
+        state
+            .identity_manager
+            .managed_identity(owner)
+            .is_some_and(|managed| {
+                let dashpay = managed.dashpay();
+                dashpay.established_contacts().contains_key(peer)
+                    || !contact && dashpay.sent_contact_requests().contains_key(peer)
+            })
+    }
+
     /// Undo [`Self::dashpay_ignore_contact_sender`]: platform-wallet skips an
     /// ignored sender's requests entirely, so re-engaging with them must
     /// lift the ignore or their reply never establishes the contact.

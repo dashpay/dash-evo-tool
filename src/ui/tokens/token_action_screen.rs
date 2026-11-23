@@ -550,18 +550,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return AppAction::None;
             }
 
-            let key_status = super::token_action_key_status(
+            let followed = self.common.selected_key.follow_automatic_with_wallet(
                 &self.common.app_context,
-                &self.common.identity_token_info.identity,
-                self.common.identity_token_info.data_contract.contract.id(),
-            );
-            if self.common.selected_key.follow_automatic_with_wallet(
                 &self.common.identity_token_info.identity,
                 TransactionType::TokenAction,
                 self.common.identity_token_info.data_contract.contract.id(),
                 &mut self.common.selected_wallet,
                 &mut self.common.wallet_open_attempted,
-            ) {
+            );
+            let key_status = followed.status;
+            if followed.changed {
                 // A pending confirmation was for the previous key.
                 self.common.confirmation_dialog = None;
             }

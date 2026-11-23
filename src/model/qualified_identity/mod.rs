@@ -36,7 +36,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
-use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -607,6 +607,16 @@ pub enum SigningKeyStatus {
     /// No private key of a purpose, level and key type the transition takes
     /// is filed.
     NoneHeld,
+}
+
+/// The key a token transition's automatic choice picks and the
+/// [`SigningKeyStatus`] that choice gives, from one selection at one instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigningKeySelection<'a> {
+    /// The picked key; `Some` exactly when `status` is
+    /// [`SigningKeyStatus::Usable`].
+    pub key: Option<&'a IdentityPublicKey>,
+    pub status: SigningKeyStatus,
 }
 
 /// The bincode configuration [`QualifiedIdentity::from_bytes`] decodes under.
@@ -1323,7 +1333,16 @@ impl QualifiedIdentity {
     /// then key id order, so a budgeted application key is spent only when no
     /// unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
+        self.signing_key_at(requirements, now_ms())
+    }
+
+    /// [`Self::signing_key_now`] at `now` (ms since the epoch).
+    fn signing_key_at(
+        &self,
+        requirements: KeyRequirements<'_>,
+        now: TimestampMillis,
+    ) -> Option<&IdentityPublicKey> {
+        select_identity_signing_key(&self.identity, requirements, now, |key| {
             self.holds_obtainable_key(key)
         })
     }
@@ -1336,15 +1355,25 @@ impl QualifiedIdentity {
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> Option<&IdentityPublicKey> {
+        self.single_token_transition_key_at(contract_id, now_ms())
+    }
+
+    /// [`Self::single_token_transition_key`] at `now` (ms since the epoch).
+    fn single_token_transition_key_at(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+        now: TimestampMillis,
+    ) -> Option<&IdentityPublicKey> {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 
         let scope = SigningScope::ContractWide { contract_id };
         SINGLE_TOKEN_TRANSITION_PURPOSES
             .into_iter()
             .filter_map(|purpose| {
-                self.signing_key_now(
+                self.signing_key_at(
                     KeyRequirements::new(purpose, &[SecurityLevel::CRITICAL], scope)
                         .with_key_types(PLATFORM_SIGNING_KEY_TYPES),
+                    now,
                 )
             })
             .min_by_key(|key| (key.has_limits(), key.purpose() != Purpose::AUTHENTICATION))
@@ -1361,22 +1390,34 @@ impl QualifiedIdentity {
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> SigningKeyStatus {
+        self.single_token_transition_key_selection(contract_id)
+            .status
+    }
+
+    /// [`Self::single_token_transition_key`] together with
+    /// [`Self::single_token_transition_key_status`], from one selection.
+    pub fn single_token_transition_key_selection(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> SigningKeySelection<'_> {
+        let now = now_ms();
         let scope = SigningScope::ContractWide { contract_id };
-        if self.single_token_transition_key(contract_id).is_some() {
+        let key = self.single_token_transition_key_at(contract_id, now);
+        let status = if key.is_some() {
             SigningKeyStatus::Usable
         } else if SINGLE_TOKEN_TRANSITION_PURPOSES.into_iter().any(|purpose| {
-            self.holds_contract_group_key_for(KeyRequirements::new(
-                purpose,
-                &[SecurityLevel::CRITICAL],
-                scope,
-            ))
+            self.holds_contract_group_key_for(
+                KeyRequirements::new(purpose, &[SecurityLevel::CRITICAL], scope),
+                now,
+            )
         }) {
             SigningKeyStatus::ManualChoiceOnly
         } else if self.holds_single_token_transition_key() {
             SigningKeyStatus::HeldButUnusable
         } else {
             SigningKeyStatus::NoneHeld
-        }
+        };
+        SigningKeySelection { key, status }
     }
 
     /// The requirements of a token action on `contract_id` other than a
@@ -1412,10 +1453,21 @@ impl QualifiedIdentity {
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> SigningKeyStatus {
+        self.token_action_key_selection(contract_id).status
+    }
+
+    /// [`Self::token_action_key`] together with
+    /// [`Self::token_action_key_status`], from one selection.
+    pub fn token_action_key_selection(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> SigningKeySelection<'_> {
+        let now = now_ms();
         let requirements = Self::token_action_requirements(contract_id);
-        if self.signing_key_now(requirements).is_some() {
+        let key = self.signing_key_at(requirements, now);
+        let status = if key.is_some() {
             SigningKeyStatus::Usable
-        } else if self.holds_contract_group_key_for(requirements) {
+        } else if self.holds_contract_group_key_for(requirements, now) {
             SigningKeyStatus::ManualChoiceOnly
         } else if self
             .private_keys
@@ -1426,16 +1478,20 @@ impl QualifiedIdentity {
             SigningKeyStatus::HeldButUnusable
         } else {
             SigningKeyStatus::NoneHeld
-        }
+        };
+        SigningKeySelection { key, status }
     }
 
-    /// Whether a live key matching `requirements`, whose private half this
-    /// device can obtain, is bound to a contract group: never picked
-    /// automatically, as only Platform can tell whether the group covers the
-    /// contract, but the user may choose it.
-    fn holds_contract_group_key_for(&self, requirements: KeyRequirements<'_>) -> bool {
+    /// Whether a key matching `requirements`, live at `now`, whose private
+    /// half this device can obtain, is bound to a contract group: never
+    /// picked automatically, as only Platform can tell whether the group
+    /// covers the contract, but the user may choose it.
+    fn holds_contract_group_key_for(
+        &self,
+        requirements: KeyRequirements<'_>,
+        now: TimestampMillis,
+    ) -> bool {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
-        let now = now_ms();
         self.identity.public_keys().values().any(|key| {
             requirements.matches(key)
                 && !key.is_disabled()
@@ -4324,6 +4380,58 @@ mod protocol_v14_compat_tests {
                 SigningKeyStatus::HeldButUnusable,
                 "{case}, expired"
             );
+        }
+    }
+
+    /// A token form reads its gate status and its automatic key from one
+    /// selection: the status is `Usable` exactly when a key is picked, and
+    /// the key is the one the separate lookup picks.
+    #[test]
+    fn a_token_key_selection_agrees_with_its_status() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let critical = |id| auth_key(id, SecurityLevel::CRITICAL);
+        for (case, qi, expected) in [
+            (
+                "usable",
+                identity_holding(&[critical(1)]),
+                SigningKeyStatus::Usable,
+            ),
+            (
+                "group only",
+                identity_holding(&[bound_to(
+                    critical(1),
+                    ContractBounds::ContractGroup {
+                        id: Identifier::new([0x6A; 32]),
+                    },
+                )]),
+                SigningKeyStatus::ManualChoiceOnly,
+            ),
+            (
+                "expired",
+                identity_holding(&[critical(1).with_limits(None, Some(1))]),
+                SigningKeyStatus::HeldButUnusable,
+            ),
+            (
+                "none",
+                identity_holding(&[auth_key(1, SecurityLevel::HIGH)]),
+                SigningKeyStatus::NoneHeld,
+            ),
+        ] {
+            let action = qi.token_action_key_selection(contract_id);
+            assert_eq!(action.status, expected, "{case}");
+            assert_eq!(action.key, qi.token_action_key(contract_id), "{case}");
+            assert_eq!(action.key.is_some(), expected == SigningKeyStatus::Usable);
+
+            let single = qi.single_token_transition_key_selection(contract_id);
+            assert_eq!(single.status, expected, "{case}");
+            assert_eq!(
+                single.key,
+                qi.single_token_transition_key(contract_id),
+                "{case}"
+            );
+            assert_eq!(single.key.is_some(), expected == SigningKeyStatus::Usable);
         }
     }
 

@@ -1009,18 +1009,16 @@ impl ScreenLike for SetTokenPriceScreen {
                 return;
             }
 
-            let key_status = super::token_action_key_status(
+            let followed = self.selected_key.follow_automatic_with_wallet(
                 &self.app_context,
-                &self.identity_token_info.identity,
-                self.identity_token_info.data_contract.contract.id(),
-            );
-            if self.selected_key.follow_automatic_with_wallet(
                 &self.identity_token_info.identity,
                 TransactionType::TokenAction,
                 self.identity_token_info.data_contract.contract.id(),
                 &mut self.selected_wallet,
                 &mut self.wallet_open_attempted,
-            ) {
+            );
+            let key_status = followed.status;
+            if followed.changed {
                 // A pending confirmation was for the previous key.
                 self.show_confirmation_popup = false;
                 self.confirmation_dialog = None;

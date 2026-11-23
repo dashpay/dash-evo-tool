@@ -19,7 +19,7 @@ pub mod view_token_claims_screen;
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::identity_key_usability::{SigningScope, key_caveats, now_ms};
-use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeySelection, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
@@ -111,25 +111,17 @@ pub fn validate_signing_key(
     }
 }
 
-/// The gate in front of a token action form (mint, burn, freeze, pause,
-/// pricing, purchase, configuration updates). Outside developer mode it opens
-/// exactly when [`QualifiedIdentity::token_action_key`] picks a key, the key
-/// the form's constructor selects, so an open form can always sign; with
-/// [`SigningKeyStatus::ManualChoiceOnly`] it opens onto the key chooser.
-pub(crate) fn token_action_key_status(
-    app_context: &AppContext,
-    identity: &QualifiedIdentity,
-    contract_id: Identifier,
-) -> SigningKeyStatus {
-    if app_context.user_role().at_least(UserRole::Developer) {
-        if identity.identity.public_keys().is_empty() {
-            SigningKeyStatus::NoneHeld
-        } else {
-            SigningKeyStatus::Usable
-        }
-    } else {
-        identity.token_action_key_status(contract_id)
-    }
+/// A token form's signing key for one frame, from
+/// [`TokenSigningKey::follow_automatic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FollowedKey {
+    /// The gate in front of the form. Outside developer mode it opens exactly
+    /// when the automatic choice picks a key, so an open form can always
+    /// sign; with [`SigningKeyStatus::ManualChoiceOnly`] it opens onto the
+    /// key chooser. Developer mode opens it while the identity holds any key.
+    status: SigningKeyStatus,
+    /// Whether the selected key changed.
+    changed: bool,
 }
 
 /// Keeps the user's explicit signing key choice across identity refreshes.
@@ -202,38 +194,61 @@ impl TokenSigningKey {
             return;
         }
 
-        *self = Self::automatic(automatic_key(identity, transaction_type, contract_id).cloned());
+        *self = Self::automatic(
+            automatic_selection(identity, transaction_type, contract_id)
+                .key
+                .cloned(),
+        );
     }
 
     /// Keeps an automatic choice on the key the selector picks now, so a key
     /// that expired since is never signed with; an explicit choice is left
-    /// to [`Self::refresh`]. Returns whether the selection changed.
+    /// to [`Self::refresh`]. The form's gate status comes from the same
+    /// selection, so it agrees with the key.
     fn follow_automatic(
         &mut self,
+        app_context: &AppContext,
         identity: &QualifiedIdentity,
         transaction_type: TransactionType,
         contract_id: Identifier,
-    ) -> bool {
-        let automatic = automatic_key(identity, transaction_type, contract_id);
-        if self.manually_selected || self.selected.as_ref() == automatic {
-            return false;
+    ) -> FollowedKey {
+        let (automatic, status) = if app_context.user_role().at_least(UserRole::Developer) {
+            let status = if identity.identity.public_keys().is_empty() {
+                SigningKeyStatus::NoneHeld
+            } else {
+                SigningKeyStatus::Usable
+            };
+            // The status does not depend on the automatic key here.
+            let automatic = if self.manually_selected {
+                None
+            } else {
+                automatic_selection(identity, transaction_type, contract_id).key
+            };
+            (automatic, status)
+        } else {
+            let selection = automatic_selection(identity, transaction_type, contract_id);
+            (selection.key, selection.status)
+        };
+        let changed = !self.manually_selected && self.selected.as_ref() != automatic;
+        if changed {
+            self.selected = automatic.cloned();
         }
-        self.selected = automatic.cloned();
-        true
+        FollowedKey { status, changed }
     }
 
     /// [`Self::follow_automatic`], also moving the signing wallet to the new
-    /// key's wallet. Returns whether the selection changed.
+    /// key's wallet.
     fn follow_automatic_with_wallet(
         &mut self,
+        app_context: &AppContext,
         identity: &QualifiedIdentity,
         transaction_type: TransactionType,
         contract_id: Identifier,
         selected_wallet: &mut Option<Arc<RwLock<Wallet>>>,
         wallet_open_attempted: &mut bool,
-    ) -> bool {
-        let changed = self.follow_automatic(identity, transaction_type, contract_id);
-        if changed {
+    ) -> FollowedKey {
+        let followed = self.follow_automatic(app_context, identity, transaction_type, contract_id);
+        if followed.changed {
             crate::ui::identity::sync_signing_wallet(
                 Some(identity),
                 self.as_ref(),
@@ -241,21 +256,22 @@ impl TokenSigningKey {
                 wallet_open_attempted,
             );
         }
-        changed
+        followed
     }
 }
 
-/// The key a token form picks without the user's choice.
-fn automatic_key(
+/// The key a token form picks without the user's choice, with the status
+/// that choice gives.
+fn automatic_selection(
     identity: &QualifiedIdentity,
     transaction_type: TransactionType,
     contract_id: Identifier,
-) -> Option<&IdentityPublicKey> {
+) -> SigningKeySelection<'_> {
     match transaction_type {
         TransactionType::TokenClaim | TransactionType::TokenTransfer => {
-            identity.single_token_transition_key(contract_id)
+            identity.single_token_transition_key_selection(contract_id)
         }
-        _ => identity.token_action_key(contract_id),
+        _ => identity.token_action_key_selection(contract_id),
     }
 }
 
@@ -343,9 +359,76 @@ pub(crate) mod tests {
             },
         )]);
         assert_eq!(
-            token_action_key_status(&ctx, &identity, Identifier::new([0x70; 32])),
+            TokenSigningKey::automatic(None)
+                .follow_automatic(
+                    &ctx,
+                    &identity,
+                    TransactionType::TokenAction,
+                    Identifier::new([0x70; 32]),
+                )
+                .status,
             SigningKeyStatus::ManualChoiceOnly
         );
+    }
+
+    /// A token form gates on the status of the same selection it signs with:
+    /// the form opens with a key exactly when that key is selected, and an
+    /// explicit choice is kept while the status is still reported.
+    #[test]
+    fn a_token_forms_status_agrees_with_its_selected_key() {
+        use dash_sdk::dpp::identity::Purpose;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_user_role(UserRole::Power);
+        let contract_id = Identifier::new([0x70; 32]);
+        let mut transfer = auth_key(2, SecurityLevel::CRITICAL);
+        transfer.set_purpose(Purpose::TRANSFER);
+        let usable = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL), transfer]);
+        let group_only = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]);
+
+        for transaction_type in [TransactionType::TokenAction, TransactionType::TokenTransfer] {
+            for (case, identity) in [("usable", &usable), ("group only", &group_only)] {
+                let mut key = TokenSigningKey::automatic(None);
+                let followed = key.follow_automatic(&ctx, identity, transaction_type, contract_id);
+                assert_eq!(
+                    followed.status == SigningKeyStatus::Usable,
+                    key.as_ref().is_some(),
+                    "{case}, {transaction_type:?}"
+                );
+                assert_eq!(followed.changed, key.as_ref().is_some(), "{case}");
+                let again = key.follow_automatic(&ctx, identity, transaction_type, contract_id);
+                assert_eq!(again.status, followed.status, "{case}");
+                assert!(
+                    !again.changed,
+                    "{case}: the same frame state selects the same key"
+                );
+            }
+        }
+
+        let chosen = usable.identity.public_keys()[&2].clone();
+        let mut key = TokenSigningKey {
+            selected: Some(chosen.clone()),
+            manually_selected: true,
+        };
+        let followed =
+            key.follow_automatic(&ctx, &usable, TransactionType::TokenAction, contract_id);
+        assert_eq!(followed.status, SigningKeyStatus::Usable);
+        assert!(!followed.changed);
+        assert_eq!(key.as_ref(), Some(&chosen));
+
+        ctx.set_user_role(UserRole::Developer);
+        let followed =
+            key.follow_automatic(&ctx, &group_only, TransactionType::TokenAction, contract_id);
+        assert_eq!(followed.status, SigningKeyStatus::Usable);
+        assert!(!followed.changed);
+        assert_eq!(key.as_ref(), Some(&chosen));
     }
 
     /// While an identity waits for its wallet, the re-check keeps it waiting

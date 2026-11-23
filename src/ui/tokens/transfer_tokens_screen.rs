@@ -7,7 +7,6 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
-use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -490,23 +489,14 @@ impl ScreenLike for TransferTokensScreen {
                 return AppAction::None;
             }
 
-            let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
-                if identity.identity.public_keys().is_empty() {
-                    SigningKeyStatus::NoneHeld
-                } else {
-                    SigningKeyStatus::Usable
-                }
-            } else {
-                identity.single_token_transition_key_status(
-                    self.identity_token_balance.data_contract_id,
-                )
-            };
-
-            if self.selected_key.follow_automatic(
+            let followed = self.selected_key.follow_automatic(
+                &self.app_context,
                 identity,
                 TransactionType::TokenTransfer,
                 self.identity_token_balance.data_contract_id,
-            ) {
+            );
+            let key_status = followed.status;
+            if followed.changed {
                 // A pending confirmation was for the previous key.
                 self.confirmation_dialog = None;
             }

@@ -3303,7 +3303,9 @@ impl ScreenLike for TokensScreen {
                 );
             }
             BackendTaskSuccessResult::RegisteredTokenContract => {
-                if self.awaits_token_registration() {
+                if self.awaits_token_registration()
+                    && self.token_registration_context.as_ref() == Some(context)
+                {
                     self.token_creator_status = TokenCreatorStatus::Complete;
                     self.token_registration_context = None;
                 }
@@ -3470,23 +3472,16 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        let handle = MessageBanner::set_global(
-            app_context.egui_ctx(),
-            "Creating token...",
-            MessageType::Info,
-        );
-        screen.operation_banner = Some(handle.clone());
-        // As set when the registration was sent.
-        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        let registration = screen.begin_token_registration_for_test();
 
         screen.display_backend_task_result(
-            &BackendTaskContext::Other,
+            &registration,
             BackendTaskSuccessResult::RegisteredTokenContract,
         );
 
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
+        assert!(!screen.registration_banner_live_for_test());
         assert!(screen.operation_banner.is_none());
-        assert!(handle.elapsed().is_none());
     }
 
     /// A token DET knows about, as the registry would list it, with a contract
@@ -4640,9 +4635,9 @@ mod tests {
                 "stale summary",
             ),
         );
-        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        let registration = screen.begin_token_registration_for_test();
         screen.display_backend_task_result(
-            &BackendTaskContext::Other,
+            &registration,
             BackendTaskSuccessResult::RegisteredTokenContract,
         );
 
@@ -5624,5 +5619,32 @@ mod tests {
             .as_ref()
             .expect("confirmation shown");
         assert!(dialog.is_input_blocking());
+    }
+
+    /// A registration's success completes only the wait it belongs to: one sent
+    /// before the creator was reset does not complete a later registration.
+    #[test]
+    fn registration_success_completes_only_its_own_wait() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        let previous = screen.begin_token_registration_for_test();
+        screen.reset_for_network_switch();
+        let current = screen.begin_token_registration_for_test();
+
+        screen.display_backend_task_result(
+            &previous,
+            BackendTaskSuccessResult::RegisteredTokenContract,
+        );
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::WaitingForResult
+        );
+
+        screen.display_backend_task_result(
+            &current,
+            BackendTaskSuccessResult::RegisteredTokenContract,
+        );
+        assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
     }
 }

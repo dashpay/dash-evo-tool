@@ -702,6 +702,8 @@ impl ScreenLike for TransferTokensScreen {
                         "Insufficient identity balance for fee (need at least {})",
                         format_credits_as_dash(estimated_fee)
                     )
+                } else if self.selected_key.as_ref().is_none() {
+                    super::CHOOSE_SIGNING_KEY.to_string()
                 } else {
                     "Please ensure all fields are filled correctly".to_string()
                 };
@@ -1023,5 +1025,63 @@ mod tests {
         }));
         report_error(&mut screen, &unrelated_request(context.network));
         assert!(screen.transfer_tokens_status == TransferTokensStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) the disabled Transfer button asked to fill in the
+    /// fields, though they were filled in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transfer_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::from([0x6A; 32]),
+            },
+        )]);
+        identity.identity.set_balance(1_000_000_000_000);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Example".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: ctx.dpns_contract().id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &ctx);
+        assert!(screen.selected_key.as_ref().is_none());
+        screen.amount = Some(Amount::new(1, 0));
+        screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Transfer")
+            .last()
+            .expect("the Transfer button")
+            .hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

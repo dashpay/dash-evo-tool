@@ -734,6 +734,8 @@ impl ScreenLike for PurchaseTokenScreen {
                             && self.fetched_pricing_schedule.is_none()
                         {
                             "This token is not available for purchase"
+                        } else if self.selected_key.as_ref().is_none() {
+                            super::CHOOSE_SIGNING_KEY
                         } else {
                             "Fetch token price and enter amount first"
                         });
@@ -1128,5 +1130,52 @@ mod tests {
             });
             assert!(screen.status == PurchaseTokensStatus::Complete);
         }
+    }
+
+    /// Regression: with no key to sign (developer mode, the identity's only
+    /// key is not on this device) the disabled Purchase button asked to fetch
+    /// the price and enter an amount, though both were done.
+    #[test]
+    fn a_purchase_without_a_signing_key_asks_for_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_user_role(UserRole::Developer);
+        let mut info = token_info(&context, None, false);
+        info.identity.identity.add_public_key(signing_key());
+        let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+        assert!(screen.selected_key.as_ref().is_none());
+        screen.display_task_result(BackendTaskSuccessResult::TokenPricing {
+            token_id: info.token_id,
+            prices: Some(TokenPricingSchedule::SinglePrice(10)),
+        });
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut PurchaseTokenScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Amount to Purchase:").focus();
+        harness.run_steps(2);
+        harness.get_by_label("Amount to Purchase:").type_text("5");
+        harness.run_steps(3);
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Purchase")
+            .last()
+            .expect("the Purchase button")
+            .hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("Fetch token price and enter amount first")
+                .is_none()
+        );
     }
 }

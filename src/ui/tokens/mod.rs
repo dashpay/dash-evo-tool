@@ -259,6 +259,9 @@ fn automatic_key(
     }
 }
 
+/// Why a token action button is disabled while no signing key is selected.
+pub(crate) const CHOOSE_SIGNING_KEY: &str = "Choose a signing key to continue.";
+
 /// Why a token form opened with its key chooser shown
 /// ([`SigningKeyStatus::ManualChoiceOnly`]).
 pub(crate) const CONTRACT_GROUP_KEY_NOTE: &str = "No key can be chosen automatically for this action, because the only key that can sign it is limited to a contract group. Choose that key below if the group includes this token's contract.";

@@ -688,12 +688,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             {
                 ui.add_space(10.0);
                 let in_flight = self.common.request.is_pending();
-                let ready = self.action.inputs_ready() && !in_flight;
+                let inputs_ready = self.action.inputs_ready();
+                let ready =
+                    inputs_ready && self.common.selected_key.as_ref().is_some() && !in_flight;
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
                     .disabled_tooltip(if in_flight {
                         "Wait for the current action to finish."
-                    } else {
+                    } else if !inputs_ready {
                         self.action.disabled_reason()
+                    } else {
+                        super::CHOOSE_SIGNING_KEY
                     })
                     .clicked()
                 {
@@ -1212,5 +1216,56 @@ mod tests {
         ));
         report_error(&mut screen, &refresh_request);
         assert!(screen.common.status == TokenActionStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) the action button stayed enabled, and confirming
+    /// only then reported that no key was selected.
+    #[test]
+    fn a_token_action_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut info = token_info(&context, None, false);
+        info.identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::from([0x6A; 32]),
+            },
+        )]);
+        let screen = PauseTokensScreen::new(info, &context);
+        assert!(screen.common.selected_key.as_ref().is_none());
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut PauseTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        let button = harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Pause")
+            .last()
+            .expect("the Pause button");
+        assert!(
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click),
+            "the action cannot be confirmed without a key"
+        );
+        button.hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
     }
 }

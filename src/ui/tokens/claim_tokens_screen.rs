@@ -813,10 +813,17 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                let claim =
-                    ComponentStyles::add_primary_button_enabled(ui, self.claim_allowed(), "Claim");
+                let claim_allowed = self.claim_allowed();
+                let has_key = self.selected_key.as_ref().is_some();
+                let claim = ComponentStyles::add_primary_button_enabled(
+                    ui,
+                    claim_allowed && has_key,
+                    "Claim",
+                );
                 let claim = if self.claim_request.is_pending() {
                     claim.disabled_tooltip("Wait for the current claim to finish.")
+                } else if claim_allowed && !has_key {
+                    claim.disabled_tooltip(super::CHOOSE_SIGNING_KEY)
                 } else {
                     claim
                 };
@@ -1413,5 +1420,51 @@ mod tests {
         let refresh = unrelated_request(screen.app_context.network);
         report_error(&mut screen, &refresh);
         assert!(screen.status == ClaimTokensStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) Claim stayed enabled, and pressing it only then
+    /// reported that no key was selected.
+    #[test]
+    fn a_claim_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        screen.identity = Some(identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]));
+        screen.selected_key.selected = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        let claim = harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Claim")
+            .last()
+            .expect("the Claim button");
+        assert!(
+            !claim
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click),
+            "a claim cannot be sent without a key"
+        );
+        claim.hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
     }
 }

@@ -1213,7 +1213,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 } else if in_flight {
                     button_response.disabled_tooltip("Wait for the current price change to finish.");
                 } else if self.selected_key.as_ref().is_none() {
-                    button_response.disabled_tooltip("Choose a signing key to continue.");
+                    button_response.disabled_tooltip(super::CHOOSE_SIGNING_KEY);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }

@@ -30,11 +30,11 @@ use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
+use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
@@ -46,7 +46,7 @@ use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self};
-use egui::{Color32, RichText, ScrollArea};
+use egui::{RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
 use zxcvbn::zxcvbn;
@@ -627,7 +627,13 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                                 self.render_sign_input(ui);
                             } else if self.wallet_open {
-                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                let notice = wallet_key_notice(
+                                    self.selected_wallet
+                                        .as_ref()
+                                        .map(|wallet| wallet.read_recover())
+                                        .as_deref(),
+                                );
+                                ui.label(RichText::new(notice).color(text_primary));
                                 ui.add_space(10.0);
 
                                 if ui.button("View Private Key").clicked() {
@@ -649,7 +655,13 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                                 self.render_sign_input(ui);
                             } else {
-                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                let notice = wallet_key_notice(
+                                    self.selected_wallet
+                                        .as_ref()
+                                        .map(|wallet| wallet.read_recover())
+                                        .as_deref(),
+                                );
+                                ui.label(RichText::new(notice).color(text_primary));
                                 ui.add_space(10.0);
 
                                 if ui.button("View Private Key").clicked() {
@@ -754,7 +766,7 @@ impl ScreenLike for KeyInfoScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("identity_key_sign_message_info_popup"),
+                        egui::Id::unique("identity_key_sign_message_info_popup"),
                         "Sign Message Info",
                         &show_pop_up_info_text,
                     );
@@ -1220,13 +1232,14 @@ impl KeyInfoScreen {
         });
         ui.add_space(5.0);
 
-        ui.label(RichText::new("Enter message to sign:").color(text_primary));
+        let message_label = ui.label(RichText::new("Enter message to sign:").color(text_primary));
         ui.add_space(5.0);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_input)
                 .desired_width(f32::INFINITY)
                 .desired_rows(3),
-        );
+        )
+        .labelled_by(message_label.id);
         ui.add_space(5.0);
 
         if ui.button("Sign Message").clicked() {
@@ -1241,13 +1254,15 @@ impl KeyInfoScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
+            let signed_label =
+                ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
                     .desired_width(f32::INFINITY)
                     .desired_rows(3),
-            );
+            )
+            .labelled_by(signed_label.id);
         }
     }
 
@@ -1783,6 +1798,20 @@ fn validate_identity_password_form(password: String, confirmation: &str) -> Resu
     Ok(password)
 }
 
+/// Where a wallet-derived key's private key comes from, phrased for the
+/// wallet's actual protection: only a password wallet is called protected.
+fn wallet_key_notice(wallet: Option<&Wallet>) -> &'static str {
+    match wallet {
+        Some(wallet) if wallet.requires_password_unlock() => {
+            "The private key is in your password-protected wallet. Unlock the wallet to view it."
+        }
+        Some(wallet) if wallet.uses_password => {
+            "The private key is in your password-protected wallet."
+        }
+        _ => "The private key is derived from your wallet's recovery phrase.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1809,6 +1838,43 @@ mod tests {
     const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
+    fn wallet_with_password(protected: bool) -> Wallet {
+        use crate::test_support::keys;
+        let password = protected.then(|| Secret::new(hex::encode(keys::secret_bytes())));
+        Wallet::new_from_seed(keys::seed(), Network::Testnet, None, password.as_ref())
+            .expect("wallet")
+    }
+
+    #[test]
+    fn a_passwordless_wallet_key_is_not_called_password_protected() {
+        let wallet = wallet_with_password(false);
+
+        assert_eq!(
+            wallet_key_notice(Some(&wallet)),
+            "The private key is derived from your wallet's recovery phrase."
+        );
+        assert_eq!(
+            wallet_key_notice(None),
+            "The private key is derived from your wallet's recovery phrase."
+        );
+    }
+
+    #[test]
+    fn a_password_wallet_key_asks_for_an_unlock_only_while_locked() {
+        let mut wallet = wallet_with_password(true);
+        assert_eq!(
+            wallet_key_notice(Some(&wallet)),
+            "The private key is in your password-protected wallet."
+        );
+
+        wallet.wallet_seed.close();
+
+        assert_eq!(
+            wallet_key_notice(Some(&wallet)),
+            "The private key is in your password-protected wallet. Unlock the wallet to view it."
+        );
+    }
+
     #[test]
     fn identity_password_form_names_the_identity_credential_when_too_long() {
         use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
@@ -1830,7 +1896,7 @@ mod tests {
     async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");

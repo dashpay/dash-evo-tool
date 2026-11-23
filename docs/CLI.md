@@ -121,17 +121,20 @@ pass show dash/testnet-wallet | det-cli core-wallet-import --mnemonic-stdin netw
 ```
 
 - The input must be exactly one line; one trailing line ending is removed.
-- `--mnemonic-stdin` cannot be combined with `mnemonic=...`, nor with
-  `--password-stdin` (only one input can read standard input; use
-  `--password-file` for a password).
+- `--mnemonic-stdin` cannot be combined with `mnemonic=...` or
+  `--password-stdin` (only one input can read standard input).
+- `core-wallet-import` takes no password: it creates a wallet without password
+  protection.
 - A phrase given as `mnemonic=...` still works, but det-cli warns: command-line
   arguments are visible to other users and saved in shell history.
 - In HTTP mode a phrase, piped or inline, is sent only to this computer
   (`127.0.0.1`, `::1` or `localhost`) or to an `https` address, like a password.
 - To provision a wallet into a GUI data directory for testing, point
-  `DASH_EVO_DATA_DIR` at it and leave `MCP_API_KEY` unset (standalone mode).
-  Use a `det-cli` built from the same commit as the GUI: both open the same
-  database. `.claude/skills/visual-diff/scripts/provision-wallet.sh` does this
+  `DASH_EVO_DATA_DIR` at it and pass `--standalone` before the command
+  (`det-cli --standalone core-wallet-import --mnemonic-stdin ...`): an
+  `MCP_API_KEY` in that directory's `.env` would otherwise send the phrase to
+  a running server. Use the `det-cli` from the same release zip as the GUI, or
+  one built from the same commit: both open the same database. `.claude/skills/visual-diff/scripts/provision-wallet.sh` does this
   from an env file.
 
 ## Usage

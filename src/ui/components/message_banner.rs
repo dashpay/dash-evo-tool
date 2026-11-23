@@ -1,5 +1,6 @@
 use crate::ui::MessageType;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::technical_details::TechnicalDetails;
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
 use std::fmt;
@@ -20,8 +21,6 @@ const BANNER_STATE_ID: &str = "__global_message_banner";
 /// `action_id` here when the user clicks the action button — the app
 /// loop consumes it to dispatch the matching backend task.
 const BANNER_ACTIONS_ID: &str = "__global_message_banner_actions";
-/// Maximum height for the expanded details section before scrolling.
-const DETAILS_MAX_HEIGHT: f32 = 120.0;
 
 /// Monotonic counter for generating unique banner keys.
 static BANNER_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -210,6 +209,15 @@ impl BannerHandle {
             .iter()
             .find(|b| b.key == self.key)
             .map(|b| b.created_at.elapsed())
+    }
+
+    /// Returns the current timer origin for deterministic UI regression tests.
+    #[cfg(feature = "testing")]
+    pub fn created_at(&self) -> Option<Instant> {
+        get_banners(&self.ctx)
+            .iter()
+            .find(|b| b.key == self.key)
+            .map(|b| b.created_at)
     }
 
     /// Update the display text of this banner.
@@ -865,25 +873,7 @@ fn render_banner(
 
                 if *details_expanded {
                     ui.add_space(4.0);
-                    egui::Frame::new()
-                        .fill(DashColors::input_background(dark_mode))
-                        .inner_margin(egui::Margin::symmetric(8, 6))
-                        .corner_radius(Shape::RADIUS_SM as f32)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt(banner_key)
-                                .max_height(DETAILS_MAX_HEIGHT)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(details)
-                                                .font(Typography::monospace())
-                                                .color(secondary_color),
-                                        )
-                                        .wrap(),
-                                    );
-                                });
-                        });
+                    TechnicalDetails::new(banner_key, details).show(ui);
                 }
             }
         });
@@ -894,7 +884,7 @@ fn render_banner(
 
 /// Reads the global banner list from egui context data.
 fn get_banners(ctx: &egui::Context) -> Vec<BannerState> {
-    ctx.data(|d| d.get_temp::<Vec<BannerState>>(egui::Id::new(BANNER_STATE_ID)))
+    ctx.data(|d| d.get_temp::<Vec<BannerState>>(egui::Id::unique(BANNER_STATE_ID)))
         .unwrap_or_default()
 }
 
@@ -909,24 +899,24 @@ pub(crate) fn global_banner_texts(ctx: &egui::Context) -> Vec<String> {
 /// Removes the entry entirely when the list is empty.
 fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
     if banners.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<BannerState>>(egui::Id::new(BANNER_STATE_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<BannerState>>(egui::Id::unique(BANNER_STATE_ID)));
     } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_STATE_ID), banners));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(BANNER_STATE_ID), banners));
     }
 }
 
 /// Reads the pending banner-action queue (FIFO) from egui context data.
 fn get_actions(ctx: &egui::Context) -> Vec<String> {
-    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)))
+    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::unique(BANNER_ACTIONS_ID)))
         .unwrap_or_default()
 }
 
 /// Writes the pending banner-action queue. Removes the slot when empty.
 fn set_actions(ctx: &egui::Context, actions: Vec<String>) {
     if actions.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::unique(BANNER_ACTIONS_ID)));
     } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_ACTIONS_ID), actions));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(BANNER_ACTIONS_ID), actions));
     }
 }
 
@@ -938,7 +928,8 @@ fn push_action(ctx: &egui::Context, action_id: &str) {
     set_actions(ctx, queue);
 }
 
-fn icon_for_type(message_type: MessageType) -> &'static str {
+/// The leading icon for a message of `message_type`, shared with `InlineNotice`.
+pub(crate) fn icon_for_type(message_type: MessageType) -> &'static str {
     match message_type {
         MessageType::Error => "\u{26D4}",   // no entry (⛔)
         MessageType::Warning => "\u{26A0}", // warning sign (⚠)

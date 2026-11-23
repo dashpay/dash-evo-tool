@@ -976,7 +976,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -1008,7 +1008,6 @@ mod tests {
     /// payment needs, change included: one coin, one recipient and change.
     #[test]
     fn the_fee_estimate_is_the_models_core_payment_fee() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 
         let (mut screen, _dir) = send_screen();

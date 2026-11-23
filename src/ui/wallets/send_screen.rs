@@ -20,7 +20,7 @@ use crate::model::fee_estimation::{
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
 use crate::model::user_role::UserRole;
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{PlatformAddressInfo, Wallet, WalletSeedHash};
 use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -50,6 +50,7 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::AddressNonce;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::{BTreeMap, hash_map::DefaultHasher};
@@ -776,12 +777,9 @@ impl WalletSendScreen {
         }
     }
 
-    /// Get available Platform addresses with balances
-    /// Deduplicates addresses based on their canonical Bech32m string representation,
-    /// preferring the entry with the highest nonce (most recent update)
+    /// Get available Platform addresses with balances, one entry per address
+    /// (see [`funded_platform_addresses`]), sorted by their Bech32m form.
     fn get_platform_addresses(&self) -> Vec<(Address, PlatformAddress, Credits)> {
-        use std::collections::HashMap;
-
         let Some(wallet_arc) = &self.selected_wallet else {
             return vec![];
         };
@@ -790,39 +788,14 @@ impl WalletSendScreen {
         };
 
         let network = self.app_context.network;
-        // Use HashMap to deduplicate by canonical address string
-        // Store (core_addr, platform_addr, balance, nonce) and prefer higher nonce
-        let mut address_map: HashMap<String, (Address, PlatformAddress, Credits, u32)> =
-            HashMap::new();
-
-        for (addr, info) in wallet.platform_address_info.iter() {
-            if let Ok(platform_addr) = PlatformAddress::try_from(addr.clone()) {
-                let canonical_str = platform_addr.to_bech32m_string(network);
-
-                // Check if we already have this address
-                let should_update = match address_map.get(&canonical_str) {
-                    Some((_, _, _, existing_nonce)) => {
-                        // Prefer the entry with higher nonce (more recent)
-                        info.nonce >= *existing_nonce
-                    }
-                    None => true,
-                };
-
-                if should_update {
-                    address_map.insert(
-                        canonical_str,
-                        (addr.clone(), platform_addr, info.balance, info.nonce),
-                    );
-                }
-            }
-        }
-
-        // Filter to only addresses with positive balance, sort by canonical string, and return
-        let mut result: Vec<_> = address_map
-            .into_iter()
-            .filter(|(_, (_, _, balance, _))| *balance > 0)
-            .map(|(canonical_str, (addr, platform_addr, balance, _))| {
-                (canonical_str, addr, platform_addr, balance)
+        let mut result: Vec<_> = funded_platform_addresses(&wallet.platform_address_info)
+            .map(|(platform_addr, (addr, balance))| {
+                (
+                    platform_addr.to_bech32m_string(network),
+                    addr.clone(),
+                    platform_addr,
+                    balance,
+                )
             })
             .collect();
 
@@ -960,15 +933,21 @@ impl WalletSendScreen {
     /// Names the wallet's live Platform balances, not the ones captured in
     /// `selected_source`: a balance fetch or sync push updates the wallet
     /// without re-selecting the source, and must still re-quote shield Max.
+    ///
+    /// Read on every quote lookup, several times a frame, so it hashes the
+    /// wallet's funded addresses in place: no Bech32m encoding, sorting or
+    /// display list.
     fn live_platform_balances_revision(&self) -> u64 {
-        let addresses: Vec<_> = self
-            .get_platform_addresses()
-            .into_iter()
-            .map(|(core_address, platform_address, balance)| {
-                (platform_address, core_address, balance)
-            })
-            .collect();
-        platform_balances_revision(&addresses)
+        let wallet = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok());
+        platform_balances_revision(
+            wallet
+                .as_ref()
+                .into_iter()
+                .flat_map(|wallet| funded_platform_addresses(&wallet.platform_address_info)),
+        )
     }
 
     /// What the loaded Core send Max was proven against, for the current
@@ -2562,16 +2541,14 @@ impl WalletSendScreen {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let mut selected = is_core_selected;
-                    if ui.radio_value(&mut selected, true, "").changed() && selected {
+                    let label = RichText::new("Core Wallet")
+                        .color(DashColors::text_primary(dark_mode))
+                        .strong();
+                    if ui.radio_value(&mut selected, true, label).changed() && selected {
                         self.selected_source = Some(SourceSelection::CoreWallet);
                         self.address_input = None;
                         self.validated_destination = None;
                     }
-                    ui.label(
-                        RichText::new("Core Wallet")
-                            .color(DashColors::text_primary(dark_mode))
-                            .strong(),
-                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             RichText::new(format_duffs_as_dash(core_balance))
@@ -2612,7 +2589,10 @@ impl WalletSendScreen {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected = is_platform_selected;
-                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                        let label = RichText::new("Platform Addresses")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong();
+                        if ui.radio_value(&mut selected, true, label).changed() && selected {
                             // Select all platform addresses
                             let addresses_with_balances: Vec<_> = platform_addresses
                                 .iter()
@@ -2625,11 +2605,6 @@ impl WalletSendScreen {
                             self.address_input = None;
                             self.validated_destination = None;
                         }
-                        ui.label(
-                            RichText::new("Platform Addresses")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format_credits_as_dash(total_platform_balance))
@@ -2680,7 +2655,10 @@ impl WalletSendScreen {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected = is_identity_selected;
-                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                        let label = RichText::new("Identity")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong();
+                        if ui.radio_value(&mut selected, true, label).changed() && selected {
                             if let Some(identity) = self.selected_identity.clone().or_else(|| {
                                 // Default to the identity with the highest balance
                                 identities
@@ -2695,11 +2673,6 @@ impl WalletSendScreen {
                             self.address_input = None;
                             self.validated_destination = None;
                         }
-                        ui.label(
-                            RichText::new("Identity")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        );
                         if let Some(SourceSelection::Identity(qi)) = &self.selected_source {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -2806,17 +2779,15 @@ impl WalletSendScreen {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut selected = is_shielded_selected;
-                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                        let label = RichText::new("Shielded Balance")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong();
+                        if ui.radio_value(&mut selected, true, label).changed() && selected {
                             self.selected_source =
                                 Some(SourceSelection::Shielded(seed_hash, balance));
                             self.address_input = None;
                             self.validated_destination = None;
                         }
-                        ui.label(
-                            RichText::new("Shielded Balance")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(format_credits_as_dash(balance))
@@ -5336,14 +5307,41 @@ impl ScreenLike for WalletSendScreen {
     }
 }
 
+/// The wallet's Platform addresses that hold credits, one entry per address,
+/// in `PlatformAddress` order. Where several stored entries name the same
+/// Platform address, the one with the highest nonce wins (the last of equals);
+/// an address whose winning entry is empty is left out.
+fn funded_platform_addresses(
+    info: &BTreeMap<Address, PlatformAddressInfo>,
+) -> impl Iterator<Item = (PlatformAddress, (&Address, Credits))> {
+    let mut latest: BTreeMap<PlatformAddress, (&Address, Credits, AddressNonce)> = BTreeMap::new();
+    for (address, entry) in info {
+        let Ok(platform_address) = PlatformAddress::try_from(address.clone()) else {
+            continue;
+        };
+        if latest
+            .get(&platform_address)
+            .is_none_or(|(_, _, nonce)| entry.nonce >= *nonce)
+        {
+            latest.insert(platform_address, (address, entry.balance, entry.nonce));
+        }
+    }
+    latest
+        .into_iter()
+        .filter(|(_, (_, balance, _))| *balance > 0)
+        .map(|(platform_address, (address, balance, _))| (platform_address, (address, balance)))
+}
+
 /// Names the Platform balances a shield quote was made against: any change in
 /// the offered addresses or their balances asks for a new quote.
-fn platform_balances_revision(addresses: &[(PlatformAddress, Address, u64)]) -> u64 {
+fn platform_balances_revision<'a>(
+    funded: impl IntoIterator<Item = (PlatformAddress, (&'a Address, Credits))>,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for (platform_address, _, balance) in addresses {
-        Hash::hash(platform_address, &mut hasher);
-        Hash::hash(balance, &mut hasher);
+    for (platform_address, (_, balance)) in funded {
+        Hash::hash(&platform_address, &mut hasher);
+        Hash::hash(&balance, &mut hasher);
     }
     hasher.finish()
 }
@@ -5357,7 +5355,7 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::AssetLockInputState;
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
-    use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{OutPoint, Txid};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
     use dash_sdk::dpp::secp256k1::SecretKey;
     use egui_kittest::Harness;
@@ -5385,6 +5383,55 @@ mod tests {
         Address::p2pkh(&public_key, Network::Testnet)
     }
 
+    /// One entry per Platform address: the stored entry with the highest
+    /// nonce wins, even when it is empty, and empty addresses are left out.
+    #[test]
+    fn funded_platform_addresses_keep_the_latest_entry_of_each_address() {
+        let testnet = testnet_core_address(11);
+        // The same key hash on another network names the same Platform address.
+        let mainnet = Address::new(Network::Mainnet, testnet.payload().clone());
+        let other = testnet_core_address(12);
+        let empty = testnet_core_address(13);
+        let entry = |balance, nonce| PlatformAddressInfo { balance, nonce };
+        let platform = |address: &Address| {
+            PlatformAddress::try_from(address.clone()).expect("platform address")
+        };
+
+        let info = BTreeMap::from([
+            (testnet.clone(), entry(500, 1)),
+            (mainnet.clone(), entry(700, 2)),
+            (other.clone(), entry(300, 1)),
+            (empty.clone(), entry(0, 1)),
+        ]);
+        let funded: BTreeMap<_, _> = funded_platform_addresses(&info).collect();
+        assert_eq!(funded.len(), 2, "{funded:?}");
+        assert_eq!(funded[&platform(&testnet)], (&mainnet, 700));
+        assert_eq!(funded[&platform(&other)], (&other, 300));
+
+        // A newer empty entry empties the address.
+        let info = BTreeMap::from([(testnet.clone(), entry(500, 1)), (mainnet, entry(0, 2))]);
+        assert_eq!(funded_platform_addresses(&info).count(), 0);
+    }
+
+    /// The shield Max key follows the funded balances only: it holds while
+    /// they hold, moves when one changes, and ignores an empty address.
+    #[test]
+    fn platform_balances_revision_follows_the_funded_balances() {
+        let funded_address = testnet_core_address(14);
+        let entry = |balance, nonce| PlatformAddressInfo { balance, nonce };
+        let revision = |info: &BTreeMap<Address, PlatformAddressInfo>| {
+            platform_balances_revision(funded_platform_addresses(info))
+        };
+
+        let mut info = BTreeMap::from([(funded_address.clone(), entry(500, 1))]);
+        let base = revision(&info);
+        assert_eq!(revision(&info.clone()), base);
+        info.insert(testnet_core_address(15), entry(0, 1));
+        assert_eq!(revision(&info), base, "an empty address offers nothing");
+        info.insert(funded_address, entry(499, 2));
+        assert_ne!(revision(&info), base, "a balance change re-quotes");
+    }
+
     fn bip44_receive_path(index: u32) -> DerivationPath {
         DerivationPath::from(
             [
@@ -5403,7 +5450,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -6515,6 +6562,9 @@ mod tests {
         );
     }
 
+    /// Press and release `label` within one frame, then step once more: a dialog
+    /// it opens spends its first frame in an invisible sizing pass, which egui keeps
+    /// out of the accessibility tree.
     fn click_in_one_frame(harness: &mut Harness<'_, WalletSendScreen>, label: &str) {
         let pos = harness.get_by_label(label).rect().center();
         harness.input_mut().events.extend([
@@ -6532,6 +6582,7 @@ mod tests {
                 modifiers: egui::Modifiers::default(),
             },
         ]);
+        harness.step();
         harness.step();
     }
 
@@ -7229,7 +7280,6 @@ mod tests {
     #[test]
     fn core_send_max_is_requested_for_the_destination_script() {
         use crate::model::spend_limit::CoreDestinationScript;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
 
         let (mut screen, _temp_dir) = send_screen();
         screen.selected_source = Some(SourceSelection::CoreWallet);

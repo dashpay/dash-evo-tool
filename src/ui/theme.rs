@@ -613,6 +613,27 @@ impl DashColors {
         }
     }
 
+    /// Text and ring of an informational pill drawn on a 12% tint of itself
+    /// over [`Self::surface`]. Darker than [`Self::DASH_BLUE`] in light mode
+    /// and lighter in dark mode so the label reads at 4.5:1 or better.
+    pub fn pill_accent(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(80, 175, 250)
+        } else {
+            Color32::from_rgb(0, 100, 162)
+        }
+    }
+
+    /// Text and ring of a neutral pill on its own 12% tint over
+    /// [`Self::surface`]; reads at 4.5:1 or better in both themes.
+    pub fn pill_neutral(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(170, 170, 170)
+        } else {
+            Color32::from_rgb(85, 100, 118)
+        }
+    }
+
     pub fn warning_color(dark_mode: bool) -> Color32 {
         if dark_mode {
             Color32::from_rgb(255, 200, 100) // Lighter orange for dark mode
@@ -1085,6 +1106,16 @@ impl ComponentStyles {
 
     pub fn input_stroke_focused() -> Stroke {
         Stroke::new(2.0, DashColors::DASH_BLUE)
+    }
+
+    /// Ring around a custom-painted clickable (card, chip) that has keyboard focus.
+    pub fn focus_stroke(dark_mode: bool) -> Stroke {
+        let color = if dark_mode {
+            DashColors::WHITE
+        } else {
+            DashColors::DEEP_BLUE
+        };
+        Stroke::new(Shape::BORDER_WIDTH_THICK, color)
     }
 
     pub fn input_stroke_error() -> Stroke {
@@ -1603,6 +1634,27 @@ mod tests {
                 assert!(
                     ratio >= 4.5,
                     "{mode:?}: bold text {bold:?} on the {surface} fill {fill:?} has contrast {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    /// A pill paints its label in the accent over the fill `pill_colors`
+    /// returns, composited on the card surface.
+    #[test]
+    fn pill_accents_read_on_their_own_tint_in_both_themes() {
+        use crate::ui::components::pill::pill_colors;
+        for dark_mode in [false, true] {
+            let surface = DashColors::surface(dark_mode);
+            for (name, accent) in [
+                ("accent", DashColors::pill_accent(dark_mode)),
+                ("neutral", DashColors::pill_neutral(dark_mode)),
+            ] {
+                let (fill, _) = pill_colors(accent);
+                let ratio = contrast_ratio(accent, surface.blend(fill));
+                assert!(
+                    ratio >= 4.5,
+                    "dark_mode={dark_mode}: the {name} pill text {accent:?} reads at {ratio:.2}:1"
                 );
             }
         }

@@ -64,6 +64,7 @@ use crate::model::fee_estimation::{
     TokenRegistrationFeatures, estimate_token_contract_registration,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::token::TokenActionAvailability;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -1074,6 +1075,8 @@ pub struct TokensScreen {
     pub tokens_subscreen: TokensSubscreen,
     all_known_tokens: IndexMap<Identifier, TokenInfoWithDataContract>,
     identities: IndexMap<Identifier, QualifiedIdentity>,
+    /// Whether each identity in `identities` can send token transactions.
+    token_action_availability: BTreeMap<Identifier, TokenActionAvailability>,
     my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions>,
     pub selected_token: Option<Identifier>,
     token_pricing_data: IndexMap<
@@ -1431,6 +1434,22 @@ fn my_tokens(
         .collect()
 }
 
+/// Whether each of `identities` can send token transactions.
+fn token_action_availability(
+    app_context: &AppContext,
+    identities: &IndexMap<Identifier, QualifiedIdentity>,
+) -> BTreeMap<Identifier, TokenActionAvailability> {
+    identities
+        .keys()
+        .map(|id| {
+            (
+                *id,
+                crate::ui::tokens::load_token_action_availability(app_context, id),
+            )
+        })
+        .collect()
+}
+
 impl TokensScreen {
     #[cfg(feature = "testing")]
     #[doc(hidden)]
@@ -1499,9 +1518,11 @@ impl TokensScreen {
             load_formula_image(LINEAR_FORMULA_PNG),
         );
 
+        let token_action_availability = token_action_availability(app_context, &identities);
         let mut screen = Self {
             app_context: app_context.clone(),
             identities,
+            token_action_availability,
             all_known_tokens,
             my_tokens,
             selected_token: None,
@@ -2344,6 +2365,17 @@ impl TokensScreen {
         self.token_creator_status == TokenCreatorStatus::WaitingForResult
     }
 
+    /// Stops waiting for a balance refresh or keyword search when the screen is
+    /// left; their results will not retire the progress banner, so it goes now.
+    fn stop_waiting_for_results(&mut self) {
+        if self.refreshing_status == RefreshingStatus::Refreshing {
+            self.operation_banner.take_and_clear();
+        }
+        self.refreshing_status = RefreshingStatus::NotRefreshing;
+        self.pending_operation_context = None;
+        self.end_keyword_search();
+    }
+
     /// Drops the Token Creator form after a network switch: its identity, key and
     /// wallet belong to the previous network.
     pub(crate) fn reset_for_network_switch(&mut self) {
@@ -2756,6 +2788,8 @@ impl ScreenLike for TokensScreen {
                 .into_iter()
                 .map(|identity| (identity.identity.id(), identity))
                 .collect();
+            self.token_action_availability =
+                token_action_availability(&self.app_context, &self.identities);
         }
         // My Tokens joins both: one recomputation after whichever side changed.
         self.my_tokens = my_tokens(
@@ -2778,6 +2812,8 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        self.token_action_availability =
+            token_action_availability(&self.app_context, &self.identities);
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -2803,6 +2839,10 @@ impl ScreenLike for TokensScreen {
         }
     }
 
+    fn on_leave(&mut self) {
+        self.stop_waiting_for_results();
+    }
+
     fn refresh_on_arrival(&mut self) {
         self.selected_token = None;
         self.should_reset_collapsing_states = true;
@@ -2818,6 +2858,9 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        // A wallet may have loaded or locked while the user was away.
+        self.token_action_availability =
+            token_action_availability(&self.app_context, &self.identities);
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -2970,7 +3013,7 @@ impl ScreenLike for TokensScreen {
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
                         let mut popup = InfoPopup::new(
-                            egui::Id::new("tokens_screen_info_popup"),
+                            egui::Id::unique("tokens_screen_info_popup"),
                             "Information",
                             &info_text,
                         );
@@ -3019,11 +3062,9 @@ impl ScreenLike for TokensScreen {
                 self.operation_banner = Some(handle);
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-                self.pending_operation_context = None;
+                self.stop_waiting_for_results();
 
                 // should put these in a fn
-                self.contract_search_status = ContractSearchStatus::NotStarted;
                 self.selected_token = None;
                 self.selected_contract_id = None;
                 self.token_search_query = None;
@@ -3160,6 +3201,9 @@ impl ScreenLike for TokensScreen {
                 self.search_has_next_page = next_cursor.is_some();
                 if let Some(cursor) = next_cursor {
                     self.next_cursors.push(cursor);
+                }
+                if self.contract_search_status == ContractSearchStatus::WaitingForResult {
+                    self.operation_banner.take_and_clear();
                 }
                 self.contract_search_status = ContractSearchStatus::Complete;
             }
@@ -3319,7 +3363,7 @@ mod tests {
     fn ensure_test_env() {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            copy_env_file_if_not_exists(); // required by AppContext::new()
+            copy_env_file_if_not_exists().expect("write .env"); // required by AppContext::new()
 
             // Ensure minimum required configs exist even if .env isn't loaded.
             // Safety: tests set env vars once to ensure deterministic config.
@@ -3338,6 +3382,44 @@ mod tests {
                 std::env::set_var("LOCAL_core_rpc_password", "password");
             }
         });
+    }
+
+    /// An identity that appears while My Tokens is open, or whose wallet
+    /// state changed while it was away, gets a fresh token-action
+    /// availability on a cache update and on arrival, never a stale or
+    /// missing (enabled) one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_action_availability_follows_identity_changes_and_arrival() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::bare_user_identity;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        let waiting = |byte: u8| {
+            let identity = bare_user_identity(Identifier::from([byte; 32]), app_context.network);
+            app_context
+                .insert_local_qualified_identity(&identity, &Some(([0x4E; 32], 0)))
+                .expect("store the identity of an unloaded wallet");
+            identity.identity.id()
+        };
+
+        let added = waiting(0x51);
+        screen.cached_data_changed(CacheUpdate {
+            network: app_context.network,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(
+            screen.token_action_availability.get(&added),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
+
+        let arrived = waiting(0x52);
+        screen.refresh_on_arrival();
+        assert_eq!(
+            screen.token_action_availability.get(&arrived),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
     }
 
     #[test]
@@ -3362,6 +3444,184 @@ mod tests {
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(handle.elapsed().is_none());
+    }
+
+    #[test]
+    fn keyword_search_results_clear_searching_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        let handle = MessageBanner::set_global(
+            app_context.egui_ctx(),
+            "Searching contracts...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        screen.operation_banner = Some(handle.clone());
+        // As set when the search was sent.
+        screen.contract_search_status = ContractSearchStatus::WaitingForResult;
+
+        // No match is still a finished search.
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::DescriptionsByKeyword(vec![], None),
+        );
+
+        assert!(screen.contract_search_status == ContractSearchStatus::Complete);
+        assert!(screen.operation_banner.is_none());
+        assert!(!handle.is_live());
+    }
+
+    /// Clearing a search, or leaving the screen, while it waits for results
+    /// retires its progress banner; no result will come to retire it later.
+    #[test]
+    fn clearing_or_leaving_a_pending_search_retires_its_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for control in ["Clear", "Wallets"] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let app_context = crate::context::test_support::test_app_context(tmp.path());
+            let screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut TokensScreen| {
+                        let _ = screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_label("Search").click();
+            harness.run();
+            let handle = harness
+                .state()
+                .operation_banner
+                .clone()
+                .expect("searching banner");
+            assert!(handle.is_live(), "{control}");
+
+            // The nav entry is an icon and a label, both clickable.
+            harness
+                .query_all_by_label(control)
+                .next()
+                .expect("control")
+                .click();
+            harness.run();
+
+            assert!(!handle.is_live(), "{control}");
+        }
+    }
+
+    /// Leaving My Tokens while its balance refresh runs retires the refresh
+    /// banner: the screen stops waiting, so the result will not retire it.
+    #[test]
+    fn leaving_during_a_balance_refresh_retires_its_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let screen = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label("Refresh").click();
+        harness.run();
+        assert_eq!(
+            harness.state().refreshing_status,
+            RefreshingStatus::Refreshing
+        );
+        let handle = harness
+            .state()
+            .operation_banner
+            .clone()
+            .expect("refresh banner");
+        assert!(handle.is_live());
+
+        // The nav entry is an icon and a label, both clickable.
+        harness
+            .query_all_by_label("Wallets")
+            .next()
+            .expect("nav entry")
+            .click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().refreshing_status,
+            RefreshingStatus::NotRefreshing
+        );
+        assert!(!handle.is_live());
+    }
+
+    /// Leaving by a route that skips the screen's own navigation (the Search
+    /// breadcrumb, the "Create Token" button) still retires a pending search's
+    /// or balance refresh's banner.
+    #[test]
+    fn leaving_by_any_route_retires_a_pending_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for (subscreen, control) in [
+            (TokensSubscreen::SearchTokens, "Search"),
+            (TokensSubscreen::MyTokens, "Refresh"),
+        ] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let app_context = crate::context::test_support::test_app_context(tmp.path());
+            let screen = TokensScreen::new(&app_context, subscreen);
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut TokensScreen| {
+                        let _ = screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_label(control).click();
+            harness.run();
+            let handle = harness
+                .state()
+                .operation_banner
+                .clone()
+                .expect("progress banner");
+            assert!(handle.is_live(), "{control}");
+
+            harness.state_mut().on_leave();
+
+            assert!(!handle.is_live(), "{control}");
+        }
+    }
+
+    #[test]
+    fn keyword_search_page_results_clear_searching_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        screen.token_search_query = Some("game".to_owned());
+        screen.contract_search_status = ContractSearchStatus::Complete;
+        screen.next_cursors.push(Start::StartAfter(vec![1]));
+        screen.search_has_next_page = true;
+
+        for page_action in [
+            TokensScreen::goto_next_search_page as fn(&mut TokensScreen) -> AppAction,
+            TokensScreen::goto_previous_search_page,
+        ] {
+            assert!(matches!(
+                page_action(&mut screen),
+                AppAction::BackendTask(_)
+            ));
+            let handle = screen.operation_banner.clone().expect("searching banner");
+            assert!(handle.is_live());
+
+            screen.display_backend_task_result(
+                &BackendTaskContext::Other,
+                BackendTaskSuccessResult::DescriptionsByKeyword(vec![], None),
+            );
+
+            assert!(screen.operation_banner.is_none());
+            assert!(!handle.is_live());
+        }
     }
 
     /// A token DET knows about, as the registry would list it, with a contract

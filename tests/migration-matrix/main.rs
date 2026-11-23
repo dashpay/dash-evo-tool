@@ -2,9 +2,10 @@
 //!
 //! Boots profiles captured by older DET releases with the binary built from
 //! this tree, and asserts the upgrade lands them intact. The fixtures are
-//! multi-megabyte captures of real profiles, stored as CI build artifacts
-//! rather than in the repository, so the matrix only runs when a workflow
-//! points `MIGRATION_FIXTURES_DIR` at an unpacked fixture set. Unset — the
+//! captures of real profiles, committed as archives or attached to releases.
+//! The matrix only runs when `MIGRATION_FIXTURES_DIR` is set: to
+//! `tests/migration-fixtures` for the
+//! committed archives, or to the directory CI downloads into. Unset — the
 //! normal `cargo test --all-features --workspace` case — it reports the skip
 //! and passes, while the module-level unit tests below still exercise the
 //! harness's own logic. The bundled public-only v0.9.3 profile also runs
@@ -23,7 +24,7 @@
 //!
 //! | Variable | Effect |
 //! |---|---|
-//! | `MIGRATION_FIXTURES_DIR` | Unpacked fixtures + `manifest.json`. Unset ⇒ skip. |
+//! | `MIGRATION_FIXTURES_DIR` | `manifest.json` + downloaded or unpacked fixtures. Unset ⇒ skip. |
 //! | `MIGRATION_FIXTURES_MANIFEST` | Manifest path, when it lives elsewhere. |
 //! | `MIGRATION_MATRIX_ONLY` | Comma-separated fixture ids to run. |
 //! | `MIGRATION_MATRIX_SKIP_NETWORK` | Skip the checks needing a synced chain. |

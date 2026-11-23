@@ -122,8 +122,8 @@ pub fn check_needs_desktop(run: &CliRun, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The release `WalletDataNeedsUpgradeRelease` names; det-cli prints the
-/// error's message when it cannot open the wallet data.
+/// The release `WalletDataNeedsUpgradeRelease` and `AppDataNeedsUpgradeRelease`
+/// name; det-cli prints the error's message when it cannot open the wallet data.
 const UPGRADE_RELEASE_MARKER: &str = "v1.0.0-weekly.20261117";
 
 /// A boot refused because only an earlier release can upgrade the wallet data.

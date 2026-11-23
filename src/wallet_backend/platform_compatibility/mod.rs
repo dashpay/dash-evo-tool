@@ -14,7 +14,7 @@ use std::path::Path;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, UpgradeReleaseNetworks};
 
 /// Refinery history (version, name, checksum) of a database written at the
 /// pinned Platform PR revision 67d4ef3 (DET v1.0.0-weekly.20260901 and
@@ -54,11 +54,36 @@ const HISTORY_READ_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
     if needs_upgrade_release(&config.path) {
-        return Err(TaskError::WalletDataNeedsUpgradeRelease {
+        let data_dir = config.path.parent().unwrap_or_else(|| Path::new(""));
+        refuse_stores_needing_upgrade_release(data_dir)?;
+        return Err(TaskError::AppDataNeedsUpgradeRelease {
             database: config.path,
         });
     }
     open_with_housekeeping(config, engine::tidy_backups_locked)
+}
+
+/// Refuses when any wallet store in `data_dir` is on the pinned-PR lineage,
+/// naming every such network. Must run before `det-app.sqlite` is opened:
+/// opening migrates it past what v1.0.0-weekly.20261117 can read, which would
+/// leave the network stores that release still has to convert unconvertible.
+pub(crate) fn refuse_stores_needing_upgrade_release(data_dir: &Path) -> Result<(), TaskError> {
+    let networks: Vec<_> = super::all_networks()
+        .into_iter()
+        .filter(|network| needs_upgrade_release(&super::wallet_database_path(data_dir, *network)))
+        .collect();
+    if !networks.is_empty() {
+        return Err(TaskError::WalletDataNeedsUpgradeRelease {
+            networks: UpgradeReleaseNetworks(networks),
+        });
+    }
+    let app_database = super::app_database_path(data_dir);
+    if needs_upgrade_release(&app_database) {
+        return Err(TaskError::AppDataNeedsUpgradeRelease {
+            database: app_database,
+        });
+    }
+    Ok(())
 }
 
 /// Whether the existing database at `path` is on the pinned-PR lineage. Reads
@@ -211,6 +236,7 @@ fn lock_error(source: std::io::Error) -> TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::dashcore::Network;
     use platform_wallet::changeset::PlatformWalletPersistence;
 
     /// Every failed open of an unsupported database makes upstream write another
@@ -389,16 +415,11 @@ mod tests {
         };
 
         assert!(
-            matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { database } if database == &path),
+            matches!(&error, TaskError::AppDataNeedsUpgradeRelease { database } if database == &path),
             "{error:?}"
         );
         assert!(error.to_string().contains("v1.0.0-weekly.20261117"));
-        assert!(
-            error
-                .to_string()
-                .contains("open every network where you have a wallet"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("start it once"), "{error}");
         assert!(crate::backend_task::is_terminal_storage_open_error(&error));
         assert_eq!(
             tree(dir.path()),
@@ -430,7 +451,7 @@ mod tests {
         };
 
         assert!(
-            matches!(error, TaskError::WalletDataNeedsUpgradeRelease { .. }),
+            matches!(error, TaskError::AppDataNeedsUpgradeRelease { .. }),
             "{error:?}"
         );
         assert_eq!(tree(&folder), before, "no file may be created");
@@ -447,6 +468,67 @@ mod tests {
 
         assert_ne!(uri, "file:///data%20dir/det-app.sqlite?mode=ro&immutable=1");
         assert_eq!(Some(uri), immutable_uri(&absolute));
+    }
+
+    /// A current app database beside pinned-PR network stores is refused before
+    /// the app database is opened (and migrated past what the older release can
+    /// read), naming every affected network, including one without a wallet.
+    #[test]
+    fn platform_compatibility_mixed_profile_is_refused_before_the_app_database_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        drop(
+            open(SqlitePersisterConfig::new(super::super::app_database_path(
+                dir.path(),
+            )))
+            .unwrap(),
+        );
+        for network in [Network::Devnet, Network::Testnet] {
+            seed_pinned_pr_history(&super::super::wallet_database_path(dir.path(), network))
+                .unwrap();
+        }
+        let before = tree(dir.path());
+
+        let error = match crate::context::AppContext::open_app_kv(dir.path()) {
+            Ok(_) => panic!("a mixed profile must be refused"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks }
+                if networks.0 == [Network::Testnet, Network::Devnet]),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("open each of these networks and wait until each one finishes syncing: Testnet, Devnet."),
+            "{message}"
+        );
+        assert_eq!(tree(dir.path()), before, "no store may be changed");
+    }
+
+    /// A pinned-PR network store opened on its own names its network.
+    #[test]
+    fn platform_compatibility_refused_network_store_names_its_network() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = super::super::wallet_database_path(dir.path(), Network::Regtest);
+        seed_pinned_pr_history(&path).unwrap();
+
+        let error = match open(SqlitePersisterConfig::new(&path)) {
+            Ok(_) => panic!("a pinned-PR database must not open"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks }
+                if networks.0 == [Network::Regtest]),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("finishes syncing: Local."),
+            "{error}"
+        );
     }
 
     /// A history still only in the `-wal` file of an open writer is seen.

@@ -215,6 +215,25 @@ impl fmt::Display for BackendTaskJoinError {
 
 impl std::error::Error for BackendTaskJoinError {}
 
+/// Networks whose wallet data only v1.0.0-weekly.20261117 can still convert,
+/// displayed as the network chooser names them (e.g. `Testnet, Devnet`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeReleaseNetworks(pub Vec<Network>);
+
+impl fmt::Display for UpgradeReleaseNetworks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, network) in self.0.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(", ")?;
+            }
+            formatter.write_str(crate::ui::network_chooser_screen::chooser_network_label(
+                *network,
+            ))?;
+        }
+        Ok(())
+    }
+}
+
 /// Lets `?` on a joined task keep the panic message out of the error.
 impl From<tokio::task::JoinError> for TaskError {
     fn from(source: tokio::task::JoinError) -> Self {
@@ -731,13 +750,22 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
-    /// The wallet database was written by a test build pinned to an unreleased
-    /// storage layout. Only that release line's last build can still convert
-    /// it, so the user must run it once; this build never changes the file.
+    /// Wallet stores of these networks were written by a test build pinned to
+    /// an unreleased storage layout. Only that release line's last build can
+    /// still convert them, one network at a time when it is opened; this build
+    /// never changes any store.
     #[error(
-        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that version, open every network where you have a wallet and wait until each one finishes syncing. Then return to this version."
+        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that version, open each of these networks and wait until each one finishes syncing: {networks}. Then return to this version."
     )]
-    WalletDataNeedsUpgradeRelease { database: std::path::PathBuf },
+    WalletDataNeedsUpgradeRelease { networks: UpgradeReleaseNetworks },
+
+    /// Only the app database (no network store) was written by a test build
+    /// pinned to an unreleased storage layout; that release line's last build
+    /// converts it on start. This build never changes the file.
+    #[error(
+        "Your app data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, start it once, and then return to this version."
+    )]
+    AppDataNeedsUpgradeRelease { database: std::path::PathBuf },
 
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.

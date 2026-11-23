@@ -265,6 +265,7 @@ pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
             | TaskError::WalletStorageAccessDenied { .. }
             | TaskError::WalletDataFolderInsecure { .. }
             | TaskError::WalletDataNeedsUpgradeRelease { .. }
+            | TaskError::AppDataNeedsUpgradeRelease { .. }
     )
 }
 
@@ -3616,6 +3617,13 @@ mod tests {
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataNeedsUpgradeRelease {
+                networks: crate::backend_task::error::UpgradeReleaseNetworks(vec![
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                ]),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::AppDataNeedsUpgradeRelease {
                 database: std::path::PathBuf::from("det-app.sqlite"),
             }
         ));

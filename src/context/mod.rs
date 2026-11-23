@@ -797,6 +797,9 @@ impl AppContext {
         use platform_wallet_storage::SqlitePersisterConfig;
         crate::app_dir::ensure_data_dir_exists(data_dir)
             .map_err(|source| TaskError::FileSystem { source })?;
+        crate::wallet_backend::platform_compatibility::refuse_stores_needing_upgrade_release(
+            data_dir,
+        )?;
         let path = crate::wallet_backend::app_database_path(data_dir);
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(crate::wallet_backend::platform_compatibility::open(config)?);

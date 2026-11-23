@@ -300,7 +300,7 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
         let BootApp::Failed(failure) = harness.state() else {
             panic!("a pinned-PR app database must fail the boot");
         };
-        let expected = TaskError::WalletDataNeedsUpgradeRelease {
+        let expected = TaskError::AppDataNeedsUpgradeRelease {
             database: app_db.clone(),
         }
         .to_string();

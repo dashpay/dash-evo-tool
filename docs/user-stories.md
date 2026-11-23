@@ -431,6 +431,7 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
+- On a network confirmed to run a Platform protocol older than 14, shielding is refused before any funds are locked, with a message to wait for the upgrade or choose another network.
 - Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-008: Top up identity from Send screen [Implemented]

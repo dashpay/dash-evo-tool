@@ -1262,7 +1262,7 @@ impl AppContext {
         // while the list still holds them; it shares the list, so it follows
         // the move below.
         let provider = self.spv_context_provider.read()?.clone();
-        // Like a cold start: the network minimum, raised by the new
+        // Like a cold start: DET's minimum (`MIN_PLATFORM_VERSION`), raised by the new
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
         let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
@@ -2302,10 +2302,10 @@ mod tests {
         assert!(info.newer_protocol_available);
     }
 
-    /// Contest windows stay consistent as the SDK ratchets upward from each
-    /// network minimum to a newer supported protocol.
+    /// Contest windows stay consistent as the SDK ratchets upward from DET's
+    /// minimum (`MIN_PLATFORM_VERSION`) to a newer supported protocol.
     #[test]
-    fn contest_durations_match_the_network_minimum_for_every_supported_version() {
+    fn contest_durations_match_the_minimum_for_every_supported_version() {
         use crate::model::dpns::contest_durations;
 
         let newest = PlatformVersion::latest().protocol_version;
@@ -2313,7 +2313,7 @@ mod tests {
             let minimum = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version;
             let pinned = contest_durations(
                 network,
-                PlatformVersion::get(minimum).expect("network minimum"),
+                PlatformVersion::get(minimum).expect("minimum supported version"),
             );
             for protocol_version in minimum..=newest {
                 let live = PlatformVersion::get(protocol_version).expect("known version");

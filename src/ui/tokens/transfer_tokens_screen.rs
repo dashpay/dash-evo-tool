@@ -380,6 +380,14 @@ impl TransferTokensScreen {
     }
 }
 
+/// A send keeps running when its form is closed, but its result no longer
+/// reaches the form, so the progress banner goes with the form.
+impl Drop for TransferTokensScreen {
+    fn drop(&mut self) {
+        self.refresh_banner.take_and_clear();
+    }
+}
+
 impl ScreenLike for TransferTokensScreen {
     fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
         use crate::backend_task::CacheDomain;
@@ -393,7 +401,9 @@ impl ScreenLike for TransferTokensScreen {
         }
     }
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        self.transfer_request.settle(context);
+        if self.transfer_request.settle(context).is_some() {
+            self.refresh_banner.take_and_clear();
+        }
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
@@ -786,12 +796,9 @@ mod tests {
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 
-    /// A transfer is irreversible, so a second confirmation while the first
-    /// is in flight must not send it again.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_transfer_in_flight_is_never_sent_twice() {
-        let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+    /// A screen whose Send can be confirmed: a stored contract, a loaded
+    /// identity with a signing key, an amount and a recipient.
+    fn screen_ready_to_send(context: &Arc<AppContext>) -> TransferTokensScreen {
         let contract = context.dpns_contract();
         context
             .insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
@@ -814,7 +821,7 @@ mod tests {
             data_contract_id: contract.id(),
             token_position: 0,
         };
-        let mut screen = TransferTokensScreen::new(balance, &context);
+        let mut screen = TransferTokensScreen::new(balance, context);
         screen.identity = Some(identity);
         screen.selected_key = Some(
             IdentityPublicKeyV0 {
@@ -831,6 +838,16 @@ mod tests {
         );
         screen.amount = Some(Amount::new(5, 0));
         screen.receiver_identity_id = Identifier::from([5; 32]).to_string(Encoding::Base58);
+        screen
+    }
+
+    /// A transfer is irreversible, so a second confirmation while the first
+    /// is in flight must not send it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_transfer_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = screen_ready_to_send(&context);
 
         use crate::ui::tokens::mint_tokens_screen::tests::{
             report_error, sent_request, unrelated_request,
@@ -881,5 +898,52 @@ mod tests {
         }));
         report_error(&mut screen, &unrelated_request(context.network));
         assert!(screen.transfer_tokens_status == TransferTokensStatus::Complete);
+    }
+
+    fn sending_banners(context: &AppContext) -> Vec<String> {
+        crate::ui::components::message_banner::global_banner_texts(context.egui_ctx())
+            .into_iter()
+            .filter(|text| text.starts_with("Sending "))
+            .collect()
+    }
+
+    /// The progress banner belongs to the form: sends whose forms were closed
+    /// before they finished leave no "Sending" banner to crowd out others.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_the_form_clears_its_sending_banner() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        for value in 1..=3 {
+            let mut screen = screen_ready_to_send(&context);
+            screen.amount = Some(Amount::new(value, 0));
+            screen.open_send_confirmation();
+            screen.confirmation_ok();
+            assert_eq!(
+                sending_banners(&context).len(),
+                1,
+                "the send shows progress"
+            );
+            drop(screen);
+            assert!(
+                sending_banners(&context).is_empty(),
+                "a closed form leaves no progress banner"
+            );
+        }
+    }
+
+    /// The send's own error ends its progress banner even when the screen
+    /// gets no error message, e.g. after a network switch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_sends_own_error_clears_its_sending_banner() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = screen_ready_to_send(&context);
+        screen.open_send_confirmation();
+        let request =
+            crate::ui::tokens::mint_tokens_screen::tests::sent_request(&screen.confirmation_ok())
+                .flatten()
+                .expect("the send's context");
+        screen.display_backend_task_error(&request, &TaskError::NetworkSwitchedBeforeResult);
+        assert!(sending_banners(&context).is_empty());
     }
 }

@@ -256,7 +256,7 @@ Send → `WalletUnlockPopup` → (unlocked) → W12. Cancelling the unlock retur
 ```
         ┌─ Send 0.5000 DASH? ─────────────────────────────┐
         │ From     Main · Core                            │
-        │ To       bob (yX12…9fab)                        │
+        │ To       bob (<bob's full identity ID>)         │
         │ Amount   0.5000 DASH                            │
         │ Fee      ≈ 0.0001 DASH                          │
         │ Total    ≈ 0.5001 DASH                          │
@@ -265,7 +265,7 @@ Send → `WalletUnlockPopup` → (unlocked) → W12. Cancelling the unlock retur
         │                          [ Cancel ]  [ Send ]   │
         └─────────────────────────────────────────────────┘
 ```
-Own-wallet example: "To   Savings · new Core address (yQb7…2c1d)".
+Own-wallet example: "To   <the full new Core address in Savings>". The confirmation always shows the whole address (spec §10).
 
 ## W13 — Narrow (< 420 pt)
 

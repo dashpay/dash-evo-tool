@@ -84,8 +84,11 @@ fn main() -> ExitCode {
         }
         report_startup_failure(&causes);
         // Only now: the dialog points the user to the log, which holds the
-        // causes once they are reported.
-        if let Err(error) = &result {
+        // causes once they are reported. It explains a window that never
+        // opened, so an eframe error after the app was built gets none.
+        if let Err(error) = &result
+            && !outcome.window_opened()
+        {
             crate::boot::show_window_failure_dialog(error);
         }
         return ExitCode::FAILURE;

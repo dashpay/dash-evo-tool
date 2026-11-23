@@ -20,6 +20,7 @@
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
@@ -528,6 +529,7 @@ impl Startup {
     /// Build the boot app. Successful steps are handed over and the startup
     /// becomes [`Self::Spent`]; a failure stays here for the terminal notice.
     pub fn boot(&mut self, ctx: egui::Context, outcome: &StartupOutcome) -> BootApp {
+        outcome.window_opened.store(true, Ordering::Release);
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match std::mem::replace(self, Self::Spent) {
             Self::Prepared {
@@ -553,9 +555,16 @@ impl Startup {
 pub struct StartupOutcome {
     shown: Arc<Mutex<Option<FailureNotice>>>,
     held_vault: Arc<Mutex<Option<Arc<SecretStore>>>>,
+    window_opened: Arc<AtomicBool>,
 }
 
 impl StartupOutcome {
+    /// Whether eframe opened the window and built the app. An eframe error
+    /// after that is not a failure to open the window.
+    pub fn window_opened(&self) -> bool {
+        self.window_opened.load(Ordering::Acquire)
+    }
+
     fn mark_failed(&self, failure: &StartupFailure) {
         *self.shown.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(FailureNotice(failure.clone()));
@@ -1141,11 +1150,13 @@ mod tests {
     #[test]
     fn spent_startup_does_not_prepare_again() {
         let outcome = StartupOutcome::default();
+        assert!(!outcome.window_opened());
         assert!(matches!(
             Startup::Spent.boot(egui::Context::default(), &outcome),
             BootApp::Failed(_)
         ));
         assert!(outcome.failed());
+        assert!(outcome.window_opened());
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.

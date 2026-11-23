@@ -20,6 +20,7 @@ on:
       - "scripts/ci/**"
       - ".github/workflows/tests.yml"
       - ".github/workflows/weekly-build.yml"
+      - ".github/workflows/release-qa.yml"
       # Its permissions are checked against the weekly job that calls it.
       - ".github/workflows/migration-fixture-capture.yml"
   pull_request:
@@ -69,6 +70,23 @@ jobs:
       # why ancestry alone is not sufficient.
       - name: Check platform pin ancestry and migration fingerprint
         run: scripts/migration-fixtures/check-pin-ancestry.sh
+
+  release-qa-tests:
+    name: Release QA scripts
+    # The scheduled weekly gate must not depend on package mirror availability.
+    if: github.event_name != 'schedule' && github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install release QA test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-yaml python3-pil python3-mnemonic
+
+      - name: Test release QA scripts
+        run: /usr/bin/python3 -m unittest discover -s scripts/ci/release-qa -v
 
   test:
     name: Test Suite

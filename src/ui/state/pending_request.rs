@@ -158,6 +158,22 @@ impl PendingRequest {
     pub fn track(&mut self, context: BackendTaskContext) {
         self.track_with(context, ());
     }
+
+    /// Dispatch every task `action` sends, each under its own context bound to
+    /// `network`, and wait on the first, such as an operation sent ahead of
+    /// its balance refresh. Contexts the action already carries are kept; an
+    /// action that sends no task is returned unchanged.
+    pub fn dispatch_action_on(&mut self, action: AppAction, network: Network) -> AppAction {
+        match action.into_dispatch(network) {
+            Ok((tasks, mode)) => {
+                if let Some((_, context)) = tasks.first() {
+                    self.track(context.clone());
+                }
+                AppAction::BackendTasksWithContexts(tasks, mode)
+            }
+            Err(action) => action,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -287,5 +303,72 @@ mod tests {
         pending.track(context.clone());
 
         assert!(pending.owns(&context));
+    }
+
+    #[test]
+    fn an_action_dispatch_waits_on_its_first_task() {
+        use crate::app::BackendTasksExecutionMode;
+        let mut pending = PendingRequest::default();
+        let AppAction::BackendTasksWithContexts(tasks, mode) = pending.dispatch_action_on(
+            AppAction::BackendTasks(
+                vec![refresh_task(), refresh_task()],
+                BackendTasksExecutionMode::Sequential,
+            ),
+            Network::Testnet,
+        ) else {
+            panic!("the action's tasks are dispatched with contexts");
+        };
+        assert_eq!(mode, BackendTasksExecutionMode::Sequential);
+        let [(_, first), (_, second)] = tasks.as_slice() else {
+            panic!("expected both tasks, got {tasks:?}");
+        };
+        assert_ne!(first, second, "each task has a context of its own");
+        assert!(pending.owns(first));
+        assert!(!pending.owns(second));
+    }
+
+    /// A context the action already carries is the one its sender waits on.
+    #[test]
+    fn an_action_dispatch_keeps_the_contexts_it_carries() {
+        use crate::app::BackendTasksExecutionMode;
+        let network = Network::Testnet;
+        let context = BackendTaskContext::for_dispatch_on(&BackendTask::None, network);
+        let mut pending = PendingRequest::default();
+        let action = pending.dispatch_action_on(
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::None,
+                context: context.clone(),
+            },
+            network,
+        );
+        assert!(pending.owns(&context));
+        assert!(
+            matches!(action, AppAction::BackendTasksWithContexts(tasks, _)
+            if tasks.len() == 1 && tasks[0].1 == context)
+        );
+
+        let mut pending = PendingRequest::default();
+        let action = pending.dispatch_action_on(
+            AppAction::BackendTasksWithContexts(
+                vec![(BackendTask::None, context.clone())],
+                BackendTasksExecutionMode::Concurrent,
+            ),
+            network,
+        );
+        assert!(pending.owns(&context));
+        assert!(matches!(
+            action,
+            AppAction::BackendTasksWithContexts(_, BackendTasksExecutionMode::Concurrent)
+        ));
+    }
+
+    #[test]
+    fn an_action_without_tasks_is_not_waited_on() {
+        let mut pending = PendingRequest::default();
+        assert!(matches!(
+            pending.dispatch_action_on(AppAction::PopScreen, Network::Testnet),
+            AppAction::PopScreen
+        ));
+        assert!(!pending.is_pending());
     }
 }

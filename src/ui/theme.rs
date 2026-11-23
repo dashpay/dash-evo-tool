@@ -1639,26 +1639,19 @@ mod tests {
         }
     }
 
-    /// A pill paints its label in the accent over a 12% tint of the accent on
-    /// the card surface (`ui::components::pill::accent_pill`).
+    /// A pill paints its label in the accent over the fill `pill_colors`
+    /// returns, composited on the card surface.
     #[test]
     fn pill_accents_read_on_their_own_tint_in_both_themes() {
-        fn tint(accent: Color32, surface: Color32) -> Color32 {
-            let alpha = f32::from((0.12 * 255.0) as u8) / 255.0;
-            let mix = |a: u8, s: u8| (f32::from(a) * alpha + f32::from(s) * (1.0 - alpha)) as u8;
-            Color32::from_rgb(
-                mix(accent.r(), surface.r()),
-                mix(accent.g(), surface.g()),
-                mix(accent.b(), surface.b()),
-            )
-        }
+        use crate::ui::components::pill::pill_colors;
         for dark_mode in [false, true] {
             let surface = DashColors::surface(dark_mode);
             for (name, accent) in [
                 ("accent", DashColors::pill_accent(dark_mode)),
                 ("neutral", DashColors::pill_neutral(dark_mode)),
             ] {
-                let ratio = contrast_ratio(accent, tint(accent, surface));
+                let (fill, _) = pill_colors(accent);
+                let ratio = contrast_ratio(accent, surface.blend(fill));
                 assert!(
                     ratio >= 4.5,
                     "dark_mode={dark_mode}: the {name} pill text {accent:?} reads at {ratio:.2}:1"

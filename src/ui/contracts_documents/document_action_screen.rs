@@ -414,7 +414,7 @@ impl DocumentActionScreen {
         }
     }
 
-    fn render_identity_and_key_selection(&mut self, ui: &mut Ui) {
+    fn render_identity_and_key_selection(&mut self, ui: &mut Ui) -> AppAction {
         ui.horizontal(|ui| {
             ui.heading("2. Select an identity:");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -462,10 +462,11 @@ impl DocumentActionScreen {
         }
 
         // Key selector (only shown in advanced mode)
+        let mut action = AppAction::None;
         if self.show_advanced_options {
             ui.add_space(10.0);
             if let Some(identity) = &self.selected_identity {
-                add_key_chooser_with_doc_type(
+                action = add_key_chooser_with_doc_type(
                     ui,
                     &self.app_context,
                     identity,
@@ -481,6 +482,7 @@ impl DocumentActionScreen {
         }
 
         ui.add_space(10.0);
+        action
     }
 
     fn render_action_specific_inputs(&mut self, ui: &mut Ui) -> AppAction {
@@ -2056,7 +2058,7 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
 
                 // Step 2: Identity and Key Selection
-                self.render_identity_and_key_selection(ui);
+                action |= self.render_identity_and_key_selection(ui);
 
                 if self.selected_key.is_none() {
                     let dark_mode = ui.style().visuals.dark_mode;
@@ -2983,7 +2985,7 @@ mod tests {
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {
-                    screen.render_identity_and_key_selection(ui)
+                    screen.render_identity_and_key_selection(ui);
                 },
                 screen,
             );

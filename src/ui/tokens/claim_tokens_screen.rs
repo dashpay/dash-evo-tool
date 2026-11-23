@@ -3,7 +3,6 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::token::once_per_identity_amount;
-use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -469,24 +468,17 @@ impl ScreenLike for ClaimTokensScreen {
         {
             self.identity = Some(updated);
         }
-        if let Some(identity) = &self.identity {
-            let contract_id = self.identity_token_basic_info.contract_id;
-            let previous_key = self.selected_key.as_ref().cloned();
-            self.selected_key.refresh(
+        if let Some(identity) = &self.identity
+            && self.selected_key.refresh_with_wallet(
                 &self.app_context,
                 identity,
                 TransactionType::TokenClaim,
-                contract_id,
-            );
-            let wallet_changed = crate::ui::identity::sync_signing_wallet(
-                Some(identity),
-                self.selected_key.as_ref(),
+                self.identity_token_basic_info.contract_id,
                 &mut self.selected_wallet,
                 &mut self.wallet_open_attempted,
-            );
-            if wallet_changed || previous_key.as_ref() != self.selected_key.as_ref() {
-                self.confirmation_dialog = None;
-            }
+            )
+        {
+            self.confirmation_dialog = None;
         }
         self.once_per_identity_claimed_at =
             load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
@@ -546,22 +538,16 @@ impl ScreenLike for ClaimTokensScreen {
             }
 
             // Check if user has any auth keys
-            let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
-                if identity.identity.public_keys().is_empty() {
-                    SigningKeyStatus::NoneHeld
-                } else {
-                    SigningKeyStatus::Usable
-                }
-            } else {
-                claim_key_status(identity, self.identity_token_basic_info.contract_id)
-            };
-            if self.selected_key.follow_automatic_with_wallet(
+            let followed = self.selected_key.follow_automatic_with_wallet(
+                &self.app_context,
                 identity,
                 TransactionType::TokenClaim,
                 self.identity_token_basic_info.contract_id,
                 &mut self.selected_wallet,
                 &mut self.wallet_open_attempted,
-            ) {
+            );
+            let key_status = followed.status;
+            if followed.changed {
                 // A pending confirmation was for the previous key.
                 self.confirmation_dialog = None;
             }
@@ -662,6 +648,8 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         TransactionType::TokenClaim,
                         self.identity_token_basic_info.contract_id,
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                 }
@@ -813,10 +801,17 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                let claim =
-                    ComponentStyles::add_primary_button_enabled(ui, self.claim_allowed(), "Claim");
+                let claim_allowed = self.claim_allowed();
+                let has_key = self.selected_key.as_ref().is_some();
+                let claim = ComponentStyles::add_primary_button_enabled(
+                    ui,
+                    claim_allowed && has_key,
+                    "Claim",
+                );
                 let claim = if self.claim_request.is_pending() {
                     claim.disabled_tooltip("Wait for the current claim to finish.")
+                } else if claim_allowed && !has_key {
+                    claim.disabled_tooltip(super::CHOOSE_SIGNING_KEY)
                 } else {
                     claim
                 };
@@ -858,17 +853,6 @@ impl ScreenLike for ClaimTokensScreen {
 
         action
     }
-}
-
-/// Whether `identity` can sign a claim on `contract_id`, the gate in front
-/// of the form outside developer mode: whether
-/// [`QualifiedIdentity::single_token_transition_key`], the claim's key
-/// choice for every identity type, picks a key.
-fn claim_key_status(
-    identity: &QualifiedIdentity,
-    contract_id: dash_sdk::platform::Identifier,
-) -> SigningKeyStatus {
-    identity.single_token_transition_key_status(contract_id)
 }
 
 /// The claim confirmation text: which distribution of `token` is claimed and,
@@ -1246,15 +1230,13 @@ mod tests {
         assert_eq!(identity.identity_type, IdentityType::User);
         let contract_id = Identifier::new([0x70; 32]);
         assert_eq!(
-            claim_key_status(&identity, contract_id),
+            identity.single_token_transition_key_status(contract_id),
             SigningKeyStatus::Usable
         );
 
         assert_eq!(
-            claim_key_status(
-                &identity_holding(&[auth_key(1, SecurityLevel::HIGH)]),
-                contract_id
-            ),
+            identity_holding(&[auth_key(1, SecurityLevel::HIGH)])
+                .single_token_transition_key_status(contract_id),
             SigningKeyStatus::NoneHeld
         );
     }
@@ -1303,7 +1285,7 @@ mod tests {
                 "{case}"
             );
             assert_eq!(
-                claim_key_status(&identity, contract_id),
+                identity.single_token_transition_key_status(contract_id),
                 SigningKeyStatus::HeldButUnusable,
                 "{case}"
             );
@@ -1384,14 +1366,14 @@ mod tests {
             let mut expired = identity_holding(&[transfer(Some(1))]);
             expired.identity_type = identity_type;
             assert_eq!(
-                claim_key_status(&expired, contract_id),
+                expired.single_token_transition_key_status(contract_id),
                 SigningKeyStatus::HeldButUnusable,
                 "{identity_type:?}"
             );
             let mut live = identity_holding(&[transfer(None)]);
             live.identity_type = identity_type;
             assert_eq!(
-                claim_key_status(&live, contract_id),
+                live.single_token_transition_key_status(contract_id),
                 SigningKeyStatus::Usable,
                 "{identity_type:?}"
             );
@@ -1413,5 +1395,51 @@ mod tests {
         let refresh = unrelated_request(screen.app_context.network);
         report_error(&mut screen, &refresh);
         assert!(screen.status == ClaimTokensStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) Claim stayed enabled, and pressing it only then
+    /// reported that no key was selected.
+    #[test]
+    fn a_claim_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        screen.identity = Some(identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]));
+        screen.selected_key.selected = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        let claim = harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Claim")
+            .last()
+            .expect("the Claim button");
+        assert!(
+            !claim
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click),
+            "a claim cannot be sent without a key"
+        );
+        claim.hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
     }
 }

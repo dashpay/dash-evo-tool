@@ -507,10 +507,11 @@ impl ScreenLike for UpdateDataContractScreen {
             }
 
             // Key selector (only shown in advanced mode)
+            let mut key_action = AppAction::None;
             if self.show_advanced_options {
                 ui.add_space(10.0);
                 if let Some(identity) = &self.selected_qualified_identity {
-                    add_key_chooser(
+                    key_action = add_key_chooser(
                         ui,
                         &self.app_context,
                         identity,
@@ -629,7 +630,8 @@ impl ScreenLike for UpdateDataContractScreen {
             self.ui_input_field(ui, json_heading.id);
 
             // Parse the contract and show the result
-            self.ui_parsed_contract(ui)
+            key_action |= self.ui_parsed_contract(ui);
+            key_action
         });
 
         // Show wallet unlock popup if open

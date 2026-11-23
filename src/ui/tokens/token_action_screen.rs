@@ -483,18 +483,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             self.common.identity_token_info.identity = updated;
         }
         let contract_id = self.common.identity_token_info.data_contract.contract.id();
-        self.common.selected_key.refresh(
+        if self.common.selected_key.refresh_with_wallet(
             &self.common.app_context,
             &self.common.identity_token_info.identity,
             TransactionType::TokenAction,
             contract_id,
-        );
-        crate::ui::identity::sync_signing_wallet(
-            Some(&self.common.identity_token_info.identity),
-            self.common.selected_key.as_ref(),
             &mut self.common.selected_wallet,
             &mut self.common.wallet_open_attempted,
-        );
+        ) {
+            self.common.confirmation_dialog = None;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -550,18 +548,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return AppAction::None;
             }
 
-            let key_status = super::token_action_key_status(
+            let followed = self.common.selected_key.follow_automatic_with_wallet(
                 &self.common.app_context,
-                &self.common.identity_token_info.identity,
-                self.common.identity_token_info.data_contract.contract.id(),
-            );
-            if self.common.selected_key.follow_automatic_with_wallet(
                 &self.common.identity_token_info.identity,
                 TransactionType::TokenAction,
                 self.common.identity_token_info.data_contract.contract.id(),
                 &mut self.common.selected_wallet,
                 &mut self.common.wallet_open_attempted,
-            ) {
+            );
+            let key_status = followed.status;
+            if followed.changed {
                 // A pending confirmation was for the previous key.
                 self.common.confirmation_dialog = None;
             }
@@ -641,6 +637,8 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &self.common.identity_token_info.identity,
                     TransactionType::TokenAction,
                     self.common.identity_token_info.data_contract.contract.id(),
+                    &mut self.common.selected_wallet,
+                    &mut self.common.wallet_open_attempted,
                 );
                 ui.add_space(10.0);
                 ui.separator();
@@ -688,12 +686,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             {
                 ui.add_space(10.0);
                 let in_flight = self.common.request.is_pending();
-                let ready = self.action.inputs_ready() && !in_flight;
+                let inputs_ready = self.action.inputs_ready();
+                let ready =
+                    inputs_ready && self.common.selected_key.as_ref().is_some() && !in_flight;
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
                     .disabled_tooltip(if in_flight {
                         "Wait for the current action to finish."
-                    } else {
+                    } else if !inputs_ready {
                         self.action.disabled_reason()
+                    } else {
+                        super::CHOOSE_SIGNING_KEY
                     })
                     .clicked()
                 {
@@ -846,6 +848,115 @@ mod tests {
             assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
             assert!(!screen.common.wallet_open_attempted);
         }
+    }
+
+    /// A confirmation opened for one key is closed when a refresh picks
+    /// another, so Confirm never signs with a key the dialog was not opened for.
+    #[test]
+    fn token_refresh_closes_the_confirmation_when_the_key_changes() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let budgeted = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000), None);
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(std::slice::from_ref(&budgeted)),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.common.confirmation_dialog = Some(ConfirmationDialog::new("Mint", "Mint 5?"));
+        store_identity_with_wallet_key(
+            &context,
+            identity_holding(&[budgeted, auth_key(2, SecurityLevel::CRITICAL)]),
+            2,
+        );
+
+        screen.refresh();
+        assert_eq!(
+            screen.common.selected_key.as_ref().map(|key| key.id()),
+            Some(2)
+        );
+        assert!(screen.common.confirmation_dialog.is_none());
+    }
+
+    /// Regression: picking a key by hand left the signing wallet as it was,
+    /// so with only a contract-group key held by a wallet the form showed no
+    /// unlock prompt and Confirm failed at signing.
+    #[test]
+    fn picking_a_key_by_hand_follows_its_wallet() {
+        use crate::context::test_support::{
+            auth_key, bound_to, identity_holding, test_app_context,
+        };
+        use crate::ui::helpers::format_key_label;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let key = bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([6; 32]),
+            },
+        );
+        let mut identity = identity_holding(std::slice::from_ref(&key));
+        let wallet = crate::model::wallet::test_support::open_wallet_on(
+            crate::test_support::keys::labelled_seed("manual_pick_wallet", 0),
+        );
+        let seed_hash = wallet.seed_hash();
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        identity
+            .associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let screen = MintTokensScreen::new(info, &context);
+        assert!(screen.common.selected_key.as_ref().is_none());
+        assert!(screen.common.selected_wallet.is_none());
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_value("Select Key…").click();
+        harness.run();
+        harness
+            .get_by_label(&format!("{} (contract group)", format_key_label(&key)))
+            .click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(screen.common.selected_key.as_ref().map(|k| k.id()), Some(1));
+        let wallet = screen
+            .common
+            .selected_wallet
+            .as_ref()
+            .expect("the chosen key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
     }
 
     #[test]
@@ -1212,5 +1323,56 @@ mod tests {
         ));
         report_error(&mut screen, &refresh_request);
         assert!(screen.common.status == TokenActionStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) the action button stayed enabled, and confirming
+    /// only then reported that no key was selected.
+    #[test]
+    fn a_token_action_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut info = token_info(&context, None, false);
+        info.identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::from([0x6A; 32]),
+            },
+        )]);
+        let screen = PauseTokensScreen::new(info, &context);
+        assert!(screen.common.selected_key.as_ref().is_none());
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut PauseTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        let button = harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Pause")
+            .last()
+            .expect("the Pause button");
+        assert!(
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click),
+            "the action cannot be confirmed without a key"
+        );
+        button.hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
     }
 }

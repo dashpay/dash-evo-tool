@@ -1065,19 +1065,18 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 }
 
                 // Signing eligibility affects submission, not reads or previews.
-                let key_status = super::token_action_key_status(
-                    &self.app_context,
-                    &self.identity,
-                    self.identity_token_info.data_contract.contract.id(),
-                );
                 // The form signs on its button, with no confirmation to reset.
-                self.signing_key.follow_automatic_with_wallet(
-                    &self.identity,
-                    TransactionType::TokenAction,
-                    self.identity_token_info.data_contract.contract.id(),
-                    &mut self.selected_wallet,
-                    &mut self.wallet_open_attempted,
-                );
+                let key_status = self
+                    .signing_key
+                    .follow_automatic_with_wallet(
+                        &self.app_context,
+                        &self.identity,
+                        TransactionType::TokenAction,
+                        self.identity_token_info.data_contract.contract.id(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
+                    )
+                    .status;
 
                 if key_status == SigningKeyStatus::ManualChoiceOnly {
                     // Only a contract-group key can sign it: the user picks it below.
@@ -1158,6 +1157,8 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             &self.identity,
                             TransactionType::TokenAction,
                             self.identity_token_info.data_contract.contract.id(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
                         );
                         ui.add_space(10.0);
                         ui.separator();

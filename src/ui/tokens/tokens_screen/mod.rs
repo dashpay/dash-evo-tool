@@ -4403,6 +4403,44 @@ mod tests {
         screen.base_supply_amount = Some(Amount::new(1_000, 8));
     }
 
+    /// Advanced mode's disabled "Register Token Contract" says why when the
+    /// identity has no key that can sign the registration.
+    #[test]
+    fn advanced_creator_explains_a_missing_signing_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, dash_sdk::dpp::identity::SecurityLevel::MEDIUM)]);
+        crate::ui::tokens::tests::store_identity_with_wallet_key(&ctx, identity.clone(), 1);
+        let mut screen = TokensScreen::new(&ctx, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &ctx);
+        screen.selected_identity = Some(identity);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::MostRestrictive,
+        ));
+        screen.base_supply_input = Some(AmountInput::new(Amount::new(1_000, 8)));
+        screen.show_advanced_token_creator = true;
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1600.0, 4000.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let context = ui.ctx().clone();
+                    screen.render_token_creator(&context, ui);
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        assert!(harness.state().selected_key.is_none());
+        assert!(
+            harness
+                .query_by_label(crate::ui::tokens::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interop_token_creator_keeps_json_preview_for_a_watch_only_identity() {
         use egui_kittest::kittest::{NodeT, Queryable};

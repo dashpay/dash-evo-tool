@@ -248,7 +248,7 @@ impl TokensScreen {
                                 .selected_identity
                                 .as_ref()
                                 .map(|qi| qi.identity.id());
-                            add_identity_key_chooser(
+                            action |= add_identity_key_chooser(
                                 ui,
                                 &self.app_context,
                                 all_identities.iter(),
@@ -827,11 +827,12 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            let blocked_reason = self.advanced_mode_blocked_reason();
+                            let blocked_reason = self
+                                .signing_blocked_reason()
+                                .or_else(|| self.advanced_mode_blocked_reason());
                             let mut register = ComponentStyles::add_primary_button_enabled(
                                 ui,
-                                blocked_reason.is_none() && self.selected_key.is_some()
-                                    && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)),
+                                blocked_reason.is_none(),
                                 "Register Token Contract",
                             );
                             if let Some(reason) = &blocked_reason {
@@ -1507,6 +1508,22 @@ impl TokensScreen {
             Some(ADVANCED_PRESET_HINT.to_owned())
         } else {
             self.creation_blocked_reason()
+        }
+    }
+
+    /// Why the registration cannot be signed yet: no signing key, or its
+    /// wallet is locked.
+    fn signing_blocked_reason(&self) -> Option<String> {
+        if self.selected_key.is_none() {
+            Some(crate::ui::tokens::CHOOSE_SIGNING_KEY.to_owned())
+        } else if self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(wallet_needs_unlock)
+        {
+            Some("Unlock the wallet to continue.".to_owned())
+        } else {
+            None
         }
     }
 

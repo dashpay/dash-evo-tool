@@ -424,7 +424,7 @@ impl TransactionType {
             TransactionType::Withdraw => "Withdraw",
             TransactionType::DocumentAction => "Document Action",
             TransactionType::TokenAction => "Token Action",
-            TransactionType::TokenTransfer => "Token Transfer",
+            TransactionType::TokenTransfer => "Token Send",
             TransactionType::TokenClaim => "Token Claim",
             TransactionType::ContactRequest => "Contact Request",
             TransactionType::UsernameRegistration => "Username Registration",
@@ -432,8 +432,24 @@ impl TransactionType {
     }
 }
 
+/// `identity`'s current copy of `key`, while this device holds its private
+/// half and it can sign in `scope` now.
+pub(crate) fn signable_key_now<'a>(
+    identity: &'a QualifiedIdentity,
+    key: &IdentityPublicKey,
+    scope: SigningScope<'_>,
+) -> Option<&'a IdentityPublicKey> {
+    identity.current_public_key(key).filter(|live| {
+        identity.holds_obtainable_key(live)
+            && !key_caveats(live, scope, now_ms())
+                .iter()
+                .any(KeyCaveat::blocks_signing)
+    })
+}
+
 /// Re-evaluate a contract key when the network confirms or changes its rules.
-/// A manually selected key is retained while the active protocol permits its limits.
+/// A manually selected key is retained while the identity still holds it and
+/// the active protocol permits its limits.
 pub(crate) fn refresh_contract_signing_key(
     app_context: &AppContext,
     identity: Option<&QualifiedIdentity>,
@@ -441,11 +457,9 @@ pub(crate) fn refresh_contract_signing_key(
     security_levels: &[SecurityLevel],
 ) -> bool {
     let scope = app_context.contract_signing_scope();
-    if selected_key.as_ref().is_some_and(|key| {
-        !key_caveats(key, scope, now_ms())
-            .iter()
-            .any(KeyCaveat::blocks_signing)
-    }) {
+    if let (Some(identity), Some(key)) = (identity, selected_key.as_ref())
+        && signable_key_now(identity, key, scope).is_some()
+    {
         return false;
     }
     let next = identity
@@ -1516,6 +1530,36 @@ mod tests {
             selected.is_none(),
             "activation invalidates a previous limited choice"
         );
+    }
+
+    /// A kept contract key must still be the identity's key and signable on
+    /// this device; otherwise the automatic choice replaces it.
+    #[test]
+    fn contract_key_refresh_drops_a_key_this_device_cannot_sign_with() {
+        use crate::context::test_support::{
+            auth_key, hold_as_legacy_encrypted, identity_holding, test_app_context,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let levels = [SecurityLevel::CRITICAL];
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        identity
+            .identity
+            .add_public_key(auth_key(2, SecurityLevel::CRITICAL));
+        hold_as_legacy_encrypted(&mut identity, 2);
+        for stale in [
+            auth_key(2, SecurityLevel::CRITICAL),
+            auth_key(3, SecurityLevel::CRITICAL),
+        ] {
+            let mut selected = Some(stale);
+            assert!(refresh_contract_signing_key(
+                &ctx,
+                Some(&identity),
+                &mut selected,
+                &levels
+            ));
+            assert_eq!(selected.as_ref().map(|key| key.id()), Some(1));
+        }
     }
 
     #[test]

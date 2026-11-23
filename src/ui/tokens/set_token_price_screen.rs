@@ -929,18 +929,17 @@ impl ScreenLike for SetTokenPriceScreen {
             self.identity_token_info.identity = updated_identity;
         }
         let contract_id = self.identity_token_info.data_contract.contract.id();
-        self.selected_key.refresh(
+        if self.selected_key.refresh_with_wallet(
             &self.app_context,
             &self.identity_token_info.identity,
             TransactionType::TokenAction,
             contract_id,
-        );
-        crate::ui::identity::sync_signing_wallet(
-            Some(&self.identity_token_info.identity),
-            self.selected_key.as_ref(),
             &mut self.selected_wallet,
             &mut self.wallet_open_attempted,
-        );
+        ) {
+            self.show_confirmation_popup = false;
+            self.confirmation_dialog = None;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -1009,18 +1008,16 @@ impl ScreenLike for SetTokenPriceScreen {
                 return;
             }
 
-            let key_status = super::token_action_key_status(
+            let followed = self.selected_key.follow_automatic_with_wallet(
                 &self.app_context,
-                &self.identity_token_info.identity,
-                self.identity_token_info.data_contract.contract.id(),
-            );
-            if self.selected_key.follow_automatic_with_wallet(
                 &self.identity_token_info.identity,
                 TransactionType::TokenAction,
                 self.identity_token_info.data_contract.contract.id(),
                 &mut self.selected_wallet,
                 &mut self.wallet_open_attempted,
-            ) {
+            );
+            let key_status = followed.status;
+            if followed.changed {
                 // A pending confirmation was for the previous key.
                 self.show_confirmation_popup = false;
                 self.confirmation_dialog = None;
@@ -1111,6 +1108,8 @@ impl ScreenLike for SetTokenPriceScreen {
                         &self.identity_token_info.identity,
                         TransactionType::TokenAction,
                         self.identity_token_info.data_contract.contract.id(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();
@@ -1213,7 +1212,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 } else if in_flight {
                     button_response.disabled_tooltip("Wait for the current price change to finish.");
                 } else if self.selected_key.as_ref().is_none() {
-                    button_response.disabled_tooltip("Choose a signing key to continue.");
+                    button_response.disabled_tooltip(super::CHOOSE_SIGNING_KEY);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }

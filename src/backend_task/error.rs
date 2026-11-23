@@ -1761,6 +1761,22 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
+    /// The seed vault in the data folder may not be opened or written: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    SecretStoreAccessDenied {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// The wallet storage lock in the data folder may not be opened: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    WalletStorageLockAccessDenied {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
         "Could not access local files. Check available disk space and restart the application."
@@ -5305,6 +5321,54 @@ mod tests {
 
     /// Each data folder step and failure kind gets advice that can fix it:
     /// no home folder, a file in the folder's place, a full disk.
+    /// A file above the data folder is not reported as a file at the
+    /// folder's own path, which does not exist.
+    #[test]
+    fn data_folder_under_a_file_is_not_called_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file"), "").expect("write file");
+        let path = dir.path().join("file").join("data");
+        let source = crate::app_dir::ensure_data_dir_exists(&path)
+            .expect_err("a file blocks the data folder's path");
+        let error = TaskError::from_prepare_environment_error(
+            crate::boot::PrepareEnvironmentError::CreateDataFolder { path, source },
+        );
+        assert!(
+            matches!(error, TaskError::DataFolderSetupFailed { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// A vault the app may not open or write gets the data-folder permission
+    /// advice; a held lock and a wrong passphrase keep their own handling.
+    #[test]
+    fn vault_access_failures_get_the_data_folder_advice() {
+        use platform_wallet_storage::secrets::{IoError, SecretStoreError};
+        use std::io::ErrorKind;
+        let io = |kind| {
+            SecretStoreError::Io(IoError {
+                path: None,
+                source: std::io::Error::from(kind),
+            })
+        };
+        let class = |source| TaskError::SecretStore { source };
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            let error = vault_error(io(kind), class);
+            assert!(
+                matches!(error, TaskError::SecretStoreAccessDenied { .. }),
+                "{error:?}"
+            );
+        }
+        for source in [
+            SecretStoreError::AlreadyLocked,
+            SecretStoreError::WrongPassphrase,
+            io(ErrorKind::WouldBlock),
+        ] {
+            let error = vault_error(source, class);
+            assert!(matches!(error, TaskError::SecretStore { .. }), "{error:?}");
+        }
+    }
+
     #[test]
     fn data_folder_errors_give_step_specific_advice() {
         use crate::boot::PrepareEnvironmentError as Step;

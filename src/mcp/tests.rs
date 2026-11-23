@@ -59,29 +59,109 @@ async fn standalone_storage_status_does_not_initialize_a_profile() {
     );
 }
 
+/// The error of a first, lazily initializing tool call. In the test process
+/// this prepares a data folder with `setup`, reruns `test` in a child process
+/// pointed at the folder `setup` returns, and returns `None`.
+#[cfg(feature = "cli")]
+async fn lazy_startup_error(
+    test: &str,
+    setup: impl FnOnce(&std::path::Path) -> std::path::PathBuf,
+) -> Option<McpToolError> {
+    use crate::mcp::server::DashMcpService;
+    use crate::mcp::tools::{EmptyParams, network::NetworkTool};
+    use crate::test_support::{is_test_child, run_test_in_child};
+    use rmcp::handler::server::router::tool::AsyncTool;
+
+    if !is_test_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = setup(dir.path());
+        run_test_in_child(test, &[("DASH_EVO_DATA_DIR", &data_dir)]);
+        return None;
+    }
+    let result = NetworkTool::invoke(&DashMcpService::new_lazy(), EmptyParams {}).await;
+    Some(result.err().expect("startup fails"))
+}
+
 #[cfg(feature = "cli")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_tool_call_reports_the_startup_cause() {
     use crate::config::{ConfigError, EnvFileError};
-    use crate::mcp::server::DashMcpService;
-    use crate::mcp::tools::{EmptyParams, network::NetworkTool};
-    use rmcp::handler::server::router::tool::AsyncTool;
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    // A malformed first line stops dotenvy before it sets any variable.
-    std::fs::write(
-        dir.path().join(".env"),
-        "MAINNET_core_host=\"unterminated\n",
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_tool_call_reports_the_startup_cause",
+        |dir| {
+            // A malformed first line stops dotenvy before it sets any variable.
+            std::fs::write(dir.join(".env"), "MAINNET_core_host=\"unterminated\n")
+                .expect("write .env");
+            dir.to_path_buf()
+        },
     )
-    .expect("write .env");
-    let _override = DataDirOverride::new(dir.path());
-    let error = NetworkTool::invoke(&DashMcpService::new_lazy(), EmptyParams {})
-        .await
-        .err()
-        .expect("startup fails on the malformed .env");
+    .await
+    else {
+        return;
+    };
 
     let cause = ConfigError::InvalidEnvFile {
         source: EnvFileError::Other,
+    }
+    .to_string();
+    assert!(error.to_string().contains(&cause), "got: {error}");
+}
+
+/// A file in place of a folder above the data folder is not reported as a
+/// file at the data folder's own path.
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_tool_call_reports_an_obstructed_data_folder() {
+    use crate::backend_task::error::TaskError;
+
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_tool_call_reports_an_obstructed_data_folder",
+        |dir| {
+            std::fs::write(dir.join("file"), "").expect("write file");
+            dir.join("file").join("data")
+        },
+    )
+    .await
+    else {
+        return;
+    };
+
+    assert!(
+        matches!(
+            error,
+            McpToolError::StartupFailed(TaskError::DataFolderSetupFailed { .. })
+        ),
+        "{error:?}"
+    );
+}
+
+/// The saved network's invalid setting is named, not reported as missing.
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_tool_call_reports_invalid_network_settings() {
+    use crate::context::NetworkContextError;
+    use dash_sdk::dpp::dashcore::Network;
+
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_tool_call_reports_invalid_network_settings",
+        |dir| {
+            std::fs::write(
+                dir.join(".env"),
+                "MAINNET_core_rpc_port=invalid\nTESTNET_core_host=127.0.0.1\n",
+            )
+            .expect("write .env");
+            dir.to_path_buf()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+
+    let cause = NetworkContextError::InvalidSettings {
+        network: Network::Mainnet,
+        source: envy::Error::Custom(String::new()),
     }
     .to_string();
     assert!(error.to_string().contains(&cause), "got: {error}");

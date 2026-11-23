@@ -25,6 +25,42 @@ pub(crate) fn harness_builder_with_app_fonts<State>() -> egui_kittest::HarnessBu
     })
 }
 
+#[cfg(test)]
+const CHILD_MARKER: &str = "DET_ISOLATED_TEST_CHILD";
+
+/// Whether this process is a child started by [`run_test_in_child`].
+#[cfg(test)]
+pub(crate) fn is_test_child() -> bool {
+    std::env::var_os(CHILD_MARKER).is_some()
+}
+
+/// Runs the unit test `test` (full path) alone in a child process with
+/// `envs` set and no inherited network settings, and asserts it passed.
+/// Returns `false` inside the child, which then runs the test body.
+#[cfg(test)]
+pub(crate) fn run_test_in_child(test: &str, envs: &[(&str, &std::path::Path)]) -> bool {
+    if is_test_child() {
+        return false;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+    command.args([test, "--exact"]).env(CHILD_MARKER, "1");
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        {
+            command.env_remove(key.as_ref());
+        }
+    }
+    command.envs(envs.iter().copied());
+    let output = command.output().expect("run isolated test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "isolated test failed: {stdout}");
+    assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+    true
+}
+
 /// Serializes every unit test that mutates the process-global data directory.
 #[cfg(test)]
 pub(crate) static DASH_EVO_DATA_DIR_LOCK: Mutex<()> = Mutex::new(());

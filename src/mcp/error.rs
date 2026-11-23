@@ -28,6 +28,9 @@ pub enum McpToolError {
     DesktopOwnsPasswordPrompt,
     #[error("Backend task failed: {0}")]
     TaskFailed(#[source] TaskError),
+    /// The app could not start for this tool call.
+    #[error("{0}")]
+    StartupFailed(#[source] TaskError),
     #[error("{0}")]
     Internal(String),
     #[error(
@@ -86,6 +89,11 @@ impl From<McpToolError> for McpError {
                     Some(serde_json::Value::String(details)),
                 )
             }
+            McpToolError::StartupFailed(task_err) => (
+                CODE_INTERNAL,
+                e.to_string(),
+                Some(serde_json::Value::String(format!("{task_err:?}"))),
+            ),
             McpToolError::Internal(_) => (CODE_INTERNAL, e.to_string(), None),
             McpToolError::StorageInspection { .. } => (CODE_INTERNAL, e.to_string(), None),
             McpToolError::StorageMetadata { .. } => (CODE_INTERNAL, e.to_string(), None),

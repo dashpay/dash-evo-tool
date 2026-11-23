@@ -213,7 +213,7 @@ mod tests {
     use super::*;
 
     use dash_sdk::dpp::dashcore::PublicKey;
-    use dash_sdk::dpp::dashcore::base58;
+    use dash_sdk::dpp::platform_value::string_encoding::{Encoding, decode as decode_string};
     use dash_sdk::dpp::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
 
     use crate::wallet_backend::kv_test_support::InMemoryKv;
@@ -450,7 +450,7 @@ mod tests {
         let key = key_for(Network::Mainnet, &seed);
         assert!(key.starts_with("mainnet:auth_pubkeys:"));
         let suffix = key.trim_start_matches("mainnet:auth_pubkeys:");
-        let decoded = base58::decode(suffix).expect("base58 decodes");
+        let decoded = decode_string(suffix, Encoding::Base58).expect("base58 decodes");
         assert_eq!(decoded.as_slice(), seed.as_slice());
     }
 

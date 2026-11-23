@@ -29,8 +29,6 @@ use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
-#[cfg(feature = "testing")]
-use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -168,6 +166,29 @@ fn boot_auto_start_spv(
 /// no way onward. `left_panel::tests::fallback_root_screen_has_an_ungated_nav_entry`
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
+
+/// Set up `saved`, or else the first of `others` that `make` can build. When
+/// none can be, the error keeps why `saved` could not be set up.
+fn first_available_network<T>(
+    saved: Network,
+    others: impl IntoIterator<Item = Network>,
+    mut make: impl FnMut(Network) -> Result<T, crate::context::NetworkContextError>,
+) -> Result<(Network, T), TaskError> {
+    let saved_error = match make(saved) {
+        Ok(built) => return Ok((saved, built)),
+        Err(error) => error,
+    };
+    tracing::warn!(network = ?saved, error = ?saved_error, "Could not set up the saved network; trying the others");
+    for network in others {
+        match make(network) {
+            Ok(built) => return Ok((network, built)),
+            Err(error) => tracing::warn!(?network, ?error, "Could not set up network"),
+        }
+    }
+    Err(TaskError::NoNetworkAvailable {
+        source: Box::new(saved_error),
+    })
+}
 
 #[cfg(test)]
 mod backend_task_join_tests {
@@ -710,6 +731,46 @@ pub enum AppAction {
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
+impl AppAction {
+    /// The tasks this action sends, each with its own dispatch context on
+    /// `network` so its sender can tell their results and errors from any
+    /// other task's; contexts the action already carries are kept. An action
+    /// that sends no task is returned unchanged.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands back the caller's own action, not a failure"
+    )]
+    pub(crate) fn into_dispatch(
+        self,
+        network: Network,
+    ) -> Result<
+        (
+            Vec<(BackendTask, BackendTaskContext)>,
+            BackendTasksExecutionMode,
+        ),
+        Self,
+    > {
+        let with_context = |task: BackendTask| {
+            let context = BackendTaskContext::for_dispatch_on(&task, network);
+            (task, context)
+        };
+        Ok(match self {
+            AppAction::BackendTask(task) => (
+                vec![with_context(task)],
+                BackendTasksExecutionMode::Sequential,
+            ),
+            AppAction::BackendTaskWithContext { task, context } => {
+                (vec![(task, context)], BackendTasksExecutionMode::Sequential)
+            }
+            AppAction::BackendTasks(tasks, mode) => {
+                (tasks.into_iter().map(with_context).collect(), mode)
+            }
+            AppAction::BackendTasksWithContexts(tasks, mode) => (tasks, mode),
+            other => return Err(other),
+        })
+    }
+}
+
 impl BitOrAssign for AppAction {
     fn bitor_assign(&mut self, rhs: Self) {
         if matches!(rhs, AppAction::None) {
@@ -844,14 +905,17 @@ impl AppState {
     #[cfg(not(feature = "testing"))]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = crate::boot::prepare_environment()?;
+        let data_dir = crate::boot::prepare_environment()
+            .map_err(TaskError::from_prepare_environment_error)?;
         let db_file_path =
-            data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)?;
+            data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)
+                .map_err(|source| TaskError::FileSystem { source })?;
+        let database_error = |e| TaskError::from_database_open_error(e, &db_file_path);
         let db = if db_file_path.exists() {
-            Arc::new(Database::open_legacy_read_only(&db_file_path)?)
+            Arc::new(Database::open_legacy_read_only(&db_file_path).map_err(database_error)?)
         } else {
-            let db = Arc::new(Database::new(&db_file_path)?);
-            db.initialize(&db_file_path)?;
+            let db = Arc::new(Database::new(&db_file_path).map_err(database_error)?);
+            db.initialize(&db_file_path).map_err(database_error)?;
             db
         };
         Ok((data_dir, db))
@@ -860,9 +924,10 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = app_user_data_dir_path()?;
-        ensure_data_dir_exists(&data_dir)?;
-        ensure_env_file(&data_dir);
+        // Same steps and error mapping as production, without the logger.
+        let data_dir = crate::boot::ensure_data_folder()
+            .and_then(|data_dir| crate::boot::ensure_settings_file(&data_dir).map(|()| data_dir))
+            .map_err(TaskError::from_prepare_environment_error)?;
 
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
@@ -936,7 +1001,7 @@ impl AppState {
         let user_role = crate::model::user_role::UserRoleCell::default();
 
         // Build a helper to create AppContext for a given network.
-        let make_context = |network: Network| -> Option<Arc<AppContext>> {
+        let make_context = |network: Network| {
             AppContext::new(
                 data_dir.clone(),
                 network,
@@ -957,46 +1022,17 @@ impl AppState {
         // If the saved network fails (e.g., no DAPI addresses configured),
         // try other networks before giving up. The user can fix the config
         // via the "Fetch Node List" button in Network Settings.
-        let mut network_contexts = BTreeMap::new();
-        let try_order = std::iter::once(saved_network).chain(
-            [
-                Network::Mainnet,
-                Network::Testnet,
-                Network::Devnet,
-                Network::Regtest,
-            ]
-            .into_iter()
-            .filter(|n| *n != saved_network),
-        );
-        for net in try_order {
-            if let Some(ctx) = make_context(net) {
-                network_contexts.insert(net, ctx);
-                break;
-            }
-            if net == saved_network {
-                tracing::warn!(
-                    "Could not create context for saved network {:?}. \
-                     Check your node addresses. Trying other networks...",
-                    saved_network
-                );
-            }
-        }
-        if network_contexts.is_empty() {
-            return Err(
-                "No network could be initialized. Check that at least one network has \
-                 DAPI node addresses configured in your settings file. You can use the \
-                 \"Fetch Node List\" button in Network Settings to get addresses."
-                    .into(),
-            );
-        }
-        let chosen_network = *network_contexts
-            .keys()
-            .next()
-            .expect("invariant: network_contexts is non-empty after the emptiness check above");
-        let active_context = network_contexts
-            .get(&chosen_network)
-            .expect("invariant: chosen_network was just taken from network_contexts")
-            .clone();
+        let others = [
+            Network::Mainnet,
+            Network::Testnet,
+            Network::Devnet,
+            Network::Regtest,
+        ]
+        .into_iter()
+        .filter(|n| *n != saved_network);
+        let (chosen_network, active_context) =
+            first_available_network(saved_network, others, make_context)?;
+        let network_contexts = BTreeMap::from([(chosen_network, Arc::clone(&active_context))]);
 
         // Seed the shared role cell from AppSettings — the single source of truth —
         // publishing it to every context holding the cell. A settings read that
@@ -1006,6 +1042,7 @@ impl AppState {
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+        crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
 
         // Force-enable AccessKit so the accessibility tree is populated every
         // frame, even without VoiceOver or other assistive technology running.
@@ -3383,5 +3420,46 @@ mod contact_request_routing_tests {
             );
             assert!(!ResultRoute::ClosedOwner.delivers_to(hub, visible));
         }
+    }
+}
+
+#[cfg(test)]
+mod network_choice_tests {
+    use super::*;
+    use crate::context::NetworkContextError;
+
+    /// The first network that can be set up is used, in the given order.
+    #[test]
+    fn first_network_that_can_be_set_up_is_chosen() {
+        let chosen = first_available_network(
+            Network::Testnet,
+            [Network::Mainnet, Network::Devnet],
+            |network| match network {
+                Network::Testnet => Err(NetworkContextError::NoDapiAddresses { network }),
+                other => Ok(other),
+            },
+        )
+        .expect("mainnet can be set up");
+        assert_eq!(chosen, (Network::Mainnet, Network::Mainnet));
+    }
+
+    /// When no network can be set up, the saved network's own reason is kept
+    /// as the source, so the details say what actually went wrong.
+    #[test]
+    fn no_network_keeps_the_saved_networks_reason() {
+        let error = first_available_network(Network::Testnet, [Network::Mainnet], |network| {
+            Err::<(), _>(NetworkContextError::NoDapiAddresses { network })
+        })
+        .expect_err("nothing can be set up");
+        let TaskError::NoNetworkAvailable { source } = &error else {
+            panic!("expected NoNetworkAvailable, got {error:?}");
+        };
+        assert!(matches!(
+            **source,
+            NetworkContextError::NoDapiAddresses {
+                network: Network::Testnet
+            }
+        ));
+        assert!(format!("{error:?}").contains("NoDapiAddresses"));
     }
 }

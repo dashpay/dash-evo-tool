@@ -52,7 +52,7 @@ fn offline_testnet_context_with_db(
     db: Arc<crate::database::Database>,
 ) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
     let data_dir = data_dir.to_path_buf();
-    ensure_env_file(&data_dir);
+    ensure_env_file(&data_dir).expect("write .env");
 
     let subtasks = Arc::new(TaskManager::new());
     let connection_status = Arc::new(ConnectionStatus::new());
@@ -4811,7 +4811,6 @@ async fn cold_boot_fails_closed_on_a_corrupt_fvk_row() {
 /// local-data load error during seedless cold boot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_boot_surfaces_typed_error_when_persisted_transaction_txid_is_corrupt() {
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{

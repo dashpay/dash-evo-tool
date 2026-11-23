@@ -84,6 +84,8 @@ pub struct AmountInput {
     max_exceeded_hint: Option<String>,
     /// Optional persistent caption rendered below the amount field.
     caption: Option<String>,
+    /// Whether an amount above `max_amount` is refused.
+    validate_max: bool,
 }
 
 impl AmountInput {
@@ -115,6 +117,7 @@ impl AmountInput {
             changed: true,                // Start as changed to force initial validation
             max_exceeded_hint: None,
             caption: None,
+            validate_max: true,
         }
     }
 
@@ -159,7 +162,8 @@ impl AmountInput {
         self.unit_name.as_deref()
     }
 
-    /// Sets the label for the input field.
+    /// Sets the label shown before the field; it also names the field for screen
+    /// readers, which otherwise hear "Amount".
     pub fn with_label<T: Into<WidgetText>>(mut self, label: T) -> Self {
         self.label = Some(label.into());
         self
@@ -208,6 +212,14 @@ impl AmountInput {
     /// Defaults to [`MAX_CREDITS`](dash_sdk::dpp::balances::credits::MAX_CREDITS).
     pub fn set_max_amount(&mut self, max_amount: Option<Credits>) -> &mut Self {
         self.max_amount = max_amount;
+        self
+    }
+
+    /// Whether an amount above the maximum is refused (default `true`). With
+    /// `false`, the maximum only backs the "Max" button and the caller reports
+    /// an amount that is too large itself.
+    pub fn with_max_validation(mut self, validate: bool) -> Self {
+        self.validate_max = validate;
         self
     }
 
@@ -297,7 +309,8 @@ impl AmountInput {
                 }
 
                 // Check if amount exceeds maximum
-                if let Some(max_amount) = self.max_amount
+                if self.validate_max
+                    && let Some(max_amount) = self.max_amount
                     && amount.value() > max_amount
                 {
                     let max_formatted = Amount::new(max_amount, self.decimal_places);
@@ -337,9 +350,7 @@ impl AmountInput {
                     ui.set_min_height(30.0);
                 }
                 // Show label if provided
-                if let Some(label) = &self.label {
-                    ui.label(label.clone());
-                }
+                let label_id = self.label.as_ref().map(|label| ui.label(label.clone()).id);
                 // Create the text edit widget
                 let mut text_edit = TextEdit::singleline(&mut self.amount_str);
 
@@ -354,6 +365,10 @@ impl AmountInput {
                 }
 
                 let text_response = ui.add(text_edit);
+                let text_response = match label_id {
+                    Some(label_id) => text_response.labelled_by(label_id),
+                    None => text_response.accessible_name("Amount"),
+                };
 
                 let mut changed = text_response.changed() && ui.is_enabled();
 
@@ -597,6 +612,20 @@ mod tests {
         assert!(
             validation_result.unwrap().is_some(),
             "Amount within range should have parsed amount"
+        );
+    }
+
+    #[test]
+    fn without_max_validation_an_amount_above_the_maximum_is_kept() {
+        let mut input = AmountInput::new(Amount::new(0, 2))
+            .with_max_amount(Some(10000))
+            .with_max_validation(false);
+        input.amount_str = "150.00".to_string();
+        assert_eq!(
+            input
+                .validate_amount()
+                .map(|amount| amount.map(|a| a.value())),
+            Ok(Some(15000))
         );
     }
 

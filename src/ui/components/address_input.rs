@@ -13,7 +13,11 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{Color32, InnerResponse, Response, Ui, WidgetText};
 use std::ops::Bound;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+
+/// Source of each [`AddressInput`]'s instance id.
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 /// Internal detection result including the `Unknown` state for unrecognized input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +361,10 @@ pub struct AddressInput {
     selected_from_autocomplete: bool,
     cached_detection: Option<(String, DetectedType)>,
     changed: bool,
+    focus_requested: bool,
+    /// Scope for this input's popup ids, fixed for its lifetime. Sibling inputs
+    /// share their parent's `scope_id`, so ids derived from it would collide.
+    instance_id: egui::Id,
 }
 
 impl AddressInput {
@@ -386,6 +394,11 @@ impl AddressInput {
             cached_detection: None,
             changed: false,
             exclude_change: false,
+            focus_requested: false,
+            instance_id: egui::Id::unique((
+                "address_input",
+                NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            )),
         }
     }
 
@@ -466,7 +479,8 @@ impl AddressInput {
         self
     }
 
-    /// Set the label displayed above the input field.
+    /// Set the label displayed above the input field; it also names the field
+    /// for screen readers, which otherwise hear "Address".
     pub fn with_label(mut self, label: impl Into<WidgetText>) -> Self {
         self.label = Some(label.into());
         self
@@ -494,6 +508,11 @@ impl AddressInput {
     pub fn with_initial_value(mut self, address: impl Into<String>) -> Self {
         self.input_text = address.into();
         self
+    }
+
+    /// Put the keyboard focus in the field on the next frame.
+    pub fn request_focus(&mut self) {
+        self.focus_requested = true;
     }
 
     /// Enable selection-only mode. When true, the user must pick from autocomplete;
@@ -913,7 +932,7 @@ impl AddressInput {
     /// the wallets segment lists up to five distinct wallet names, alphabetically,
     /// with a `(+N more)` indicator when more exist. The wallets segment is
     /// omitted entirely when no wallets are loaded.
-    fn dynamic_hint(&self) -> String {
+    pub fn dynamic_hint(&self) -> String {
         let mut segments = Vec::new();
 
         let types: Vec<String> = AddressKind::ALL
@@ -1006,9 +1025,7 @@ impl AddressInput {
         let hint_text = self.effective_hint_text();
         let resp = ui.vertical(|ui| {
             // Label
-            if let Some(label) = &self.label {
-                ui.label(label.clone());
-            }
+            let label_id = self.label.as_ref().map(|label| ui.label(label.clone()).id);
 
             // Input row
             let text_response = ui
@@ -1019,7 +1036,7 @@ impl AddressInput {
                             .selected_type_filter
                             .map(|t| t.display_name())
                             .unwrap_or("All");
-                        egui::ComboBox::from_id_salt(ui.id().with("address_type_filter"))
+                        egui::ComboBox::from_id_salt(self.instance_id.with("address_type_filter"))
                             .selected_text(current_label)
                             .width(120.0)
                             .show_ui(ui, |ui| {
@@ -1036,7 +1053,9 @@ impl AddressInput {
                                         self.selected_type_filter = Some(kind);
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .accessible_name("Address type");
                     }
 
                     // Text input
@@ -1050,9 +1069,16 @@ impl AddressInput {
                     } else {
                         text_edit = text_edit.desired_width(f32::INFINITY);
                     }
-                    ui.add(text_edit)
+                    let response = ui.add(text_edit);
+                    match label_id {
+                        Some(label_id) => response.labelled_by(label_id),
+                        None => response.accessible_name("Address"),
+                    }
                 })
                 .inner;
+            if std::mem::take(&mut self.focus_requested) {
+                text_response.request_focus();
+            }
 
             let text_changed = text_response.changed();
             let lost_focus = text_response.lost_focus();
@@ -1076,14 +1102,24 @@ impl AddressInput {
                 self.has_blurred = true;
             }
 
-            // Autocomplete popup. A modal that blocks this field closes it: the
-            // popup's foreground layer would otherwise draw over the modal and
-            // its dimmed backdrop, and keep taking arrow keys and Enter.
+            // Autocomplete popup: it opens while the user types (a
+            // selection-only field opens on focus, as typing is not its use) and
+            // closes on a choice, Escape, or when the focus moves elsewhere. A
+            // modal that blocks this field closes it too: the popup's foreground
+            // layer would otherwise draw over the modal and its dimmed backdrop,
+            // and keep taking arrow keys and Enter.
             let behind_modal = !ui
                 .ctx()
                 .memory(|memory| memory.is_above_modal_layer(ui.layer_id()));
             let mut selected_entry: Option<AddressEntry> = None;
-            if !behind_modal && (has_focus || self.autocomplete_open) {
+            if (has_focus && text_changed) || (self.selection_only && text_response.gained_focus())
+            {
+                self.autocomplete_open = true;
+            }
+            if behind_modal {
+                self.autocomplete_open = false;
+                self.autocomplete_highlight = None;
+            } else if self.autocomplete_open {
                 // Collect filtered entries into an owned snapshot to release the
                 // borrow on self: (balance, address text, entry).
                 let (filtered, total_entries) = self.filtered_entries();
@@ -1102,9 +1138,9 @@ impl AddressInput {
 
                 if !entries_snapshot.is_empty() {
                     self.autocomplete_open = true;
-                    let popup_id = ui.id().with("address_autocomplete");
+                    let popup_id = self.instance_id.with("address_autocomplete");
 
-                    egui::Area::new(popup_id)
+                    let popup = egui::Area::new(popup_id)
                         .order(egui::Order::Foreground)
                         .fixed_pos(text_response.rect.left_bottom())
                         .show(ui.ctx(), |ui| {
@@ -1147,7 +1183,7 @@ impl AddressInput {
                                             );
                                             response.widget_info(|| {
                                                 egui::WidgetInfo::labeled(
-                                                    egui::WidgetType::Button,
+                                                    egui::Role::Button,
                                                     true,
                                                     label.clone(),
                                                 )
@@ -1171,6 +1207,15 @@ impl AddressInput {
                                     });
                             });
                         });
+                    let pointer_in_popup = ui
+                        .input(|i| i.pointer.interact_pos())
+                        .is_some_and(|pos| popup.response.rect.contains(pos));
+                    let focus_moved_away =
+                        lost_focus || (!has_focus && ui.input(|i| i.pointer.any_pressed()));
+                    if focus_moved_away && !pointer_in_popup {
+                        self.autocomplete_open = false;
+                        self.autocomplete_highlight = None;
+                    }
 
                     // Keyboard navigation (uses snapshot data, no recomputation)
                     ui.input(|i| {
@@ -1201,8 +1246,6 @@ impl AddressInput {
                 } else {
                     self.autocomplete_open = false;
                 }
-            } else {
-                self.autocomplete_open = false;
             }
 
             // Handle autocomplete selection (clear cached_detection).

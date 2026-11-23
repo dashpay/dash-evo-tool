@@ -93,6 +93,56 @@ impl<S> PendingRequest<S> {
     }
 }
 
+/// Several outstanding requests of one kind, each with the `subject` it is
+/// about — for actions a screen may fire on more than one row before the
+/// first answers. Unlike [`PendingRequest`], a new dispatch never replaces an
+/// earlier one, so no request is orphaned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingRequests<S> {
+    slots: Vec<(BackendTaskContext, S)>,
+}
+
+impl<S> Default for PendingRequests<S> {
+    fn default() -> Self {
+        Self { slots: Vec::new() }
+    }
+}
+
+impl<S> PendingRequests<S> {
+    /// Dispatch `task` under a context of its own and wait on it alongside
+    /// the requests already outstanding.
+    pub fn dispatch_with(&mut self, task: BackendTask, subject: S) -> AppAction {
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.slots.push((context.clone(), subject));
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
+    /// Whether this collection is waiting for this exact dispatch.
+    pub fn owns(&self, context: &BackendTaskContext) -> bool {
+        self.slots.iter().any(|(own, _)| own == context)
+    }
+
+    /// End the wait on the request `context` is, returning its subject. Any
+    /// other context leaves every request outstanding.
+    pub fn settle(&mut self, context: &BackendTaskContext) -> Option<S> {
+        let index = self.slots.iter().position(|(own, _)| own == context)?;
+        Some(self.slots.remove(index).1)
+    }
+
+    /// Whether any request is outstanding.
+    pub fn is_pending(&self) -> bool {
+        !self.slots.is_empty()
+    }
+
+    /// Whether a request about `subject` is outstanding.
+    pub fn is_pending_for(&self, subject: &S) -> bool
+    where
+        S: PartialEq,
+    {
+        self.slots.iter().any(|(_, pending)| pending == subject)
+    }
+}
+
 impl PendingRequest {
     /// Dispatch `task` under a context of its own and wait on it.
     pub fn dispatch(&mut self, task: BackendTask) -> AppAction {
@@ -107,6 +157,22 @@ impl PendingRequest {
     /// Wait on a dispatch whose context the caller built itself.
     pub fn track(&mut self, context: BackendTaskContext) {
         self.track_with(context, ());
+    }
+
+    /// Dispatch every task `action` sends, each under its own context bound to
+    /// `network`, and wait on the first, such as an operation sent ahead of
+    /// its balance refresh. Contexts the action already carries are kept; an
+    /// action that sends no task is returned unchanged.
+    pub fn dispatch_action_on(&mut self, action: AppAction, network: Network) -> AppAction {
+        match action.into_dispatch(network) {
+            Ok((tasks, mode)) => {
+                if let Some((_, context)) = tasks.first() {
+                    self.track(context.clone());
+                }
+                AppAction::BackendTasksWithContexts(tasks, mode)
+            }
+            Err(action) => action,
+        }
     }
 }
 
@@ -207,6 +273,27 @@ mod tests {
     }
 
     #[test]
+    fn several_requests_settle_independently() {
+        let mut pending = PendingRequests::<u8>::default();
+        let (_, first) = dispatched(pending.dispatch_with(refresh_task(), 1));
+        let (_, second) = dispatched(pending.dispatch_with(refresh_task(), 2));
+        assert!(pending.is_pending_for(&1) && pending.is_pending_for(&2));
+        assert_eq!(
+            pending.settle(&BackendTaskContext::for_dispatch(&refresh_task())),
+            None
+        );
+        assert_eq!(
+            pending.settle(&first),
+            Some(1),
+            "the earlier request is kept"
+        );
+        assert!(!pending.is_pending_for(&1) && pending.is_pending_for(&2));
+        assert_eq!(pending.settle(&first), None);
+        assert_eq!(pending.settle(&second), Some(2));
+        assert!(!pending.is_pending());
+    }
+
+    #[test]
     fn a_tracked_context_is_owned_as_built() {
         let mut pending = PendingRequest::default();
         let context = BackendTaskContext::LegacyRecoveryOnNetwork {
@@ -216,5 +303,72 @@ mod tests {
         pending.track(context.clone());
 
         assert!(pending.owns(&context));
+    }
+
+    #[test]
+    fn an_action_dispatch_waits_on_its_first_task() {
+        use crate::app::BackendTasksExecutionMode;
+        let mut pending = PendingRequest::default();
+        let AppAction::BackendTasksWithContexts(tasks, mode) = pending.dispatch_action_on(
+            AppAction::BackendTasks(
+                vec![refresh_task(), refresh_task()],
+                BackendTasksExecutionMode::Sequential,
+            ),
+            Network::Testnet,
+        ) else {
+            panic!("the action's tasks are dispatched with contexts");
+        };
+        assert_eq!(mode, BackendTasksExecutionMode::Sequential);
+        let [(_, first), (_, second)] = tasks.as_slice() else {
+            panic!("expected both tasks, got {tasks:?}");
+        };
+        assert_ne!(first, second, "each task has a context of its own");
+        assert!(pending.owns(first));
+        assert!(!pending.owns(second));
+    }
+
+    /// A context the action already carries is the one its sender waits on.
+    #[test]
+    fn an_action_dispatch_keeps_the_contexts_it_carries() {
+        use crate::app::BackendTasksExecutionMode;
+        let network = Network::Testnet;
+        let context = BackendTaskContext::for_dispatch_on(&BackendTask::None, network);
+        let mut pending = PendingRequest::default();
+        let action = pending.dispatch_action_on(
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::None,
+                context: context.clone(),
+            },
+            network,
+        );
+        assert!(pending.owns(&context));
+        assert!(
+            matches!(action, AppAction::BackendTasksWithContexts(tasks, _)
+            if tasks.len() == 1 && tasks[0].1 == context)
+        );
+
+        let mut pending = PendingRequest::default();
+        let action = pending.dispatch_action_on(
+            AppAction::BackendTasksWithContexts(
+                vec![(BackendTask::None, context.clone())],
+                BackendTasksExecutionMode::Concurrent,
+            ),
+            network,
+        );
+        assert!(pending.owns(&context));
+        assert!(matches!(
+            action,
+            AppAction::BackendTasksWithContexts(_, BackendTasksExecutionMode::Concurrent)
+        ));
+    }
+
+    #[test]
+    fn an_action_without_tasks_is_not_waited_on() {
+        let mut pending = PendingRequest::default();
+        assert!(matches!(
+            pending.dispatch_action_on(AppAction::PopScreen, Network::Testnet),
+            AppAction::PopScreen
+        ));
+        assert!(!pending.is_pending());
     }
 }

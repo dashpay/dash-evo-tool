@@ -8,14 +8,16 @@
 
 use crate::model::contested_name::approximate_time_until;
 use crate::model::dpns_usernames::UsernameRequest;
-use crate::ui::theme::{DashColors, ResponseExt, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use eframe::egui::{
-    Color32, CornerRadius, FontSelection, Frame, Margin, Response, RichText, Sense, Stroke,
-    StrokeKind, TextWrapMode, Ui, WidgetText,
+    Color32, CornerRadius, CursorIcon, FontSelection, Frame, Margin, Response, RichText, Role,
+    Sense, Stroke, StrokeKind, TextWrapMode, Ui, Vec2, WidgetInfo, WidgetText,
 };
 
 /// Horizontal padding between a pill's edge and its label, in points.
 const PILL_MARGIN_X: i8 = 10;
+/// Vertical padding between a pill's edge and its label, in points.
+const PILL_MARGIN_Y: i8 = 3;
 
 fn pill_text(label: &str, accent: Color32) -> RichText {
     RichText::new(label).color(accent).size(12.0).strong()
@@ -37,16 +39,14 @@ pub fn accent_pill_width(ui: &Ui, label: &str) -> f32 {
 /// accent ring. `tooltip`, when present, is attached on hover. Returns the
 /// pill's [`Response`].
 pub fn accent_pill(ui: &mut Ui, label: &str, accent: Color32, tooltip: Option<&str>) -> Response {
-    let fill =
-        Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (0.12 * 255.0) as u8);
-    let stroke_color = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 180);
+    let (fill, stroke_color) = pill_colors(accent);
 
     let text = pill_text(label, accent);
     let inner = Frame::new()
         .fill(fill)
         .stroke(Stroke::NONE)
         .corner_radius(CornerRadius::same(Shape::RADIUS_FULL))
-        .inner_margin(Margin::symmetric(PILL_MARGIN_X, 3))
+        .inner_margin(Margin::symmetric(PILL_MARGIN_X, PILL_MARGIN_Y))
         .show(ui, |ui| {
             ui.add(eframe::egui::Label::new(text).sense(Sense::hover()))
         });
@@ -63,6 +63,57 @@ pub fn accent_pill(ui: &mut Ui, label: &str, accent: Color32, tooltip: Option<&s
         Some(text) => inner.response.info_tooltip(text),
         None => inner.response,
     }
+}
+
+/// [`accent_pill`] as a button named by its `label`: one clickable widget, so
+/// it keeps keyboard focus (Tab, then Enter or Space) and shows a focus ring.
+pub fn accent_pill_button(
+    ui: &mut Ui,
+    label: &str,
+    accent: Color32,
+    tooltip: Option<&str>,
+) -> Response {
+    let (fill, stroke_color) = pill_colors(accent);
+    let galley = WidgetText::from(pill_text(label, accent)).into_galley(
+        ui,
+        Some(TextWrapMode::Extend),
+        f32::INFINITY,
+        FontSelection::Default,
+    );
+    let margin = Vec2::new(f32::from(PILL_MARGIN_X), f32::from(PILL_MARGIN_Y));
+    let (rect, response) = ui.allocate_exact_size(galley.size() + 2.0 * margin, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), label));
+
+    if ui.is_rect_visible(rect) {
+        let ring = if response.has_focus() {
+            ComponentStyles::focus_stroke(ui.visuals().dark_mode)
+        } else {
+            Stroke::new(1.0, stroke_color)
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(Shape::RADIUS_FULL), fill);
+        painter.galley(rect.min + margin, galley, accent);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(Shape::RADIUS_FULL),
+            ring,
+            StrokeKind::Outside,
+        );
+    }
+
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    match tooltip {
+        Some(text) => response.on_hover_text(text),
+        None => response,
+    }
+}
+
+/// A pill's fill (12% of `accent`) and ring color.
+pub(crate) fn pill_colors(accent: Color32) -> (Color32, Color32) {
+    let fill =
+        Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (0.12 * 255.0) as u8);
+    let ring = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 180);
+    (fill, ring)
 }
 
 /// Paint the request phase pill for a username the identity has requested but
@@ -165,6 +216,29 @@ mod tests {
                 harness
                     .query_by_label(crate::ui::identity::username_copy::phase_label(phase))
                     .is_some()
+            );
+        }
+    }
+
+    /// A pill button shows the pointing-hand cursor on hover, with or without
+    /// a tooltip.
+    #[test]
+    fn pill_button_shows_the_pointing_hand_with_or_without_a_tooltip() {
+        for tooltip in [None, Some("Opens the votes.")] {
+            let mut harness = Harness::builder().build_ui(move |ui| {
+                accent_pill_button(ui, "1 name needs your vote", DashColors::DASH_BLUE, tooltip);
+            });
+            harness.run();
+            let center = harness
+                .get_by_role_and_label(Role::Button, "1 name needs your vote")
+                .rect()
+                .center();
+            harness.hover_at(center);
+            harness.step();
+            assert_eq!(
+                harness.output().platform_output.cursor_icon,
+                eframe::egui::CursorIcon::PointingHand,
+                "tooltip {tooltip:?}"
             );
         }
     }

@@ -427,7 +427,7 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Select Core Wallet source and enter a shielded address as destination. Core funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
+- Pay from Core and choose My wallets › Shielded, or open Shield from the Shielded tab. The funds go to the same wallet's private balance; someone else's private address can be paid only from a private balance (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
@@ -538,7 +538,7 @@ As a user, I want a payment whose confirmation could not be verified to tell me 
 - Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
 - While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
 
-### SND-019: Let the app choose which balance pays [Gap]
+### SND-019: Let the app choose which balance pays [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want the Send screen to pick which of my balances pays for a payment, and tell me what it picked, so that I can pay someone without knowing the difference between Core and Platform.
@@ -550,7 +550,7 @@ As a user, I want the Send screen to pick which of my balances pays for a paymen
 - Changing Pay from never clears the recipient. A choice that cannot reach the recipient is disabled or explained inline, never refused after pressing Send.
 - Design: `docs/ai-design/2026-10-23-send-screen-redesign/`.
 
-### SND-020: Move funds between my own wallets and balances [Gap]
+### SND-020: Move funds between my own wallets and balances [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to send to one of my own wallets, balances or identities by picking it, so that I never have to copy my own address.
@@ -561,7 +561,7 @@ As a user, I want to send to one of my own wallets, balances or identities by pi
 - Auto can be on only one side. Choosing it on one side fixes the other side to what its Auto had chosen, and says so.
 - The balance being paid from cannot also be chosen as the destination.
 
-### SND-021: One Summary of what a send costs [Gap]
+### SND-021: One Summary of what a send costs [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want a single summary of the route, fee and total before I press Send, so that I do not have to piece it together from several hints.
@@ -572,15 +572,16 @@ As a user, I want a single summary of the route, fee and total before I press Se
 - "Max" means "everything available" and stays that way until the amount is edited. With Auto, Max uses the balance that can send the most.
 - A locked wallet does not hide the form; Send asks for the password, then shows the confirmation.
 
-### SND-022: Choose exactly which addresses pay, or pay several recipients [Gap]
+### SND-022: Choose exactly which addresses pay, or pay several recipients [Implemented]
 **Persona:** Priya, Jordan
 
 As a power user, I want to pick the addresses a payment spends from, or pay several recipients at once, from the same Send form, so that I do not have to switch to a separate advanced screen.
 
-- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. The amount still comes from the single Amount field.
+- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. Each ticked address can take its own amount; with none entered, the payment is spread over the ticked addresses.
+- Ticked Platform addresses cannot pay into a private balance. The form says why and points to Auto or Platform, which can.
 - When Platform is involved, a collapsed "Fee options" row in the Summary offers the same four fee strategies as today (deduct from first/last input, reduce first/last output), with the same default.
 - "+ Add another recipient" under the recipient field turns it into address-and-amount rows. All recipients in one payment are the same kind.
-- Replaces the separate "Advanced Options" form and its per-address amounts.
+- Replaces the separate "Advanced Options" form; everything it could do stays available.
 
 ---
 
@@ -1200,10 +1201,10 @@ As a power user, I want to add a token by entering its contract ID or token ID d
 
 - Enter ID manually and add to token list.
 
-### TOK-004: Transfer tokens [Implemented]
+### TOK-004: Send tokens [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to transfer tokens to another identity so that I can send tokens I own.
+As a user, I want to send tokens to another identity so that someone else can hold tokens I own.
 
 - Select token, enter recipient and amount.
 - Confirmation before broadcast.
@@ -1223,6 +1224,7 @@ As a token issuer, I want to mint additional tokens so that I can increase the c
 
 - Requires authorized identity.
 - Specify amount to mint.
+- A recipient can be chosen only when the token allows it; otherwise the screen and the confirmation name the token's destination identity.
 
 ### TOK-007: Burn tokens [Implemented]
 **Persona:** Jordan
@@ -1263,6 +1265,7 @@ As a user, I want to claim tokens distributed to me so that they appear in my ba
 
 - View available claims.
 - Claim action transfers tokens to identity.
+- Identities that belong to no wallet in this app, such as evonode identities, can claim too.
 
 ### TOK-012: Set token pricing and purchase tokens [Implemented]
 **Persona:** Jordan
@@ -1343,8 +1346,17 @@ As a token creator, I want to create a token that holders cannot send to other i
 - The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
-- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
+
+### TOK-021: Token transactions go through the identity's wallet when it has one [Implemented]
+**Persona:** Alex, Jordan, Priya
+
+As a user, I want token transactions to use the wallet that holds my identity, and to be told up front when that wallet is not ready, so that I do not fill in a form the network step will refuse.
+
+- Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) of an identity that a wallet in this app holds are sent through that wallet.
+- An identity that no wallet in this app holds (masternode, evonode and key-only identities) sends them signed with its own keys; it needs no wallet.
+- When the identity's wallet is known but not loaded yet, My Tokens marks the identity "View only" with its transaction buttons disabled, and token action screens show the reason (unlock the wallet or wait for it to load) instead of the form.
 
 ## Contracts and Documents (DOC)
 
@@ -1790,6 +1802,17 @@ As a user with more than one wallet, I want every wallet picker to show each wal
 - If the balances of the wallet's identities cannot be read, the load-existing-identity screen says so, leaves them out of the totals instead of showing them as zero, and stays usable.
 - The top-bar wallet pill keeps its own format.
 
+### UX-007: See why the app could not start [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose app fails to start, I want a window that explains what happened so that I can fix it myself or ask for help with the right information.
+
+- When startup fails after the app window can open, the app shows a window instead of closing silently; the app itself does not open behind it.
+- The window says in plain language what happened and what to try. A known cause (for example, a data folder other accounts can change) gets its own message; any other cause gets a general one.
+- It suggests reporting the problem on the project's issue page if the user cannot solve it, shows that address so it can be copied, and can open it in the browser.
+- It shows the technical details, selectable and with a Copy details button, and where the log file is.
+- Quit closes the app.
+
 ## Identities Hub (IDH)
 
 ### IDH-001: First-time identity setup [Implemented]
@@ -1806,6 +1829,7 @@ As Alex, I want to open the Identities section on a fresh device and be offered 
 As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
 
 - A compact identity summary sits above Home, Contacts, and Profile. It shows the published avatar (initial fallback), balance, and up to three usernames with the main name first. `+` registers another name for this identity; `…` opens its complete username list.
+- On every tab, the header shows the Base58 identity ID below the usernames, shortened in the middle. The accessible copy icon sits beside the ID, centered on the same line. It copies the full ID and renews the success confirmation on each copy in either theme.
 - Home offers Send, Receive, and Top up. Send reuses the Wallets send form with this identity fixed as sender; Top up fixes it as recipient. Retry and Send another preserve that identity, and switching networks requires reopening the form.
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.
@@ -1942,6 +1966,7 @@ As a masternode operator, I want to open the key screen for a node, so that I ca
 As an evonode operator, I want to jump to token-reward claiming from the node's detail view, so that I can collect rewards my evonode earned.
 
 - An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
+- The claim is signed with the evonode identity's own keys; no wallet is needed.
 - The action is hidden entirely on a plain Masternode's detail view.
 
 ### MN-010: Keep the Masternodes tab consistent across a network switch [Implemented]

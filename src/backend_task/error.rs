@@ -114,7 +114,7 @@ impl TokenOperationKind {
                 "Burning the tokens did not complete. Check your connection and try again."
             }
             Self::Transfer => {
-                "The token transfer did not complete. Check your connection and try again."
+                "Sending the tokens did not complete. Check your connection and try again."
             }
             Self::Freeze => {
                 "Freezing the token account did not complete. Check your connection and try again."
@@ -162,7 +162,7 @@ impl TokenOperationKind {
                  that this identity is allowed to burn this token, then try again."
             }
             Self::Transfer => {
-                "The platform did not accept this token transfer. Check the recipient and the \
+                "The platform did not accept sending these tokens. Check the recipient and the \
                  amount against your balance, then try again."
             }
             Self::Freeze => {
@@ -8582,6 +8582,15 @@ mod tests {
                 assert!(message.ends_with('.'), "{message}");
                 assert!(seen.insert(message), "repeated: {message}");
             }
+        }
+    }
+
+    /// Moving tokens is called Send in the app, so its messages say so.
+    #[test]
+    fn token_send_messages_use_send_wording() {
+        let kind = TokenOperationKind::Transfer;
+        for message in [kind.failure_message(), kind.rejection_message()] {
+            assert!(!message.contains("transfer"), "{message}");
         }
     }
 

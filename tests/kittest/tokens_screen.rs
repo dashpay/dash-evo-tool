@@ -619,6 +619,54 @@ impl TokenFixture {
         self.harness.run_steps(5);
     }
 
+    /// Replaces the text of the field named `label` and checks that it took.
+    fn set_named_input(&mut self, label: &str, text: &str) {
+        let field = |harness: &Harness<'static, dash_evo_tool::app::AppState>| {
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::TextInput, label)
+                .next()
+                .unwrap_or_else(|| panic!("no {label:?} field"))
+                .accesskit_node()
+                .value()
+        };
+        self.harness
+            .query_all_by_role_and_label(egui::accesskit::Role::TextInput, label)
+            .next()
+            .unwrap_or_else(|| panic!("no {label:?} field"))
+            .set_text_value_accesskit(text);
+        self.harness.run_steps(3);
+        assert_eq!(field(&self.harness).as_deref(), Some(text), "{label:?}");
+    }
+
+    /// The recipient, raw amount and dispatch context of each captured
+    /// token send.
+    fn captured_sends(
+        &self,
+    ) -> Vec<(
+        Identifier,
+        u64,
+        dash_evo_tool::backend_task::BackendTaskContext,
+    )> {
+        use dash_evo_tool::backend_task::BackendTask;
+        use dash_evo_tool::backend_task::tokens::TokenTask;
+        self.harness
+            .state()
+            .test_captured_dispatches()
+            .iter()
+            .filter_map(|(task, context)| match task {
+                BackendTask::TokenTask(task) => match task.as_ref() {
+                    TokenTask::TransferTokens {
+                        recipient_id,
+                        amount,
+                        ..
+                    } => Some((*recipient_id, *amount, context.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
     fn confirmation_open(&self) -> bool {
         self.harness
             .query_all_by_role(egui::accesskit::Role::Window)
@@ -1076,14 +1124,14 @@ fn token_forms_show_one_heading_and_number_steps_from_one() {
         let _guard = rt.enter();
         let mut f = token_fixture();
         let info = f.info.clone();
-        let transfer_heading = format!("Transfer {SMOKE_TOKEN}");
+        let transfer_heading = format!("Send {SMOKE_TOKEN}");
 
         // (screen, page heading, a heading that must no longer repeat it)
         let cases = [
             (
                 ScreenType::TransferTokensScreen(f.balance.clone()),
                 transfer_heading.as_str(),
-                "Transfer Tokens",
+                "Send tokens",
             ),
             (
                 ScreenType::PurchaseTokenScreen(info.clone()),
@@ -1409,6 +1457,171 @@ fn token_subnav_labels_stay_on_one_line() {
                  {panel_widths:?}"
             );
         }
+    });
+}
+
+/// The send confirmation keeps Tab off the form behind it, and confirming it
+/// dispatches the amount and recipient it shows, even if the form behind it
+/// is edited while it is open.
+#[test]
+fn the_send_confirmation_dispatches_what_it_shows() {
+    use dash_evo_tool::model::amount::Amount;
+    use dash_evo_tool::ui::tokens::transfer_tokens_screen::{SEND_LABEL, send_question};
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use egui::accesskit::Role;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.harness.state_mut().test_capture_dispatches();
+        let mut sender = f.info.identity.clone();
+        sender.identity.set_balance(1_000_000_000);
+        f.app_context
+            .update_local_qualified_identity(&sender)
+            .expect("fund the sender");
+        let shown = Identifier::from([0x55; 32]);
+        let other = Identifier::from([0x66; 32]).to_string(Encoding::Base58);
+        f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
+        f.set_named_input("Amount:", "1");
+        f.set_named_input("Identity ID", &shown.to_string(Encoding::Base58));
+        f.click_button(SEND_LABEL);
+        let amount = Amount::new(100_000_000, 8).with_unit_name(SMOKE_TOKEN);
+        let question = send_question(&amount, &shown.to_string(Encoding::Base58));
+        assert!(f.harness.query_by_label(&question).is_some());
+
+        // The dialog has no text field, so any focused one is behind it.
+        for _ in 0..60 {
+            f.harness.key_press(egui::Key::Tab);
+            f.harness.run_steps(1);
+            assert!(
+                !f.harness
+                    .query_all_by_role(Role::TextInput)
+                    .any(|node| node.accesskit_node().is_focused()),
+                "Tab reaches a field behind the confirmation"
+            );
+        }
+        for (label, text) in [("Amount:", "2"), ("Identity ID", other.as_str())] {
+            f.harness
+                .query_all_by_role_and_label(Role::TextInput, label)
+                .next()
+                .unwrap_or_else(|| panic!("no {label:?} field"))
+                .set_text_value_accesskit(text);
+            f.harness.run_steps(3);
+        }
+        assert!(
+            f.harness.query_by_label(&question).is_some(),
+            "the confirmation still shows what it was opened for"
+        );
+        f.click_button(SEND_LABEL);
+
+        let sent: Vec<_> = f
+            .captured_sends()
+            .into_iter()
+            .map(|(recipient, amount, _)| (recipient, amount))
+            .collect();
+        assert_eq!(sent, vec![(shown, 100_000_000)]);
+    });
+}
+
+/// A recipient ID that does not parse is refused before the confirmation
+/// opens, with a sentence that names the field and says what to do.
+#[test]
+fn the_send_screen_explains_an_invalid_recipient() {
+    use dash_evo_tool::ui::tokens::transfer_tokens_screen::{CONFIRM_SEND_TITLE, SEND_LABEL};
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.harness.state_mut().test_capture_dispatches();
+        let mut sender = f.info.identity.clone();
+        sender.identity.set_balance(1_000_000_000);
+        f.app_context
+            .update_local_qualified_identity(&sender)
+            .expect("fund the sender");
+        f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
+        f.set_named_input("Amount:", "1");
+        f.set_named_input("Identity ID", "not-an-identity");
+        f.click_button(SEND_LABEL);
+        assert!(f.harness.query_by_label(CONFIRM_SEND_TITLE).is_none());
+        assert!(
+            f.harness
+                .query_by_label("This recipient ID is not valid. Check it and try again.")
+                .is_some(),
+            "the banner explains the invalid recipient"
+        );
+        assert!(f.captured_sends().is_empty());
+    });
+}
+
+/// The send screen asks in Send wording, and its success line names the
+/// amount and recipient that were confirmed, even if the recipient field is
+/// edited while the send runs.
+#[test]
+fn the_send_screen_reports_the_confirmed_recipient() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
+    use dash_evo_tool::model::amount::Amount;
+    use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
+        CONFIRM_SEND_TITLE, SEND_LABEL, send_question, sent_text,
+    };
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.harness.state_mut().test_capture_dispatches();
+        // The sender pays the fee in credits.
+        let mut sender = f.info.identity.clone();
+        sender.identity.set_balance(1_000_000_000);
+        f.app_context
+            .update_local_qualified_identity(&sender)
+            .expect("fund the sender");
+        let recipient_id = Identifier::from([0x55; 32]);
+        let recipient = recipient_id.to_string(Encoding::Base58);
+        f.open(ScreenType::TransferTokensScreen(f.balance.clone()));
+        f.set_named_input("Amount:", "1");
+        f.set_named_input("Identity ID", &recipient);
+        f.click_button(SEND_LABEL);
+        let amount = Amount::new(100_000_000, 8).with_unit_name(SMOKE_TOKEN);
+        assert!(f.harness.query_by_label(CONFIRM_SEND_TITLE).is_some());
+        assert!(
+            f.harness
+                .query_by_label(&send_question(&amount, &recipient))
+                .is_some(),
+            "the confirmation names the amount and the recipient"
+        );
+        f.click_button(SEND_LABEL);
+        let sends = f.captured_sends();
+        let [(sent_to, sent_amount, context)] = &sends[..] else {
+            panic!("expected one token send");
+        };
+        assert_eq!((*sent_to, *sent_amount), (recipient_id, 100_000_000));
+
+        let other = Identifier::from([0x66; 32]).to_string(Encoding::Base58);
+        f.set_named_input("Identity ID", &other);
+        rt.block_on(
+            f.harness
+                .state()
+                .task_result_sender
+                .send(TaskResult::Success {
+                    context: context.clone(),
+                    result: Box::new(BackendTaskSuccessResult::TransferredTokens(
+                        FeeResult::estimated_only(0),
+                    )),
+                }),
+        )
+        .expect("deliver the send result");
+        f.harness.run_steps(3);
+        assert!(
+            f.harness
+                .query_by_label(&sent_text(&amount, &recipient))
+                .is_some(),
+            "the success line names the confirmed recipient"
+        );
+        assert!(f.harness.query_by_label_contains("Transfer").is_none());
     });
 }
 

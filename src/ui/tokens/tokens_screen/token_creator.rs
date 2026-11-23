@@ -1631,6 +1631,7 @@ impl TokensScreen {
                     .confirm_text(Some("Confirm"))
                     .cancel_text(Some("Cancel"))
                     .danger_mode(is_danger_mode)
+                    .blocks_input(true)
             });
 
         // Show the dialog and handle the response

@@ -5596,4 +5596,33 @@ mod tests {
         assert!(screen.selected_key.is_none());
         context.wallet_backend().unwrap().shutdown().await;
     }
+
+    /// The registration's confirmation blocks the screen behind it, so the
+    /// identity that signs cannot change while the user confirms.
+    #[test]
+    fn registration_confirmation_blocks_the_screen_behind_it() {
+        use egui_kittest::Harness;
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut TokensScreen| {
+                let _ = screen.render_token_creator_confirmation_popup(ui);
+            },
+            screen,
+        );
+        harness.run();
+
+        let dialog = harness
+            .state()
+            .token_creator_confirmation_dialog
+            .as_ref()
+            .expect("confirmation shown");
+        assert!(dialog.is_input_blocking());
+    }
 }

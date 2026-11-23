@@ -2,7 +2,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, Spacing};
 use egui::{InnerResponse, Ui, WidgetText};
 
 pub use crate::ui::components::modal_chrome::NOTHING;
@@ -48,6 +48,27 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
         self.error_message.as_deref()
     }
 }
+/// Label/value rows and separate notes for a structured confirmation.
+#[derive(Debug, Clone, Default)]
+pub struct ConfirmationSummary {
+    /// Values remain selectable and never wrap inside a token.
+    pub rows: Vec<(&'static str, String)>,
+    /// Explanations shown below the summary, with normal wrapping.
+    pub notes: Vec<String>,
+}
+
+impl std::fmt::Display for ConfirmationSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut lines: Vec<String> = self
+            .rows
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"))
+            .collect();
+        lines.extend(self.notes.iter().cloned());
+        f.write_str(&lines.join("\n"))
+    }
+}
+
 /// A reusable confirmation dialog component that implements the Component trait
 ///
 /// This component provides a consistent modal dialog for confirming user actions
@@ -58,6 +79,7 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
 pub struct ConfirmationDialog {
     title: WidgetText,
     message: WidgetText,
+    summary: Option<ConfirmationSummary>,
     confirm_text: Option<WidgetText>,
     cancel_text: Option<WidgetText>,
     danger_mode: bool,
@@ -105,6 +127,7 @@ impl ConfirmationDialog {
         Self {
             title: title.into(),
             message: message.into(),
+            summary: None,
             confirm_text: Some("Confirm".into()),
             cancel_text: Some("Cancel".into()),
             danger_mode: false,
@@ -115,6 +138,12 @@ impl ConfirmationDialog {
             is_open: true,
             opening_guard: ModalOpeningGuard::armed(),
         }
+    }
+
+    /// Show aligned summary rows, keeping each value intact and notes separate.
+    pub fn with_summary(mut self, summary: ConfirmationSummary) -> Self {
+        self.summary = Some(summary);
+        self
     }
 
     /// Set the text for the confirm button, or None to hide it
@@ -208,18 +237,54 @@ impl ConfirmationDialog {
                 inner_margin: 16,
             },
             |ui| {
-                // Set minimum width for the dialog
-                ui.set_min_width(300.0);
+                if self.summary.is_some() {
+                    ui.set_width(
+                        640.0_f32.min((ui.ctx().content_rect().width() - 64.0).max(240.0)),
+                    );
+                } else {
+                    ui.set_min_width(300.0);
+                }
 
                 let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message content with bold text and proper color
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(self.message.text())
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
+                if let Some(summary) = &self.summary {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("confirmation_rows")
+                        .show(ui, |ui| {
+                            egui::Grid::new("confirmation_summary")
+                                .spacing([Spacing::LG, Spacing::MD])
+                                .show(ui, |ui| {
+                                    for (label, value) in &summary.rows {
+                                        ui.label(
+                                            egui::RichText::new(*label)
+                                                .color(DashColors::text_secondary(dark_mode)),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(value).monospace(),
+                                            )
+                                            .extend()
+                                            .selectable(true),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    ui.add_space(Spacing::MD);
+                    ui.separator();
+                    for note in &summary.notes {
+                        ui.add_space(Spacing::SM);
+                        ui.label(note);
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new(self.message.text())
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                }
                 ui.add_space(20.0);
 
                 if let Some(prompt) = self.confirmation_prompt.clone() {

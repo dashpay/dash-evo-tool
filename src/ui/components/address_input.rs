@@ -510,6 +510,14 @@ impl AddressInput {
         self
     }
 
+    /// Wallet label from the same ownership inventory used by autocomplete.
+    pub fn wallet_name_for(&self, address: &str) -> Option<&str> {
+        self.all_entries
+            .iter()
+            .find(|entry| entry.address_string == address)
+            .and_then(|entry| entry.wallet_name.as_deref())
+    }
+
     /// Put the keyboard focus in the field on the next frame.
     pub fn request_focus(&mut self) {
         self.focus_requested = true;

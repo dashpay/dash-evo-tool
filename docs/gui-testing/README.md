@@ -23,6 +23,118 @@ instead — it's faster, deterministic, and runs in CI on every PR. Reach for
 this tier only when the thing under test genuinely needs a real display, real
 network timing, or a flow `kittest` can't simulate.
 
+## Release GUI QA in GitHub Actions
+
+`release-qa.yml` runs on GitHub-hosted `ubuntu-26.04`, called after the weekly
+build legs. It verifies the Linux release zip's attestation against `release.yml`
+and the NEW tag's source SHA, then runs the zip's GUI and `det-cli`. There is no
+local build, OLD-build A/B or code review. The baseline is the newest older
+published pre-release, or an explicitly selected older published pre-release.
+
+The prepare job alone has `contents: write` to read draft assets; it never
+executes release binaries. Normal weekly runs reuse their build artifact.
+The review job has `contents: read`, the `CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK`
+secret only on the Claude step, and no Slack/write secret. A separate report job
+publishes a fixed verdict and artifact link. The existing weekly Slack job
+includes that result. Neither the agent nor the standalone QA workflow publishes
+or deletes a release.
+
+| Result | Scheduled weekly | Manual weekly / standalone QA |
+|---|---|---|
+| PASS | Publish | Keep draft / report only |
+| NOTE | Keep unpublished draft; limitations listed | Keep draft / report only |
+| FAIL | Keep unpublished draft | Keep draft / report only |
+| INCOMPLETE, invalid/missing report, timeout | Keep unpublished draft | Keep draft / report only |
+
+Build and migration-fixture failures still clean up a newly created tag. QA
+failure cannot trigger cleanup, even through a failed/skipped dependency.
+Drafts are never pruned by later weekly runs; **a human must clean them up**.
+A normal run skips an existing tag or unchanged source. To rebuild a retained
+weekly, dispatch `weekly-build.yml` with `force=true` and its version: the tag
+may move only if the existing release is still a draft bearing our weekly marker.
+Successful build legs replace their assets; a failed recut retains the draft and
+may leave mixed old/new assets, so inspect a complete successful rebuild before
+publishing. Published releases and unrelated tags cannot be recut. A draft left
+without the marker by cancellation before finalization needs human inspection.
+Use standalone QA to retest unchanged assets without recutting the tag.
+The `<!-- weekly-version: … -->` marker remains unchanged.
+
+### Burner wallet and boundaries
+
+PRE generates one BIP39 phrase with Ubuntu's `python3-mnemonic` and pipes it
+directly into the same release's `det-cli core-wallet-import --mnemonic-stdin`.
+No phrase/env file is created; generated app `.env` files are removed before
+Claude starts. Binaries run with an emptied environment and isolated HOME/data.
+The keyless wallet remains burnable and must never be used beyond this run.
+
+PRE uses only `https://faucet.thepasta.org`: live `/api/status`, CAP PoW,
+at most one payout/address/day, no faucet/IP rotation. The testnet P2PKH refund
+address comes from `depositAddress`, with optional repository variable
+`QA_FAUCET_REFUND_ADDRESS` taking precedence. Missing or invalid addresses skip
+POST with a warning in the report and step summary; that alone does not downgrade
+PASS. The funds are then abandoned with the disposable testnet wallet. Funding
+is capped at 1 tDASH. Known funding refusal means NOTE plus explicit NOT_REACHED
+items, while other reachable screens are still tested. An ambiguous payout is
+never retried; it requires a refund attempt and can leave the result incomplete.
+
+POST runs with `if: always()` after stopping the GUI. It checks Testnet, a single
+confirmed faucet UTXO and matching wallet/explorer balances, then sends the
+balance minus 226 duffs back to the faucet once. This allowance covers the current
+one-input P2PKH builder at 1 duff/byte; the sub-dust remainder is miner fee.
+Unexpected inputs, fee/API drift, unconfirmed funds or an uncertain broadcast
+produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and
+the Insight explorer; a lost runner or forced cancellation can prevent POST.
+The ephemeral wallet is not uploaded and cannot be recovered after runner disposal.
+
+Claude uses pinned CLI `2.1.331`, `--permission-mode default`, 180 turns and a
+140-minute process timeout inside a 220-minute runner job, reserving time for
+PRE/POST and artifacts. Prepare/report jobs have 15/5-minute limits: the QA
+workflow totals at most four hours of job execution (queue time excluded).
+`--restricted` and an explicit PreToolUse hook permit public-input reads, report
+writes and the fixed `qa-ui` helper only. The hook uses `onFailure: block`;
+controller receipts, wallet status and smoke evidence are not agent-writable.
+An empty working directory and explicit context/report/source directories avoid
+repository startup instructions. Do not add `--bare`: it disables explicit hooks
+and OAuth ([Claude automation documentation](https://code.claude.com/docs/en/headless)). No general shell, WebFetch, MCP servers or subagents.
+Xvfb/lavapipe follow the render-spike setup; the helper provides xdotool/scrot
+and AT-SPI labels/rectangles. GUI scenarios stop before any broadcast or secret
+export. These controls reduce exposure; they do not make public on-chain text
+or an LLM verdict trustworthy by themselves.
+
+### Reruns and verification
+
+Dispatch `release-qa.yml` from `v1.0-dev` with `tag`, optional `baseline`, and
+optional `run_id` of the build whose Linux zip should be reviewed. Without a
+run ID, it downloads the release asset, including drafts. Other refs are skipped
+and reported INCOMPLETE. For standalone QA use **Re-run all jobs**, because input/report artifact
+names are attempt-specific. A weekly rerun still obeys its tag/no-commits gate;
+use a new forced manual dispatch when rebuilding an existing draft. Standalone reruns never publish; a maintainer can
+publish the retained draft after inspecting the new report.
+
+Download `release-qa-report-<attempt>` for `report.json`, Markdown, verified
+changelog, scenarios/checklist, spotlight gallery, embedded visual changelog,
+screenshots and GUI logs. `result.json` is the controller's effective verdict;
+`report.json.summary` also records it. INCOMPLETE uses `verdict: FAIL` with
+`complete: false` in that machine report. Missing or malformed evidence fails closed: the controller validates report
+field types, scenario statuses, nonempty documents, gallery JSON, PNG files and
+coverage of every supplied commit. Findings prevent PASS even if the agent labels
+the summary PASS. Pending or uncertain refunds keep the result INCOMPLETE.
+Credential-like text suppresses export; screenshots are checked by the agent.
+Profiles, vaults, env files and raw Claude transcripts are never uploaded.
+
+Offline checks (no faucet payouts or Claude usage):
+
+```bash
+python3 -m unittest discover -s scripts/ci/release-qa
+bash scripts/ci/test-weekly-jobs.sh
+actionlint .github/workflows/release-qa.yml .github/workflows/weekly-build.yml
+shellcheck scripts/ci/release-qa/setup.sh
+```
+
+The first hosted dispatch remains required to validate OAuth, AT-SPI, live sync,
+funding/refund and artifact delivery together. The prior render spike validated
+rendering only.
+
 ## How to run a scenario
 
 Use a graphical session whose `DISPLAY` already points at the desktop you want

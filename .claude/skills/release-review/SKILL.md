@@ -5,6 +5,64 @@ description: "This skill should be used when preparing to QA a dash-evo-tool nig
 
 # Release Review
 
+## CI mode (GUI only)
+
+When invoked by `release-qa.yml`, this section overrides the interactive procedure
+below. Read `ci-prompt.md`. Inputs are `context/inputs.json` (NEW tag/SHA,
+published baseline tag/SHA, repository), `changes.diff`, `commits.txt`, PR context,
+the verified release zip and an output directory. Use these pinned inputs;
+do not resolve a development HEAD, fetch, build, create worktrees or run OLD.
+
+- Scope: verified changelog, functional GUI testing of NEW, and `visual-diff`.
+  Skip Phase 2 entirely. Reading the diff establishes expected GUI changes and
+  attribution; it is not a code/security/dependency review. No subagents.
+- The controller provisions an ephemeral testnet wallet with the same zip's
+  `det-cli`, funds it once, and runs the deterministic launch smoke before you.
+  Read only `wallet-status.json`; never provision, fund, refund, import or
+  export keys yourself. No credential files or shared E2E fixtures are inputs.
+- Testnet only, navigation and form validation only. Stop before broadcasting,
+  registration, voting, shielding, account deletion or final transaction approval.
+  Never open recovery phrases/private-key export screens.
+- No prompts or confirmation gates. Fixed blocker rule: data loss, or a
+  diff-attributed regression in a happy flow, secondary/error flow, noticeable UX
+  or performance. Reproduce twice. A NEW-only observation without attribution
+  remains unknown, not a claim that this release introduced it.
+- Fixture/network blockers: record `NOT_REACHED`, continue with other screens.
+  Faucet failure alone is NOTE (draft retained); never silently treat an unreached flow as passed.
+  A timeout, turn exhaustion, missing required deliverables or unfinished tour
+  is incomplete, even if some screenshots look good.
+- Write Phase 3 scenarios and the story checklist under the supplied output
+  directory, not `docs/`. Reuse the standing scenario library as a starting point.
+- `desktop-gui` is unnecessary: `/usr/local/bin/qa-ui` provides clicks, keys,
+  text, scroll, screenshots and the AT-SPI tree. Use the exact commands in
+  `ci-prompt.md`; do not use arbitrary Bash, network tools or WebFetch.
+- Finish with `report.json`, `report.md`, `verified-changelog.md`, `scenarios.md`,
+  `story-checklist.md`, `spec.json`, `meta.json`, NEW captures, annotated images and
+  `index.html`. The controller makes `visual-changelog.html` with embedded images.
+  Read every kept screenshot before completing the report; omit secret-bearing
+  captures and document any exposure. No profiles, env files or keys in output.
+
+Machine contract (write an incomplete draft early; set `complete` only at the end):
+
+```json
+{
+  "summary": {"verdict": "NOTE", "complete": true},
+  "scenarios": [{"id": "GUI-001", "status": "NOT_REACHED", "reason": "No funded wallet."}],
+  "findings": [],
+  "not_reached": ["Wallet balance screen: faucet unavailable."]
+}
+```
+
+Scenario statuses: `PASS`, `NOTE`, `FAIL`, `NOT_REACHED`. Findings include stable
+`id`, `title`, screen/scenario, evidence, attribution (`introduced` or `unknown`),
+reproduction count, recommendation and a boolean `blocking`. PASS means completed
+coverage without issues; NOTE means completed review with explicit nonblocking
+findings or unavailable fixtures; FAIL means a confirmed blocker or failed scenario. Controller
+smoke failure forces FAIL; incomplete output is surfaced as INCOMPLETE. Only
+PASS permits **scheduled** publishing. NOTE, FAIL, INCOMPLETE, invalid/missing
+reports, smoke failure and timeout retain the unpublished draft. Manual runs
+never publish. A missing refund address alone adds a warning, not a verdict downgrade.
+
 End-to-end nightly-release QA campaign for dash-evo-tool: find what actually changed since the
 last shipped pre-release, run a scoped code review, and prove the GUI isn't worse than before in
 the happy flow. Default method: the before/after comes from a static check of the diff (verified

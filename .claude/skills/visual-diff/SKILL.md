@@ -5,6 +5,25 @@ description: "Use to produce a visual diff of dash-evo-tool: annotated screensho
 
 # Visual diff
 
+## CI inputs and runtime wallet
+
+Under `release-qa.yml`, read `release-review`'s CI section first; it overrides
+local setup below. OLD is the supplied published baseline SHA for static evidence
+only. NEW is the verified release zip, already launched by the controller.
+`context/inputs.json` pins both SHAs; use the supplied output directory. No Cargo,
+OLD launch, user-level `desktop-gui` skill or shared mnemonic fixture is needed.
+
+The runtime testnet wallet is already imported by the same zip's `det-cli`.
+Read `wallet-status.json`, never `.env`, vaults or credentials. If funding or sync
+is unavailable, capture reachable layouts and record affected shots as not reached;
+do not import another wallet, request funds, or broadcast. Keep the existing
+NEW-only spotlight style and coverage table. Driver: `/usr/local/bin/qa-ui`
+(`release-review/ci-prompt.md` documents its commands and AT-SPI tree). Write
+`spec.json` and `meta.json`, then use `qa-ui gallery` to run the existing render
+and gallery scripts. Only PASS permits scheduled publication; NOTE also retains the draft.
+The controller owns shutdown, refund and profile disposal;
+do not delete its runtime directories. These overrides apply only in CI.
+
 A commit range in, a gallery out: one annotated image per changed screen of the NEW build, a
 clean variant of each, and an `index.html` that maps every commit to an image or says why none
 exists. Scripts live in `scripts/` beside this file; all take paths as arguments. Do not

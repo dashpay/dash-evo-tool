@@ -2510,7 +2510,7 @@ mod tests {
     /// amount carries that remainder; the entered amount would understate it.
     #[test]
     fn shield_from_core_reports_the_remainder_of_rounding_the_fee_up() {
-        for (protocol, remainder_credits) in [(14, 0), (15, 0)] {
+        for (protocol, remainder_credits) in [(13, 800), (14, 0), (15, 0)] {
             let platform_version = PlatformVersion::get(protocol).expect("known protocol");
             for amount_duffs in [1, 100_000, 100_000_000] {
                 let funding = PlatformFeeEstimator::latest()

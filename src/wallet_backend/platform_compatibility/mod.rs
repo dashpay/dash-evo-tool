@@ -1,6 +1,8 @@
 //! Open the wallet databases, refusing those only an earlier release can upgrade.
 
 mod engine;
+#[cfg(test)]
+mod real_fixture_tests;
 mod storage_failure;
 #[cfg(test)]
 pub(crate) use engine::{LOCK_SUFFIX, backup_lock_path, bridge_backup_path};
@@ -386,7 +388,9 @@ mod tests {
     }
 
     /// Every file in `dir` (recursively) with its bytes.
-    fn tree(dir: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    pub(super) fn tree(
+        dir: &std::path::Path,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
         let mut files = std::collections::BTreeMap::new();
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();

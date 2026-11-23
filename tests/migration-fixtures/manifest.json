@@ -1,6 +1,5 @@
 {
-  "schema_version": 1,
-  "artifact_name_template": "migration-fixture-<git_tag>-<profile>",
+  "schema_version": 2,
   "fixtures": [
     {
       "id": "v0.9.3-wallet-only",
@@ -17,15 +16,10 @@
       "expect": {
         "derive_address": false
       },
-      "artifact": {
-        "workflow_name": "migration-fixture-renewal.yml",
-        "workflow_run_id": 43810295586,
-        "artifact_name": "migration-fixture-v0.9.3-wallet-only",
-        "archive_filename": "dash-evo-tool-v093-fixture.tar.zst",
+      "archive": {
+        "path": "archives/v0.9.3-wallet-only.tar.zst",
         "sha256": "3c9939f8061f836b9494ecc4a9b393791eb868ff6e4033fbd1424bf9e4e5cdbc",
-        "bytes": 6032,
-        "retention_days": 90,
-        "expires_at": "2027-02-14T05:26:59Z"
+        "bytes": 6032
       },
       "contents": {
         "wallets": [
@@ -71,15 +65,10 @@
       "platform_rev": "67d4ef3f6340a1e983229b6870ef60cf7573602a",
       "capture_scenario": null,
       "captured_at": "2026-09-11",
-      "artifact": {
-        "workflow_name": "migration-fixture-renewal.yml",
-        "workflow_run_id": 43810295586,
-        "artifact_name": "migration-fixture-v1.0.0-weekly.20260908-wallet-only",
-        "archive_filename": "v1.0.0-weekly.20260908-wallet-only.tar.zst",
+      "archive": {
+        "path": "archives/v1.0.0-weekly.20260908-wallet-only.tar.zst",
         "sha256": "c7e21762a762c6a5892dcdff952c54583c7df8bd649fbd3c960696057ca17624",
-        "bytes": 277402,
-        "retention_days": 90,
-        "expires_at": "2027-02-14T05:26:59Z"
+        "bytes": 277402
       },
       "expect": {
         "wallet_aliases": [
@@ -114,15 +103,10 @@
         },
         "binary_sha256": "ec1195ad4bed29c9548edc4c754288ae71bf9d82d2f5a94957dc2b34da7d0ede"
       },
-      "artifact": {
-        "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": 36553576984,
-        "artifact_name": "migration-fixture-v1.0.0-weekly.20260915-wallet-only",
-        "archive_filename": "v1.0.0-weekly.20260915-wallet-only.tar.zst",
+      "archive": {
+        "path": "archives/v1.0.0-weekly.20260915-wallet-only.tar.zst",
         "sha256": "c0bb5430a15835de9c2e77547f87de2785cd1fb6ae801dc65cf65320ead1e30b",
-        "bytes": 267105,
-        "retention_days": 90,
-        "expires_at": "2026-12-28T10:07:22Z"
+        "bytes": 267105
       },
       "expect": {
         "wallet_aliases": [
@@ -157,15 +141,10 @@
         },
         "binary_sha256": "9de4cd59643a92eece9587d13c9423939766fcd318a98f82f40be2765dc19934"
       },
-      "artifact": {
-        "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": 38359167767,
-        "artifact_name": "migration-fixture-v1.0.0-weekly.20260929-wallet-only",
-        "archive_filename": "v1.0.0-weekly.20260929-wallet-only.tar.zst",
+      "archive": {
+        "path": "archives/v1.0.0-weekly.20260929-wallet-only.tar.zst",
         "sha256": "25b141aa57187ca64dbd45ff0040d8cb0be97ccd78077188ae438ecb0a2fd644",
-        "bytes": 267239,
-        "retention_days": 90,
-        "expires_at": "2027-01-11T06:52:03Z"
+        "bytes": 267239
       },
       "expect": {
         "wallet_aliases": [
@@ -200,15 +179,10 @@
         },
         "binary_sha256": "e0e92202e0395d24de7bd69f6a97a2d538a1e709d1caeafe56bda56b6a921d64"
       },
-      "artifact": {
-        "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": 38359179297,
-        "artifact_name": "migration-fixture-v1.0.0-weekly.20261006-wallet-only",
-        "archive_filename": "v1.0.0-weekly.20261006-wallet-only.tar.zst",
+      "archive": {
+        "path": "archives/v1.0.0-weekly.20261006-wallet-only.tar.zst",
         "sha256": "08ee4723a3409393e97cafde56f946483d21c0e5b748a3c144329ebada818493",
-        "bytes": 267550,
-        "retention_days": 90,
-        "expires_at": "2027-01-11T06:52:10Z"
+        "bytes": 267550
       },
       "expect": {
         "wallet_aliases": [
@@ -223,6 +197,46 @@
       },
       "notes": "Derived from the September 29 snapshot above by the original October 6 released det-cli, in the same chain run that started from the verified September 15 fixture. The release started on persisted testnet, hydrated the wallet twice and listed the same wallet identity and alias. The source archive is unchanged. RPC credentials were cleared only in the capture copy before packing. The release asset matched its published digest and build attestation. This release pins the same Platform revision as the September 29 release. Wallet seed hash: 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929.",
       "known_limitations": "Inherits the September 8 single unprotected wallet profile: no protected wallet, identity or DPNS name. This is an upgrade-derived snapshot, not a fresh import. The capture ran only network-info and core-wallets-list, so it does not exercise network discovery or address derivation. The hop applied no new wallet-storage migrations: both stores stay at 18 applied migrations, and data.db, the vault and .env are byte-identical to the source. Empty mainnet databases from the original source remain present; all wallet data is testnet."
+    },
+    {
+      "id": "v1.0.0-weekly.20261117-wallet-only",
+      "git_tag": "v1.0.0-weekly.20261117",
+      "det_version": "1.0.0-weekly.20261117+1cae75d97",
+      "capture_method": "release-chain",
+      "profile": "wallet-only",
+      "network": "testnet",
+      "host_platform": "x86_64-linux",
+      "binary_asset": "dash-evo-tool-linux-x86_64.zip",
+      "data_dir_env": "DASH_EVO_DATA_DIR",
+      "platform_rev": "6323a430c731a14bbec1d7a18466ca28bb083316",
+      "capture_scenario": null,
+      "captured_at": "2026-11-23",
+      "provenance": {
+        "source": {
+          "git_tag": "v1.0.0-weekly.20261117",
+          "archive": "migration-fixture-v1.0.0-weekly.20261117-wallet-only.tar.zst",
+          "sha256": "e3b65f1c366dea86bda9d75fa99d9db281d8117c8b05b865a106f5db37278109"
+        },
+        "binary_sha256": "fb624cc4d8cd40af2406cbc1ed88c88c501edcf66ba4bbf7a74587e6a5e9eefd"
+      },
+      "archive": {
+        "path": "archives/v1.0.0-weekly.20261117-wallet-only.tar.zst",
+        "sha256": "71019208023084357bc8581cba0ab465b582826fec0087f9f37e368e25ca62bf",
+        "bytes": 260718
+      },
+      "expect": {
+        "wallet_aliases": [
+          "weekly-fixture"
+        ],
+        "starting_db_version": 38,
+        "derive_address": false
+      },
+      "contents": {
+        "wallets": [],
+        "identity": null
+      },
+      "notes": "Replaces the fixture attached to the v1.0.0-weekly.20261117 release as the source of later release-chain captures, and wins over it as a manifest entry. It is that attested release asset with every network store opened by the same release's own det-cli, which still carries the platform_compatibility bridge, so no store remains on the Platform 67d4ef3 lineage. The attached fixture still held the empty det-mainnet.sqlite every capture since September 8 carried (refinery version 3 `unified`). Not produced by chain.py: in a network-less sandbox the release det-cli ran `serve` over stdio, network_switch to mainnet converted det-mainnet.sqlite (14 migrations to 19; version 3 is now `invitations`), and network_switch back to testnet persisted testnet again. The same binary then started standalone on testnet and listed the same wallet identity and alias twice. data.db, .env and the vault are byte-identical to the source; the bridge left its retained original as det-mainnet.sqlite.platform-67d4ef3-backup-Kdn7qr.sqlite, kept because a real profile carries it. Wallet seed hash: 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929.",
+      "known_limitations": "Inherits the September 8 single unprotected wallet profile: no protected wallet, identity or DPNS name. This is an upgrade-derived snapshot, not a fresh import. The capture ran offline, so it does not exercise network discovery or address derivation; SPV start on both networks failed to resolve peers and wrote only chain caches that are not packed. Mainnet holds no wallet data; all wallet data is testnet."
     }
   ]
 }

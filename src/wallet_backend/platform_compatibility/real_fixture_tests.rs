@@ -1,0 +1,343 @@
+//! Real profiles on the pinned-PR lineage must be refused unchanged; the
+//! all-networks 20261117 archive must open and preserve its captured wallet.
+//!
+//! Env-gated. It runs only in the archived-profile suite, which sets
+//! `MIGRATION_FIXTURES_DIR`, and otherwise reports the skip and passes. With
+//! the variable set, a missing or altered archive fails: silently testing
+//! nothing is the failure mode the fixture exists to prevent.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crate::backend_task::error::TaskError;
+use dash_sdk::dpp::dashcore::Network;
+use platform_wallet::changeset::PlatformWalletPersistence;
+use platform_wallet_storage::SqlitePersisterConfig;
+use sha2::{Digest, Sha256};
+
+use super::open;
+
+/// Set by the archived-profile suite, shared with the migration-matrix harness.
+const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
+/// The committed manifest: the archive path, size and checksum.
+const MANIFEST: &str = include_str!("../../../tests/migration-fixtures/manifest.json");
+/// Directory the manifest's archive paths are relative to.
+const FIXTURES_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/migration-fixtures");
+/// The fixture wallet's balance at capture: one faucet payment of 1 tDASH.
+const CAPTURED_BALANCE_DUFFS: u64 = 100_000_000;
+/// Per-network store holding the fixture wallet.
+const NETWORK_DB: &str = "det-testnet.sqlite";
+/// Cross-network app store.
+const APP_DB: &str = "det-app.sqlite";
+/// Version bookkeeping the upgrade rewrites by design; every other table must
+/// keep its rows.
+const VERSION_TABLES: [&str; 2] = ["refinery_schema_history", "meta_data_versions"];
+/// Marker in the name of the backup the bridge retains next to an upgraded
+/// database.
+const BACKUP_MARKER: &str = ".platform-67d4ef3-backup-";
+/// Rows the upgrade derives from the fixture wallet's history: Platform's
+/// V021 indexes the inputs of every stored transaction, and the captured
+/// faucet payment spends one. Its record needs no repair, so V021's table of
+/// original records stays empty.
+const NETWORK_DB_DERIVED_ROWS: [(&str, i64); 1] = [("core_transaction_inputs", 1)];
+
+#[test]
+fn platform_compatibility_checks_real_weekly_profiles() {
+    for (id, networks) in [
+        (
+            "v1.0.0-weekly.20260908-wallet-only",
+            vec![Network::Mainnet, Network::Testnet],
+        ),
+        ("v1.0.0-weekly.20260915-wallet-only", vec![Network::Mainnet]),
+        ("v1.0.0-weekly.20260929-wallet-only", vec![Network::Mainnet]),
+        ("v1.0.0-weekly.20261006-wallet-only", vec![Network::Mainnet]),
+    ] {
+        let Some(staged) = stage(id) else {
+            return;
+        };
+        let before = data_file_digests(&staged.data_dir);
+        for _ in 0..2 {
+            let error = crate::context::AppContext::open_app_kv(&staged.data_dir)
+                .expect_err("the unconverted profile must be refused");
+            assert!(
+                matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks: actual }
+                if actual.0 == networks),
+                "{id}: {error:?}"
+            );
+            assert_eq!(
+                data_file_digests(&staged.data_dir),
+                before,
+                "{id}: refusal must preserve every data file"
+            );
+        }
+    }
+    let Some(staged) = stage("v1.0.0-weekly.20261117-wallet-only") else {
+        return;
+    };
+    super::refuse_stores_needing_upgrade_release(&staged.data_dir)
+        .expect("every network in the committed 20261117 profile is converted");
+    assert_eq!(
+        assert_upgrade(&staged, NETWORK_DB, &NETWORK_DB_DERIVED_ROWS),
+        [CAPTURED_BALANCE_DUFFS],
+        "{NETWORK_DB} must still load its one captured wallet, with the captured balance"
+    );
+    assert_upgrade(&staged, APP_DB, &[]);
+    assert_upgrade(&staged, "det-mainnet.sqlite", &[]);
+}
+
+/// Like the migration matrix, exclude the `-shm` index a read-only WAL open rewrites.
+fn data_file_digests(dir: &Path) -> BTreeMap<PathBuf, [u8; 32]> {
+    super::tests::tree(dir)
+        .into_iter()
+        .filter(|(path, _)| !path.to_string_lossy().ends_with("-shm"))
+        .map(|(path, bytes)| (path, Sha256::digest(bytes).into()))
+        .collect()
+}
+
+/// The fixture unpacked into an owner-only temporary data directory.
+struct Staged {
+    root: tempfile::TempDir,
+    data_dir: PathBuf,
+}
+
+impl Staged {
+    /// A fresh directory for copies, so reading a database never checkpoints
+    /// the WAL of the file under test.
+    fn scratch(&self, label: &str) -> PathBuf {
+        let dir = self.root.path().join("scratch").join(label);
+        // The wallet store refuses a database below a group- or
+        // other-writable directory, so every level is created owner-only
+        // whatever the umask.
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir).expect("scratch directory");
+        dir
+    }
+}
+
+/// Unpacks the named fixture, or returns `None` when
+/// [`FIXTURES_DIR_ENV`] is unset.
+fn stage(fixture_id: &str) -> Option<Staged> {
+    if std::env::var_os(FIXTURES_DIR_ENV).is_none_or(|dir| dir.is_empty()) {
+        eprintln!(
+            "skipped: {FIXTURES_DIR_ENV} is unset; the archived-profile suite sets it to run this test"
+        );
+        return None;
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_str(MANIFEST).expect("the committed manifest parses");
+    let entry = manifest["fixtures"]
+        .as_array()
+        .expect("the manifest lists fixtures")
+        .iter()
+        .find(|fixture| fixture["id"] == fixture_id)
+        .unwrap_or_else(|| panic!("the manifest has no `{fixture_id}` entry"));
+    let recorded = &entry["archive"];
+    let archive_path = recorded["path"]
+        .as_str()
+        .expect("the entry names its archive");
+    let expected_sha256 = recorded["sha256"]
+        .as_str()
+        .expect("the entry records the archive checksum");
+    let expected_size = recorded["bytes"]
+        .as_u64()
+        .expect("the entry records the archive size");
+
+    let archive = Path::new(FIXTURES_ROOT).join(archive_path);
+    let bytes = std::fs::read(&archive).unwrap_or_else(|error| {
+        panic!(
+            "{FIXTURES_DIR_ENV} is set, but {} cannot be read: {error}",
+            archive.display()
+        )
+    });
+    assert_eq!(
+        bytes.len() as u64,
+        expected_size,
+        "{} does not match the manifest size",
+        archive.display()
+    );
+    assert_eq!(
+        hex::encode(Sha256::digest(&bytes)),
+        expected_sha256,
+        "{} does not match the manifest checksum",
+        archive.display()
+    );
+
+    // Owner-only whatever the umask:
+    // the wallet store refuses a database below a group-writable ancestor.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("platform-real-fixture-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let root = builder.tempdir().expect("temporary directory");
+    let data_dir = root.path().join("data");
+    crate::app_dir::ensure_data_dir_exists(&data_dir).expect("owner-only data directory");
+    let status = Command::new("tar")
+        .arg("-xf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&data_dir)
+        .status()
+        .expect("tar runs");
+    assert!(
+        status.success(),
+        "tar could not unpack {}",
+        archive.display()
+    );
+    Some(Staged { root, data_dir })
+}
+
+/// Opens a converted store twice, preserving its data and retained bridge backups.
+fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) -> Vec<u64> {
+    let path = staged.data_dir.join(db_name);
+    let before = table_counts(&path, &staged.scratch(&format!("{db_name}-before")));
+    assert!(
+        !before.is_empty(),
+        "{db_name} is missing from the fixture or has no tables"
+    );
+    assert!(!super::needs_upgrade_release(&path));
+    let backups = backup_files(&path);
+
+    let persister = open(SqlitePersisterConfig::new(&path))
+        .unwrap_or_else(|error| panic!("could not open {db_name}: {error:?}"));
+    let loaded = persister.load().unwrap_or_else(|error| {
+        panic!("{db_name}: typed load failed after the upgrade: {error:?}")
+    });
+    persister.load_unowned_identities().unwrap_or_else(|error| {
+        panic!("{db_name}: identity load failed after the upgrade: {error:?}")
+    });
+    let balances = loaded
+        .wallets
+        .values()
+        .map(|wallet| wallet.wallet_info.balance.total())
+        .collect();
+    drop(persister);
+
+    let after = table_counts(&path, &staged.scratch(&format!("{db_name}-after")));
+    assert_rows_kept(db_name, &before, &after, derived_rows);
+
+    assert_eq!(
+        backup_files(&path),
+        backups,
+        "no new bridge backup is needed"
+    );
+
+    drop(
+        open(SqlitePersisterConfig::new(&path))
+            .unwrap_or_else(|error| panic!("{db_name}: a second open failed: {error:?}")),
+    );
+    assert_eq!(
+        backup_files(&path),
+        backups,
+        "{db_name}: a second open must not upgrade again"
+    );
+
+    eprintln!("{db_name}: upgraded, rows kept {:?}", data_tables(&after));
+    balances
+}
+
+/// Row count of every table, read from a copy of the database and its WAL.
+fn table_counts(path: &Path, scratch: &Path) -> BTreeMap<String, i64> {
+    let copy = copy_database(path, scratch);
+    let conn = rusqlite::Connection::open(&copy).expect("open the copy");
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()
+        })
+        .expect("list tables");
+    tables
+        .into_iter()
+        .map(|table| {
+            let count = conn
+                .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
+                    row.get(0)
+                })
+                .expect("count rows");
+            (table, count)
+        })
+        .collect()
+}
+
+/// The upgrade loses no row: every data table keeps its row count (a table
+/// the target schema drops may disappear only if it was empty). A table the
+/// target schema adds holds only rows the upgrade derives from that data:
+/// exactly `derived_rows`, and nothing in any other new table.
+fn assert_rows_kept(
+    db_name: &str,
+    before: &BTreeMap<String, i64>,
+    after: &BTreeMap<String, i64>,
+    derived_rows: &[(&str, i64)],
+) {
+    for (table, rows) in data_tables(before) {
+        assert_eq!(
+            after.get(table).copied().unwrap_or(0),
+            rows,
+            "{db_name}: `{table}` must keep its {rows} rows through the upgrade"
+        );
+    }
+    let filled_new_tables: BTreeMap<&str, i64> = data_tables(after)
+        .into_iter()
+        .filter(|(table, rows)| !before.contains_key(*table) && *rows != 0)
+        .collect();
+    assert_eq!(
+        filled_new_tables,
+        derived_rows.iter().copied().collect::<BTreeMap<_, _>>(),
+        "{db_name}: tables the upgrade created must hold only the rows it derives from the profile's history"
+    );
+}
+
+/// `counts` without the version bookkeeping tables.
+fn data_tables(counts: &BTreeMap<String, i64>) -> BTreeMap<&str, i64> {
+    counts
+        .iter()
+        .filter(|(table, _)| !VERSION_TABLES.contains(&table.as_str()))
+        .map(|(table, count)| (table.as_str(), *count))
+        .collect()
+}
+
+/// Copies a database with its `-wal` and `-shm` sidecars into `scratch`.
+fn copy_database(path: &Path, scratch: &Path) -> PathBuf {
+    let name = path.file_name().expect("database file name");
+    let copy = scratch.join(name);
+    std::fs::copy(path, &copy)
+        .unwrap_or_else(|error| panic!("could not copy {}: {error}", path.display()));
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if sidecar.exists() {
+            let mut target = copy.as_os_str().to_owned();
+            target.push(suffix);
+            std::fs::copy(&sidecar, PathBuf::from(target))
+                .unwrap_or_else(|error| panic!("could not copy {}: {error}", sidecar.display()));
+        }
+    }
+    copy
+}
+
+/// Backups the bridge retained next to `path`.
+fn backup_files(path: &Path) -> BTreeSet<PathBuf> {
+    let prefix = format!(
+        "{}{BACKUP_MARKER}",
+        path.file_name().expect("file name").to_string_lossy()
+    );
+    std::fs::read_dir(path.parent().expect("parent directory"))
+        .expect("read the data directory")
+        .map(|entry| entry.expect("directory entry").path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".sqlite"))
+        })
+        .collect()
+}

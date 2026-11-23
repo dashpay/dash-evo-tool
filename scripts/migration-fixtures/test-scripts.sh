@@ -73,7 +73,7 @@ echo 'PASS: capture rejects a network switch lost on restart'
 
 
 # TEST_RELEASES lines are TAG[|ASSET,ASSET...[|draft]]; TEST_ASSETS holds the
-# files of each release and of the stored artifact, plus the names that fail
+# files of each release and the committed archive, plus the names that fail
 # attestation.
 cat > "$scratch/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -95,13 +95,6 @@ case "$*" in
             | {tag_name: .[0], draft: (.[2] == "draft"),
                assets: ((.[1] // "") | split(",") | map({name: .}))}]' | emit ;;
     'api '*'/tags'*) printf '%s\n' "$TEST_RELEASES" | cut -d'|' -f1 ;;
-    'api '*'/artifacts'*) jq -n '{artifacts: [{name: "stored-fixture", expired: false}]}' | emit ;;
-    'run download '*)
-        if [ -n "${TEST_DOWNLOAD_ERROR:-}" ]; then
-            printf '%s\n' "$TEST_DOWNLOAD_ERROR" >&2
-            exit 1
-        fi
-        cp "$TEST_ASSETS/stored-fixture/"* "$dir/" ;;
     'release download '*)
         for pattern in "${patterns[@]}"; do cp "$TEST_ASSETS/$3/$pattern" "$dir/"; done ;;
     'attestation verify '*)
@@ -113,15 +106,24 @@ esac
 EOF
 chmod +x "$scratch/bin/gh"
 export PATH="$scratch/bin:$PATH" GH_CALL_LOG="$scratch/gh.log"
-for digest in '' invalid; do
-    jq -n --arg sha "$digest" '{fixtures:[{id:"test",artifact:{artifact_name:"fixture",workflow_run_id:1,sha256:$sha}}]}' > "$scratch/manifest.json"
+for digest in '' invalid "$(printf 'A%.0s' {1..64})"; do
+    jq -n --arg sha "$digest" '{fixtures:[{id:"test",archive:{path:"test.tar.zst",sha256:$sha,bytes:1}}]}' > "$scratch/manifest.json"
     if bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" --dest "$scratch/download" --strict > "$scratch/download.log" 2>&1; then
         fail 'strict downloader accepted invalid digest'
     fi
-    grep -q 'valid sha256' "$scratch/download.log" || fail 'digest validation did not fail first'
+    grep -q 'lowercase hex sha256' "$scratch/download.log" || fail 'digest validation did not fail first'
     [ ! -e "$GH_CALL_LOG" ] || fail 'invalid digest reached the network'
 done
 echo 'PASS: strict digest validation before network access'
+
+for path in '' /etc/test.tar.zst ../test.tar.zst archives/../../test.tar.zst ./test.tar.zst; do
+    jq -n --arg path "$path" '{fixtures:[{id:"test",archive:{path:$path,sha256:("0" * 64),bytes:1}}]}' > "$scratch/manifest.json"
+    if bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" --dest "$scratch/download" --strict > "$scratch/download.log" 2>&1; then
+        fail "strict downloader accepted archive path '$path'"
+    fi
+    grep -q 'names no archive path below' "$scratch/download.log" || fail "archive path '$path' failed for an unrelated reason"
+done
+echo 'PASS: committed archive paths stay below the manifest directory'
 
 check_coverage() {
     local baseline="$1" release="$2" expected="$3"
@@ -165,7 +167,9 @@ echo 'PASS: release precedence coverage'
 # Fixtures attached to releases: discovered, verified, merged into the manifest.
 export TEST_ASSETS="$scratch/assets"
 mkdir -p "$TEST_ASSETS/stored-fixture"
-printf 'stored profile\n' > "$TEST_ASSETS/stored-fixture/stored.tar.zst"
+stored="$TEST_ASSETS/stored-fixture/stored.tar.zst"
+printf 'stored profile\n' > "$stored"
+stored_sha="$(sha256sum "$stored" | cut -d' ' -f1)" stored_bytes="$(stat -c %s "$stored")"
 attach_fixture() { # RELEASE_TAG [TAG_THE_METADATA_DESCRIBES]
     local dir="$TEST_ASSETS/$1" base="migration-fixture-$1-wallet-only" tag="${2:-$1}" sha
     mkdir -p "$dir"
@@ -186,9 +190,9 @@ download() {
     shift 2
     merged="$scratch/merged.json"
     rm -rf "$scratch/download" "$merged" "$GH_CALL_LOG"
-    jq -n --arg tag "$stored_tag" --arg sha "$(sha256sum "$TEST_ASSETS/stored-fixture/stored.tar.zst" | cut -d' ' -f1)" \
-        '{schema_version: 1, fixtures: [{id: "\($tag)-wallet-only", git_tag: $tag, artifact: {artifact_name: "stored-fixture",
-          workflow_run_id: 1, archive_filename: "stored.tar.zst", sha256: $sha}}]}' > "$scratch/manifest.json"
+    jq -n --arg tag "$stored_tag" --arg sha "$stored_sha" --argjson bytes "$stored_bytes" \
+        '{schema_version: 2, fixtures: [{id: "\($tag)-wallet-only", git_tag: $tag,
+          archive: {path: "assets/stored-fixture/stored.tar.zst", sha256: $sha, bytes: $bytes}}]}' > "$scratch/manifest.json"
     bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" --repo owner/repo \
         --dest "$scratch/download" "$@" > "$scratch/download.log" 2>&1 || status=$?
     [ "$status" -eq "$expected" ] || { cat "$scratch/download.log" >&2; fail "download exited $status, expected $expected ($*)"; }
@@ -202,32 +206,49 @@ attach_fixture v1.0.2
 TEST_RELEASES=$'v1.0.0\nv1.0.1|'"$(pair v1.0.1)"$'\nv1.0.2|'"$(pair v1.0.2)|draft"
 download 0 v1.0.0 --strict --merged-manifest "$scratch/merged.json"
 [ "$(merged_ids)" = 'v1.0.0-wallet-only v1.0.1-wallet-only' ] || fail "merged manifest lists: $(merged_ids)"
-[ -f "$scratch/download/stored.tar.zst" ] || fail 'the stored archive is missing'
+grep -q 'size and checksum OK' "$scratch/download.log" || fail 'the committed archive was not verified'
+[ ! -e "$scratch/download/stored.tar.zst" ] || fail 'the committed archive was copied'
 [ -f "$(release_archive v1.0.1)" ] || fail 'the attached archive is missing'
 ! grep -q 'release download v1.0.2' "$GH_CALL_LOG" || fail 'a draft release was read'
-jq -e '.schema_version == 1' "$merged" > /dev/null || fail 'the merged manifest lost the manifest header'
+jq -e '.schema_version == 2' "$merged" > /dev/null || fail 'the merged manifest lost the manifest header'
 echo 'PASS: attached fixtures are discovered and merged; drafts are skipped'
 
 download 0 v1.0.0 --strict
 ! grep -q '/releases' "$GH_CALL_LOG" || fail 'releases were read without --merged-manifest'
 echo 'PASS: releases are read only on request'
 
-# A failed download stops --strict at once, naming the fixture and the HTTP
-# status but not the signed download URL, and fetches nothing further.
-rm -rf "$scratch/download" "$GH_CALL_LOG"
-sha="$(sha256sum "$TEST_ASSETS/stored-fixture/stored.tar.zst" | cut -d' ' -f1)"
-jq -n --arg sha "$sha" '{fixtures: [range(2) | {id: "fixture-\(.)", artifact: {artifact_name: "stored-fixture",
-    workflow_run_id: 1, archive_filename: "stored.tar.zst", sha256: $sha}}]}' > "$scratch/manifest.json"
-if TEST_DOWNLOAD_ERROR='error downloading stored-fixture: HTTP 503: 503 Egress is over the account limit. (https://blob.example/a.zip?sig=signed)' \
-    bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" --repo owner/repo \
-    --dest "$scratch/download" --strict > "$scratch/download.log" 2>&1; then
-    fail 'strict downloader accepted a failed download'
+# committed EXPECTED_STATUS SIZE_OFFSET [OPTIONS...]: two entries naming the
+# committed archive, with its size off by SIZE_OFFSET.
+committed() {
+    local expected="$1" offset="$2" status=0
+    shift 2
+    jq -n --arg sha "$stored_sha" --argjson bytes "$((stored_bytes + offset))" \
+        '{fixtures: [range(2) | {id: "fixture-\(.)",
+          archive: {path: "assets/stored-fixture/stored.tar.zst", sha256: $sha, bytes: $bytes}}]}' > "$scratch/manifest.json"
+    bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" \
+        --dest "$scratch/download" "$@" > "$scratch/download.log" 2>&1 || status=$?
+    [ "$status" -eq "$expected" ] || { cat "$scratch/download.log" >&2; fail "committed exited $status, expected $expected ($*)"; }
+}
+# A committed archive that differs from its entry stops at once, strict or not.
+committed 1 1
+grep -Fq "::error::Fixture 'fixture-0': assets/stored-fixture/stored.tar.zst does not match its manifest entry." \
+    "$scratch/download.log" || { cat "$scratch/download.log" >&2; fail 'the mismatch was not reported with its fixture'; }
+! grep -q "Fixture 'fixture-1'" "$scratch/download.log" || fail 'verification continued after a mismatch'
+jq --arg sha "$(printf '0%.0s' {1..64})" --argjson bytes "$stored_bytes" \
+    '.fixtures[0].archive |= (.sha256 = $sha | .bytes = $bytes)' "$scratch/manifest.json" > "$scratch/replaced.json"
+if bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/replaced.json" \
+    --dest "$scratch/download" > "$scratch/download.log" 2>&1; then
+    fail 'a committed archive with another digest was accepted'
 fi
-grep -Fq "::error::Fixture 'fixture-0': download of 'stored-fixture' from run 1 failed: error downloading stored-fixture: HTTP 503: 503 Egress is over the account limit." \
-    "$scratch/download.log" || { cat "$scratch/download.log" >&2; fail 'the failed download was not reported with its fixture and HTTP status'; }
-! grep -q 'blob.example' "$scratch/download.log" || fail 'the signed download URL was printed'
-[ "$(grep -c '^run download ' "$GH_CALL_LOG")" -eq 1 ] || fail 'strict mode kept downloading after a failure'
-echo 'PASS: a failed download stops --strict with its fixture and HTTP status'
+echo 'PASS: a committed archive of another size or digest is refused'
+# A missing one stops --strict, and is only reported otherwise.
+mv "$stored" "$stored.moved"
+committed 1 0 --strict
+grep -q "archive assets/stored-fixture/stored.tar.zst is not in" "$scratch/download.log" || fail 'the missing archive was not named'
+committed 0 0
+grep -q '0 fixture(s) into .*; 2 unresolved' "$scratch/download.log" || fail 'missing archives were not counted'
+mv "$stored.moved" "$stored"
+echo 'PASS: a missing committed archive fails --strict'
 
 download 0 v1.0.1 --strict --merged-manifest "$scratch/merged.json"
 [ "$(merged_ids)" = 'v1.0.1-wallet-only' ] || fail "manifest entry did not win: $(merged_ids)"
@@ -269,7 +290,7 @@ echo 'PASS: only the 8 newest attached fixtures are used'
 # source_for EXPECTED_STATUS TAG: leaves the fetch counts in $fetched.
 source_for() {
     download "$1" v1.0.0 --merged-manifest "$scratch/merged.json" --source-for "$2"
-    fetched="$(grep -c 'run download' "$GH_CALL_LOG" || true) stored, $(grep -c 'release download' "$GH_CALL_LOG" || true) attached, $(grep -c 'attestation verify' "$GH_CALL_LOG" || true) verified"
+    fetched="$(grep -c 'size and checksum OK' "$scratch/download.log" || true) stored, $(grep -c 'release download' "$GH_CALL_LOG" || true) attached, $(grep -c 'attestation verify' "$GH_CALL_LOG" || true) verified"
 }
 source_for 0 v1.1.11
 [ "$(merged_ids)" = 'v1.1.10-wallet-only' ] || fail "the capture of v1.1.11 starts from: $(merged_ids)"

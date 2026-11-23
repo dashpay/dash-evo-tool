@@ -6671,7 +6671,9 @@ mod tests {
 
         assert_eq!(
             screen.amount_problem(),
-            Some(form_view::AmountProblem::CoreShortfall)
+            Some(form_view::AmountProblem::CoreShortfall(
+                CoreSendShortfall::NothingSpendable
+            ))
         );
         assert_eq!(screen.missing_step(), Some("Fix the highlighted field."));
     }
@@ -6706,7 +6708,9 @@ mod tests {
         );
         assert_eq!(
             screen.amount_problem(),
-            Some(form_view::AmountProblem::CoreShortfall)
+            Some(form_view::AmountProblem::CoreShortfall(
+                CoreSendShortfall::NothingSpendable
+            ))
         );
         let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| {

@@ -63,6 +63,8 @@ impl ProtocolRefresh {
                     };
                     // Headers and masternodes at the tip, not the wallet scan:
                     // filters return to Syncing for every new block.
+                    // TODO: cover this predicate with a test once platform-wallet
+                    // can report a sync state with filters still syncing.
                     let spv = backend.inner.pwm.spv();
                     spv.is_ready().await
                         && spv.wait_until_ready(Duration::from_millis(50)).await

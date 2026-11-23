@@ -1,12 +1,11 @@
-use super::token_action_screen::{
-    StepCounter, TokenAction, TokenActionCtx, TokenActionScreen, parse_identity_id,
-};
+use super::token_action_screen::{StepCounter, TokenAction, TokenActionCtx, TokenActionScreen};
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::parse_identity_id;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;

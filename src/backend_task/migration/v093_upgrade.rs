@@ -677,7 +677,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
 /// network, every downstream network filter in the wallet drain
 /// would silently target mainnet and find nothing.
 fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSettings) {
-    crate::app_dir::ensure_env_file(dir);
+    crate::app_dir::ensure_env_file(dir).expect("write .env");
     let db_file = dir.join("data.db");
 
     let db = Arc::new(Database::open_legacy_read_only(&db_file).expect("open data.db read-only"));

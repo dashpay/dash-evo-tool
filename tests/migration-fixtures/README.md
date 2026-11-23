@@ -491,7 +491,7 @@ uploaded:
 | `starting_db_version` | The `data.db` schema version at capture. The boot fails if the staged file disagrees. |
 | `finish_unwire_sentinel` | Whether the boot must record the storage-update completion sentinel. Default `true`. |
 | `derive_address` | Whether to derive a receive address for every listed wallet. Needs a synced chain. Default `true`. |
-| `upgrade_release_required` | Whether every boot must be refused because only an earlier release can upgrade the wallet data, naming that release and leaving the wallet stores and backups unchanged. Default `false`. |
+| `upgrade_release_required` | Whether every boot must be refused because only an earlier release can upgrade the wallet data. Default `false`. The harness expects the refusal anyway for any fixture holding a `det-<network>.sqlite` on the 67d4ef3 lineage (its refinery version 3 is named `unified`), such as the empty mainnet store a September 2026 weekly left behind; release-attached manifest entries cannot declare it. Every boot must then name that release and exactly those networks, and leave every file in the data directory unchanged. |
 
 `contents.wallets[]` — one entry per wallet in the captured `data.db`. A
 current-era profile keeps its wallets in `det-<network>.sqlite` instead: it

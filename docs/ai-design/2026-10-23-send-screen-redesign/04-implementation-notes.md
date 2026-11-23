@@ -95,7 +95,7 @@ and the cached shielded receive address.
 | Form state | `src/ui/state/send_form.rs` (16), `src/ui/state/own_receive_addresses.rs` (3) |
 | Chips | `src/ui/components/choice_chips.rs` kittests (4) |
 | A1 regression | `core_and_platform_never_route_to_someone_elses_private_address` and `the_form_refuses_core_to_someone_elses_private_address` (`send_screen/mod.rs`), `w10_core_cannot_pay_someone_elses_private_address` (`tests/kittest/send_form.rs`) |
-| UX-001 | `the_typed_recipient_survives_switching_to_my_wallets_and_back` |
+| SR-16 (typed values survive section changes) | `the_typed_recipient_survives_switching_to_my_wallets_and_back` |
 | Flows | `tests/kittest/send_form.rs`: W1–W3, W5, W6, W8–W11, W13, W14. Each settles the harness before asserting; none counts frames |
 
 W4 (destination options), W7 (identity source) and W12 (confirmation) are covered by the existing

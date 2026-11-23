@@ -2262,9 +2262,7 @@ mod tests {
         );
     }
 
-    /// A pooled send is priced as platform-wallet's `pooled_max_sendable`
-    /// prices it, which at a whole duff per byte is the plain size estimate,
-    /// less what a shorter P2SH output script saves.
+    /// Several outputs cost the single-output bound plus one output each.
     #[test]
     fn core_several_outputs_fee_is_the_single_output_bound_plus_each_output() {
         use crate::model::spend_limit::CoreDestinationScript::PubkeyHash;
@@ -2314,6 +2312,9 @@ mod tests {
         );
     }
 
+    /// A pooled send is priced as platform-wallet's `pooled_max_sendable`
+    /// prices it, which at a whole duff per byte is the plain size estimate,
+    /// less what a shorter P2SH output script saves.
     #[test]
     fn core_send_fee_and_max_follow_the_pooled_pricing() {
         use crate::model::spend_limit::CoreDestinationScript::{PubkeyHash, ScriptHash};

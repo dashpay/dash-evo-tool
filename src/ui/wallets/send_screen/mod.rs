@@ -8276,7 +8276,7 @@ mod tests {
         );
     }
 
-    /// UX-001: what was typed for Someone else survives a trip to My wallets.
+    /// SR-16: what was typed for Someone else survives a trip to My wallets.
     #[test]
     fn the_typed_recipient_survives_switching_to_my_wallets_and_back() {
         let (mut screen, _temp_dir) = funded_send_screen();

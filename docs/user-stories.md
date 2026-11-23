@@ -1331,7 +1331,7 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
 
-- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The token creator offers a once-per-identity distribution with the amount each identity can claim.
 - The fee estimate includes the network's extra fee for this distribution.
 - The Claim screen and My Tokens show the distribution.
 - After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
@@ -1342,9 +1342,8 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
+- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
-- A network that does not support it is refused before anything is paid.
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.
 

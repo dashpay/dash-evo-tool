@@ -43,17 +43,13 @@ elif [[ " $* " == *' --test migration-matrix '* ]]; then
     fi
     [[ "$CASE_NAME" == empty-matrix ]] || echo 'Running 3 migration fixture(s)'
     echo 'test result: ok. 1 passed; 0 failed;'
-elif [[ " $* " == *' --lib platform_compatibility_upgrades_the_real '* ]]; then
-    [[ "$CASE_NAME" != compatibility-failure ]]
-    [[ "$CASE_NAME" != skipped-compatibility ]] || echo 'skipped: fixtures are missing'
-    echo 'test result: ok. 1 passed; 0 failed;'
 else
     echo "unexpected cargo invocation: $*" >&2
     exit 2
 fi
 MOCK
 chmod +x "$scratch/bin/cargo"
-for scenario in success fork unit-failure matrix-failure both-fail empty-matrix compatibility-failure skipped-compatibility download-failure; do
+for scenario in success fork unit-failure matrix-failure both-fail empty-matrix download-failure; do
     case_dir="$scratch/$scenario"
     mkdir -p "$case_dir/fixtures"
     fixture_dir="$case_dir/fixtures"

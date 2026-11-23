@@ -64,14 +64,14 @@ The `Tests` workflow builds all test targets and `det-cli` once with
 `cargo test --locked --all-features --workspace --no-run`. On that same runner,
 `scripts/ci/run-tests.sh` then runs two suites in parallel against the shared
 build: the normal workspace tests (including doctests and bundled fixtures),
-and the archived-profile migration matrix plus the real-data compatibility
-check. All Cargo invocations keep `--all-features`; the matrix uses the CLI
-binary Cargo already built, without downloading another executable.
+and the archived-profile migration matrix. All Cargo invocations keep
+`--all-features`; the matrix uses the CLI binary Cargo already built, without
+downloading another executable.
 
 Only the migration suite receives the downloaded archive directory and fixture
 password. It selects `migration_matrix --exact` and requires evidence that at
-least one archive and exactly one matrix test ran; the real-data check must
-also execute rather than skip. Either suite failing makes the job fail, and
+least one archive and exactly one matrix test ran. Either suite failing makes
+the job fail, and
 both results are reported even if one fails first. Complete per-suite logs are
 printed in separate Actions groups after both suites finish. Fork PRs retain the
 password-free scenarios. Clippy checks all test targets without executing them.

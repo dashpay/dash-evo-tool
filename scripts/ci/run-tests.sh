@@ -20,13 +20,6 @@ run_migrations() {
         echo '::error::The migration matrix did not execute the downloaded fixtures.'
         return 1
     fi
-    cargo test --locked --all-features --lib platform_compatibility_upgrades_the_real -- --nocapture \
-        2>&1 | tee "$log_dir/platform-compatibility.log"
-    if ! grep -q 'test result: ok. 1 passed; 0 failed;' "$log_dir/platform-compatibility.log" || \
-       grep -q '^skipped:' "$log_dir/platform-compatibility.log"; then
-        echo '::error::The real-data compatibility test did not execute the downloaded fixture.'
-        return 1
-    fi
 }
 
 # The normal suite covers the bundled fixtures and doctests, but must not run

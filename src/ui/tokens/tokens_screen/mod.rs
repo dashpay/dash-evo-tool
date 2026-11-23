@@ -1455,7 +1455,7 @@ fn token_action_availability(
 }
 
 impl TokensScreen {
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     #[doc(hidden)]
     /// Starts a registration as the creator's confirmation does, without
     /// building a contract, and returns a dispatch standing in for it.
@@ -1473,7 +1473,7 @@ impl TokensScreen {
         &self.token_creator_status
     }
 
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     #[doc(hidden)]
     /// Whether the registration's progress banner is still shown.
     pub fn registration_banner_live_for_test(&self) -> bool {

@@ -6676,6 +6676,55 @@ mod tests {
         assert_eq!(screen.missing_step(), Some("Fix the highlighted field."));
     }
 
+    /// With several Core recipients there is no Amount field, so the reason
+    /// a settled Core shortfall keeps Send disabled must still be shown.
+    #[test]
+    fn a_settled_core_shortfall_names_its_reason_for_several_recipients() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        let (mut screen, _temp_dir) = send_screen();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        assert!(screen.form.has_several_recipients());
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+        assert_eq!(
+            screen.amount_problem(),
+            Some(form_view::AmountProblem::CoreShortfall)
+        );
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                let _ = screen.render_form(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let shown = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(CoreSendShortfall::NothingSpendable.message())
+                    .include_labels(),
+            )
+            .count();
+        assert!(shown >= 1, "Send is disabled, so the form must say why");
+    }
+
     /// The shield fee preview states the fee the shield is charged, not the
     /// larger reserve the planner keeps back on the Platform address.
     #[test]

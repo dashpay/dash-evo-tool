@@ -110,6 +110,33 @@ pass show dash/det-wallets | det-cli app-storage-update --password-stdin
   `--addr http://127.0.0.1:<port>/mcp` instead.
 - Once the update has finished, other commands need no password.
 
+## Importing a wallet without showing its recovery phrase
+
+`core-wallet-import` takes the recovery phrase from a pipe with
+`--mnemonic-stdin`, so it never appears on a command line or a screen:
+
+```bash
+# From a password manager (refused when stdin is a terminal)
+pass show dash/testnet-wallet | det-cli core-wallet-import --mnemonic-stdin network=testnet alias=e2e
+```
+
+- The input must be exactly one line; one trailing line ending is removed.
+- `--mnemonic-stdin` cannot be combined with `mnemonic=...` or
+  `--password-stdin` (only one input can read standard input).
+- `core-wallet-import` takes no password: it creates a wallet without password
+  protection.
+- A phrase given as `mnemonic=...` still works, but det-cli warns: command-line
+  arguments are visible to other users and saved in shell history.
+- In HTTP mode a phrase, piped or inline, is sent only to this computer
+  (`127.0.0.1`, `::1` or `localhost`) or to an `https` address, like a password.
+- To provision a wallet into a GUI data directory for testing, point
+  `DASH_EVO_DATA_DIR` at it and pass `--standalone` before the command
+  (`det-cli --standalone core-wallet-import --mnemonic-stdin ...`): an
+  `MCP_API_KEY` in that directory's `.env` would otherwise send the phrase to
+  a running server. Use the `det-cli` from the same release zip as the GUI, or
+  one built from the same commit: both open the same database. `.claude/skills/visual-diff/scripts/provision-wallet.sh` does this
+  from an env file.
+
 ## Usage
 
 Commands use hyphens (`core-wallets-list`, not `core_wallets_list`). Parameters are passed as `key=value` pairs:
@@ -259,7 +286,7 @@ funds and confirm each balance change with `shielded-sync`.
 
 ```bash
 # 1. Import the funded testnet seed (returns its seed_hash; idempotent)
-det-cli core-wallet-import mnemonic="word1 word2 ... word12" network=testnet alias=shielded-test
+pass show dash/testnet-wallet | det-cli core-wallet-import --mnemonic-stdin network=testnet alias=shielded-test
 
 # 2. Bind shielded keys + warm the proving key (~30s; idempotent)
 det-cli shielded-init wallet-id=shielded-test
@@ -287,4 +314,4 @@ det-cli shielded-balance-get wallet-id=shielded-test
 
 The `mnemonic` for the framework wallet is read from `E2E_WALLET_MNEMONIC`
 (shell env or the project-root `.env`) in the backend-e2e harness; for the
-standalone `det-cli` loop above, pass it directly to `core-wallet-import`.
+standalone `det-cli` loop above, pipe it to `core-wallet-import --mnemonic-stdin`.

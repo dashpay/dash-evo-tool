@@ -15,6 +15,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::TokenActionAvailability;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -80,6 +81,9 @@ pub struct GroupActionsScreen {
     identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
+    /// Whether `selected_identity` can send token transactions, read once per
+    /// selected identity and re-read only while it waits for its wallet.
+    selected_identity_token_actions: Option<(Identifier, TokenActionAvailability)>,
 
     // Backend task status
     fetch_group_actions_status: FetchGroupActionsStatus,
@@ -146,6 +150,7 @@ impl GroupActionsScreen {
             identity_token_balances,
             selected_identity: None,
             selected_identity_str: String::new(),
+            selected_identity_token_actions: None,
 
             // Backend task status
             fetch_group_actions_status: FetchGroupActionsStatus::NotStarted,
@@ -154,6 +159,30 @@ impl GroupActionsScreen {
             // App Context
             app_context: app_context.clone(),
         }
+    }
+
+    /// Why the selected identity cannot sign group token actions, if it cannot.
+    fn selected_identity_token_action_block(&mut self) -> Option<&'static str> {
+        let identity_id = self.selected_identity.as_ref()?.identity.id();
+        let availability = match &mut self.selected_identity_token_actions {
+            Some((cached_id, availability)) if *cached_id == identity_id => {
+                crate::ui::tokens::recheck_token_action_availability(
+                    &self.app_context,
+                    &identity_id,
+                    availability,
+                );
+                *availability
+            }
+            _ => {
+                let availability = crate::ui::tokens::load_token_action_availability(
+                    &self.app_context,
+                    &identity_id,
+                );
+                self.selected_identity_token_actions = Some((identity_id, availability));
+                availability
+            }
+        };
+        availability.unavailable_reason()
     }
 
     fn render_group_actions(
@@ -169,6 +198,12 @@ impl GroupActionsScreen {
         if group_actions.is_empty() {
             ui.label("No active group actions found.");
             return action;
+        }
+
+        let blocked = self.selected_identity_token_action_block();
+        if let Some(reason) = blocked {
+            ui.label(reason);
+            ui.add_space(10.0);
         }
 
         let text_style = TextStyle::Body;
@@ -237,6 +272,11 @@ impl GroupActionsScreen {
                                     if !Self::supports_token_event_action(token_event) {
                                         ui.add_enabled(false, egui::Button::new("Take Action"))
                                             .on_hover_text("The app cannot sign this action yet.");
+                                        return;
+                                    }
+                                    if let Some(reason) = blocked {
+                                        ui.add_enabled(false, egui::Button::new("Take Action"))
+                                            .on_disabled_hover_text(reason);
                                         return;
                                     }
                                     if ComponentStyles::add_primary_button(
@@ -405,7 +445,7 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, recipient, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.common.group_action_id = Some(action_id);
-                mint_screen.action.recipient_identity_id = recipient.to_string(Encoding::Base58);
+                mint_screen.action.set_proposal_recipient(*recipient);
                 mint_screen.action.amount = Some(Amount::from_token(
                     &mint_screen.common.identity_token_info,
                     *amount,
@@ -498,6 +538,7 @@ impl GroupActionsScreen {
 impl ScreenLike for GroupActionsScreen {
     fn refresh(&mut self) {
         self.fetch_group_actions_status = FetchGroupActionsStatus::NotStarted;
+        self.selected_identity_token_actions = None;
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
@@ -664,6 +705,37 @@ impl ScreenLike for GroupActionsScreen {
 mod sdk_adapter_tests {
     use super::*;
 
+    /// Co-signing a group mint of a token that forbids choosing a recipient:
+    /// Platform refuses a signature whose destination differs from the
+    /// proposal's recipient, so signing is offered only while they match.
+    #[test]
+    fn a_group_mint_is_signable_only_while_the_destination_matches_the_proposal() {
+        use crate::ui::tokens::mint_tokens_screen::tests::token_info;
+        use crate::ui::tokens::token_action_screen::TokenAction;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let destination = Identifier::from([5; 32]);
+        let mut screen = GroupActionsScreen::new(&ctx);
+        for (proposed, signable) in [(destination, true), (Identifier::from([9; 32]), false)] {
+            let mut action = AppAction::None;
+            screen.handle_token_event_action(
+                &TokenEvent::Mint(5, proposed, None),
+                Identifier::from([8; 32]),
+                token_info(&ctx, Some(destination), false),
+                &mut action,
+            );
+            let AppAction::AddScreen(Screen::MintTokensScreen(mint)) = action else {
+                panic!("a mint screen opens");
+            };
+            assert_eq!(
+                mint.action.inputs_ready(),
+                signable,
+                "proposal to {proposed}, destination {destination}"
+            );
+        }
+    }
+
     #[test]
     fn shielded_events_are_displayed_without_offering_transparent_actions() {
         let identity = Identifier::from([7; 32]);
@@ -704,6 +776,62 @@ mod sdk_adapter_tests {
         assert!(GroupActionsScreen::supports_token_event_action(
             &TokenEvent::Mint(12, identity, None)
         ));
+    }
+
+    /// The selected identity's cached block is re-read while it waits for its
+    /// wallet, so co-signing becomes possible once the wallet has loaded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn group_token_actions_unblock_once_the_wallet_loads() {
+        use crate::context::test_support::{bare_user_identity, wired_test_app_context};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let seed_hash = crate::model::wallet::Wallet::new_from_seed(seed, ctx.network, None, None)
+            .expect("build wallet")
+            .seed_hash();
+        let identity = bare_user_identity(Identifier::from([0x62; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let mut screen = GroupActionsScreen::new(&ctx);
+        screen.selected_identity = Some(identity);
+        assert_eq!(
+            screen.selected_identity_token_action_block(),
+            Some(crate::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET)
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        assert_eq!(screen.selected_identity_token_action_block(), None);
+    }
+
+    /// Co-signing a group token action is a token transaction. An identity no
+    /// wallet in the app holds signs it with its own keys; one whose wallet is
+    /// not loaded yet is told to wait for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn group_token_actions_wait_only_for_a_linked_wallet_to_load() {
+        use crate::context::test_support::{bare_user_identity, wired_test_app_context};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let wallet_less = bare_user_identity(Identifier::from([8; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&wallet_less, &None)
+            .expect("store the wallet-less identity");
+        let waiting = bare_user_identity(Identifier::from([9; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&waiting, &Some(([0x4E; 32], 0)))
+            .expect("store the identity of an unloaded wallet");
+        let mut screen = GroupActionsScreen::new(&ctx);
+        assert_eq!(screen.selected_identity_token_action_block(), None);
+
+        screen.selected_identity = Some(wallet_less);
+        assert_eq!(screen.selected_identity_token_action_block(), None);
+
+        screen.selected_identity = Some(waiting);
+        assert_eq!(
+            screen.selected_identity_token_action_block(),
+            Some(crate::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET)
+        );
     }
 
     /// Co-signing a group Mint must reuse the proposer's recipient: the field

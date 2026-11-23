@@ -581,7 +581,7 @@ impl ScreenLike for TransferTokensScreen {
                     })
                     .cloned();
                 let message = if key_status == SigningKeyStatus::HeldButUnusable {
-                    "No key on this device can sign this token transfer. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
+                    "No key on this device can sign this token send. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
                 } else {
                     format!(
                         "You do not have a CRITICAL authentication or transfer key loaded for this {identity_type} identity."

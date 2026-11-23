@@ -1,0 +1,63 @@
+# Throwaway spike: can a GitHub-hosted runner render the released GUI with
+# software Vulkan fast enough for automated GUI QA? Not for merging.
+name: QA render spike
+
+on:
+  push:
+    branches: [spike/qa-render]
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: Render on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install display and software rendering
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb x11-utils xdotool scrot python3-pil \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libegl1 libgl1 \
+            libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6 libx11-xcb1
+          vulkaninfo --summary 2>&1 | tee "$RUNNER_TEMP/vulkaninfo.txt" || true
+          nproc; free -m
+
+      - name: Download the latest published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release list -R "$GITHUB_REPOSITORY" --limit 1 --exclude-drafts --json tagName --jq '.[0].tagName')"
+          echo "Release: $tag"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p 'dash-evo-tool-linux-x86_64.zip' -D "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP/dash-evo-tool-linux-x86_64.zip" -d "$RUNNER_TEMP/app"
+
+      - name: Launch on Xvfb and measure
+        run: |
+          out="$RUNNER_TEMP/spike"
+          bash scripts/ci/qa-render-spike/spike.sh "$RUNNER_TEMP/app/dash-evo-tool/dash-evo-tool" "$out" :99
+          { echo "### ${{ matrix.os }}"; echo '```'; cat "$out/timings.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: render-spike-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/spike/shots
+            ${{ runner.temp }}/spike/timings.txt
+            ${{ runner.temp }}/spike/*.log
+            ${{ runner.temp }}/spike/data/det.log
+            ${{ runner.temp }}/spike/data/det-stderr.log
+            ${{ runner.temp }}/vulkaninfo.txt
+          retention-days: 7

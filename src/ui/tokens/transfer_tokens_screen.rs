@@ -380,20 +380,17 @@ impl ScreenLike for TransferTokensScreen {
                 self.identity = Some(refreshed);
             }
         }
-        if let Some(identity) = &self.identity {
-            let contract_id = self.identity_token_balance.data_contract_id;
-            self.selected_key.refresh(
+        if let Some(identity) = &self.identity
+            && self.selected_key.refresh_with_wallet(
                 &self.app_context,
                 identity,
                 TransactionType::TokenTransfer,
-                contract_id,
-            );
-            crate::ui::identity::sync_signing_wallet(
-                Some(identity),
-                self.selected_key.as_ref(),
+                self.identity_token_balance.data_contract_id,
                 &mut self.selected_wallet,
                 &mut self.wallet_open_attempted,
-            );
+            )
+        {
+            self.confirmation_dialog = None;
         }
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
             match self.app_context.identity_token_balances() {

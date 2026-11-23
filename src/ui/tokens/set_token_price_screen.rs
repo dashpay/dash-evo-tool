@@ -929,18 +929,17 @@ impl ScreenLike for SetTokenPriceScreen {
             self.identity_token_info.identity = updated_identity;
         }
         let contract_id = self.identity_token_info.data_contract.contract.id();
-        self.selected_key.refresh(
+        if self.selected_key.refresh_with_wallet(
             &self.app_context,
             &self.identity_token_info.identity,
             TransactionType::TokenAction,
             contract_id,
-        );
-        crate::ui::identity::sync_signing_wallet(
-            Some(&self.identity_token_info.identity),
-            self.selected_key.as_ref(),
             &mut self.selected_wallet,
             &mut self.wallet_open_attempted,
-        );
+        ) {
+            self.show_confirmation_popup = false;
+            self.confirmation_dialog = None;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

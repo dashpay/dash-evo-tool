@@ -483,18 +483,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             self.common.identity_token_info.identity = updated;
         }
         let contract_id = self.common.identity_token_info.data_contract.contract.id();
-        self.common.selected_key.refresh(
+        if self.common.selected_key.refresh_with_wallet(
             &self.common.app_context,
             &self.common.identity_token_info.identity,
             TransactionType::TokenAction,
             contract_id,
-        );
-        crate::ui::identity::sync_signing_wallet(
-            Some(&self.common.identity_token_info.identity),
-            self.common.selected_key.as_ref(),
             &mut self.common.selected_wallet,
             &mut self.common.wallet_open_attempted,
-        );
+        ) {
+            self.common.confirmation_dialog = None;
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -850,6 +848,44 @@ mod tests {
             assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
             assert!(!screen.common.wallet_open_attempted);
         }
+    }
+
+    /// A confirmation opened for one key is closed when a refresh picks
+    /// another, so Confirm never signs with a key the dialog was not opened for.
+    #[test]
+    fn token_refresh_closes_the_confirmation_when_the_key_changes() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let budgeted = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000), None);
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(std::slice::from_ref(&budgeted)),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.common.confirmation_dialog = Some(ConfirmationDialog::new("Mint", "Mint 5?"));
+        store_identity_with_wallet_key(
+            &context,
+            identity_holding(&[budgeted, auth_key(2, SecurityLevel::CRITICAL)]),
+            2,
+        );
+
+        screen.refresh();
+        assert_eq!(
+            screen.common.selected_key.as_ref().map(|key| key.id()),
+            Some(2)
+        );
+        assert!(screen.common.confirmation_dialog.is_none());
     }
 
     /// Regression: picking a key by hand left the signing wallet as it was,

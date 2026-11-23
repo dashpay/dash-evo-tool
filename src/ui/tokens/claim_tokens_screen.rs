@@ -468,24 +468,17 @@ impl ScreenLike for ClaimTokensScreen {
         {
             self.identity = Some(updated);
         }
-        if let Some(identity) = &self.identity {
-            let contract_id = self.identity_token_basic_info.contract_id;
-            let previous_key = self.selected_key.as_ref().cloned();
-            self.selected_key.refresh(
+        if let Some(identity) = &self.identity
+            && self.selected_key.refresh_with_wallet(
                 &self.app_context,
                 identity,
                 TransactionType::TokenClaim,
-                contract_id,
-            );
-            let wallet_changed = crate::ui::identity::sync_signing_wallet(
-                Some(identity),
-                self.selected_key.as_ref(),
+                self.identity_token_basic_info.contract_id,
                 &mut self.selected_wallet,
                 &mut self.wallet_open_attempted,
-            );
-            if wallet_changed || previous_key.as_ref() != self.selected_key.as_ref() {
-                self.confirmation_dialog = None;
-            }
+            )
+        {
+            self.confirmation_dialog = None;
         }
         self.once_per_identity_claimed_at =
             load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);

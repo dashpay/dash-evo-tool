@@ -32,7 +32,7 @@ fund-movement caps, read the logs — applies unchanged.
   or a command line that lands in shell history):
   - `MIGRATION_FIXTURE_MNEMONIC` — the dedicated, public-by-design fixture
     wallet. **Not** `E2E_WALLET_MNEMONIC`, which belongs to the funded
-    backend-E2E framework wallet and must never be published in an artifact.
+    backend-E2E framework wallet and must never be published in a fixture.
   - `MIGRATION_FIXTURE_PROTECTED_MNEMONIC` — a second, distinct phrase for the
     password-protected wallet.
 - `MIGRATION_V093_WALLET_PASSWORD` holds the protected wallet's password,
@@ -179,9 +179,9 @@ app resolved a *different* directory — stop, do not continue, and check
     `wallet_private_key` settings in the capture copy's `.env`, including
     template placeholders. Pack per [`tests/migration-fixtures/README.md`](../../../tests/migration-fixtures/README.md)
     — include `data.db` and `.env`, exclude `backups/` and `*.log` — then
-    upload the archive and fill in the manifest entry's `artifact` fields,
-    `captured_at` and `sha256`.
-22. Delete the scratch tree only after the archive is uploaded and its checksum
+    add the archive under `tests/migration-fixtures/archives/` and fill in the
+    manifest entry's `archive` block and `captured_at`.
+22. Delete the scratch tree only after the archive is committed and its checksum
     is recorded. A capture that has to be redone from scratch costs an
     identity registration.
 

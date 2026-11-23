@@ -8427,6 +8427,62 @@ mod tests {
         assert!(!screen.shows_fee_options());
     }
 
+    /// Recipient rows parked under My wallets are not paid, so their Platform
+    /// addresses do not bring up Fee options for a Core-to-Core payment.
+    #[test]
+    fn parked_recipient_rows_do_not_show_fee_options() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .app_context
+            .set_user_role(crate::model::user_role::UserRole::Power);
+        let seed_hash = screen.selected_wallet_seed_hash;
+        let core = testnet_core_address(9).to_string();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Advanced, PayFromKind::Core);
+        screen.form.choose_advanced_type(AdvancedSourceType::Core);
+        screen.form.set_advanced_ticked(&core, true);
+        screen.form.set_advanced_amount(&core, "0.5".to_string());
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(21), "0.2".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(22),
+            amount: "0.3".to_string(),
+        };
+        screen.sync_route();
+
+        const OTHER_WALLET: WalletSeedHash = [9; 32];
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, seed_hash, PayFromKind::Core);
+        screen.form.choose_to_wallet(OTHER_WALLET);
+        screen
+            .form
+            .choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        let _ = screen
+            .own_addresses
+            .ensure_requested(OTHER_WALLET, OwnAddressKind::Core);
+        screen.own_addresses.store(
+            OTHER_WALLET,
+            OwnAddressKind::Core,
+            testnet_core_address(44).to_string(),
+        );
+        screen.sync_route();
+        assert!(
+            screen.form.recipients().len() >= 2,
+            "precondition: parked rows"
+        );
+        assert_eq!(screen.destination_kind(), Some(AddressKind::Core));
+        assert!(
+            screen.uses_explicit_payment(),
+            "precondition: amounts per address"
+        );
+        assert!(!screen.shows_fee_options());
+    }
+
     /// A receiving address from another network (an answer to a request
     /// sent before a network switch) never becomes the destination: the
     /// request stays open so the right address can still arrive.

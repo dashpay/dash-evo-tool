@@ -1577,11 +1577,11 @@ impl WalletSendScreen {
         // Advanced source without per-address amounts pays as the simple
         // route does, and Platform sources pick the paying input themselves.
         let core_source = matches!(&self.selected_source, Some(SourceSelection::CoreWallet));
-        let to_platform =
-            self.destination_kind() == Some(AddressKind::Platform)
-                || self.form.recipients().iter().any(|row| {
+        let to_platform = self.destination_kind() == Some(AddressKind::Platform)
+            || (self.form.has_several_recipients()
+                && self.form.recipients().iter().any(|row| {
                     AddressKind::detect(row.address.trim()) == Some(AddressKind::Platform)
-                });
+                }));
         self.is_expert() && self.uses_explicit_payment() && core_source && to_platform
     }
 

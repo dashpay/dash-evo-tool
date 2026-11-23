@@ -519,4 +519,31 @@ mod tests {
             "the click that opens a dialog must not also dismiss it",
         );
     }
+
+    /// A private (Orchard) address is 83 characters on testnet. The whole
+    /// recipient must be visible in the confirmation without scrolling.
+    #[test]
+    fn summary_shows_a_whole_private_address_without_scrolling() {
+        use egui_kittest::kittest::Queryable;
+        let address = format!("tdash1{}", "q".repeat(77));
+        assert_eq!(address.len(), 83);
+        let summary = ConfirmationSummary {
+            rows: vec![("To", address.clone())],
+            notes: vec!["Check the recipient. Payments can't be undone.".to_string()],
+        };
+        let mut dialog =
+            ConfirmationDialog::new("Send 1 DASH?", summary.to_string()).with_summary(summary);
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_ui(move |ui| {
+                let _ = dialog.show(ui);
+            });
+        harness.run();
+        let window = harness.get_by_role(egui::accesskit::Role::Window).rect();
+        let value = harness.get_by_label(&address).rect();
+        assert!(
+            value.right() <= window.right(),
+            "the address runs past the dialog edge: value {value:?}, window {window:?}"
+        );
+    }
 }

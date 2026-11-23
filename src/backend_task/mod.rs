@@ -262,6 +262,8 @@ pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
         TaskError::WalletDataTooNew { .. }
         | TaskError::WalletDataIncompatible { .. }
         | TaskError::WalletStorageAccessDenied { .. }
+        | TaskError::WalletStorageLockAccessDenied { .. }
+        | TaskError::SecretStoreAccessDenied { .. }
         | TaskError::WalletDataFolderInsecure { .. } => true,
         TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
         _ => false,
@@ -3709,6 +3711,23 @@ mod tests {
                     std::io::ErrorKind::PermissionDenied,
                 ))
                 .into(),
+            }
+        ));
+        // A data folder the app may not open the wallet lock or the seed
+        // vault in fails the same way on every retry.
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageLockAccessDenied {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::SecretStoreAccessDenied {
+                source: Box::new(platform_wallet_storage::secrets::SecretStoreError::Io(
+                    platform_wallet_storage::secrets::IoError {
+                        path: None,
+                        source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    },
+                )),
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;

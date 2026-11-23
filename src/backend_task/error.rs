@@ -5445,8 +5445,6 @@ mod tests {
         );
     }
 
-    /// Each data folder step and failure kind gets advice that can fix it:
-    /// no home folder, a file in the folder's place, a full disk.
     /// A file above the data folder is not reported as a file at the
     /// folder's own path, which does not exist.
     #[test]
@@ -5495,6 +5493,8 @@ mod tests {
         }
     }
 
+    /// Each data folder step and failure kind gets advice that can fix it:
+    /// no home folder, a file in the folder's place, a full disk.
     #[test]
     fn data_folder_errors_give_step_specific_advice() {
         use crate::boot::PrepareEnvironmentError as Step;

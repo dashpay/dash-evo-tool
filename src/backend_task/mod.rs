@@ -38,6 +38,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 pub use events::{CacheDomain, CacheUpdate, TaskResult};
+pub(crate) use events::{as_request, in_current_request};
 use futures::future::join_all;
 use grovestark::GroveSTARKTask;
 use migration::MigrationTask;
@@ -548,6 +549,22 @@ pub enum BackendTaskContext {
         network: Network,
         operation: Box<BackendTaskContext>,
     },
+    /// An event one network's wallet backend raised from chain sync — a
+    /// received payment, a balance push, Platform becoming reachable — rather
+    /// than from a request. The backend outlives a switch away from its
+    /// network, so this is the only record of the network the event belongs to.
+    WalletSync { network: Network },
+    /// A report `request` sent while still running on `network` — progress,
+    /// a partial result, or one step's failure. It has no dispatch id of its
+    /// own, so the request's sender stays on record until the request's own
+    /// result arrives, and no screen's wait for that request ends on it:
+    /// [`Self::operation`] leaves it wrapped, so it matches no request's
+    /// context. `request` is `Unknown` when the report was sent outside a
+    /// dispatch.
+    Interim {
+        network: Network,
+        request: Box<BackendTaskContext>,
+    },
     /// Building the context of a network the app switches to. Every failure
     /// of the switch, including a task that stops without a result, must
     /// release the app the switch is blocking.
@@ -600,12 +617,34 @@ impl BackendTaskContext {
         }
     }
 
-    /// The network a scheduled-vote sweep runs on, or `None` for every other
-    /// operation. The app starts sweeps itself, undispatched, so this is the
-    /// only record of the network their outcome belongs to.
-    pub(crate) fn scheduled_vote_sweep_network(&self) -> Option<Network> {
+    /// The network an operation no screen dispatched runs on, or `None` when
+    /// the context does not name one. The app's own sweeps and background
+    /// refreshes, and the wallet backend's chain-sync events, have no sender
+    /// on record, so this is the only record of the network their results
+    /// belong to.
+    pub(crate) fn undispatched_network(&self) -> Option<Network> {
         match self {
-            Self::ScheduledVoteSweep { network } => Some(*network),
+            Self::ScheduledVoteSweep { network }
+            | Self::DpnsBackgroundRefresh { network }
+            | Self::WalletSync { network }
+            | Self::Interim { network, .. } => Some(*network),
+            _ => None,
+        }
+    }
+
+    /// The context of a report sent by a request still running: see
+    /// [`Self::Interim`].
+    pub(crate) fn interim(network: Network, request: BackendTaskContext) -> Self {
+        Self::Interim {
+            network,
+            request: Box::new(request),
+        }
+    }
+
+    /// The request an interim report was sent from, or `None` for a result.
+    pub(crate) fn interim_request(&self) -> Option<&BackendTaskContext> {
+        match self {
+            Self::Interim { request, .. } => Some(request),
             _ => None,
         }
     }
@@ -632,6 +671,9 @@ impl BackendTaskContext {
         match self {
             Self::Dispatched { dispatch_id, .. } => Some(*dispatch_id),
             Self::LegacyRecoveryOnNetwork { operation, .. } => operation.dispatch_id(),
+            // A mid-task report is not the request's arrival: the request's
+            // sender stays on record until its own result takes it.
+            Self::Interim { .. } => None,
             _ => None,
         }
     }
@@ -972,10 +1014,12 @@ pub enum BackendTaskSuccessResult {
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
-    /// By convention, the app routes `Progress` results to the visible screen's
-    /// `display_task_result` without creating a global banner at the app level
-    /// (unlike `Message`). Screens may create a banner handle on first receipt
-    /// and update it in-place on subsequent updates to avoid stacking.
+    /// Sent mid-task with [`TaskResult::interim_success`], so the app routes
+    /// them to the screen that started the task, in view or not, and to no
+    /// screen once that screen is closed or its network switched away from —
+    /// without creating a global banner at the app level (unlike `Message`).
+    /// Screens may create a banner handle on first receipt and update it
+    /// in-place on subsequent updates to avoid stacking.
     Progress {
         /// Human-readable progress message
         message: String,
@@ -1252,7 +1296,9 @@ pub enum BackendTaskSuccessResult {
     ClaimedTokens(FeeResult),
     /// The once-per-identity claim note of this pair was forgotten.
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
-    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
+    /// The config item that was updated, the fee, and whether the update took
+    /// effect or was recorded as a group proposal.
+    UpdatedTokenConfig(String, FeeResult, crate::model::token::ConfigUpdateOutcome),
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
     /// running, so no second pass was started.
@@ -1762,8 +1808,20 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        // Closing the app cancels the token, which this process does only at
+        // exit. The switch then stops between its steps instead of holding the
+        // exit for the task manager's whole shutdown budget: the test hold
+        // point and the wallet backend build stop at their next await, and a
+        // backend that was built is torn down through the upstream shutdown,
+        // never a plain drop.
+        let cancellation_token = self.subtasks.cancellation_token.clone();
+
         #[cfg(feature = "testing")]
-        drop(self.test_network_switch_gate.lock().await);
+        tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => return Err(TaskError::TaskManagerShuttingDown),
+            gate = self.test_network_switch_gate.lock() => drop(gate),
+        }
 
         // Create a new AppContext for the target network, reusing shared
         // resources (db, subtasks, connection_status) from the current context.
@@ -1793,14 +1851,31 @@ impl AppContext {
                 user_role,
             )
         })
-        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        .map_err(|source| TaskError::NetworkContextCreationFailed {
+            network,
+            source: Box::new(source),
+        })?;
+        // Never shown: shutdown drains task results without displaying them.
+        if cancellation_token.is_cancelled() {
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
         new_ctx.install_secret_prompt(self.secret_prompt());
         // The switch runs on the frame loop of the context it leaves; the new
         // context reports to the same one, and its backend is built on it
         // below, before anyone else is handed the context.
         new_ctx.install_frame_loop(sender.clone());
 
-        let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+        // Stops on its own when the app closes, tearing down a backend it had
+        // not finished building.
+        let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
+        if cancellation_token.is_cancelled() {
+            if let Ok(backend) = new_ctx.wallet_backend() {
+                backend.shutdown_bounded().await;
+            }
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
+
+        let backend_wired = match wiring {
             Ok(()) => {
                 if let Err(error) = sender
                     .send(TaskResult::unattributed_success(
@@ -1829,7 +1904,6 @@ impl AppContext {
             }
         };
 
-        let cancellation_token = self.subtasks.cancellation_token.clone();
         let mut spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
             tokio::select! {
                 biased;
@@ -1857,8 +1931,7 @@ impl AppContext {
         if cancellation_token.is_cancelled()
             && let Ok(backend) = new_ctx.wallet_backend()
         {
-            backend.forget_all_secrets();
-            backend.shutdown().await;
+            backend.shutdown_bounded().await;
             spv_started = false;
         }
         Ok(BackendTaskSuccessResult::NetworkContextCreated {
@@ -2212,6 +2285,14 @@ mod tests {
         assert!(
             !secret_access.is_session_cached(&scope),
             "cancellation teardown clears secrets on the registered backend"
+        );
+        assert_eq!(
+            completed_context
+                .test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "cancellation teardown runs the bounded upstream shutdown"
         );
     }
 
@@ -2609,6 +2690,27 @@ mod tests {
             None
         );
         assert_eq!(BackendTaskContext::Unknown.dispatch_id(), None);
+    }
+
+    /// A report a request sends mid-task names the request without taking
+    /// its place: it has no dispatch id, matches no request's operation, and
+    /// names the network it runs on.
+    #[test]
+    fn an_interim_report_names_its_request_without_its_dispatch_id() {
+        let refresh = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
+            ContestedResourceTask::QueryDPNSContests,
+        ));
+        let interim = BackendTaskContext::interim(Network::Testnet, refresh.clone());
+
+        assert_eq!(interim.dispatch_id(), None);
+        assert_eq!(interim.interim_request(), Some(&refresh));
+        assert_eq!(interim.undispatched_network(), Some(Network::Testnet));
+        assert!(refresh.is_dpns_contest_refresh());
+        assert!(
+            !interim.is_dpns_contest_refresh(),
+            "the report matches no request's context"
+        );
+        assert_eq!(refresh.interim_request(), None);
     }
 
     /// `is_wallet_touching` covers every task family that funnels
@@ -3166,8 +3268,12 @@ mod tests {
             .expect("wire wallet backend");
 
         // The mock reports the latest protocol version, and the system
-        // contracts the queries carry follow it; settle it before building them.
-        let sdk = dash_sdk::Sdk::new_mock();
+        // contracts the queries carry follow it; start the SDK at that version
+        // and prove it before building them.
+        let sdk = crate::context::test_support::mock_sdk_at_for(
+            &context,
+            dash_sdk::dpp::version::LATEST_VERSION,
+        );
         let mut mock = sdk.clone();
         context.sdk.store(Arc::new(sdk));
         crate::context::test_support::prove_protocol_version(
@@ -3522,7 +3628,8 @@ mod tests {
             &TaskError::WalletDataIncompatible {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
-                )),
+                ))
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
@@ -3532,14 +3639,16 @@ mod tests {
                     reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
                         mode: 0o777,
                     },
-                },
+                }
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
                     std::io::ErrorKind::PermissionDenied,
-                )),
+                ))
+                .into(),
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;

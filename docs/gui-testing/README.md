@@ -68,7 +68,7 @@ test -x "$BIN"
 
 Prepare isolated state and launch the binary as a detached process. The app
 redirects some diagnostics into its data directory, so inspect both the launch
-log and `det-stderr.log` / `det.log` after a crash or panic.
+log and `det.log` (older builds also `det-stderr.log`) after a crash or panic.
 
 ```bash
 DATADIR=$(mktemp -d)
@@ -149,6 +149,11 @@ skill may still provide convenient screenshot and input tooling.
    variable *names* only (matching the `tests/backend-e2e/` convention — e.g.
    `E2E_WALLET_MNEMONIC`, `E2E_MN_*`). Read actual values at run time via
    `grep`/`env`, never paste them into a scenario doc, a report, or a commit.
+   To start with the test wallet already imported, provision the data
+   directory before launch with
+   `.claude/skills/visual-diff/scripts/provision-wallet.sh` (the `det-cli` from
+   the same release zip or commit as the GUI pipes the phrase in with
+   `--mnemonic-stdin`).
 4. **Default to testnet.** Only use mainnet if a scenario explicitly requires
    it and says why — and if it does, treat every fund-moving step as
    irreversible and get explicit confirmation before broadcasting.
@@ -160,7 +165,7 @@ skill may still provide convenient screenshot and input tooling.
    owner-key withdrawal forcing the registered payout address), use that path
    over one where you type an arbitrary address by hand.
 7. **Check the logs, not just the screen.** A crash or panic doesn't always
-   show a UI error — check `det-stderr.log` / `det.log` in the test's data
+   show a UI error — check `det.log` (older builds also `det-stderr.log`) in the test's data
    directory (or the default location if unset) for a Rust panic
    (`location=...` line) even when the UI appeared to work.
 

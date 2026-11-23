@@ -48,12 +48,12 @@ impl TokensScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Enter Keyword:");
+            let label = ui.label("Enter Keyword:");
             // Extract the query string as a clone to avoid multiple mutable borrows
             let query_ref = self
                 .token_search_query
                 .get_or_insert_with(|| "".to_string());
-            let text_edit_response = ui.text_edit_singleline(query_ref);
+            let text_edit_response = ui.text_edit_singleline(query_ref).labelled_by(label.id);
 
             // Clone the current query for use in the closure below
             let current_query = query_ref.clone();

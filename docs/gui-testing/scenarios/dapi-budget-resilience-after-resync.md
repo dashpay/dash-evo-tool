@@ -66,8 +66,8 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
    two) without additional resync cycling, to distinguish "budget recovers
    on its own" from "budget stays exhausted."
 5. **Check the logs.** Confirm the log targets exist first — `ls -l "$LOG"`
-   and `ls -l "$DATADIR"`, which is where the app writes `det.log` /
-   `det-stderr.log` — then search them:
+   and `ls -l "$DATADIR"`, which is where the app writes `det.log` (older builds also
+   `det-stderr.log`) — then search them:
 
    ```bash
    grep -R 'DapiAllAddressesExhausted' "$LOG" "$DATADIR"

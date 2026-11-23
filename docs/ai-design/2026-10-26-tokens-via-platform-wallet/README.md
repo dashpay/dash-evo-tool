@@ -1,0 +1,75 @@
+# Token actions through platform-wallet
+
+## Decision
+
+All twelve token state transitions (mint, transfer, burn, freeze, unfreeze,
+destroy frozen funds, pause, resume, claim, set price, purchase, settings
+update) take one of two routes, chosen by `AppContext::token_action_wallet`
+from the identity's DET wallet link:
+
+- **Wallet-linked identity:** the upstream `platform-wallet` crate,
+  `IdentityWallet::token_*_with_signer` of the wallet that holds it. DET never
+  borrows another wallet's handle. If that wallet is not registered upstream,
+  the existing `WalletNotLoaded` / `WalletLockedNotLoaded` errors apply.
+- **Wallet-less identity** (masternode, evonode and key-only identities): DET
+  builds the same `Token*TransitionBuilder` through the SDK and signs with the
+  identity's own keys. At the pinned revision `_with_signer` is exactly this SDK
+  call, so both routes send the same transition. The user chose to keep this
+  route because upstream offers no token handle outside a wallet; drop it once
+  upstream does.
+- **Removed wallet:** once storage is prepared, a link to an HD wallet the app
+  no longer knows (it was removed) counts as no link, so the identity takes the
+  SDK route. Before that the wallet list may still be filling, so the link is
+  kept. A known wallet that is locked or still loading keeps the identity
+  waiting.
+
+- **Seam:** `src/wallet_backend/tokens.rs`. `TokenActor` pairs a route (the
+  holding `PlatformWallet`, or the SDK) with the acting `QualifiedIdentity` (the
+  signer) and has one method per action. `AppContext::token_actor` picks the
+  route.
+- **Why `_with_signer`, not `_with_external_signer`:** the external-signer
+  variants pick the signing key themselves, take no `StateTransitionCreationOptions`
+  (so the Developer signing override and fee agreement would be lost), fetch the
+  contract again, and need the identity inside the wallet's `IdentityManager`.
+- **Errors:** `_with_signer` returns a raw `dash_sdk::Error`, so each `TokenActor`
+  method maps it with `TaskError::from_token_operation(kind, e)`.
+  - Proof failures are logged.
+  - Dedicated consensus mappings take priority.
+  - Unclassified failures become `TokenOperationFailed`; unclassified rejections
+    become `TokenOperationRejected`. Both name the operation.
+- **UI:** `AppContext::token_action_availability` blocks actions only for a
+  linked wallet that is not loaded yet: My Tokens shows "View only" with the
+  transaction buttons disabled, and token action screens show the reason
+  instead of the form, re-checking each frame while they wait. Read-only token
+  data stays visible. Wallet-less identities are never blocked.
+- **Mint recipient:** upstream drops a chosen recipient when the token does not
+  allow choosing one. `model::token::MintRecipient` applies the same rule up
+  front, so the confirmation names the identity that actually receives the
+  tokens.
+
+## Upstream gaps
+
+1. **No token handle outside a wallet.** `platform-wallet` exposes token
+   actions only on an identity held by a wallet, so wallet-less identities use
+   DET's SDK route instead.
+2. **`_with_signer` returns `dash_sdk::Error`.** DET labels the operation itself.
+3. **The mint recipient is normalised silently** (only a `debug!` log upstream).
+4. **No passthrough for `PutSettings` / `user_fee_increase`.** DET does not use
+   them for tokens.
+5. **`ConfigUpdateResult::GroupActionWithDocument` required a document.**
+   A group settings-update proposal is proved without one while the action stays
+   open, so it was reported as a proof error even though Platform accepted it.
+   Fixed upstream in dashpay/platform#5584 (`Option<Document>`); DET treats
+   `None` as a recorded proposal and keeps the stored settings until the group
+   closes the action.
+
+## Not changed
+
+- Contract registration and all token queries.
+- Balances, which upstream's `IdentitySyncManager` already owns.
+- Post-broadcast bookkeeping, apart from the mint recipient.
+
+Known existing issue (out of scope): the `HistoricalDocument` branches write the
+document's `amount` (a delta) as the identity's balance for mint and burn. The
+transfer, claim and purchase branches read field names the token-history
+contract does not have, so they do nothing.

@@ -21,3 +21,5 @@ pub mod utils;
 pub mod wallet_backend;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Where users report problems they cannot solve themselves.
+pub const SUPPORT_URL: &str = "https://github.com/dashpay/dash-evo-tool/issues";

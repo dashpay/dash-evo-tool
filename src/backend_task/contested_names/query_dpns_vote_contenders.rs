@@ -6,12 +6,7 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocument;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
-use dash_sdk::drive::query::vote_poll_vote_state_query::{
-    ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
-};
-use dash_sdk::platform::FetchMany;
 
 impl AppContext {
     pub(super) async fn query_dpns_vote_contenders(
@@ -40,20 +35,17 @@ impl AppContext {
             contract_id: data_contract.id(),
         };
 
-        let contenders_query = ContestedDocumentVotePollDriveQuery {
-            limit: None,
-            offset: None,
-            start_at: None,
-            vote_poll: vote_poll.clone(),
-            allow_include_locked_and_abstaining_vote_tally: true,
-            result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
-        };
-
         const MAX_RETRIES: usize = 3;
         let mut retries = 0;
 
         loop {
-            match ContenderWithSerializedDocument::fetch_many(sdk, contenders_query.clone()).await {
+            // One proved answer holds at most 100 contenders. The SDK reads
+            // every page and keeps the first page's tallies and winner, so a
+            // crowded contest is stored whole.
+            match sdk
+                .fetch_contested_resource_vote_state(&vote_poll, None)
+                .await
+            {
                 Ok(contenders) => {
                     return self.insert_or_update_contenders(name, &contenders, document_type);
                 }

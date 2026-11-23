@@ -606,7 +606,9 @@ impl WalletBackend {
         self.inner
             .wallet_persister
             .load_unowned_identities()
-            .map_err(|source| TaskError::WalletStorage { source })
+            .map_err(|source| TaskError::WalletStorage {
+                source: source.into(),
+            })
     }
 
     /// The unowned identities as a manager, so a mutation keeps the bucket and
@@ -844,6 +846,7 @@ impl WalletBackend {
                         &address_signer,
                         &asset_lock_signer,
                         settings,
+                        None,
                     )
                     .await
                     .map(|_changeset| ())

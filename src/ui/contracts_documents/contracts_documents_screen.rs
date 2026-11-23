@@ -244,7 +244,8 @@ impl DocumentQueryScreen {
                     .desired_width(text_width)
                     .text_color(DashColors::text_primary(dark_mode))
                     .background_color(DashColors::input_background(dark_mode)),
-            );
+            )
+            .accessible_name("Document query");
 
             ui.add_space(spacing);
 
@@ -300,8 +301,9 @@ impl DocumentQueryScreen {
         // Controls section
         if !self.matching_documents.is_empty() {
             ui.horizontal(|ui| {
-                ui.label("Filter documents:");
-                ui.text_edit_singleline(&mut self.document_search_term);
+                let filter_label = ui.label("Filter documents:");
+                ui.text_edit_singleline(&mut self.document_search_term)
+                    .labelled_by(filter_label.id);
 
                 if ui.button("Select Properties").clicked() {
                     self.show_fields_dropdown = !self.show_fields_dropdown;
@@ -543,7 +545,8 @@ impl DocumentQueryScreen {
                 .text_color(DashColors::text_primary(dark_mode))
                 .background_color(DashColors::input_background(dark_mode))
                 .font(egui::TextStyle::Monospace),
-        );
+        )
+        .accessible_name("Fetched documents");
     }
 
     fn show_remove_contract_popup(&mut self, ui: &mut egui::Ui) -> AppAction {

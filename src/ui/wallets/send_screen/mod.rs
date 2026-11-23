@@ -6657,6 +6657,38 @@ mod tests {
         );
     }
 
+    /// An explicit Core source the wallet settled as unable to send keeps
+    /// Send disabled for any amount, so the payment is never confirmed only
+    /// to be refused afterwards.
+    #[test]
+    fn a_settled_core_shortfall_is_an_amount_problem() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        let (mut screen, _temp_dir) = send_screen();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        screen.amount = Some(Amount::new_dash(0.01));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+
+        assert_eq!(
+            screen.amount_problem(),
+            Some(form_view::AmountProblem::CoreShortfall)
+        );
+        assert_eq!(screen.missing_step(), Some("Fix the highlighted field."));
+    }
+
     /// The shield fee preview states the fee the shield is charged, not the
     /// larger reserve the planner keeps back on the Platform address.
     #[test]

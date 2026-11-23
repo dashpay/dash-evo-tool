@@ -131,6 +131,8 @@ pub(super) enum AmountProblem {
     OverTicked { max: u64 },
     /// No amount the source can fund covers the network fee.
     FeeNotCovered,
+    /// The wallet answered that Core can send nothing.
+    CoreShortfall,
 }
 
 /// Why the private balance cannot pay yet (spec §3.1).
@@ -1371,6 +1373,9 @@ impl WalletSendScreen {
         if limits.fee_not_covered {
             return Some(AmountProblem::FeeNotCovered);
         }
+        if matches!(limits.quote, QuoteState::Shortfall(_)) {
+            return Some(AmountProblem::CoreShortfall);
+        }
         if let Some(held) = self.ticked_held()
             && requested > held
         {
@@ -1477,7 +1482,7 @@ impl WalletSendScreen {
                 None
             }
             // Shown with the Amount field itself.
-            Some(AmountProblem::FeeNotCovered) | None => None,
+            Some(AmountProblem::FeeNotCovered | AmountProblem::CoreShortfall) | None => None,
         };
         // Recipient rows carry their own amounts, so no single fix applies.
         if let Some((credits, label)) = fix.filter(|_| !several)

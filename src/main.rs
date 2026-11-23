@@ -85,8 +85,8 @@ fn main() -> ExitCode {
         report_startup_failure(&causes);
         // Only now: the dialog points the user to the log, which holds the
         // causes once they are reported.
-        if result.is_err() {
-            crate::boot::show_window_failure_dialog();
+        if let Err(error) = &result {
+            crate::boot::show_window_failure_dialog(error);
         }
         return ExitCode::FAILURE;
     }

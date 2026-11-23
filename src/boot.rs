@@ -28,7 +28,7 @@ use platform_wallet_storage::secrets::{SecretStore, SecretString};
 use crate::app::AppState;
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::model::error_report::StartupFailure;
+use crate::model::error_report::{StartupFailure, WindowFailureKind, window_failure_text};
 use crate::ui::components::passphrase_modal::{
     PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
@@ -352,9 +352,11 @@ impl eframe::App for BootApp {
 /// Tell the user in a system dialog that the app window could not be opened,
 /// so a launch without a terminal does not end silently. Best effort: without
 /// a dialog service (e.g. no zenity or kdialog on Linux) only the log remains.
-pub fn show_window_failure_dialog() {
-    let text =
-        crate::model::error_report::window_failure_text(crate::logging::log_file_path().as_deref());
+pub fn show_window_failure_dialog(error: &eframe::Error) {
+    let text = window_failure_text(
+        window_failure_kind(error),
+        crate::logging::log_file_path().as_deref(),
+    );
     if let Err(error) = native_dialog::DialogBuilder::message()
         .set_level(native_dialog::MessageLevel::Error)
         .set_title(crate::ui::components::startup_error_dialog::STARTUP_ERROR_TITLE)
@@ -366,6 +368,18 @@ pub fn show_window_failure_dialog() {
             ?error,
             "Could not show the system dialog about the window failure"
         );
+    }
+}
+
+/// Which layer kept eframe from opening the window, so the dialog gives
+/// advice that fits: winit talks to the desktop, wgpu to the graphics driver.
+fn window_failure_kind(error: &eframe::Error) -> WindowFailureKind {
+    match error {
+        eframe::Error::Winit(_) | eframe::Error::WinitEventLoop(_) => {
+            WindowFailureKind::DesktopSession
+        }
+        eframe::Error::Wgpu(_) => WindowFailureKind::Graphics,
+        eframe::Error::AppCreation(_) => WindowFailureKind::Other,
     }
 }
 
@@ -1056,6 +1070,17 @@ mod tests {
         let startup = Startup::prepare(Ok::<_, std::io::Error>(dir));
         assert!(startup.error().is_none());
         assert!(!startup.persist_window());
+    }
+
+    /// A graphics failure and an app-creation failure each get their own kind
+    /// of advice, not one fixed text for every window failure.
+    #[test]
+    fn window_failure_kind_follows_the_failing_layer() {
+        let graphics = eframe::Error::Wgpu(eframe::egui_wgpu::WgpuError::NoSurfaceFormatsAvailable);
+        assert_eq!(window_failure_kind(&graphics), WindowFailureKind::Graphics);
+
+        let creation = eframe::Error::AppCreation(Box::new(std::io::Error::other("x")));
+        assert_eq!(window_failure_kind(&creation), WindowFailureKind::Other);
     }
 
     /// Releasing a successful preparation frees the vault for another launch,

@@ -9,13 +9,38 @@ use crate::backend_task::error::TaskError;
 /// Message shown when a startup error carries no user-facing message of its own.
 pub const GENERIC_STARTUP_FAILURE: &str = "Dash Evo Tool could not start because of an unexpected problem. Restart the application to try again.";
 
-/// Message shown when the app window itself could not be opened.
-pub const WINDOW_FAILURE: &str = "Dash Evo Tool could not open its window, which usually means a problem with the graphics driver. Update your graphics drivers, then restart the application.";
+/// Why the app window could not be opened, as far as the user can act on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFailureKind {
+    /// The graphics system (driver or graphics card) could not be started.
+    Graphics,
+    /// The app could not connect to the desktop to create its window.
+    DesktopSession,
+    /// Any other cause.
+    Other,
+}
 
-/// The system dialog text for a window failure: [`WINDOW_FAILURE`], the log
-/// file location when known, and where to report the problem.
-pub fn window_failure_text(log_file: Option<&Path>) -> String {
-    let mut text = WINDOW_FAILURE.to_owned();
+impl WindowFailureKind {
+    /// What happened and what the user can do about it.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Graphics => {
+                "Dash Evo Tool could not open its window because the graphics system could not be started. Update your graphics drivers, then restart the application."
+            }
+            Self::DesktopSession => {
+                "Dash Evo Tool could not open its window because it could not connect to your desktop. Sign out and sign back in, or restart your computer, then start the application again."
+            }
+            Self::Other => {
+                "Dash Evo Tool could not open its window because of an unexpected problem. Restart the application to try again."
+            }
+        }
+    }
+}
+
+/// The system dialog text for a window failure: the message for `kind`, the
+/// log file location when known, and where to report the problem.
+pub fn window_failure_text(kind: WindowFailureKind, log_file: Option<&Path>) -> String {
+    let mut text = kind.message().to_owned();
     if let Some(log_file) = log_file {
         text.push_str(&format!(
             "\n\nThe log file is at {path}.",
@@ -143,13 +168,31 @@ mod tests {
     /// is and where to report the problem.
     #[test]
     fn window_failure_text_names_the_log_and_support() {
-        let text = window_failure_text(Some(Path::new("/logs/det.log")));
-        assert!(text.starts_with(WINDOW_FAILURE), "{text}");
+        let kind = WindowFailureKind::Graphics;
+        let text = window_failure_text(kind, Some(Path::new("/logs/det.log")));
+        assert!(text.starts_with(kind.message()), "{text}");
         assert!(text.contains("The log file is at /logs/det.log."), "{text}");
         assert!(text.contains(crate::SUPPORT_URL), "{text}");
 
-        let text = window_failure_text(None);
+        let text = window_failure_text(kind, None);
         assert!(!text.contains("log file is at"), "{text}");
+    }
+
+    /// Only a graphics failure sends the user to their graphics drivers; a
+    /// desktop connection failure or an unknown cause gets its own advice.
+    #[test]
+    fn window_failure_advice_follows_the_kind() {
+        let graphics = WindowFailureKind::Graphics.message();
+        let desktop = WindowFailureKind::DesktopSession.message();
+        let other = WindowFailureKind::Other.message();
+        assert!(graphics.contains("graphics drivers"), "{graphics}");
+        assert!(!desktop.contains("graphics"), "{desktop}");
+        assert!(desktop.contains("desktop"), "{desktop}");
+        assert!(!other.contains("graphics"), "{other}");
+        assert_ne!(desktop, other);
+
+        let text = window_failure_text(WindowFailureKind::DesktopSession, None);
+        assert!(text.starts_with(desktop), "{text}");
     }
 
     /// Startup failures fall back to the generic startup message.

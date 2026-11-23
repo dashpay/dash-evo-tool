@@ -648,8 +648,8 @@ pub fn check_password_not_echoed(run: &CliRun, password: &str) -> Result<(), Str
 }
 
 /// Backup files a boot created, by path relative to the data dir. Covers the
-/// `platform_compatibility` bridge's `*-backup-*.sqlite` copies and the
-/// generic `.bak` convention.
+/// `platform_compatibility` bridge's `*-backup-*.sqlite` copies, upstream
+/// `pre-migration-*.db` snapshots and the generic `.bak` convention.
 pub fn backup_files(data_dir: &Path) -> Result<BTreeMap<String, u64>, String> {
     let mut found = BTreeMap::new();
     collect_backups(data_dir, data_dir, &mut found)?;
@@ -674,7 +674,10 @@ fn collect_backups(
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if name.contains("backup") || name.ends_with(".bak") {
+        if name.contains("backup")
+            || name.ends_with(".bak")
+            || (name.starts_with("pre-migration-") && name.ends_with(".db"))
+        {
             let relative = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
@@ -1373,9 +1376,20 @@ mod tests {
         .expect("write backup");
         fs::write(dir.path().join("spv/testnet/notes.bak"), b"yy").expect("write nested backup");
         fs::write(dir.path().join(DATA_DB), b"zzz").expect("write live db");
+        fs::create_dir_all(dir.path().join("backups/auto")).expect("create auto backup dir");
+        fs::write(
+            dir.path()
+                .join("backups/auto/pre-migration-det-app-19-to-21-20000101T000000Z.db"),
+            b"wwww",
+        )
+        .expect("write upstream snapshot");
 
         let found = backup_files(dir.path()).expect("scan");
-        assert_eq!(found.len(), 2, "found {found:?}");
+        assert_eq!(found.len(), 3, "found {found:?}");
         assert_eq!(found.get("spv/testnet/notes.bak"), Some(&2));
+        assert_eq!(
+            found.get("backups/auto/pre-migration-det-app-19-to-21-20000101T000000Z.db"),
+            Some(&4)
+        );
     }
 }

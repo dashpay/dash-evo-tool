@@ -1320,6 +1320,8 @@ pub struct TokensScreen {
 
     // Banner handle for elapsed-time progress display
     operation_banner: Option<BannerHandle>,
+    /// The token registration's progress banner, apart from other operations'.
+    registration_banner: Option<BannerHandle>,
 
     // Document Schemas
     document_schemas_input: String,
@@ -1477,7 +1479,7 @@ impl TokensScreen {
     #[doc(hidden)]
     /// Whether the registration's progress banner is still shown.
     pub fn registration_banner_live_for_test(&self) -> bool {
-        self.operation_banner
+        self.registration_banner
             .as_ref()
             .is_some_and(|banner| banner.is_live())
     }
@@ -1751,6 +1753,7 @@ impl TokensScreen {
 
             // Banner handle for elapsed-time progress display
             operation_banner: None,
+            registration_banner: None,
 
             // Document Schemas
             document_schemas_input: String::new(),
@@ -2455,6 +2458,7 @@ impl TokensScreen {
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
         self.token_registration_context = None;
+        self.registration_banner.take_and_clear();
         self.token_names_input = vec![(
             String::new(),
             String::new(),
@@ -3163,7 +3167,6 @@ impl ScreenLike for TokensScreen {
         // Uncorrelated failures must not clear a genuine token refresh banner.
         if matches!(msg_type, MessageType::Error | MessageType::Warning)
             && self.refreshing_status != RefreshingStatus::Refreshing
-            && !self.awaits_token_registration()
         {
             self.operation_banner.take_and_clear();
         }
@@ -3209,7 +3212,7 @@ impl ScreenLike for TokensScreen {
         {
             self.token_creator_status = TokenCreatorStatus::Error;
             self.token_registration_context = None;
-            self.operation_banner.take_and_clear();
+            self.registration_banner.take_and_clear();
         }
         if self.tokens_subscreen == TokensSubscreen::MyTokens {
             let was_stopped = self.refreshing_status == RefreshingStatus::Refreshing
@@ -3303,14 +3306,13 @@ impl ScreenLike for TokensScreen {
                     &self.token_pricing_data,
                 );
             }
-            BackendTaskSuccessResult::RegisteredTokenContract => {
+            BackendTaskSuccessResult::RegisteredTokenContract
                 if self.awaits_token_registration()
-                    && self.token_registration_context.as_ref() == Some(context)
-                {
-                    self.token_creator_status = TokenCreatorStatus::Complete;
-                    self.token_registration_context = None;
-                }
-                self.operation_banner.take_and_clear();
+                    && self.token_registration_context.as_ref() == Some(context) =>
+            {
+                self.token_creator_status = TokenCreatorStatus::Complete;
+                self.token_registration_context = None;
+                self.registration_banner.take_and_clear();
             }
             _ => {}
         }
@@ -3482,7 +3484,7 @@ mod tests {
 
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(!screen.registration_banner_live_for_test());
-        assert!(screen.operation_banner.is_none());
+        assert!(screen.registration_banner.is_none());
     }
 
     /// A token DET knows about, as the registry would list it, with a contract
@@ -5459,7 +5461,8 @@ mod tests {
     fn token_creator_harness(screen: TokensScreen) -> egui_kittest::Harness<'static, TokensScreen> {
         egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 2400.0))
-            // Unnamed creator inputs are named on the base branch, not here.
+            // Simple mode's Token Name, Description and preset inputs have no
+            // accessible name yet (pre-existing, outside this change).
             .with_accessibility_check(false)
             .build_ui_state(
                 |ui, screen: &mut TokensScreen| {
@@ -5641,6 +5644,7 @@ mod tests {
             screen.token_creator_status,
             TokenCreatorStatus::WaitingForResult
         );
+        assert!(screen.registration_banner_live_for_test());
 
         screen.display_backend_task_result(
             &current,
@@ -5661,5 +5665,26 @@ mod tests {
         screen.display_message("The balance refresh failed.", MessageType::Error);
 
         assert!(screen.registration_banner_live_for_test());
+    }
+
+    /// A search started during a registration has a banner of its own: it
+    /// leaves the registration's banner up, and its failure retires only its
+    /// own banner.
+    #[test]
+    fn a_search_during_registration_keeps_each_banner_its_own() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        let _registration = screen.begin_token_registration_for_test();
+        screen.next_cursors.push(Start::StartAfter(vec![1]));
+
+        let banners =
+            || crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+
+        let _ = screen.goto_next_search_page();
+        assert_eq!(banners(), ["Creating token...", "Searching contracts..."]);
+
+        screen.display_message("The search failed.", MessageType::Error);
+        assert_eq!(banners(), ["Creating token..."]);
     }
 }

@@ -51,7 +51,7 @@ impl TokensScreen {
             MessageType::Info,
         );
         handle.with_elapsed();
-        self.operation_banner = Some(handle);
+        self.registration_banner = Some(handle);
     }
 
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {

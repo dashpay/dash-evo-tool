@@ -857,7 +857,8 @@ impl AppContext {
     }
 
     /// Set the cached fee multiplier without an epoch; the next proved epoch replaces it.
-    pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
+    #[cfg(test)]
+    pub(crate) fn set_fee_multiplier_permille(&self, multiplier: u64) {
         *self
             .fee_multiplier
             .lock()

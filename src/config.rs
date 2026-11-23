@@ -285,19 +285,29 @@ impl Config {
         }
 
         let process_entries = std::env::vars().collect::<Vec<_>>();
-        let mainnet_config =
-            load_network_config_or_none("MAINNET_", "Mainnet", &process_entries, &file_entries);
-        let testnet_config =
-            load_network_config_or_none("TESTNET_", "Testnet", &process_entries, &file_entries);
-        let devnet_config =
-            load_network_config_or_none("DEVNET_", "Devnet", &process_entries, &file_entries);
-        let local_config =
-            load_network_config_or_none("LOCAL_", "local network", &process_entries, &file_entries);
+        let mut invalid_networks = Vec::new();
+        let mut load = |network| match load_network_config(
+            dotenv_network_prefix(network),
+            &process_entries,
+            &file_entries,
+        ) {
+            Ok(config) => config,
+            Err(source) => {
+                tracing::warn!(?network, "Invalid saved network settings");
+                invalid_networks.push((network, source));
+                None
+            }
+        };
+        let mainnet_config = load(Network::Mainnet);
+        let testnet_config = load(Network::Testnet);
+        let devnet_config = load(Network::Devnet);
+        let local_config = load(Network::Regtest);
 
         if mainnet_config.is_none()
             && testnet_config.is_none()
             && devnet_config.is_none()
             && local_config.is_none()
+            && invalid_networks.is_empty()
         {
             return Err(ConfigError::NoValidConfigs);
         }
@@ -307,12 +317,14 @@ impl Config {
             testnet_config,
             devnet_config,
             local_config,
-            invalid_networks: Vec::new(),
+            invalid_networks,
         })
     }
 
     /// Update (overwrite) the configuration for a particular network.
     pub fn update_config_for_network(&mut self, network: Network, new_config: NetworkConfig) {
+        self.invalid_networks
+            .retain(|(rejected, _)| *rejected != network);
         match network {
             Network::Mainnet => self.mainnet_config = Some(new_config),
             Network::Testnet => self.testnet_config = Some(new_config),
@@ -434,30 +446,11 @@ fn dotenv_network_prefix(network: Network) -> &'static str {
     }
 }
 
-fn load_network_config_or_none(
-    prefix: &'static str,
-    network: &'static str,
-    process_entries: &[(String, String)],
-    file_entries: &[(String, String)],
-) -> Option<NetworkConfig> {
-    match load_network_config(prefix, network, process_entries, file_entries) {
-        Ok(config) => config,
-        Err(_) => {
-            tracing::warn!(
-                network,
-                "Ignoring invalid network settings while loading other networks"
-            );
-            None
-        }
-    }
-}
-
 fn load_network_config(
     prefix: &'static str,
-    network: &'static str,
     process_entries: &[(String, String)],
     file_entries: &[(String, String)],
-) -> Result<Option<NetworkConfig>, ConfigError> {
+) -> Result<Option<NetworkConfig>, envy::Error> {
     let mut entries = std::collections::HashMap::new();
     for (key, value) in process_entries.iter().chain(file_entries) {
         if let Some(field) = key.strip_prefix(prefix) {
@@ -473,7 +466,6 @@ fn load_network_config(
     envy::prefixed(prefix)
         .from_iter::<_, NetworkConfig>(entries)
         .map(Some)
-        .map_err(|source| ConfigError::InvalidNetworkConfig { network, source })
 }
 
 fn validate_env_contents(contents: &str) -> Result<(), ConfigError> {
@@ -667,6 +659,66 @@ mod tests {
         // Other fields should be unchanged
         assert_eq!(updated.core_rpc_user.as_deref(), Some("dashrpc"));
         assert_eq!(updated.core_rpc_port, Some(9998));
+    }
+
+    #[test]
+    fn load_retains_each_invalid_network_even_without_valid_networks() {
+        if crate::test_support::run_test_in_child(
+            "config::tests::load_retains_each_invalid_network_even_without_valid_networks",
+            &[],
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".env"),
+            "MAINNET_core_rpc_port=invalid\nTESTNET_core_rpc_port=65536\nDEVNET_core_rpc_port=-1\nLOCAL_core_rpc_port=invalid\n",
+        ).expect("write .env");
+        let config = Config::load_from(dir.path()).expect("retain parse failures");
+        for network in [
+            Network::Mainnet,
+            Network::Testnet,
+            Network::Devnet,
+            Network::Regtest,
+        ] {
+            assert!(config.config_for_network(network).is_none());
+            assert!(
+                config.network_settings_error(network).is_some(),
+                "{network}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_distinguishes_valid_invalid_and_absent_networks() {
+        if crate::test_support::run_test_in_child(
+            "config::tests::load_distinguishes_valid_invalid_and_absent_networks",
+            &[],
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".env"),
+            "MAINNET_core_rpc_port=9998\nTESTNET_core_rpc_port=invalid\n",
+        )
+        .expect("write .env");
+        let mut config = Config::load_from(dir.path()).expect("load mixed settings");
+        assert_eq!(
+            config
+                .mainnet_config
+                .as_ref()
+                .expect("mainnet")
+                .core_rpc_port,
+            Some(9998)
+        );
+        assert!(config.network_settings_error(Network::Mainnet).is_none());
+        assert!(config.testnet_config.is_none());
+        assert!(config.network_settings_error(Network::Testnet).is_some());
+        assert!(config.devnet_config.is_none());
+        assert!(config.network_settings_error(Network::Devnet).is_none());
+        config.update_config_for_network(Network::Testnet, NetworkConfig::default());
+        assert!(config.network_settings_error(Network::Testnet).is_none());
     }
 
     // ── Config::config_for_network ──────────────────────────────────
@@ -999,24 +1051,15 @@ mod tests {
     }
 
     #[test]
-    fn load_returns_no_valid_configs_when_all_networks_are_invalid() {
+    fn load_returns_no_valid_configs_when_all_networks_are_absent() {
         if run_config_test_in_subprocess(
-            "config::tests::load_returns_no_valid_configs_when_all_networks_are_invalid",
+            "config::tests::load_returns_no_valid_configs_when_all_networks_are_absent",
         ) {
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            tmp.path().join(".env"),
-            "MAINNET_core_rpc_port=invalid\n\
-             TESTNET_core_rpc_port=invalid\n\
-             DEVNET_core_rpc_port=invalid\n\
-             LOCAL_core_rpc_port=invalid\n",
-        )
-        .expect("write test config");
-
-        let error = Config::load_from(tmp.path()).expect_err("all networks are invalid");
-
+        std::fs::write(tmp.path().join(".env"), "").expect("empty config");
+        let error = Config::load_from(tmp.path()).expect_err("no network settings");
         assert!(matches!(error, ConfigError::NoValidConfigs));
     }
 

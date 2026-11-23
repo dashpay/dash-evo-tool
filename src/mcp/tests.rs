@@ -169,6 +169,83 @@ async fn standalone_tool_call_reports_invalid_network_settings() {
 
 #[cfg(feature = "cli")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_reports_invalid_settings_without_any_valid_network() {
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_reports_invalid_settings_without_any_valid_network",
+        |dir| {
+            std::fs::write(dir.join(".env"), "MAINNET_core_rpc_port=invalid\n")
+                .expect("write .env");
+            dir.to_path_buf()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("A setting saved for mainnet has a value that is not valid"),
+        "{error}"
+    );
+}
+
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_protected_vault_keeps_desktop_unlock_advice() {
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_protected_vault_keeps_desktop_unlock_advice",
+        |dir| {
+            crate::context::AppContext::open_secret_store_with_passphrase(
+                dir,
+                platform_wallet_storage::secrets::SecretString::new(hex::encode(
+                    crate::test_support::keys::secret_bytes(),
+                )),
+            )
+            .expect("create protected vault");
+            dir.to_path_buf()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        error.to_string().contains("enter the passphrase to unlock"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("other copy"), "{error}");
+}
+
+#[cfg(all(feature = "cli", unix))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_denied_vault_gets_permission_advice() {
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_denied_vault_gets_permission_advice",
+        |dir| {
+            use std::os::unix::fs::PermissionsExt;
+            drop(crate::context::AppContext::open_secret_store(dir).expect("create vault"));
+            std::fs::set_permissions(
+                crate::context::AppContext::secret_store_path(dir),
+                std::fs::Permissions::from_mode(0o000),
+            )
+            .expect("deny vault read");
+            dir.to_path_buf()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        error.to_string().contains("permission to change"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("other copy"), "{error}");
+}
+
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_startup_log_omits_the_env_file_text() {
     let marker = crate::test_support::keys::wif(dash_sdk::dpp::dashcore::Network::Testnet);
     let dir = tempfile::tempdir().expect("tempdir");

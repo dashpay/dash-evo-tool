@@ -56,7 +56,11 @@ pub(crate) fn run_test_in_child(test: &str, envs: &[(&str, &std::path::Path)]) -
     command.envs(envs.iter().copied());
     let output = command.output().expect("run isolated test");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "isolated test failed: {stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolated test failed: {stdout}\n{stderr}"
+    );
     assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
     true
 }

@@ -168,9 +168,8 @@ impl DashMcpService {
             let ctx_holder = self.ctx.clone();
             self.init_guard
                 .get_or_try_init(|| async {
-                    let app_context = init_app_context().await.map_err(|e| {
+                    let app_context = init_app_context_for_tool().await.inspect_err(|e| {
                         tracing::error!("MCP context initialization failed: {e}");
-                        McpToolError::Internal(e.message.into_owned())
                     })?;
                     ctx_holder.store(app_context);
                     Ok::<(), McpToolError>(())
@@ -348,20 +347,28 @@ impl ServerHandler for DashMcpService {
 /// for wallets to load -- individual tools wait for their specific wallet.
 #[cfg(feature = "cli")]
 pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
-    use crate::app_dir::{
-        app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
-    };
+    init_app_context_for_tool().await.map_err(Into::into)
+}
+
+#[cfg(feature = "cli")]
+async fn init_app_context_for_tool() -> Result<Arc<AppContext>, McpToolError> {
+    use crate::backend_task::error::TaskError;
+    let startup_error =
+        |source| McpToolError::StartupFailed(TaskError::from_prepare_environment_error(source));
+    let data_dir = crate::boot::ensure_data_folder().map_err(startup_error)?;
+    crate::boot::ensure_settings_file(&data_dir).map_err(startup_error)?;
+    init_app_context_in(data_dir)
+        .await
+        .map_err(|error| McpToolError::Internal(error.message.into_owned()))
+}
+
+#[cfg(feature = "cli")]
+async fn init_app_context_in(data_dir: std::path::PathBuf) -> Result<Arc<AppContext>, McpError> {
+    use crate::app_dir::data_file_path;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::Database;
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
-
-    let data_dir = app_user_data_dir_path()
-        .map_err(|e| McpError::internal_error(format!("data dir: {e}"), None))?;
-    ensure_data_dir_exists(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("ensure data dir: {e}"), None))?;
-    ensure_env_file(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("write .env: {e}"), None))?;
 
     let env_path = data_dir.join(".env");
     if env_path.exists()
@@ -448,6 +455,13 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     let config = crate::config::Config::load_from(&data_dir)
         .map_err(|e| McpError::internal_error(format!("config load: {e}"), None))?;
+    if let Some(source) = config.network_settings_error(network) {
+        let error = crate::context::NetworkContextError::InvalidSettings {
+            network,
+            source: source.clone(),
+        };
+        return Err(McpError::internal_error(error.to_string(), None));
+    }
     if config.config_for_network(network).is_none() {
         let available = available_network_names(&config);
         return Err(McpError::internal_error(

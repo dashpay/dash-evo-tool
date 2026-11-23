@@ -2581,8 +2581,10 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
         }) => {
             assert!(failed >= 1, "at least one vault-key delete must fail");
             assert!(
-                matches!(*first_error, TaskError::IdentityKeyVault { .. }),
-                "the first failure must preserve the identity-vault error chain"
+                matches!(first_error.as_ref(), TaskError::SecretStoreAccessDenied { source }
+                    if matches!(source.as_ref(), platform_wallet_storage::secrets::SecretStoreError::Io(io)
+                        if io.source.kind() == std::io::ErrorKind::PermissionDenied)),
+                "the first failure must preserve the denied vault's I/O cause: {first_error:?}"
             );
         }
         other => panic!("masternode key deletion failure must make clear incomplete: {other:?}"),

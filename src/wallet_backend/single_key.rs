@@ -948,12 +948,18 @@ pub fn open_secret_store_with_passphrase(
 /// to `0700` before the vault is opened or created.
 fn prepare_vault_dir(path: &std::path::Path) -> Result<(), SecretStoreError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
+        let io_error = |source| {
+            SecretStoreError::Io(platform_wallet_storage::secrets::IoError {
+                path: Some(parent.to_path_buf()),
+                source,
+            })
+        };
+        std::fs::create_dir_all(parent).map_err(io_error)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| SecretStoreError::MalformedVault)?;
+                .map_err(io_error)?;
         }
     }
     Ok(())
@@ -1035,7 +1041,28 @@ mod tests {
             panic!("a file blocks the vault folder");
         };
         assert!(
-            matches!(error, SecretStoreError::Io(ref io) if io.source.kind() == std::io::ErrorKind::NotADirectory),
+            matches!(error, SecretStoreError::Io(ref io) if matches!(io.source.kind(),
+                std::io::ErrorKind::NotADirectory | std::io::ErrorKind::AlreadyExists)),
+            "{error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_secret_store_keeps_denied_parent_io_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000))
+            .expect("deny access");
+        let error = open_secret_store(&parent.join("secrets/vault")).err();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).expect("restore");
+        let error = error.expect("denied parent");
+        assert!(
+            matches!(&error, SecretStoreError::Io(io)
+            if io.source.kind() == std::io::ErrorKind::PermissionDenied
+                && io.path.as_deref() == Some(parent.join("secrets").as_path())),
             "{error:?}"
         );
     }

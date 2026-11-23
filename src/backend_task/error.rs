@@ -4022,7 +4022,7 @@ impl TaskError {
             Step::CreateDataFolder { path, source: io }
                 if matches!(
                     io.kind(),
-                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
+                    ErrorKind::InvalidInput | ErrorKind::AlreadyExists
                 ) =>
             {
                 Self::DataFolderNotADirectory {
@@ -4298,7 +4298,8 @@ impl TaskError {
 /// Wrap a vault failure in its caller's class variant, except the
 /// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
 /// and an insecure vault folder, which becomes
-/// [`TaskError::SecretStoreFolderInsecure`], whichever class hit it.
+/// [`TaskError::SecretStoreFolderInsecure`]. Denied or read-only vault I/O
+/// becomes [`TaskError::SecretStoreAccessDenied`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4319,6 +4320,13 @@ pub(crate) fn vault_error(
         SecretStoreError::InsecureParentDir { .. } => TaskError::SecretStoreFolderInsecure {
             source: Box::new(source),
         },
+        SecretStoreError::Io(ref io)
+            if StorageFailure::of_io(&io.source) == Some(StorageFailure::AccessDenied) =>
+        {
+            TaskError::SecretStoreAccessDenied {
+                source: Box::new(source),
+            }
+        }
         source => class(Box::new(source)),
     }
 }

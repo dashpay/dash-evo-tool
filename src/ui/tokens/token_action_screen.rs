@@ -1364,6 +1364,47 @@ mod tests {
         );
     }
 
+    /// A confirmation opened before the co-signer's wallet locked is neither
+    /// shown nor sendable while the wallet stays locked.
+    #[test]
+    fn a_confirmation_left_open_when_the_wallet_locks_sends_nothing() {
+        use egui_kittest::kittest::Queryable;
+        use std::cell::Cell;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut info = token_info(&context, None, false);
+        hold_key_in_a_locked_wallet(&mut info);
+        let mut screen =
+            crate::ui::tokens::burn_tokens_screen::BurnTokensScreen::new(info, &context);
+        screen.action.amount = Some(Amount::from_token(&screen.common.identity_token_info, 5));
+        screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.confirmation_dialog = Some(
+            ConfirmationDialog::new("Confirm Burn", "Burn the tokens?")
+                .confirm_text(Some("Confirm pending burn")),
+        );
+        let sent = Cell::new(false);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut TokenActionScreen<_>| {
+                    if matches!(screen.ui(ui), AppAction::BackendTasksWithContexts(..)) {
+                        sent.set(true);
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        let shown = harness.query_by_label("Confirm pending burn");
+        let was_shown = shown.is_some();
+        if let Some(confirm) = shown {
+            confirm.click();
+            harness.run_steps(4);
+        }
+
+        assert!(!was_shown, "the confirmation is hidden while locked");
+        assert!(!sent.get(), "nothing is sent while the wallet is locked");
+    }
+
     /// A new action, not a proposal to co-sign, still asks to unlock a
     /// locked wallet before showing its form.
     #[test]

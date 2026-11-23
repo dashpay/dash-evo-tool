@@ -189,20 +189,21 @@ impl SpendLimitCache {
         }
     }
 
-    /// Record why the awaited request returned no limit.
+    /// Record why the awaited request returned no limit; false when
+    /// `request_id` is not the awaited one.
     pub fn mark_request_error(
         &mut self,
         seed_hash: WalletSeedHash,
         kind: SpendLimitKind,
         request_id: u64,
         error: &TaskError,
-    ) {
+    ) -> bool {
         let phase = match error {
             TaskError::SpendInProgress => Phase::Busy,
             TaskError::CoreSendMaxUnavailable { reason } => Phase::Unavailable(*reason),
             _ => Phase::Failed,
         };
-        self.settle(seed_hash, kind, request_id, phase);
+        self.settle(seed_hash, kind, request_id, phase)
     }
 
     /// Record that the awaited request failed.
@@ -226,12 +227,14 @@ impl SpendLimitCache {
         kind: SpendLimitKind,
         request_id: u64,
         phase: Phase,
-    ) {
+    ) -> bool {
         if let Some(state) = self.states.get_mut(&(seed_hash, kind))
             && matches!(state.phase, Phase::InFlight { request_id: awaited, .. } if awaited == request_id)
         {
             state.phase = phase;
+            return true;
         }
+        false
     }
 }
 

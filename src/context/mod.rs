@@ -1617,14 +1617,33 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Stored owner, falling back to the signing-key wallet for legacy records.
+    /// Stored owner, falling back to the DPNS signing key's wallet for legacy
+    /// records.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
             return Some(hash);
         }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;
+        self.legacy_owner_wallet_hash(&qi)
+    }
+
+    /// The wallet that owns a loaded identity: its stored owner, else (legacy
+    /// records) the loaded wallet behind its DPNS signing key. Not
+    /// `associated_wallets`, which lists every loaded wallet.
+    pub(crate) fn identity_owner_wallet(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
+        if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&qi.identity.id()) {
+            return Some(hash);
+        }
+        self.legacy_owner_wallet_hash(qi)
+    }
+
+    /// Owner of a legacy record without a stored wallet link.
+    // TODO(signing-key-wallet): switch to `wallet_for_signing_key` once #1117
+    // lands, so the owner is the wallet deriving a key the identity actually
+    // signs with, not the one behind its DPNS key.
+    fn legacy_owner_wallet_hash(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
+        let wallet = crate::ui::identity::get_selected_wallet(qi, Some(self), None).ok()??;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }
@@ -1873,9 +1892,27 @@ impl AppContext {
         )
     }
 
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` in
+    /// total to `output_count` recipients, never below what the build charges.
+    /// Without a `quote`, the coins the snapshot counts stand in.
+    pub fn snapshot_core_several_outputs_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        output_count: usize,
+        amount_duffs: u64,
+        quote: Option<crate::model::spend_limit::CoreSendQuoteFee>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_several_outputs_fee_duffs(
+            output_count,
+            amount_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
+        )
+    }
+
     /// How many coins a pooled Core send of the whole balance spends, from
     /// the wallet's snapshot.
-    fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+    pub fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
             .map(|wb| wb.core_send_input_count(seed_hash))
             .unwrap_or(0)

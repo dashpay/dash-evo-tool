@@ -16,9 +16,11 @@ note saying why. Text is HTML-escaped.
 """
 
 import argparse
+import base64
 import html
 import json
 import os
+from pathlib import Path
 
 e = html.escape
 CSS = """:root{--bg:#fff;--fg:#1c1e21;--mut:#666;--line:#d0d4da}
@@ -29,11 +31,29 @@ table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--line);pad
 .mut{color:var(--mut)}"""
 
 
+def embed_images(page, root):
+    """Embed controller-generated gallery PNG links for an offline presentation."""
+    root = Path(root)
+    for path in (root / "annotated").rglob("*.png"):
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError("Unsafe gallery image")
+        page = page.replace(
+            f'"{path.relative_to(root)}"',
+            '"data:image/png;base64,'
+            + base64.b64encode(path.read_bytes()).decode()
+            + '"',
+        )
+    return page
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--root", required=True)
     p.add_argument("--meta", required=True)
     p.add_argument("--title", default="Visual diff")
+    p.add_argument(
+        "--embed", action="store_true", help="Embed PNGs for offline viewing"
+    )
     a = p.parse_args()
     m = json.load(open(a.meta))
     known = {i["name"] for i in m.get("images", [])}
@@ -81,7 +101,10 @@ def main():
                 + "</ul>"
             )
     o.append("</body></html>")
-    open(os.path.join(a.root, "index.html"), "w").write("\n".join(o))
+    page = "\n".join(o)
+    if a.embed:
+        page = embed_images(page, a.root)
+    open(os.path.join(a.root, "index.html"), "w").write(page)
     print("wrote", os.path.join(a.root, "index.html"))
 
 

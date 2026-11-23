@@ -175,6 +175,25 @@ class Gallery(Case):
         self.assertEqual(code, 0, out)
         self.assertTrue(os.path.exists(self.path("index.html")))
 
+    def test_embedded_gallery_keeps_style_charset_and_both_images(self):
+        code, out = self.gallery(self.META, self.BOTH)
+        self.assertEqual(code, 0, out)
+        code, out = run(
+            "gallery.py",
+            "--root",
+            self.root,
+            "--meta",
+            self.path("meta.json"),
+            "--embed",
+        )
+        self.assertEqual(code, 0, out)
+        with open(self.path("index.html")) as page:
+            text = page.read()
+        self.assertIn("<meta charset=utf-8>", text)
+        self.assertIn("img{max-width:100%", text)
+        self.assertEqual(text.count("data:image/png;base64,"), 2)
+        self.assertNotIn('src="annotated/', text)
+
     def test_missing_labelled_image_stops_the_gallery(self):
         code, out = self.gallery(self.META, self.BOTH[1:])
         self.assertNotEqual(code, 0, out)
@@ -194,7 +213,6 @@ class Gallery(Case):
         code, out = self.gallery(meta, self.BOTH)
         self.assertNotEqual(code, 0, out)
         self.assertIn("not listed", out)
-
 
 
 class EnvValue(unittest.TestCase):

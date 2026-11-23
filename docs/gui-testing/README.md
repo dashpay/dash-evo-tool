@@ -30,7 +30,8 @@ build legs, fixture capture and draft sealing. It verifies the Linux release zip
 attestation against `release.yml`
 and the NEW tag's source SHA, then runs the zip's GUI and `det-cli`. There is no
 local build, OLD-build A/B or code review. The baseline is the newest older
-published pre-release, or an explicitly selected older published pre-release.
+published pre-release that is an ancestor of NEW, or an explicitly selected older
+published ancestor pre-release.
 
 The prepare job alone has `contents: write` to read draft assets; it never
 executes release binaries. Normal weekly runs reuse their build artifact.
@@ -40,15 +41,12 @@ publishes a fixed verdict and artifact link. The existing weekly Slack job
 includes that result. Neither the agent nor the standalone QA workflow publishes
 or deletes a release.
 
-| Result | Scheduled weekly | Manual weekly / standalone QA |
-|---|---|---|
-| PASS | Publish | Keep draft / report only |
-| NOTE | Keep unpublished draft; limitations listed | Keep draft / report only |
-| FAIL | Keep unpublished draft | Keep draft / report only |
-| INCOMPLETE, invalid/missing report, timeout | Keep unpublished draft | Keep draft / report only |
+The [release-review CI contract](../../.claude/skills/release-review/SKILL.md#ci-mode-gui-only)
+defines scope limits, report categories, verdicts and publication eligibility.
 
-Build and migration-fixture failures still clean up a newly created tag. QA
-failure cannot trigger cleanup, even through a failed/skipped dependency.
+Build and migration-fixture failures retain existing releases and mark drafts
+DO NOT PUBLISH; only an orphaned tag without a release can be removed. QA failure
+cannot trigger cleanup, even through a failed/skipped dependency.
 Drafts are never pruned by later weekly runs; **a human must clean them up**.
 A normal run skips an existing tag or unchanged source. To rebuild a retained
 weekly, dispatch `weekly-build.yml` with `force=true` and its version: the tag
@@ -70,28 +68,33 @@ The `<!-- weekly-version: … -->` marker remains unchanged.
 PRE generates one BIP39 phrase with Ubuntu's `python3-mnemonic` and pipes it
 directly into the same release's `det-cli core-wallet-import --mnemonic-stdin`.
 No phrase/env file is created; generated app `.env` files are removed before
-Claude starts. Binaries run with an emptied environment and isolated HOME/data.
+Claude starts. Binaries run with an emptied environment, isolated HOME/data and BROWSER=/bin/true
+to make external browser launches inert. Setup converts sudoers NOPASSWD grants to
+PASSWD, invalidates cached authorization and refuses QA if passwordless sudo still
+works. No later stage needs sudo. TODO: verify this on the first hosted dispatch;
+the local offline checks do not exercise hosted sudoers policy.
 The keyless wallet remains burnable and must never be used beyond this run.
 The GUI can reveal a derived WIF or spend funds if the agent ignores its
 instructions. Text/tree scanning blocks WIF exports, but screenshots have no
 independent OCR scan. This residual is accepted for the low-value, at-most-1-tDASH
 burner; never use mainnet or an operator wallet here.
 
-PRE imports the wallet and creates its receiving address before launching the GUI.
-Only after deterministic smoke passes does a separate HTTP-only funding step
-request a payout; it never starts a second `det-cli` against the running GUI.
+Smoke launches an empty Testnet profile first. The controller then pauses the GUI
+for PRE (wallet import and SPV-dependent receiving address), resumes it even if PRE
+fails, and attempts HTTP-only funding when an address is available. Standalone
+`det-cli` never runs against a live GUI.
 Funding uses only `https://faucet.thepasta.org`: live `/api/status`, CAP PoW,
-at most one payout/address/day, no faucet/IP rotation. Hard CAP sub-challenges
-run in a multiprocessing pool across available cores. Solving has a shared
+at most one payout/address/day, no faucet/IP rotation. Only the soft CAP tier is
+automated; requiresHardCaptcha stops funding. The hard tier is browser-only.
+Solving has a shared
 540-second deadline measured before challenge retrieval, leaving a minute for
 redemption within the 10-minute lifetime; expired solutions are never redeemed.
 The testnet P2PKH refund
 address comes from `depositAddress`, with optional repository variable
 `QA_FAUCET_REFUND_ADDRESS` taking precedence. Missing or invalid addresses skip
-POST with a warning in the report and step summary; that alone does not downgrade
-PASS. The funds are then abandoned with the disposable testnet wallet. Funding
-is capped at 1 tDASH. Known funding refusal means NOTE plus explicit NOT_REACHED
-items, while other reachable screens are still tested. An ambiguous payout is
+POST with a warning in the report and step summary. Funds are then abandoned with
+the disposable testnet wallet. Funding is capped at 1 tDASH. Known funding refusal
+is recorded while other reachable screens are still tested. An ambiguous payout is
 never retried; it requires a refund attempt and can leave the result incomplete.
 
 POST runs with `if: always()` after stopping the GUI. It checks Testnet, a single
@@ -130,28 +133,29 @@ or an LLM verdict trustworthy by themselves.
 Dispatch `release-qa.yml` from `v1.0-dev` with `tag`, optional `baseline`, and
 optional `run_id` of the build whose Linux zip should be reviewed. Without a
 run ID, it downloads the release asset, including drafts. Other refs are skipped
-and reported INCOMPLETE. For standalone QA use **Re-run all jobs**, because input/report artifact
-names are attempt-specific. A weekly rerun still obeys its tag/no-commits gate;
+and reported INCOMPLETE. **Re-run failed jobs** reuses stable input/report artifact names; successful
+uploads replace the previous artifact for this run. A weekly rerun still obeys its tag/no-commits gate;
 use a new forced manual dispatch when rebuilding an existing draft. Standalone reruns never publish; a maintainer can
 publish the retained draft after inspecting the new report.
 
-Download `release-qa-report-<attempt>` for `report.json`, Markdown, verified
+Download `release-qa-report` for `report.json`, Markdown, verified
 changelog, scenarios/checklist, spotlight gallery, embedded visual changelog,
 screenshots and GUI logs. `result.json` is the controller's effective verdict;
-`report.json.summary` also records it. INCOMPLETE uses `verdict: FAIL` with
-`complete: false` in that machine report. Missing or malformed evidence fails closed: the controller validates report
-field types, scenario statuses, nonempty documents, gallery JSON, PNG files and
-coverage of every supplied commit. Findings prevent PASS even if the agent labels
-the summary PASS. Pending or uncertain refunds keep the result INCOMPLETE.
+`report.json.summary` also records it. The controller validates report fields, gallery images and coverage of every
+supplied non-merge commit. The report job also requires a successful finish step
+and a complete export manifest whose file hashes match the downloaded artifacts.
 Credential-like text (BIP39, extended private keys, Dash/Bitcoin mainnet/testnet
 WIFs and Anthropic tokens) suppresses export; screenshots are checked by the agent.
 Agent HTML writes are denied. All HTML is sanitized again at export: only passive
-markup, local gallery image/anchor links and embedded PNGs survive; scripts, CSS,
-event handlers, frames and external links are removed.
+markup, local gallery image/anchor links and embedded PNGs survive. The controller
+restores only the gallery's fixed CSS and UTF-8 declaration; agent CSS, scripts,
+event handlers, frames and external links are removed. All text is scanned before
+any file is copied, and a staged export becomes public only after completion.
 Profiles, vaults, env files and raw Claude transcripts are never uploaded.
 
 CI runs the Python suite in `tests.yml` on release-QA script/workflow changes
-and the lightweight Monday schedule. Install Ubuntu `python3-yaml`, `python3-pil`
+and visual-diff/release-review skill changes; it is excluded from the Monday
+schedule. The same job runs the visual-diff selftest. Install Ubuntu `python3-yaml`, `python3-pil`
 and `python3-mnemonic` for local checks; the secret tests use the real BIP39 library.
 Offline checks (no faucet payouts or Claude usage):
 

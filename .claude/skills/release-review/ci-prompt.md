@@ -9,11 +9,12 @@ already running on an isolated display with a runtime burner wallet. Check the
 visible network is Testnet. If it is not, report incomplete and stop.
 
 1. Write an initial report.json with summary.complete=false. Verify the changelog
-   against commits and PR bodies; map every user-visible commit to a screen or
-   an explicit reason it cannot be shown. Save verified-changelog.md.
+   against commits and PR bodies. Every line of context/commits.txt (non-merge candidates)
+   needs a meta.json coverage row. Internal-only commits use images: [] and
+   note: "no user-visible change". Save verified-changelog.md.
 2. Write scenarios.md and story-checklist.md in output only. Deep-test changed
-   flows; tour reachable screens at basic and advanced levels, light/dark, narrow
-   layouts, validation and error states. No secret-entry/export screens, sends,
+   flows; tour reachable screens at basic and advanced levels, light/dark,
+   validation and error states. No secret-entry/export screens, sends,
    votes, registrations, shielding, profile mutations or final confirmations.
 3. Use only these Bash commands (no chaining, redirection or substitutions):
    `/usr/local/bin/qa-ui click X Y`, `key Tab`, `key ctrl+a`, `type 'public text'`,
@@ -30,9 +31,9 @@ visible network is Testnet. If it is not, report incomplete and stop.
    Read every labelled image, fix misplaced annotations and rerun gallery.
    Include baseline/NEW SHAs, NEW-only disclaimer and coverage reasons in meta.
 6. Update report.json to the release-review CI machine contract. Complete means
-   the changelog, reachable planned tour, coverage table and gallery are finished;
-   unavailable fixtures may be NOTE, but running out of time/turns is incomplete.
-   Only PASS permits publication; NOTE also keeps the unpublished draft.
+   the changelog, reachable planned tour, coverage table and gallery are finished.
+   Classify every not_reached item using the CI machine contract in release-review;
+   its verdict/publication rules are canonical.
    Budget: 600 turns, 140 minutes. Reserve 60 turns/final 20 minutes for reporting;
    stop exploring after roughly two hours. No human
    prompts. Do not attempt cleanup or refund: deterministic POST owns both.

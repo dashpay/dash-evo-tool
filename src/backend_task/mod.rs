@@ -1339,7 +1339,11 @@ pub enum BackendTaskSuccessResult {
         cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
-    LoadedIdentity(QualifiedIdentity),
+    LoadedIdentity {
+        identity: QualifiedIdentity,
+        /// What the requester needs to know about a save that landed.
+        warning: Option<error::IdentitySaveWarning>,
+    },
     /// This identity's keys were sealed under a password (opt-in).
     /// The `count` keys newly sealed (0 when the task was an idempotent re-run
     /// over an already-protected identity).

@@ -3875,7 +3875,7 @@ impl WalletSendScreen {
                 | BackendTaskSuccessResult::PlatformAddressSyncPushed { .. }
                 | BackendTaskSuccessResult::RefreshedWallet { .. }
                 | BackendTaskSuccessResult::RefreshedIdentity(_)
-                | BackendTaskSuccessResult::LoadedIdentity(_)
+                | BackendTaskSuccessResult::LoadedIdentity { .. }
                 | BackendTaskSuccessResult::RegisteredIdentity(..)
                 | BackendTaskSuccessResult::ToppedUpIdentity(..)
                 | BackendTaskSuccessResult::IdentitiesLoaded { .. }

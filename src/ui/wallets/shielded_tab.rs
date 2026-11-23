@@ -109,6 +109,16 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
     }
 }
 
+/// Whether spending the private balance waits for its verification: while
+/// it is being verified, or after that failed. "Skip for now" hides the
+/// failure but leaves spending paused.
+pub fn shielded_spending_paused(state: &MigrationState) -> bool {
+    matches!(
+        derive_shielded_indicator(state, false),
+        ShieldedIndicator::Verifying | ShieldedIndicator::Failed
+    )
+}
+
 /// View component for the Shielded tab within the Wallets screen.
 pub struct ShieldedTabView {
     app_context: Arc<AppContext>,
@@ -633,13 +643,11 @@ impl ShieldedTabView {
         // stay visible) rather than offer a dead end the backend would reject.
         match FeatureGate::ShieldedOperations.first_unmet_check(&self.app_context) {
             None => {
-                // J-3 spend lock: any verifying / failed indicator pauses spends
-                // regardless of the local sync state. Computed once so the
-                // hover-text and the "Spending paused" notice agree.
-                let spend_locked = matches!(
-                    indicator,
-                    ShieldedIndicator::Verifying | ShieldedIndicator::Failed
-                );
+                // J-3 spend lock, shared with the Send form, regardless of the
+                // local sync state. Computed once so the hover-text and the
+                // "Spending paused" notice agree.
+                let spend_locked =
+                    shielded_spending_paused(&self.app_context.migration_status().state());
 
                 // Action buttons
                 ui.horizontal(|ui| {

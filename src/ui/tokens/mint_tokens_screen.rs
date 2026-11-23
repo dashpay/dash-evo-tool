@@ -1,6 +1,5 @@
 use super::token_action_screen::{
     FILL_IN_THE_FORM, StepCounter, TokenAction, TokenActionCtx, TokenActionScreen,
-    parse_identity_id, positive_amount,
 };
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
@@ -9,14 +8,18 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::MintRecipient;
+use crate::model::token::{parse_identity_id, positive_amount};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
@@ -34,52 +37,92 @@ pub struct MintAction {
     amount_input: Option<AmountInput>,
     pub recipient_identity_id: String,
     known_identities: Vec<QualifiedIdentity>,
-    /// The token sends new tokens to a configured identity unless told otherwise.
-    has_default_destination: bool,
+    /// The token's rules for where new tokens go.
+    distribution_rules: TokenDistributionRules,
     /// The token lets the minter name a recipient. When it does not, Platform
     /// refuses any mint that names one, even the configured destination.
     allow_choosing_destination: bool,
     /// New tokens have somewhere to go: a configured destination, or the
     /// token lets the minter choose one.
     can_mint: bool,
+    /// The recipient of the group mint being co-signed, as proposed.
+    proposal_recipient: Option<Identifier>,
 }
 
 impl MintAction {
-    /// The recipient to mint to: `Some(None)` leaves it to the token's
-    /// configured destination; `None` when no valid recipient is known.
+    /// Where the new tokens go under the token's rules; `None` when the
+    /// entered recipient does not parse.
     ///
     /// A token that forbids choosing always mints to its configured
     /// destination, so any typed or pre-filled recipient is ignored: Platform
-    /// refuses a mint that names one. Co-signing a group mint still matches
-    /// the proposal, because Platform compares the resolved recipient (the
-    /// configured destination) and leaves the recipient out of the action id.
+    /// refuses a mint that names one. A co-signature resolves that destination
+    /// again and is refused unless it is the proposal's recipient (see
+    /// [`Self::proposal_mismatch`]).
+    fn mint_recipient(&self) -> Option<MintRecipient> {
+        let entered = self.recipient_identity_id.trim();
+        let chosen = if self.allow_choosing_destination && !entered.is_empty() {
+            Some(parse_identity_id(entered)?)
+        } else {
+            None
+        };
+        Some(MintRecipient::resolve(&self.distribution_rules, chosen))
+    }
+
+    /// The recipient to mint to: `Some(None)` leaves it to the token's
+    /// configured destination; `None` when no valid recipient is known.
     fn recipient(&self) -> Option<Option<Identifier>> {
-        if !self.allow_choosing_destination {
-            return self.has_default_destination.then_some(None);
+        match self.mint_recipient()? {
+            MintRecipient::Missing => None,
+            recipient => Some(recipient.transition_recipient()),
         }
-        if self.recipient_identity_id.trim().is_empty() && self.has_default_destination {
-            return Some(None);
-        }
-        parse_identity_id(&self.recipient_identity_id).map(Some)
     }
 
     /// The identity the new tokens go to: the entered recipient, or the
     /// token's configured destination when the mint leaves it to the token.
-    fn resolved_recipient(&self, ctx: &TokenActionCtx) -> Option<Identifier> {
-        match self.recipient()? {
-            Some(recipient) => Some(recipient),
-            None => ctx
-                .info
-                .token_config
-                .distribution_rules()
-                .new_tokens_destination_identity()
-                .copied(),
+    fn resolved_recipient(&self) -> Option<Identifier> {
+        self.mint_recipient()?.identity()
+    }
+
+    /// Co-sign the group mint proposed to `recipient`.
+    pub fn set_proposal_recipient(&mut self, recipient: Identifier) {
+        self.recipient_identity_id = recipient.to_string(Encoding::Base58);
+        self.proposal_recipient = Some(recipient);
+    }
+
+    /// The proposal's recipient and the token's current destination when they
+    /// differ for a token that forbids choosing: Platform would refuse the
+    /// co-signature.
+    fn proposal_mismatch(&self) -> Option<(Identifier, Option<Identifier>)> {
+        let proposed = self.proposal_recipient?;
+        if self.allow_choosing_destination {
+            return None;
         }
+        let destination = self.resolved_recipient();
+        (destination != Some(proposed)).then_some((proposed, destination))
+    }
+
+    /// Why the proposal cannot be co-signed, naming the destination as the
+    /// app last read it, since its stored copy of the token may be out of date.
+    fn proposal_mismatch_text(&self) -> Option<String> {
+        let (proposed, destination) = self.proposal_mismatch()?;
+        let proposed = proposed.to_string(Encoding::Base58);
+        Some(match destination {
+            Some(destination) => format!(
+                "This proposal mints to {proposed}, but this token's destination for new tokens was last known as {destination}, so it cannot be signed here. Ask the group to propose the mint again.",
+                destination = destination.to_string(Encoding::Base58)
+            ),
+            None => format!(
+                "This proposal mints to {proposed}, but this token was last known to have no destination for new tokens, so it cannot be signed here. Ask the group to propose the mint again."
+            ),
+        })
     }
 
     /// What a group co-signer is told about where the proposed tokens go.
-    fn proposed_recipient_text(&self, ctx: &TokenActionCtx) -> String {
-        match self.resolved_recipient(ctx) {
+    fn proposed_recipient_text(&self) -> String {
+        match self
+            .proposal_recipient
+            .or_else(|| self.resolved_recipient())
+        {
             Some(recipient) => format!(
                 "Recipient: {recipient}",
                 recipient = recipient.to_string(Encoding::Base58)
@@ -115,6 +158,14 @@ impl MintAction {
     }
 }
 
+/// Where new tokens go for a token that forbids choosing, as last read.
+fn destination_text(destination: &Identifier) -> String {
+    format!(
+        "New tokens go to this token's destination identity, last known as {destination}.",
+        destination = destination.to_string(Encoding::Base58)
+    )
+}
+
 impl TokenAction for MintAction {
     const VERB: &'static str = "Mint";
     const PAGE_HEADING: &'static str = "Mint Tokens";
@@ -122,7 +173,14 @@ impl TokenAction for MintAction {
     const CONFIRM_TITLE: &'static str = "Confirm Mint";
 
     fn new(info: &IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let rules = info.token_config.distribution_rules();
+        // The rules of the contract the mint is signed with, which Platform
+        // applies; the token registry's copy only when that contract lacks it.
+        let rules = info
+            .data_contract
+            .contract
+            .expected_token_configuration(info.token_position)
+            .unwrap_or(&info.token_config)
+            .distribution_rules();
         let has_default_destination = rules.new_tokens_destination_identity().is_some();
         let allow_choosing_destination = rules.minting_allow_choosing_destination();
         MintAction {
@@ -130,9 +188,10 @@ impl TokenAction for MintAction {
             amount_input: None,
             recipient_identity_id: String::new(),
             known_identities: super::load_identities_with_banner(app_context),
-            has_default_destination,
+            distribution_rules: rules.clone(),
             allow_choosing_destination,
             can_mint: has_default_destination || allow_choosing_destination,
+            proposal_recipient: None,
         }
     }
 
@@ -142,16 +201,25 @@ impl TokenAction for MintAction {
             .authorized_to_make_change_action_takers()
     }
 
-    fn confirm_message(&self, ctx: &TokenActionCtx) -> String {
-        let recipient = self
-            .resolved_recipient(ctx)
-            .map(|id| id.to_string(Encoding::Base58))
-            .unwrap_or_default();
-        format!(
-            "Are you sure you want to mint {} tokens to {}?",
-            self.amount.clone().unwrap_or(Amount::new(0, 0)),
-            recipient
-        )
+    fn confirm_message(&self, _ctx: &TokenActionCtx) -> String {
+        let amount = self.amount.clone().unwrap_or(Amount::new(0, 0));
+        match self.mint_recipient() {
+            Some(MintRecipient::Chosen(recipient)) => format!(
+                "Are you sure you want to mint {amount} tokens to {recipient}?",
+                recipient = recipient.to_string(Encoding::Base58)
+            ),
+            Some(MintRecipient::ContractDestination(recipient)) => format!(
+                "Are you sure you want to mint {amount} tokens to the identity Platform uses as this token's destination, last known as {recipient}?",
+                recipient = recipient.to_string(Encoding::Base58)
+            ),
+            Some(MintRecipient::Missing) => format!(
+                "Are you sure you want to mint {amount} tokens? This token has no destination identity for new tokens."
+            ),
+            None => format!(
+                "Are you sure you want to mint {amount} tokens to {recipient}?",
+                recipient = self.recipient_identity_id
+            ),
+        }
     }
 
     fn render_form(&mut self, ui: &mut Ui, ctx: &TokenActionCtx, step: &mut StepCounter) {
@@ -181,7 +249,10 @@ impl TokenAction for MintAction {
             self.render_amount_input(ui, ctx);
         }
 
-        let distribution_rules = ctx.info.token_config.distribution_rules();
+        let destination = self
+            .distribution_rules
+            .new_tokens_destination_identity()
+            .copied();
         if ctx.is_group_signing {
             // The co-signer approves the proposal as it stands, so its
             // recipient is shown but cannot be changed.
@@ -190,13 +261,18 @@ impl TokenAction for MintAction {
                 "You are signing an existing group Mint so you are not allowed to choose the recipient.",
             );
             ui.add_space(5.0);
-            ui.label(self.proposed_recipient_text(ctx));
-        } else if distribution_rules.minting_allow_choosing_destination() {
+            ui.label(self.proposed_recipient_text());
+            if let Some(explanation) = self.proposal_mismatch_text() {
+                ui.add_space(5.0);
+                ui.colored_label(
+                    DashColors::error_color(ui.style().visuals.dark_mode),
+                    explanation,
+                );
+            }
+        } else if self.allow_choosing_destination {
             // A token that forbids choosing mints to its configured
             // destination for every role, so no one gets a field it ignores.
-            let destination_optional = distribution_rules
-                .new_tokens_destination_identity()
-                .is_some();
+            let destination_optional = destination.is_some();
 
             ui.add_space(10.0);
             ui.separator();
@@ -210,15 +286,23 @@ impl TokenAction for MintAction {
             }
             ui.add_space(5.0);
             self.render_recipient_input(ui, ctx);
+        } else if let Some(destination) = destination {
+            ui.add_space(10.0);
+            ui.label(destination_text(&destination));
         }
     }
 
     fn inputs_ready(&self) -> bool {
-        self.can_mint && positive_amount(&self.amount).is_some() && self.recipient().is_some()
+        self.can_mint
+            && positive_amount(&self.amount).is_some()
+            && self.recipient().is_some()
+            && self.proposal_mismatch().is_none()
     }
 
     fn disabled_reason(&self) -> &'static str {
-        if self.can_mint {
+        if self.proposal_mismatch().is_some() {
+            "This proposal mints to an identity other than this token's last known destination, so it cannot be signed here. Ask the group to propose the mint again."
+        } else if self.can_mint {
             FILL_IN_THE_FORM
         } else {
             "This token cannot be minted until its configuration sets a default recipient for new tokens."
@@ -388,11 +472,16 @@ pub(crate) mod tests {
             action.inputs_ready(),
             "the optional recipient may stay empty"
         );
-        assert!(
-            action
-                .confirm_message(&ctx)
-                .ends_with(&format!("{}?", Identifier::from([5; 32]))),
-            "the confirmation names the configured destination"
+        // The transition names no recipient: Platform applies the token's
+        // destination itself, which may have changed since it was read here.
+        assert_eq!(
+            action.confirm_message(&ctx),
+            format!(
+                "Are you sure you want to mint {amount} tokens to the identity Platform uses as this token's destination, last known as {destination}?",
+                amount = Amount::from_token(&info, 5),
+                destination = Identifier::from([5; 32]),
+            ),
+            "the confirmation names the configured destination as last known"
         );
         match action.build_action(&ctx, signing_key(), None, None) {
             Some(AppAction::BackendTask(BackendTask::TokenTask(task))) => match *task {
@@ -404,6 +493,48 @@ pub(crate) mod tests {
             },
             other => panic!("expected a mint task, got {other:?}"),
         }
+    }
+
+    /// A co-signer is shown the recipient the group proposed, even when the
+    /// token's destination has changed since.
+    #[test]
+    fn a_co_signer_sees_the_proposed_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut action = MintAction::new(&info, &context);
+        let proposed = Identifier::from([9; 32]);
+        action.set_proposal_recipient(proposed);
+
+        assert_eq!(
+            action.proposed_recipient_text(),
+            format!("Recipient: {}", proposed.to_string(Encoding::Base58))
+        );
+        assert_eq!(
+            action.proposal_mismatch(),
+            Some((proposed, Some(Identifier::from([5; 32]))))
+        );
+        // The destination is the app's stored copy, so it is named as last
+        // known, with what the user can do about it.
+        assert_eq!(
+            action.disabled_reason(),
+            "This proposal mints to an identity other than this token's last known destination, so it cannot be signed here. Ask the group to propose the mint again."
+        );
+        assert_eq!(
+            action.proposal_mismatch_text(),
+            Some(format!(
+                "This proposal mints to {proposed}, but this token's destination for new tokens was last known as {destination}, so it cannot be signed here. Ask the group to propose the mint again.",
+                proposed = proposed.to_string(Encoding::Base58),
+                destination = Identifier::from([5; 32]).to_string(Encoding::Base58),
+            ))
+        );
+        assert_eq!(
+            destination_text(&Identifier::from([5; 32])),
+            format!(
+                "New tokens go to this token's destination identity, last known as {}.",
+                Identifier::from([5; 32]).to_string(Encoding::Base58)
+            )
+        );
     }
 
     /// The recipient a built mint task carries; panics when no task is built.
@@ -474,35 +605,72 @@ pub(crate) mod tests {
         let context = crate::context::test_support::test_app_context(dir.path());
         let destination = Identifier::from([5; 32]);
         let info = token_info(&context, Some(destination), true);
-        let ctx = TokenActionCtx {
-            info: &info,
-            app_context: &context,
-            is_group_signing: true,
-        };
         let mut action = MintAction::new(&info, &context);
         assert_eq!(
-            action.proposed_recipient_text(&ctx),
+            action.proposed_recipient_text(),
             format!("Recipient: {}", destination.to_string(Encoding::Base58))
         );
 
         let proposed = Identifier::from([6; 32]);
         action.recipient_identity_id = proposed.to_string(Encoding::Base58);
         assert_eq!(
-            action.proposed_recipient_text(&ctx),
+            action.proposed_recipient_text(),
             format!("Recipient: {}", proposed.to_string(Encoding::Base58))
         );
 
         let without_destination = token_info(&context, None, true);
-        let ctx = TokenActionCtx {
-            info: &without_destination,
-            app_context: &context,
-            is_group_signing: true,
-        };
         let action = MintAction::new(&without_destination, &context);
         assert_eq!(
-            action.proposed_recipient_text(&ctx),
+            action.proposed_recipient_text(),
             "This proposal does not name a recipient."
         );
+    }
+
+    /// The mint is signed with the contract in `info.data_contract`, so the
+    /// recipient rules come from that contract even when the token registry's
+    /// copy (`info.token_config`) says otherwise, and the confirmation names
+    /// the identity Platform will credit.
+    #[test]
+    fn the_recipient_follows_the_contract_the_mint_is_signed_with() {
+        use dash_sdk::dpp::data_contract::TokenConfiguration as ContractTokenConfiguration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        // The registry lets the minter choose and has no destination; the
+        // signed contract forbids choosing and mints to `destination`.
+        let mut info = token_info(&context, None, true);
+        let destination = Identifier::from([5; 32]);
+        let mut signed = TokenConfigurationV0::default_most_restrictive();
+        signed
+            .distribution_rules
+            .set_new_tokens_destination_identity(Some(destination));
+        signed
+            .distribution_rules
+            .set_minting_allow_choosing_destination(false);
+        let dash_sdk::platform::DataContract::V1(contract) = &mut info.data_contract.contract
+        else {
+            panic!("a version 1 contract");
+        };
+        contract
+            .tokens
+            .insert(0, ContractTokenConfiguration::V0(signed));
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: &context,
+            is_group_signing: false,
+        };
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+        action.recipient_identity_id = Identifier::from([6; 32]).to_string(Encoding::Base58);
+
+        assert!(action.inputs_ready());
+        assert!(
+            action
+                .confirm_message(&ctx)
+                .ends_with(&format!("{}?", destination.to_string(Encoding::Base58))),
+            "the confirmation names the signed contract's destination"
+        );
+        assert_eq!(built_recipient(&mut action, &ctx), None);
     }
 
     /// Without a configured destination the recipient stays required.

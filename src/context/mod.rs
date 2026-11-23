@@ -284,6 +284,9 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: pause and observe the wallet backend build of this context.
+    #[cfg(test)]
+    pub(crate) test_wallet_backend_hooks: crate::wallet_backend::BuildTestHooks,
     /// Test seam: a paid task's background balance read waits here before
     /// it starts, so a test can hold it and observe the task finishing first.
     #[cfg(test)]
@@ -624,6 +627,8 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_wallet_backend_hooks: Default::default(),
             #[cfg(test)]
             test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
@@ -1301,27 +1306,7 @@ impl AppContext {
         e: dash_sdk::Error,
         request_type: RequestType,
     ) -> TaskError {
-        match e {
-            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                tracing::error!(
-                    target: "proof_log",
-                    request_type = ?request_type,
-                    height = block_info.height,
-                    time_ms = block_info.time_ms,
-                    proof_bytes_len = proof_bytes.len(),
-                    %proof_error,
-                    "drive proof verification failed",
-                );
-                TaskError::ProofError {
-                    source_error: Box::new(dash_sdk::Error::DriveProofError(
-                        proof_error,
-                        proof_bytes,
-                        block_info,
-                    )),
-                }
-            }
-            e => TaskError::from(e),
-        }
+        TaskError::from_broadcast_sdk_error(e, request_type)
     }
 
     /// Recovers from a Drive proof error on a contract put/update.
@@ -1399,7 +1384,8 @@ impl AppContext {
             self,
             sdk,
             Arc::clone(&self.connection_status),
-            task_result_sender,
+            // The backend reports for the life of the context, whoever wired it.
+            task_result_sender.unfiltered(),
             self.secret_prompt(),
         )
         .await?;
@@ -1516,7 +1502,7 @@ impl AppContext {
     /// install replaces the sender for later callers only; the wallet backend
     /// keeps the one it was built with.
     pub fn install_frame_loop(&self, sender: SenderAsync<TaskResult>) {
-        self.frame_loop.store(Some(Arc::new(sender)));
+        self.frame_loop.store(Some(Arc::new(sender.unfiltered())));
     }
 
     /// The sender to this context's frame loop. Headless callers (MCP, CLI)

@@ -7,16 +7,49 @@ use tokio::sync::mpsc;
 pub struct SenderAsync<T> {
     sender: mpsc::Sender<T>,
     ctx: egui::Context,
+    /// The messages this sender passes on; `None` passes every one.
+    keep: Option<fn(&T) -> bool>,
 }
 
 impl<T> SenderAsync<T> {
     /// Create a new SenderAsync wrapper
     pub fn new(sender: mpsc::Sender<T>, ctx: egui::Context) -> Self {
-        Self { sender, ctx }
+        Self {
+            sender,
+            ctx,
+            keep: None,
+        }
+    }
+
+    /// This sender, passing on only the messages `keep` accepts. The others
+    /// are accepted and dropped, so a caller sees no failure.
+    pub fn keeping_only(self, keep: fn(&T) -> bool) -> Self {
+        Self {
+            keep: Some(keep),
+            ..self
+        }
+    }
+
+    /// This sender without a filter: for a holder that keeps it for good,
+    /// such as a context's frame loop or its wallet backend, which must pass
+    /// every report whoever handed it the sender.
+    pub fn unfiltered(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            ctx: self.ctx.clone(),
+            keep: None,
+        }
+    }
+
+    fn drops(&self, value: &T) -> bool {
+        self.keep.is_some_and(|keep| !keep(value))
     }
 
     /// Send a message and trigger a repaint
     pub async fn send(&self, value: T) -> Result<(), mpsc::error::SendError<T>> {
+        if self.drops(&value) {
+            return Ok(());
+        }
         let result = self.sender.send(value).await;
         if result.is_ok() {
             self.ctx.request_repaint();
@@ -26,16 +59,14 @@ impl<T> SenderAsync<T> {
 
     /// Try to send a message without blocking and trigger a repaint
     pub fn try_send(&self, value: T) -> Result<(), mpsc::error::TrySendError<T>> {
+        if self.drops(&value) {
+            return Ok(());
+        }
         let result = self.sender.try_send(value);
         if result.is_ok() {
             self.ctx.request_repaint();
         }
         result
-    }
-
-    /// Get a reference to the underlying sender
-    pub fn sender(&self) -> &mpsc::Sender<T> {
-        &self.sender
     }
 
     /// Check if the sender is closed
@@ -49,6 +80,7 @@ impl<T> Clone for SenderAsync<T> {
         Self {
             sender: self.sender.clone(),
             ctx: self.ctx.clone(),
+            keep: self.keep,
         }
     }
 }
@@ -116,5 +148,38 @@ impl<T> Clone for SenderSync<T> {
             sender: self.sender.clone(),
             ctx: self.ctx.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn even(value: &u32) -> bool {
+        value.is_multiple_of(2)
+    }
+
+    /// A filtered sender drops what it does not keep, reporting success so
+    /// the caller sees no failure, and passes on the rest; its clones filter
+    /// alike, and its unfiltered copy passes everything.
+    #[tokio::test]
+    async fn a_filtered_sender_passes_only_what_it_keeps() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let filtered = SenderAsync::new(tx, egui::Context::default()).keeping_only(even);
+
+        assert!(filtered.send(1).await.is_ok());
+        assert!(filtered.try_send(3).is_ok());
+        filtered.send(2).await.expect("kept");
+        let clone = filtered.clone();
+        assert!(clone.try_send(5).is_ok());
+        clone.try_send(4).expect("kept");
+        filtered.unfiltered().try_send(7).expect("unfiltered");
+
+        drop((filtered, clone));
+        let mut received = Vec::new();
+        while let Some(value) = rx.recv().await {
+            received.push(value);
+        }
+        assert_eq!(received, vec![2, 4, 7]);
     }
 }

@@ -6,6 +6,7 @@ use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessRes
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::ConfigUpdateOutcome;
 use crate::model::token::{
     TokenConfigInputError, parse_max_supply_input, parse_new_tokens_destination_input,
     token_change_item_is_supported,
@@ -59,6 +60,7 @@ pub struct UpdateTokenConfigScreen {
     pub identity_token_info: IdentityTokenInfo,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     pub change_item: TokenConfigurationChangeItem,
     update_text: String,
     text_input_error: String,
@@ -84,6 +86,9 @@ pub struct UpdateTokenConfigScreen {
     wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    /// What Platform did with the completed update; the success screen
+    /// follows it, not the form, which may have changed since.
+    completed_outcome: Option<ConfigUpdateOutcome>,
     // Banner handle for elapsed time display
     refresh_banner: Option<crate::ui::components::BannerHandle>,
     /// The update in flight; only its own result or error ends the wait.
@@ -115,9 +120,14 @@ impl UpdateTokenConfigScreen {
                 .or_show_error(app_context.egui_ctx())
                 .unwrap_or(None);
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
         Self {
             identity_token_info: identity_token_info.clone(),
             update_status: UpdateTokenConfigStatus::NotUpdating,
+            token_action_availability,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
             update_text: "".to_string(),
@@ -140,6 +150,7 @@ impl UpdateTokenConfigScreen {
             is_unilateral_group_member,
             group_action_id: None,
             completed_fee_result: None,
+            completed_outcome: None,
             refresh_banner: None,
             update_request: PendingRequest::default(),
         }
@@ -900,12 +911,17 @@ impl UpdateTokenConfigScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
+        let (is_unilateral_group_member, has_group) = match self.completed_outcome {
+            Some(ConfigUpdateOutcome::ProposalRecorded) => (false, true),
+            Some(ConfigUpdateOutcome::Applied) => (true, false),
+            None => (self.is_unilateral_group_member, self.group.is_some()),
+        };
         crate::ui::helpers::show_group_token_success_screen(
             ui,
             "Config Update",
             self.group_action_id.is_some(),
-            self.is_unilateral_group_member,
-            self.group.is_some(),
+            is_unilateral_group_member,
+            has_group,
             &self.app_context,
         )
     }
@@ -929,12 +945,13 @@ impl ScreenLike for UpdateTokenConfigScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result) =
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result, outcome) =
             backend_task_success_result
         {
             self.update_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
+            self.completed_outcome = Some(outcome);
             self.update_status = UpdateTokenConfigStatus::Complete;
         }
     }
@@ -995,6 +1012,15 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     });
                 });
                 ui.add_space(10.0);
+
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_info.identity.identity.id(),
+                &mut self.token_action_availability,
+            );
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
@@ -1366,6 +1392,58 @@ mod in_flight_tests {
         );
     }
 
+    /// The success screen follows what Platform did with the update, not the
+    /// form: a recorded group proposal is reported as one even when the item
+    /// now selected needs no group, and an applied update as done.
+    #[test]
+    fn the_config_update_success_screen_follows_the_proved_outcome() {
+        use crate::model::token::ConfigUpdateOutcome;
+        for (outcome, heading, group_actions_link) in [
+            (
+                ConfigUpdateOutcome::ProposalRecorded,
+                "Group Config Update Initiated.",
+                true,
+            ),
+            (
+                ConfigUpdateOutcome::Applied,
+                "Config Update Successful.",
+                false,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen =
+                UpdateTokenConfigScreen::new(token_info(&context, None, false), &context);
+            screen.display_task_result(BackendTaskSuccessResult::UpdatedTokenConfig(
+                "Max supply".into(),
+                FeeResult {
+                    estimated_fee: 1,
+                    actual_fee: Some(1),
+                },
+                outcome,
+            ));
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut UpdateTokenConfigScreen| {
+                        screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run_steps(3);
+            assert_eq!(
+                harness.query_all_by_label(heading).count(),
+                1,
+                "{outcome:?} shows {heading:?}"
+            );
+            assert_eq!(
+                harness.query_all_by_label("Go to Group Actions").count() == 1,
+                group_actions_link,
+                "{outcome:?}: Go to Group Actions"
+            );
+        }
+    }
+
     /// An error that arrives after the update went through, such as a
     /// background task's, must not replace the success screen.
     #[test]
@@ -1380,6 +1458,7 @@ mod in_flight_tests {
                 estimated_fee: 1,
                 actual_fee: Some(1),
             },
+            crate::model::token::ConfigUpdateOutcome::Applied,
         ));
         report_error(&mut screen, &unrelated_request(context.network));
         assert!(screen.update_status == UpdateTokenConfigStatus::Complete);

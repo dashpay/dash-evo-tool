@@ -11,7 +11,6 @@ use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -42,7 +41,6 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Ui};
 use std::collections::HashSet;
@@ -61,19 +59,6 @@ impl StepCounter {
         self.0 += 1;
         self.0
     }
-}
-
-/// The entered amount in base units, when it is greater than zero.
-pub fn positive_amount(amount: &Option<Amount>) -> Option<u64> {
-    amount
-        .as_ref()
-        .map(Amount::value)
-        .filter(|value| *value > 0)
-}
-
-/// The identity ID typed into a field (Base58 or hex), when it is valid.
-pub fn parse_identity_id(input: &str) -> Option<Identifier> {
-    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex]).ok()
 }
 
 /// Lifecycle of a single-shot token action.
@@ -173,6 +158,7 @@ pub struct TokenActionCommon {
     wallet_open_attempted: bool,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     /// The action in flight; only its own result or error ends the wait.
     request: PendingRequest,
     app_context: Arc<AppContext>,
@@ -231,6 +217,10 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 });
 
         let action = A::new(&identity_token_info, app_context);
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
 
         Self {
             common: TokenActionCommon {
@@ -248,6 +238,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 wallet_open_attempted: false,
                 completed_fee_result: None,
                 refresh_banner: None,
+                token_action_availability,
                 request: PendingRequest::default(),
                 app_context: app_context.clone(),
             },
@@ -359,7 +350,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
             .common
             .app_context
             .fee_estimator()
-            .estimate_document_batch(1);
+            .estimate_token_transition();
         let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))
@@ -480,6 +471,10 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
     }
 
     fn refresh(&mut self) {
+        self.common.token_action_availability = super::load_token_action_availability(
+            &self.common.app_context,
+            &self.common.identity_token_info.identity.identity.id(),
+        );
         if let Ok(all) = self.common.app_context.load_local_user_identities()
             && let Some(updated) = all.into_iter().find(|id| {
                 id.identity.id() == self.common.identity_token_info.identity.identity.id()
@@ -521,6 +516,25 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         let central_panel_action = island_central_panel(ui, |ui| {
             if self.common.status == TokenActionStatus::Complete {
                 return self.show_success_screen(ui);
+            }
+
+            // An identity whose wallet is not loaded yet cannot send token
+            // transactions: explain that under the heading instead of the form.
+            super::recheck_token_action_availability(
+                &self.common.app_context,
+                &self.common.identity_token_info.identity.identity.id(),
+                &mut self.common.token_action_availability,
+            );
+            if self
+                .common
+                .token_action_availability
+                .unavailable_reason()
+                .is_some()
+            {
+                ui.heading(A::PAGE_HEADING);
+                ui.add_space(10.0);
+                super::show_token_actions_unavailable(ui, self.common.token_action_availability);
+                return AppAction::None;
             }
 
             let identity = &self.common.identity_token_info.identity;
@@ -688,6 +702,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::amount::Amount;
     use crate::ui::tokens::mint_tokens_screen::MintAction;
     use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
 

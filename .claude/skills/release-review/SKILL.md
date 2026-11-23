@@ -101,7 +101,10 @@ identities, and no masternode linkage. Before running any scenario against a fre
 directory, drive the GUI itself through: selecting Testnet in the network selector, importing/
 restoring the wallet from the mnemonic fixture, discovering or importing the identities the scenario
 needs, and — if the scenario needs it — linking a masternode or seeding legacy-migration state. Do
-this explicitly and record it as setup, not as part of the scenario's own measured procedure.
+this explicitly and record it as setup, not as part of the scenario's own measured procedure. Unless
+the scenario tests the import itself, provision Testnet and the mnemonic wallet before launch with
+`.claude/skills/visual-diff/scripts/provision-wallet.sh` (needs a `det-cli` built from the same commit
+as the GUI under test).
 
 **Confirmed false-alarm trap**: precisely because the network selector has no reliable default,
 double-check it's actually on Testnet before concluding a fixture is dead — a prior run spent real

@@ -2365,6 +2365,17 @@ impl TokensScreen {
         self.token_creator_status == TokenCreatorStatus::WaitingForResult
     }
 
+    /// Stops waiting for a balance refresh or keyword search when the screen is
+    /// left; their results will not retire the progress banner, so it goes now.
+    fn stop_waiting_for_results(&mut self) {
+        if self.refreshing_status == RefreshingStatus::Refreshing {
+            self.operation_banner.take_and_clear();
+        }
+        self.refreshing_status = RefreshingStatus::NotRefreshing;
+        self.pending_operation_context = None;
+        self.end_keyword_search();
+    }
+
     /// Drops the Token Creator form after a network switch: its identity, key and
     /// wallet belong to the previous network.
     pub(crate) fn reset_for_network_switch(&mut self) {
@@ -2828,6 +2839,10 @@ impl ScreenLike for TokensScreen {
         }
     }
 
+    fn on_leave(&mut self) {
+        self.stop_waiting_for_results();
+    }
+
     fn refresh_on_arrival(&mut self) {
         self.selected_token = None;
         self.should_reset_collapsing_states = true;
@@ -3047,15 +3062,9 @@ impl ScreenLike for TokensScreen {
                 self.operation_banner = Some(handle);
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
-                // The screen stops waiting, so the result will not retire the banner.
-                if self.refreshing_status == RefreshingStatus::Refreshing {
-                    self.operation_banner.take_and_clear();
-                }
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
-                self.pending_operation_context = None;
+                self.stop_waiting_for_results();
 
                 // should put these in a fn
-                self.end_keyword_search();
                 self.selected_token = None;
                 self.selected_contract_id = None;
                 self.token_search_query = None;
@@ -3545,6 +3554,43 @@ mod tests {
             RefreshingStatus::NotRefreshing
         );
         assert!(!handle.is_live());
+    }
+
+    /// Leaving by a route that skips the screen's own navigation (the Search
+    /// breadcrumb, the "Create Token" button) still retires a pending search's
+    /// or balance refresh's banner.
+    #[test]
+    fn leaving_by_any_route_retires_a_pending_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for (subscreen, control) in [
+            (TokensSubscreen::SearchTokens, "Search"),
+            (TokensSubscreen::MyTokens, "Refresh"),
+        ] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let app_context = crate::context::test_support::test_app_context(tmp.path());
+            let screen = TokensScreen::new(&app_context, subscreen);
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut TokensScreen| {
+                        let _ = screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_label(control).click();
+            harness.run();
+            let handle = harness
+                .state()
+                .operation_banner
+                .clone()
+                .expect("progress banner");
+            assert!(handle.is_live(), "{control}");
+
+            harness.state_mut().on_leave();
+
+            assert!(!handle.is_live(), "{control}");
+        }
     }
 
     #[test]

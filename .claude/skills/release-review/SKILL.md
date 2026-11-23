@@ -17,7 +17,7 @@ do not resolve a development HEAD, fetch, build, create worktrees or run OLD.
   Skip Phase 2 entirely. Reading the diff establishes expected GUI changes and
   attribution; it is not a code/security/dependency review. No subagents.
 - The controller provisions an ephemeral testnet wallet with the same zip's
-  `det-cli`, funds it once, and runs the deterministic launch smoke before you.
+  `det-cli`, runs deterministic launch smoke, then funds it once before you.
   Read only `wallet-status.json`; never provision, fund, refund, import or
   export keys yourself. No credential files or shared E2E fixtures are inputs.
 - Testnet only, navigation and form validation only. Stop before broadcasting,
@@ -38,7 +38,8 @@ do not resolve a development HEAD, fetch, build, create worktrees or run OLD.
   `ci-prompt.md`; do not use arbitrary Bash, network tools or WebFetch.
 - Finish with `report.json`, `report.md`, `verified-changelog.md`, `scenarios.md`,
   `story-checklist.md`, `spec.json`, `meta.json`, NEW captures, annotated images and
-  `index.html`. The controller makes `visual-changelog.html` with embedded images.
+  `index.html` (generated only by `qa-ui gallery`; never write HTML). The controller
+  makes `visual-changelog.html` with embedded images.
   Read every kept screenshot before completing the report; omit secret-bearing
   captures and document any exposure. No profiles, env files or keys in output.
 

@@ -26,7 +26,8 @@ network timing, or a flow `kittest` can't simulate.
 ## Release GUI QA in GitHub Actions
 
 `release-qa.yml` runs on GitHub-hosted `ubuntu-26.04`, called after the weekly
-build legs. It verifies the Linux release zip's attestation against `release.yml`
+build legs, fixture capture and draft sealing. It verifies the Linux release zip's
+attestation against `release.yml`
 and the NEW tag's source SHA, then runs the zip's GUI and `det-cli`. There is no
 local build, OLD-build A/B or code review. The baseline is the newest older
 published pre-release, or an explicitly selected older published pre-release.
@@ -52,10 +53,15 @@ Drafts are never pruned by later weekly runs; **a human must clean them up**.
 A normal run skips an existing tag or unchanged source. To rebuild a retained
 weekly, dispatch `weekly-build.yml` with `force=true` and its version: the tag
 may move only if the existing release is still a draft bearing our weekly marker.
-Successful build legs replace their assets; a failed recut retains the draft and
+Before moving a recut tag, automation marks the existing draft **DO NOT PUBLISH**
+while retaining its ownership marker. Successful build legs replace their assets;
+a failed recut retains the draft and
 may leave mixed old/new assets, so inspect a complete successful rebuild before
-publishing. Published releases and unrelated tags cannot be recut. A draft left
-without the marker by cancellation before finalization needs human inspection.
+publishing. Published releases and unrelated tags cannot be recut. The seal job
+writes the current weekly marker and a **DO NOT PUBLISH: QA pending**
+notice before QA starts. Failed, cancelled or interrupted QA therefore retains an
+owned, visibly unsafe draft. Finalization clears that notice only on PASS.
+Cancellation before sealing still needs human inspection.
 Use standalone QA to retest unchanged assets without recutting the tag.
 The `<!-- weekly-version: … -->` marker remains unchanged.
 
@@ -66,9 +72,20 @@ directly into the same release's `det-cli core-wallet-import --mnemonic-stdin`.
 No phrase/env file is created; generated app `.env` files are removed before
 Claude starts. Binaries run with an emptied environment and isolated HOME/data.
 The keyless wallet remains burnable and must never be used beyond this run.
+The GUI can reveal a derived WIF or spend funds if the agent ignores its
+instructions. Text/tree scanning blocks WIF exports, but screenshots have no
+independent OCR scan. This residual is accepted for the low-value, at-most-1-tDASH
+burner; never use mainnet or an operator wallet here.
 
-PRE uses only `https://faucet.thepasta.org`: live `/api/status`, CAP PoW,
-at most one payout/address/day, no faucet/IP rotation. The testnet P2PKH refund
+PRE imports the wallet and creates its receiving address before launching the GUI.
+Only after deterministic smoke passes does a separate HTTP-only funding step
+request a payout; it never starts a second `det-cli` against the running GUI.
+Funding uses only `https://faucet.thepasta.org`: live `/api/status`, CAP PoW,
+at most one payout/address/day, no faucet/IP rotation. Hard CAP sub-challenges
+run in a multiprocessing pool across available cores. Solving has a shared
+540-second deadline measured before challenge retrieval, leaving a minute for
+redemption within the 10-minute lifetime; expired solutions are never redeemed.
+The testnet P2PKH refund
 address comes from `depositAddress`, with optional repository variable
 `QA_FAUCET_REFUND_ADDRESS` taking precedence. Missing or invalid addresses skip
 POST with a warning in the report and step summary; that alone does not downgrade
@@ -86,9 +103,14 @@ produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and
 the Insight explorer; a lost runner or forced cancellation can prevent POST.
 The ephemeral wallet is not uploaded and cannot be recovered after runner disposal.
 
-Claude uses pinned CLI `2.1.331`, `--permission-mode default`, 180 turns and a
+Claude uses pinned CLI `2.1.331`, `--permission-mode default`, 600 turns and a
 140-minute process timeout inside a 220-minute runner job, reserving time for
-PRE/POST and artifacts. Prepare/report jobs have 15/5-minute limits: the QA
+PRE (12 min), smoke (5), funding (15), POST (25), setup (15) and artifacts.
+600 turns allow roughly 180 action/capture/read loops plus 60 turns for changelog
+and reporting. The 140-minute timeout is the primary bound, not an expectation
+that every turn will be used; reserve the final 20 minutes for evidence/reporting.
+Measure actual turn usage in the first hosted dispatch before tuning this cap.
+Prepare/report jobs have 15/5-minute limits: the QA
 workflow totals at most four hours of job execution (queue time excluded).
 `--restricted` and an explicit PreToolUse hook permit public-input reads, report
 writes and the fixed `qa-ui` helper only. The hook uses `onFailure: block`;
@@ -97,7 +119,9 @@ An empty working directory and explicit context/report/source directories avoid
 repository startup instructions. Do not add `--bare`: it disables explicit hooks
 and OAuth ([Claude automation documentation](https://code.claude.com/docs/en/headless)). No general shell, WebFetch, MCP servers or subagents.
 Xvfb/lavapipe follow the render-spike setup; the helper provides xdotool/scrot
-and AT-SPI labels/rectangles. GUI scenarios stop before any broadcast or secret
+and AT-SPI labels/rectangles. Keyboard commands activate the recorded DET window
+then use XTEST (`key`/`type` without `--window`). GUI scenarios stop before any
+broadcast or secret
 export. These controls reduce exposure; they do not make public on-chain text
 or an LLM verdict trustworthy by themselves.
 
@@ -119,19 +143,27 @@ screenshots and GUI logs. `result.json` is the controller's effective verdict;
 field types, scenario statuses, nonempty documents, gallery JSON, PNG files and
 coverage of every supplied commit. Findings prevent PASS even if the agent labels
 the summary PASS. Pending or uncertain refunds keep the result INCOMPLETE.
-Credential-like text suppresses export; screenshots are checked by the agent.
+Credential-like text (BIP39, extended private keys, Dash/Bitcoin mainnet/testnet
+WIFs and Anthropic tokens) suppresses export; screenshots are checked by the agent.
+Agent HTML writes are denied. All HTML is sanitized again at export: only passive
+markup, local gallery image/anchor links and embedded PNGs survive; scripts, CSS,
+event handlers, frames and external links are removed.
 Profiles, vaults, env files and raw Claude transcripts are never uploaded.
 
+CI runs the Python suite in `tests.yml` on release-QA script/workflow changes
+and the lightweight Monday schedule. Install Ubuntu `python3-yaml`, `python3-pil`
+and `python3-mnemonic` for local checks; the secret tests use the real BIP39 library.
 Offline checks (no faucet payouts or Claude usage):
 
 ```bash
 python3 -m unittest discover -s scripts/ci/release-qa
 bash scripts/ci/test-weekly-jobs.sh
-actionlint .github/workflows/release-qa.yml .github/workflows/weekly-build.yml
+actionlint .github/workflows/release-qa.yml .github/workflows/weekly-build.yml .github/workflows/tests.yml
 shellcheck scripts/ci/release-qa/setup.sh
 ```
 
-The first hosted dispatch remains required to validate OAuth, AT-SPI, live sync,
+The first hosted dispatch remains required to validate OAuth, AT-SPI, typed-input
+delivery, turn usage, live sync,
 funding/refund and artifact delivery together. The prior render spike validated
 rendering only.
 

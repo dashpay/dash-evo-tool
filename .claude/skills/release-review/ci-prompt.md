@@ -33,5 +33,6 @@ visible network is Testnet. If it is not, report incomplete and stop.
    the changelog, reachable planned tour, coverage table and gallery are finished;
    unavailable fixtures may be NOTE, but running out of time/turns is incomplete.
    Only PASS permits publication; NOTE also keeps the unpublished draft.
-   Leave time for reporting; stop exploring after roughly two hours. No human
+   Budget: 600 turns, 140 minutes. Reserve 60 turns/final 20 minutes for reporting;
+   stop exploring after roughly two hours. No human
    prompts. Do not attempt cleanup or refund: deterministic POST owns both.

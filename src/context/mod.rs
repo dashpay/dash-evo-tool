@@ -56,6 +56,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -73,7 +74,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use system_contracts::{SystemContracts, SystemContractsCache};
 
 use crate::model::settings::AppSettings;
@@ -329,9 +330,10 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
-    /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
-    /// Updated when epoch info is fetched from Platform
-    fee_multiplier_permille: AtomicU64,
+    /// Cached fee multiplier permille (1000 = 1x, 2000 = 2x) with the index of
+    /// the proved epoch it came from (`None` until one arrives); kept together
+    /// so an older epoch never replaces a newer one's multiplier.
+    fee_multiplier: Mutex<(Option<EpochIndex>, u64)>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -647,9 +649,10 @@ impl AppContext {
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
-            fee_multiplier_permille: AtomicU64::new(
+            fee_multiplier: Mutex::new((
+                None,
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
-            ),
+            )),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -847,13 +850,38 @@ impl AppContext {
 
     /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
     pub fn fee_multiplier_permille(&self) -> u64 {
-        self.fee_multiplier_permille.load(Ordering::Relaxed)
+        self.fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
     }
 
-    /// Update the cached fee multiplier from epoch info
-    pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
-        self.fee_multiplier_permille
-            .store(multiplier, Ordering::Relaxed);
+    /// Set the cached fee multiplier without an epoch; the next proved epoch replaces it.
+    #[cfg(test)]
+    pub(crate) fn set_fee_multiplier_permille(&self, multiplier: u64) {
+        *self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (None, multiplier);
+    }
+
+    /// Cache the fee multiplier of proved epoch `epoch_index` unless a newer
+    /// epoch's multiplier is already cached.
+    pub(crate) fn set_epoch_fee_multiplier_permille(
+        &self,
+        epoch_index: EpochIndex,
+        multiplier: u64,
+    ) {
+        let mut cached = self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .0
+            .is_none_or(|cached_index| epoch_index >= cached_index)
+        {
+            *cached = (Some(epoch_index), multiplier);
+        }
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
@@ -1082,8 +1110,8 @@ impl AppContext {
         }
     }
 
-    /// The platform version the SDK builds, validates and signs with: the
-    /// network's minimum until a proven response ratchets it to the version
+    /// The platform version the SDK builds, validates and signs with:
+    /// DET's minimum until a proven response ratchets it to the version
     /// the network runs.
     pub fn platform_version(&self) -> &'static PlatformVersion {
         self.sdk.load().version()
@@ -1167,22 +1195,10 @@ impl AppContext {
         }
     }
 
-    /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
-    /// the new connection's epoch. The new SDK has proven no protocol version,
-    /// so protocol capabilities stay closed until a proved response carries
-    /// one; the epoch read is that response, and it refreshes the fee
-    /// multiplier too. A failed read only leaves the version unproven until
-    /// the next proved response; it does not fail the rebuild.
+    /// Rebuild the clients immediately and queue a quorum-ready metadata probe.
     pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
         Arc::clone(self).reinit_core_client_and_sdk()?;
-        let sdk = self.sdk.load_full();
-        if let Err(error) = self.refresh_current_epoch(&sdk).await {
-            tracing::warn!(
-                %error,
-                "Could not read the current epoch after rebuilding the connection; \
-                 protocol features stay closed until the next read"
-            );
-        }
+        self.queue_platform_protocol_refresh();
         Ok(())
     }
 
@@ -1246,7 +1262,7 @@ impl AppContext {
         // while the list still holds them; it shares the list, so it follows
         // the move below.
         let provider = self.spv_context_provider.read()?.clone();
-        // Like a cold start: the network minimum, raised by the new
+        // Like a cold start: DET's minimum (`MIN_PLATFORM_VERSION`), raised by the new
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
         let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
@@ -2225,15 +2241,10 @@ mod tests {
         }
     }
 
-    /// Before any proven response, a context builds, validates and signs at
-    /// the lowest protocol version its network still runs (upstream's
-    /// per-network minimum): 13 on mainnet, not an older table.
+    /// Every network starts at DET's minimum, without claiming it was verified.
     #[test]
-    fn platform_version_starts_at_the_network_minimum() {
+    fn minimum_protocol_14_seeds_every_network() {
         use crate::context::test_support::test_app_context_for_network;
-        use dash_sdk::sdk::min_protocol_version;
-
-        assert_eq!(min_protocol_version(Network::Mainnet), 13);
         for network in [
             Network::Mainnet,
             Network::Testnet,
@@ -2242,16 +2253,13 @@ mod tests {
         ] {
             let tmp = tempfile::tempdir().expect("tempdir");
             let ctx = test_app_context_for_network(tmp.path(), network);
-            assert_eq!(
-                ctx.platform_version().protocol_version,
-                min_protocol_version(network),
-                "{network:?}"
-            );
+            assert_eq!(ctx.platform_version().protocol_version, 14, "{network:?}");
+            assert_eq!(ctx.protocol_version_info().verified_version, None);
         }
     }
 
-    /// Once the SDK runs at protocol 14, the context builds with 14 and serves
-    /// the system contracts protocol 14 defines — not the ones loaded at boot.
+    /// Once the SDK runs at protocol 15, the context builds with 15 and serves
+    /// the system contracts protocol 15 defines — not the ones loaded at boot.
     #[test]
     fn platform_version_and_system_contracts_follow_the_sdk() {
         use crate::context::test_support::test_app_context_for_network;
@@ -2259,17 +2267,21 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
-        let v14 = PlatformVersion::get(14).expect("protocol 14");
+        let v15 = PlatformVersion::get(15).expect("protocol 15");
         let boot_dashpay = ctx.dashpay_contract();
-        assert_ne!(
+        assert_eq!(
             *boot_dashpay,
-            load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap(),
-            "precondition: protocol 14 redefines the DashPay contract"
+            load_system_data_contract(
+                SystemDataContract::Dashpay,
+                crate::sdk_wrapper::MIN_PLATFORM_VERSION
+            )
+            .unwrap(),
+            "boot uses DET minimum"
         );
 
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
 
-        assert_eq!(ctx.platform_version().protocol_version, 14);
+        assert_eq!(ctx.platform_version().protocol_version, 15);
         for (served, contract) in [
             (ctx.dashpay_contract(), SystemDataContract::Dashpay),
             (ctx.withdraws_contract(), SystemDataContract::Withdrawals),
@@ -2283,7 +2295,7 @@ mod tests {
                 SystemDataContract::KeywordSearch,
             ),
         ] {
-            assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
+            assert_eq!(*served, load_system_data_contract(contract, v15).unwrap());
         }
         assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
     }
@@ -2298,9 +2310,9 @@ mod tests {
         let ctx = test_app_context(temp_dir.path());
         assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
-        prove_protocol_version(&ctx, 13);
+        prove_protocol_version(&ctx, 14);
         let info = ctx.protocol_version_info();
-        assert_eq!(info.verified_version, Some(13));
+        assert_eq!(info.verified_version, Some(14));
         assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
@@ -2328,18 +2340,18 @@ mod tests {
         assert!(info.newer_protocol_available);
     }
 
-    /// Contest windows stay consistent as the SDK ratchets upward from each
-    /// network minimum to a newer supported protocol.
+    /// Contest windows stay consistent as the SDK ratchets upward from DET's
+    /// minimum (`MIN_PLATFORM_VERSION`) to a newer supported protocol.
     #[test]
-    fn contest_durations_match_the_network_minimum_for_every_supported_version() {
+    fn contest_durations_match_the_minimum_for_every_supported_version() {
         use crate::model::dpns::contest_durations;
 
         let newest = PlatformVersion::latest().protocol_version;
         for network in [Network::Mainnet, Network::Testnet] {
-            let minimum = dash_sdk::sdk::min_protocol_version(network);
+            let minimum = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version;
             let pinned = contest_durations(
                 network,
-                PlatformVersion::get(minimum).expect("network minimum"),
+                PlatformVersion::get(minimum).expect("minimum supported version"),
             );
             for protocol_version in minimum..=newest {
                 let live = PlatformVersion::get(protocol_version).expect("known version");

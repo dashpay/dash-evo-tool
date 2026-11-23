@@ -2392,7 +2392,8 @@ impl TokensScreen {
 
     /// Replaces the creator's copy of its selected identity with the one just read
     /// into `self.identities`, so keys and balance changed elsewhere show here. A
-    /// selected key the identity no longer holds is dropped; an identity that is
+    /// selected key the identity no longer holds, or that Platform disabled, is
+    /// dropped; an identity that is
     /// removed, or that the creator does not offer, is deselected so the selector
     /// picks one it offers.
     fn refresh_token_creator_identity(&mut self) {
@@ -2414,6 +2415,10 @@ impl TokensScreen {
             return;
         };
         self.selected_key = self.selected_key.take().and_then(|selected| {
+            let published = fresh.identity.public_keys().get(&selected.id())?;
+            if published.data() != selected.data() || published.disabled_at().is_some() {
+                return None;
+            }
             fresh
                 .private_keys
                 .identity_public_keys()
@@ -4702,6 +4707,9 @@ mod tests {
         use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
         use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 
+        let mut identity =
+            Identity::create_basic_identity(Identifier::from([id; 32]), context.platform_version())
+                .expect("basic identity");
         let mut private_keys = KeyStorage::default();
         for &(id, purpose, security_level) in keys {
             let key = identity_public_key(
@@ -4711,6 +4719,7 @@ mod tests {
                 KeyType::ECDSA_HASH160,
                 vec![id as u8; 20],
             );
+            identity.add_public_key(key.clone());
             private_keys.insert_at(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
                 (
@@ -4720,11 +4729,7 @@ mod tests {
             );
         }
         QualifiedIdentity {
-            identity: Identity::create_basic_identity(
-                Identifier::from([id; 32]),
-                context.platform_version(),
-            )
-            .expect("basic identity"),
+            identity,
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
@@ -5554,6 +5559,41 @@ mod tests {
         );
         assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
         drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A key disabled on Platform is never kept selected, even though the
+    /// creator still holds its private key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_drops_a_selected_key_disabled_on_platform() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let stored = creator_identity(
+            &context,
+            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("store identity");
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        screen.selected_key = stored.identity.public_keys().get(&1).cloned();
+        screen.refresh_on_arrival();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+
+        let mut disabled = stored.clone();
+        disabled
+            .identity
+            .public_keys_mut()
+            .get_mut(&1)
+            .expect("published key")
+            .set_disabled_at(1);
+        context
+            .update_local_qualified_identity(&disabled)
+            .expect("disable key");
+        screen.refresh_on_arrival();
+
+        assert!(screen.selected_key.is_none());
         context.wallet_backend().unwrap().shutdown().await;
     }
 }

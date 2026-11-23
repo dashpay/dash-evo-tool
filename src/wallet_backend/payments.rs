@@ -392,8 +392,8 @@ fn dry_run_asset_lock_amount(
 // `core_payment_builder`). The aggregate quotes still have a deadline because
 // they perform many individually bounded selections under a write lock.
 // Confirmed present: this crate's `Cargo.toml` pins `platform` to rev
-// 575d961fe0c54bd7e01a3cf3823494e58c6c4fdb, whose workspace pins rust-dashcore
-// (`key-wallet`) to rev aca020263990a86a15cc1d97ae2cbf965d488db5, and that
+// 2651f7e2e11b491b4b2818aeb93d07f846856d78, whose workspace pins rust-dashcore
+// (`key-wallet`) to rev f6bb90cbbcae3d401bb3c9ebc4a9a26873a41404, and that
 // rev's `key-wallet/src/wallet/managed_wallet_info/coin_selection.rs` carries
 // the prune and the budget. Re-verify whenever either pin moves — the
 // key-wallet reference is a rev, so it cannot drift on its own.

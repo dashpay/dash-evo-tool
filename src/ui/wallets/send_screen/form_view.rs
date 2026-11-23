@@ -1617,32 +1617,38 @@ impl WalletSendScreen {
             });
     }
 
-    pub(super) fn render_summary_details(&self, ui: &mut Ui) {
+    /// The Platform addresses Summary › Details lists as paying, if any.
+    pub(super) fn summary_details_allocation(&self) -> Option<AddressAllocationResult> {
         let Some(SourceSelection::PlatformAddresses(addresses)) = &self.selected_source else {
-            return;
+            return None;
         };
         // A shield's planner picks its own inputs.
         if self.destination_kind() == Some(AddressKind::Shielded) {
-            return;
+            return None;
         }
-        let Some(amount_credits) = self.requested_credits() else {
+        let amount_credits = self.requested_credits()?;
+        let allocation = match self.validated_destination.as_ref() {
+            Some(ValidatedAddress::Core(output)) => allocate_platform_withdrawal(
+                self.app_context.platform_version(),
+                addresses,
+                amount_credits,
+                &CoreScript::new(output.script_pubkey()),
+            ),
+            destination => allocate_platform_addresses(
+                &self.app_context.fee_estimator(),
+                addresses,
+                amount_credits,
+                destination.and_then(|v| v.as_platform()),
+            ),
+        };
+        (!allocation.inputs.is_empty()).then_some(allocation)
+    }
+
+    pub(super) fn render_summary_details(&self, ui: &mut Ui) {
+        let Some(allocation) = self.summary_details_allocation() else {
             return;
         };
-        let destination = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied());
-        let fee_estimator = self.app_context.fee_estimator();
-        let max_inputs = fee_estimator.max_platform_inputs();
-        let allocation = allocate_platform_addresses(
-            &fee_estimator,
-            addresses,
-            amount_credits,
-            destination.as_ref(),
-        );
-        if allocation.inputs.is_empty() {
-            return;
-        }
+        let max_inputs = self.app_context.fee_estimator().max_platform_inputs();
         let network = self.app_context.network;
         egui::CollapsingHeader::new("Details")
             .id_salt("send_summary_details")

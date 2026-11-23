@@ -11,7 +11,7 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount}
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
     AddressAllocationResult, PlatformFeeEstimator, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, core_send_fee_at_max_duffs,
+    allocate_platform_addresses_with_fee, allocate_platform_withdrawal, core_send_fee_at_max_duffs,
     core_several_outputs_max_duffs, estimate_address_funding_fee_from_transition,
     estimate_asset_lock_core_fee_duffs, estimate_platform_fee,
     estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
@@ -1824,15 +1824,11 @@ impl WalletSendScreen {
         let platform_version = self.app_context.platform_version();
         let max_inputs = max_platform_inputs(platform_version);
 
-        // Allocate addresses using state-transition-based fee estimation (no destination filter)
-        let allocation = allocate_platform_addresses_with_fee(
+        let allocation = allocate_platform_withdrawal(
+            platform_version,
             &addresses,
             amount_credits,
-            None,
-            max_inputs,
-            |inputs| {
-                estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
-            },
+            &output_script,
         );
 
         if allocation.shortfall > 0 {
@@ -2721,20 +2717,11 @@ impl WalletSendScreen {
                     .validated_destination
                     .as_ref()
                     .and_then(|v| v.as_core())?;
-                let output_script = CoreScript::new(dest.script_pubkey());
-                let platform_version = self.app_context.platform_version();
-                let allocation = allocate_platform_addresses_with_fee(
+                let allocation = allocate_platform_withdrawal(
+                    self.app_context.platform_version(),
                     addresses,
                     amount_credits,
-                    None,
-                    max_platform_inputs(platform_version),
-                    |inputs| {
-                        estimate_withdrawal_fee_from_transition(
-                            platform_version,
-                            inputs,
-                            &output_script,
-                        )
-                    },
+                    &CoreScript::new(dest.script_pubkey()),
                 );
                 Some(FeePreview::on_top(amount_credits, allocation.estimated_fee))
             }
@@ -9531,6 +9518,57 @@ mod tests {
             panic!("a Platform withdrawal, got {action:?}");
         };
         assert_eq!(inputs.values().sum::<Credits>(), 10_000_000_000);
+    }
+
+    /// Summary › Details lists the Platform addresses a withdrawal spends,
+    /// also when its fee needs one more address than a transfer's would.
+    #[test]
+    fn summary_details_list_the_addresses_a_withdrawal_spends() {
+        let (mut screen, _temp_dir) = send_screen();
+        let output = testnet_core_address(47);
+        let script = CoreScript::new(output.script_pubkey());
+        let largest = PlatformAddress::try_from(testnet_core_address(8)).expect("address");
+        let addresses = vec![
+            (largest, testnet_core_address(8), 100_000_000_000),
+            (
+                PlatformAddress::try_from(testnet_core_address(9)).expect("address"),
+                testnet_core_address(9),
+                50_000_000_000,
+            ),
+        ];
+        let transfer_fee =
+            allocate_platform_addresses(&screen.app_context.fee_estimator(), &addresses, 1, None)
+                .estimated_fee;
+        let withdrawal_fee = estimate_withdrawal_fee_from_transition(
+            screen.app_context.platform_version(),
+            &BTreeMap::from([(largest, 0)]),
+            &script,
+        );
+        assert_ne!(
+            transfer_fee, withdrawal_fee,
+            "precondition: the fees differ"
+        );
+        // The largest address alone covers this after the smaller fee only.
+        let amount = 100_000_000_000 - transfer_fee.min(withdrawal_fee);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(addresses.clone()));
+        screen.validated_destination = Some(ValidatedAddress::Core(output));
+        screen.amount = Some(Amount::dash_from_credits(amount));
+
+        let AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::WithdrawFromPlatformAddress { inputs, .. },
+        )) = screen
+            .send_platform_to_core([0; 32], addresses)
+            .expect("the withdrawal is built")
+        else {
+            panic!("a Platform withdrawal");
+        };
+        let details = screen
+            .summary_details_allocation()
+            .expect("Details lists the paying addresses");
+        assert_eq!(
+            details.inputs.keys().collect::<Vec<_>>(),
+            inputs.keys().collect::<Vec<_>>()
+        );
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

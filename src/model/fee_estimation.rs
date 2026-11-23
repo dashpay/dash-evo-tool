@@ -1264,6 +1264,23 @@ where
     }
 }
 
+/// Allocates platform addresses for a withdrawal of `amount_credits` to
+/// `output_script`, charging the withdrawal fee of the inputs chosen.
+pub(crate) fn allocate_platform_withdrawal(
+    platform_version: &PlatformVersion,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    output_script: &CoreScript,
+) -> AddressAllocationResult {
+    allocate_platform_addresses_with_fee(
+        addresses,
+        amount_credits,
+        None,
+        max_platform_inputs(platform_version),
+        |inputs| estimate_withdrawal_fee_from_transition(platform_version, inputs, output_script),
+    )
+}
+
 /// Allocates platform addresses for a transfer, selecting which addresses to use
 /// and how much from each.
 ///

@@ -131,7 +131,7 @@ const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 /// Populate only key payloads, preserving the captured v0.9.3 encoding layout.
 fn v093_masternode_blob() -> Vec<u8> {
-    use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
+    use dash_sdk::dpp::dashcore::hashes::hash160;
     use dash_sdk::dpp::secp256k1::PublicKey;
     let public_hash = |key: &[u8; 32]| {
         let key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*(key))
@@ -677,7 +677,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
 /// network, every downstream network filter in the wallet drain
 /// would silently target mainnet and find nothing.
 fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSettings) {
-    crate::app_dir::ensure_env_file(dir);
+    crate::app_dir::ensure_env_file(dir).expect("write .env");
     let db_file = dir.join("data.db");
 
     let db = Arc::new(Database::open_legacy_read_only(&db_file).expect("open data.db read-only"));

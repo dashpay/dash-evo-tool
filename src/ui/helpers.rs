@@ -309,6 +309,17 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         );
     }
 
+    // Screen readers get a short button name; the explanation is its description.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::accesskit::Role::Button,
+            ui.is_enabled(),
+            "More information",
+        )
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_description(hover_text));
+
     response.clickable_tooltip(hover_text)
 }
 
@@ -389,7 +400,7 @@ impl TransactionType {
             TransactionType::Withdraw => "Withdraw",
             TransactionType::DocumentAction => "Document Action",
             TransactionType::TokenAction => "Token Action",
-            TransactionType::TokenTransfer => "Token Transfer",
+            TransactionType::TokenTransfer => "Token Send",
             TransactionType::TokenClaim => "Token Claim",
             TransactionType::ContactRequest => "Contact Request",
         }
@@ -474,10 +485,12 @@ fn render_no_eligible_key_group(
 /// Renders a ComboBox listing `identity`'s loaded private keys eligible for the transaction.
 ///
 /// With `identity` `None`, prompts the user to pick an identity first. Developer mode also
-/// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`].
+/// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`]. `label_id` is the
+/// label that names the combo box.
 #[allow(clippy::too_many_arguments)]
 fn render_key_combo(
     ui: &mut Ui,
+    label_id: egui::Id,
     combo_id: &str,
     width: f32,
     identity: Option<&QualifiedIdentity>,
@@ -532,7 +545,9 @@ fn render_key_combo(
                     *selected_key = Some(key.clone());
                 }
             }
-        });
+        })
+        .response
+        .labelled_by(label_id);
 }
 
 /// Renders a centered title + description block (used above success-screen buttons).
@@ -606,12 +621,15 @@ pub fn add_key_chooser_with_doc_type(
         );
     } else {
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.add_space(15.0);
-                ui.label("Key:");
-            });
+            let label = ui
+                .vertical(|ui| {
+                    ui.add_space(15.0);
+                    ui.label("Key:")
+                })
+                .inner;
             render_key_combo(
                 ui,
+                label.id,
                 "key_chooser_combo",
                 300.0,
                 Some(identity),
@@ -670,7 +688,7 @@ where
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Identity:");
+            let identity_label = ui.label("Identity:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("identity_combo")
                     .width(220.0)
@@ -691,12 +709,14 @@ where
                                 *selected_key = None; // Clear key selection when identity changes
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(identity_label.id);
             });
 
             ui.end_row();
 
-            ui.label("Key:");
+            let key_label = ui.label("Key:");
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 let allowed_purposes = transaction_type.allowed_purposes();
@@ -724,6 +744,7 @@ where
                 if show_combo {
                     render_key_combo(
                         ui,
+                        key_label.id,
                         "key_combo",
                         220.0,
                         selected_identity.as_ref(),
@@ -799,11 +820,12 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            let filter_label = ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term)
+                .labelled_by(filter_label.id);
             ui.end_row();
 
-            ui.label("Contract:");
+            let contract_label = ui.label("Contract:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("contract_combo")
                     .width(220.0)
@@ -823,12 +845,14 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                                 select_contract(selected_contract, selected_doc_type, qc);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(contract_label.id);
             });
 
             ui.end_row();
 
-            ui.label("Doc Type:");
+            let doc_type_label = ui.label("Doc Type:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("doctype_combo")
                     .width(220.0)
@@ -858,7 +882,9 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                         } else {
                             dui.label("Pick a contract first");
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(doc_type_label.id);
             });
             ui.end_row();
         });
@@ -881,11 +907,12 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            let filter_label = ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term)
+                .labelled_by(filter_label.id);
             ui.end_row();
 
-            ui.label("Contract:");
+            let contract_label = ui.label("Contract:");
             ComboBox::from_id_salt("contract_chooser")
                 .width(220.0)
                 .selected_text(
@@ -904,7 +931,9 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
                             *selected_contract = Some(qc.clone());
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(contract_label.id);
 
             ui.end_row();
         });
@@ -1123,6 +1152,25 @@ pub fn show_group_token_success_screen_with_fee(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Screen readers announce the info icon as a button with a short name,
+    /// and its explanation as the description.
+    #[test]
+    fn info_icon_is_a_named_button_described_by_its_explanation() {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        const EXPLANATION: &str = "Explains what this option does.";
+        let harness = Harness::new_ui(|ui| {
+            info_icon_button(ui, EXPLANATION);
+        });
+        let icon = harness.get_by_role_and_label(Role::Button, "More information");
+        assert_eq!(
+            icon.accesskit_node().description().as_deref(),
+            Some(EXPLANATION)
+        );
+    }
 
     /// Switching contract drops a document type of the previous contract, so
     /// no action pairs one contract with another contract's type; a type of

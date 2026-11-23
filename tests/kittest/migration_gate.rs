@@ -56,6 +56,17 @@ fn mount_with_raised_gate() -> Harness<'static, AppState> {
     });
     harness.set_size(egui::vec2(800.0, 600.0));
     harness.run_steps(3);
+    // `AppState::new` still spawns the real preparation behind the test gate,
+    // and it publishes on the same migration status the tests drive. Let it
+    // finish first, so a late write of its own cannot land mid-test.
+    poll_until(
+        &mut harness,
+        "the real storage preparation to finish",
+        |state| {
+            let migration = state.current_app_context().migration_status().state();
+            !matches!(*migration, MigrationState::Idle) && !migration.is_in_progress()
+        },
+    );
     harness
 }
 
@@ -1363,6 +1374,49 @@ fn a_connect_during_a_pending_switch_is_refused() {
         assert_chain_sync_stays_off(
             &mut harness,
             "on the destination: the refused Connect did not lift the Disconnect",
+        );
+    });
+}
+
+/// Closing the app while a first-visit switch is still building the new
+/// network's context stops the switch instead of waiting for it. The exit
+/// otherwise sat out the whole background-task budget (two 10 s phases)
+/// before the window could close.
+///
+/// Drives the exit through `on_exit`, the blocking fallback; the window-close
+/// path drains the same task manager.
+#[test]
+fn closing_the_app_during_a_pending_switch_does_not_wait_for_it() {
+    // Well under one 10 s shutdown phase, so a switch that ignores the exit
+    // still fails, with headroom for a slow CI runner.
+    const EXIT_BOUND: Duration = Duration::from_secs(5);
+
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+
+        // Pin the switch before it builds the new network's context: it stays
+        // in flight for as long as the guard lives.
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        harness.step();
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            first,
+            "precondition: the switch is still pending",
+        );
+
+        let started = Instant::now();
+        eframe::App::on_exit(harness.state_mut());
+        let exit_took = started.elapsed();
+        drop(pending_switch);
+
+        assert!(
+            exit_took < EXIT_BOUND,
+            "closing the app waited {exit_took:?} for the pending switch (bound {EXIT_BOUND:?})",
         );
     });
 }

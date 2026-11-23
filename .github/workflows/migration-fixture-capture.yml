@@ -82,7 +82,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      actions: read # Fixture artifacts of earlier runs; the caller's binary.
+      actions: read # The caller's binary.
       attestations: read # Verify release binaries and attached fixtures.
     env:
       TAG: ${{ inputs.tag }}
@@ -145,9 +145,13 @@ jobs:
           new_cli="$binaries/new/dash-evo-tool/det-cli"
           # They see no runner variable and no real HOME either.
           isolated() { (cd "$stage/cwd" && env -i PATH=/usr/bin:/bin HOME="$stage/home" LANG=C.UTF-8 "$@"); }
+          # A committed source stays in the checkout; an attached one was downloaded.
+          archive="$(jq -r --arg committed "$repo/tests/migration-fixtures" --arg fetched "$RUNNER_TEMP/fixtures" \
+            'if .archive then "\($committed)/\(.archive.path)" else "\($fetched)/\(.artifact.archive_filename)" end' \
+            "$RUNNER_TEMP/source.json")"
           isolated python3 -I "$repo/scripts/migration-fixtures/chain.py" \
-            --archive "$RUNNER_TEMP/fixtures/$(jq -r .artifact.archive_filename "$RUNNER_TEMP/source.json")" \
-            --sha256 "$(jq -r .artifact.sha256 "$RUNNER_TEMP/source.json")" \
+            --archive "$archive" \
+            --sha256 "$(jq -r '(.archive // .artifact).sha256' "$RUNNER_TEMP/source.json")" \
             --source-tag "$source_tag" \
             --release "$source_tag=$binaries/source/dash-evo-tool/det-cli" \
             --release "$TAG=$new_cli" \

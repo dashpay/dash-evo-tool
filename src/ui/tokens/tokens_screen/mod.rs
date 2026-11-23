@@ -3163,6 +3163,7 @@ impl ScreenLike for TokensScreen {
         // Uncorrelated failures must not clear a genuine token refresh banner.
         if matches!(msg_type, MessageType::Error | MessageType::Warning)
             && self.refreshing_status != RefreshingStatus::Refreshing
+            && !self.awaits_token_registration()
         {
             self.operation_banner.take_and_clear();
         }
@@ -5646,5 +5647,19 @@ mod tests {
             BackendTaskSuccessResult::RegisteredTokenContract,
         );
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
+    }
+
+    /// Another task's error keeps the registration's progress banner while the
+    /// creator still waits for its result.
+    #[test]
+    fn an_unrelated_error_keeps_the_registration_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        let _registration = screen.begin_token_registration_for_test();
+
+        screen.display_message("The balance refresh failed.", MessageType::Error);
+
+        assert!(screen.registration_banner_live_for_test());
     }
 }

@@ -61,10 +61,10 @@ impl ProtocolRefresh {
                     let Ok(backend) = ctx.wallet_backend() else {
                         return false;
                     };
+                    // Headers and masternodes at the tip, not the wallet scan:
+                    // filters return to Syncing for every new block.
                     let spv = backend.inner.pwm.spv();
-                    spv.sync_progress()
-                        .await
-                        .is_some_and(|progress| progress.is_synced())
+                    spv.is_ready().await
                         && spv.wait_until_ready(Duration::from_millis(50)).await
                         && !ctx
                             .sdk

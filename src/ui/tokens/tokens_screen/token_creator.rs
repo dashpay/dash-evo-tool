@@ -248,7 +248,7 @@ impl TokensScreen {
                                 .selected_identity
                                 .as_ref()
                                 .map(|qi| qi.identity.id());
-                            add_identity_key_chooser(
+                            action |= add_identity_key_chooser(
                                 ui,
                                 &self.app_context,
                                 all_identities.iter(),

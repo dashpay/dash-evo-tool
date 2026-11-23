@@ -413,6 +413,7 @@ impl ScreenLike for RegisterDataContractScreen {
             }
 
             ScrollArea::vertical().show(ui, |ui| {
+                let mut key_action = AppAction::None;
                 ui.horizontal(|ui| {
                     ui.heading("Register Data Contract");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -480,7 +481,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 if self.show_advanced_options {
                     ui.add_space(10.0);
                     if let Some(identity) = &self.selected_qualified_identity {
-                        add_key_chooser(
+                        key_action = add_key_chooser(
                             ui,
                             &self.app_context,
                             identity,
@@ -563,7 +564,8 @@ impl ScreenLike for RegisterDataContractScreen {
                 self.ui_input_field(ui, json_heading.id);
 
                 // Parse the contract and show the result
-                self.ui_parsed_contract(ui)
+                key_action |= self.ui_parsed_contract(ui);
+                key_action
             }).inner
         });
 
@@ -631,6 +633,37 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallet| Arc::ptr_eq(wallet, &second))
         );
+    }
+
+    /// Regression: the chooser's "Add New Key to Identity" button returned an
+    /// action this screen dropped, so the button did nothing.
+    #[test]
+    fn add_new_key_opens_the_add_key_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity = identity_holding(&[auth_key(1, SecurityLevel::MEDIUM)]);
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+        screen.show_advanced_options = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, (screen, opened): &mut (RegisterDataContractScreen, bool)| {
+                    if matches!(
+                        screen.ui(ui),
+                        AppAction::AddScreen(crate::ui::Screen::AddKeyScreen(_))
+                    ) {
+                        *opened = true;
+                    }
+                },
+                (screen, false),
+            );
+        harness.run();
+        harness.get_by_label("Add New Key to Identity").click();
+        harness.run();
+        assert!(harness.state().1);
     }
 
     #[tokio::test]

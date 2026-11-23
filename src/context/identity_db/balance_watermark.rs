@@ -161,10 +161,11 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pending = self.adopt_balance_observation_locked(qualified_identity, provenance)?;
-        self.insert_local_qualified_identity_under_lock(
+        let warning = self.insert_local_qualified_identity_under_lock(
             qualified_identity,
             wallet_and_identity_id_info,
         )?;
+        self.show_identity_save_warning(warning);
         // TODO(upstream): the record and its watermark are two separate
         // `KvStore` writes, so a failed seed leaves the first record without
         // a watermark until the next height-tagged write. Needs an atomic

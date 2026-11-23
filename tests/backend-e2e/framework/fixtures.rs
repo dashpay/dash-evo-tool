@@ -244,8 +244,14 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
                 )
                 .await;
 
-                let a_found = matches!(search_a, Ok(BackendTaskSuccessResult::LoadedIdentity(_)));
-                let b_found = matches!(search_b, Ok(BackendTaskSuccessResult::LoadedIdentity(_)));
+                let a_found = matches!(
+                    search_a,
+                    Ok(BackendTaskSuccessResult::LoadedIdentity { .. })
+                );
+                let b_found = matches!(
+                    search_b,
+                    Ok(BackendTaskSuccessResult::LoadedIdentity { .. })
+                );
 
                 if a_found && b_found {
                     tracing::info!(

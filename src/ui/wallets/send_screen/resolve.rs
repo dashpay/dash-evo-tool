@@ -834,8 +834,9 @@ impl WalletSendScreen {
     }
 
     /// Why several recipients cannot be paid as entered: a row lacks its
-    /// address or amount, an address is not of the active network, or the
-    /// source cannot carry several outputs to these addresses.
+    /// address or amount, a Core amount has a fraction of a duff, an address
+    /// is not of the active network, or the source cannot carry several
+    /// outputs to these addresses.
     pub(super) fn recipient_rows_refusal(&self) -> Option<&'static str> {
         if !self.form.has_several_recipients() {
             return None;
@@ -850,6 +851,7 @@ impl WalletSendScreen {
         )
         .map(|refusal| match refusal {
             RecipientRowsRefusal::Incomplete => RECIPIENT_ROWS_INCOMPLETE,
+            RecipientRowsRefusal::CoreAmountTooPrecise => CORE_AMOUNT_TOO_PRECISE,
             RecipientRowsRefusal::InvalidAddress => RECIPIENT_ROWS_INVALID,
             RecipientRowsRefusal::Route => SEVERAL_RECIPIENTS_ROUTE,
         })

@@ -440,6 +440,11 @@ const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into 
 const RECIPIENT_ROWS_INCOMPLETE: &str =
     "Enter an address and an amount for every recipient, or remove the rows you don't need.";
 
+/// Refusal of several recipients while a Core row's amount has more decimal
+/// places than a Core payment carries.
+const CORE_AMOUNT_TOO_PRECISE: &str =
+    "Core amounts can have at most 8 decimal places. Shorten the amounts that have more.";
+
 /// Refusal of several recipients while a row's address is not a Core or
 /// Platform address of the active network.
 const RECIPIENT_ROWS_INVALID: &str = "Every recipient needs a Core or Platform address of the network you're on. Check the addresses, or remove the rows you don't need.";
@@ -8645,6 +8650,28 @@ mod tests {
             screen.recipient_rows_refusal(),
             Some(RECIPIENT_ROWS_INCOMPLETE)
         );
+    }
+
+    /// A Core row with more than 8 decimal places is refused for its
+    /// precision, not as a row without an amount.
+    #[test]
+    fn several_recipients_refuse_a_core_amount_past_eight_decimals() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        for amount in ["0.000000001", "0.123456789"] {
+            screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+                address: testnet_core_address(22).to_string(),
+                amount: amount.to_string(),
+            };
+            screen.sync_route();
+            assert_eq!(
+                screen.prepare_send().err().as_deref(),
+                Some(CORE_AMOUNT_TOO_PRECISE),
+                "{amount}"
+            );
+        }
     }
 
     /// An explicit source that cannot carry several recipients keeps Send

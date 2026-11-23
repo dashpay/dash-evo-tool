@@ -365,9 +365,11 @@ pub fn ticked_source_refusal(
 /// Why several recipients cannot be paid as entered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecipientRowsRefusal {
-    /// A row lacks its address or a positive amount, or a Core row's amount
-    /// is below one duff, the smallest amount a Core output carries.
+    /// A row lacks its address or a positive amount.
     Incomplete,
+    /// A Core row's amount is not a whole number of duffs, the unit a Core
+    /// output carries (at most 8 decimal places of DASH).
+    CoreAmountTooPrecise,
     /// A row's address is not a Core or Platform address of the network.
     InvalidAddress,
     /// The source cannot carry several outputs to these addresses.
@@ -394,12 +396,15 @@ pub fn recipient_rows_refusal(
     source: Option<PayFromKind>,
     destination: Option<AddressKind>,
 ) -> Option<RecipientRowsRefusal> {
-    let below_one_duff = |(address, amount): &(&str, Option<Credits>)| {
-        AddressKind::detect(address) == Some(AddressKind::Core)
-            && amount.is_some_and(|credits| credits < CREDITS_PER_DUFF)
-    };
-    if !recipient_rows_complete(rows.iter().copied()) || rows.iter().any(below_one_duff) {
+    if !recipient_rows_complete(rows.iter().copied()) {
         return Some(RecipientRowsRefusal::Incomplete);
+    }
+    let not_whole_duffs = |(address, amount): &(&str, Option<Credits>)| {
+        AddressKind::detect(address) == Some(AddressKind::Core)
+            && amount.is_some_and(|credits| credits % CREDITS_PER_DUFF != 0)
+    };
+    if rows.iter().any(not_whole_duffs) {
+        return Some(RecipientRowsRefusal::CoreAmountTooPrecise);
     }
     if rows
         .iter()
@@ -964,20 +969,23 @@ mod tests {
         assert_eq!(refusal(&incomplete, Some(Core), core), Some(Incomplete));
     }
 
-    /// A Core output carries whole duffs, so a Core row below one duff would
-    /// be dropped from the payment: it is refused as incomplete.
+    /// A Core output carries whole duffs, so a Core row with a fraction of a
+    /// duff would be cut or dropped: it is refused for its precision.
     #[test]
-    fn recipient_rows_refusal_refuses_a_core_row_below_one_duff() {
+    fn recipient_rows_refusal_refuses_a_core_row_that_is_not_whole_duffs() {
         let (first, second) = (testnet_address(21), testnet_address(22));
         let core = Some(AddressKind::Core);
-        let below_duff = [
-            (first.as_str(), Some(CREDITS_PER_DUFF)),
-            (second.as_str(), Some(CREDITS_PER_DUFF - 1)),
-        ];
-        assert_eq!(
-            recipient_rows_refusal(&below_duff, Network::Testnet, Some(Core), core),
-            Some(RecipientRowsRefusal::Incomplete)
-        );
+        for fraction in [CREDITS_PER_DUFF - 1, 3 * CREDITS_PER_DUFF + 1] {
+            let rows = [
+                (first.as_str(), Some(CREDITS_PER_DUFF)),
+                (second.as_str(), Some(fraction)),
+            ];
+            assert_eq!(
+                recipient_rows_refusal(&rows, Network::Testnet, Some(Core), core),
+                Some(RecipientRowsRefusal::CoreAmountTooPrecise),
+                "{fraction} credits is not a whole number of duffs"
+            );
+        }
         let one_duff = [
             (first.as_str(), Some(CREDITS_PER_DUFF)),
             (second.as_str(), Some(CREDITS_PER_DUFF)),

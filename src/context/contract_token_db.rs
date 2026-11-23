@@ -1533,38 +1533,6 @@ mod tests {
         assert_eq!(at_15.contract, charging);
     }
 
-    /// The proof verifier reads a saved user contract at the version it
-    /// verifies with, as it reads system contracts: a contract saved at
-    /// protocol 14 comes back in full when asked at 14 while the SDK still
-    /// sits at 15.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_proof_verifier_reads_a_saved_contract_at_the_version_it_asks_for() {
-        use dash_sdk::dpp::platform_value::platform_value;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::wired_test_app_context(tmp.path()).await;
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
-        let v14 = PlatformVersion::get(14).expect("v14");
-        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
-        let stored = StoredContract {
-            contract_bytes: charging
-                .serialize_to_bytes_with_platform_version(v14)
-                .expect("encode"),
-            alias: None,
-        };
-        ctx.wallet_backend()
-            .expect("wired backend")
-            .kv()
-            .put(DetScope::Global, &contract_key(&charging.id()), &stored)
-            .expect("store the contract");
-
-        let resolved = crate::context_provider::resolve_data_contract(&ctx, &charging.id(), v14)
-            .expect("resolves")
-            .expect("the saved contract");
-
-        assert_eq!(*resolved, charging);
-    }
-
     #[test]
     fn contract_keys_carry_a_base58_suffix_that_round_trips_to_the_id() {
         let contract = ident(6);

@@ -1,17 +1,16 @@
 //! Real-data regression test for the bridge: a profile the released
 //! `v1.0.0-weekly.20260908` build (Platform pin 67d4ef3) wrote on testnet,
-//! published as a migration-fixture artifact (`tests/migration-fixtures/`).
+//! committed as a migration-fixture archive (`tests/migration-fixtures/`).
 //!
 //! The synthetic tests next door prove the bridge on rows written for them.
 //! This one feeds it bytes a real build wrote: a funded wallet's UTXO,
 //! transaction, address pool and sync state, and an uncheckpointed WAL left by
 //! the app's own clean shutdown.
 //!
-//! Env-gated. It runs only when `MIGRATION_FIXTURES_DIR` points at the
-//! downloaded fixture archives, as the migration-matrix workflow does, and
-//! otherwise reports the skip and passes. With the variable set, a missing or
-//! altered archive fails: silently testing nothing is the failure mode the
-//! fixture exists to prevent.
+//! Env-gated. It runs only in the archived-profile suite, which sets
+//! `MIGRATION_FIXTURES_DIR`, and otherwise reports the skip and passes. With
+//! the variable set, a missing or altered archive fails: silently testing
+//! nothing is the failure mode the fixture exists to prevent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -23,12 +22,14 @@ use sha2::{Digest, Sha256};
 
 use super::open;
 
-/// Directory of fixture archives, shared with the migration-matrix harness.
+/// Set by the archived-profile suite, shared with the migration-matrix harness.
 const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
 /// The manifest entry this test reads.
 const FIXTURE_ID: &str = "v1.0.0-weekly.20260908-wallet-only";
-/// The committed manifest: the archive name and checksum the download is held to.
+/// The committed manifest: the archive path, size and checksum.
 const MANIFEST: &str = include_str!("../../../tests/migration-fixtures/manifest.json");
+/// Directory the manifest's archive paths are relative to.
+const FIXTURES_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/migration-fixtures");
 /// The fixture wallet's balance at capture: one faucet payment of 1 tDASH.
 const CAPTURED_BALANCE_DUFFS: u64 = 100_000_000;
 /// Per-network store holding the fixture wallet.
@@ -87,13 +88,12 @@ impl Staged {
 /// Unpacks the fixture named by [`FIXTURE_ID`], or returns `None` when
 /// [`FIXTURES_DIR_ENV`] is unset.
 fn stage() -> Option<Staged> {
-    let Some(fixtures_dir) = std::env::var_os(FIXTURES_DIR_ENV).filter(|dir| !dir.is_empty())
-    else {
+    if std::env::var_os(FIXTURES_DIR_ENV).is_none_or(|dir| dir.is_empty()) {
         eprintln!(
-            "skipped: {FIXTURES_DIR_ENV} is unset; the migration-matrix workflow points it at the downloaded fixture archives"
+            "skipped: {FIXTURES_DIR_ENV} is unset; the archived-profile suite sets it to run this test"
         );
         return None;
-    };
+    }
     let manifest: serde_json::Value =
         serde_json::from_str(MANIFEST).expect("the committed manifest parses");
     let entry = manifest["fixtures"]
@@ -102,21 +102,30 @@ fn stage() -> Option<Staged> {
         .iter()
         .find(|fixture| fixture["id"] == FIXTURE_ID)
         .unwrap_or_else(|| panic!("the manifest has no `{FIXTURE_ID}` entry"));
-    let artifact = &entry["artifact"];
-    let archive_name = artifact["archive_filename"]
+    let recorded = &entry["archive"];
+    let archive_path = recorded["path"]
         .as_str()
         .expect("the entry names its archive");
-    let expected_sha256 = artifact["sha256"]
+    let expected_sha256 = recorded["sha256"]
         .as_str()
         .expect("the entry records the archive checksum");
+    let expected_size = recorded["bytes"]
+        .as_u64()
+        .expect("the entry records the archive size");
 
-    let archive = Path::new(&fixtures_dir).join(archive_name);
+    let archive = Path::new(FIXTURES_ROOT).join(archive_path);
     let bytes = std::fs::read(&archive).unwrap_or_else(|error| {
         panic!(
             "{FIXTURES_DIR_ENV} is set, but {} cannot be read: {error}",
             archive.display()
         )
     });
+    assert_eq!(
+        bytes.len() as u64,
+        expected_size,
+        "{} does not match the manifest size",
+        archive.display()
+    );
     assert_eq!(
         hex::encode(Sha256::digest(&bytes)),
         expected_sha256,

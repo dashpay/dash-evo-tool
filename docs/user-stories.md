@@ -1200,10 +1200,10 @@ As a power user, I want to add a token by entering its contract ID or token ID d
 
 - Enter ID manually and add to token list.
 
-### TOK-004: Transfer tokens [Implemented]
+### TOK-004: Send tokens [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to transfer tokens to another identity so that I can send tokens I own.
+As a user, I want to send tokens to another identity so that someone else can hold tokens I own.
 
 - Select token, enter recipient and amount.
 - Confirmation before broadcast.
@@ -1223,6 +1223,7 @@ As a token issuer, I want to mint additional tokens so that I can increase the c
 
 - Requires authorized identity.
 - Specify amount to mint.
+- A recipient can be chosen only when the token allows it; otherwise the screen and the confirmation name the token's destination identity.
 
 ### TOK-007: Burn tokens [Implemented]
 **Persona:** Jordan
@@ -1263,6 +1264,7 @@ As a user, I want to claim tokens distributed to me so that they appear in my ba
 
 - View available claims.
 - Claim action transfers tokens to identity.
+- Identities that belong to no wallet in this app, such as evonode identities, can claim too.
 
 ### TOK-012: Set token pricing and purchase tokens [Implemented]
 **Persona:** Jordan
@@ -1343,8 +1345,17 @@ As a token creator, I want to create a token that holders cannot send to other i
 - The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
-- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
+
+### TOK-021: Token transactions go through the identity's wallet when it has one [Implemented]
+**Persona:** Alex, Jordan, Priya
+
+As a user, I want token transactions to use the wallet that holds my identity, and to be told up front when that wallet is not ready, so that I do not fill in a form the network step will refuse.
+
+- Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) of an identity that a wallet in this app holds are sent through that wallet.
+- An identity that no wallet in this app holds (masternode, evonode and key-only identities) sends them signed with its own keys; it needs no wallet.
+- When the identity's wallet is known but not loaded yet, My Tokens marks the identity "View only" with its transaction buttons disabled, and token action screens show the reason (unlock the wallet or wait for it to load) instead of the form.
 
 ## Contracts and Documents (DOC)
 
@@ -1954,6 +1965,7 @@ As a masternode operator, I want to open the key screen for a node, so that I ca
 As an evonode operator, I want to jump to token-reward claiming from the node's detail view, so that I can collect rewards my evonode earned.
 
 - An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
+- The claim is signed with the evonode identity's own keys; no wallet is needed.
 - The action is hidden entirely on a plain Masternode's detail view.
 
 ### MN-010: Keep the Masternodes tab consistent across a network switch [Implemented]

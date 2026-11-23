@@ -284,6 +284,9 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: pause and observe the wallet backend build of this context.
+    #[cfg(test)]
+    pub(crate) test_wallet_backend_hooks: crate::wallet_backend::BuildTestHooks,
     /// Test seam: a paid task's background balance read waits here before
     /// it starts, so a test can hold it and observe the task finishing first.
     #[cfg(test)]
@@ -624,6 +627,8 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_wallet_backend_hooks: Default::default(),
             #[cfg(test)]
             test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
@@ -1301,27 +1306,7 @@ impl AppContext {
         e: dash_sdk::Error,
         request_type: RequestType,
     ) -> TaskError {
-        match e {
-            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                tracing::error!(
-                    target: "proof_log",
-                    request_type = ?request_type,
-                    height = block_info.height,
-                    time_ms = block_info.time_ms,
-                    proof_bytes_len = proof_bytes.len(),
-                    %proof_error,
-                    "drive proof verification failed",
-                );
-                TaskError::ProofError {
-                    source_error: Box::new(dash_sdk::Error::DriveProofError(
-                        proof_error,
-                        proof_bytes,
-                        block_info,
-                    )),
-                }
-            }
-            e => TaskError::from(e),
-        }
+        TaskError::from_broadcast_sdk_error(e, request_type)
     }
 
     /// Recovers from a Drive proof error on a contract put/update.
@@ -1399,7 +1384,8 @@ impl AppContext {
             self,
             sdk,
             Arc::clone(&self.connection_status),
-            task_result_sender,
+            // The backend reports for the life of the context, whoever wired it.
+            task_result_sender.unfiltered(),
             self.secret_prompt(),
         )
         .await?;
@@ -1516,7 +1502,7 @@ impl AppContext {
     /// install replaces the sender for later callers only; the wallet backend
     /// keeps the one it was built with.
     pub fn install_frame_loop(&self, sender: SenderAsync<TaskResult>) {
-        self.frame_loop.store(Some(Arc::new(sender)));
+        self.frame_loop.store(Some(Arc::new(sender.unfiltered())));
     }
 
     /// The sender to this context's frame loop. Headless callers (MCP, CLI)
@@ -1999,6 +1985,34 @@ mod tests {
     #[test]
     fn app_context_reports_invalid_node_addresses() {
         use crate::database::test_helpers::create_database_at_path;
+
+        // Loading the .env sets process variables, so run in a child process
+        // that inherits no network settings.
+        const CHILD_MARKER: &str = "DET_INVALID_NODE_ADDRESSES_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args([
+                    "context::tests::app_context_reports_invalid_node_addresses",
+                    "--exact",
+                ])
+                .env(CHILD_MARKER, "1");
+            for (key, _) in std::env::vars_os() {
+                let key = key.to_string_lossy();
+                if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
+                {
+                    command.env_remove(key.as_ref());
+                }
+            }
+            let output = command.output().expect("run isolated test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "isolated test failed: {stdout}");
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+            return;
+        }
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();

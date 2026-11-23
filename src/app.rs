@@ -731,6 +731,46 @@ pub enum AppAction {
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
+impl AppAction {
+    /// The tasks this action sends, each with its own dispatch context on
+    /// `network` so its sender can tell their results and errors from any
+    /// other task's; contexts the action already carries are kept. An action
+    /// that sends no task is returned unchanged.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands back the caller's own action, not a failure"
+    )]
+    pub(crate) fn into_dispatch(
+        self,
+        network: Network,
+    ) -> Result<
+        (
+            Vec<(BackendTask, BackendTaskContext)>,
+            BackendTasksExecutionMode,
+        ),
+        Self,
+    > {
+        let with_context = |task: BackendTask| {
+            let context = BackendTaskContext::for_dispatch_on(&task, network);
+            (task, context)
+        };
+        Ok(match self {
+            AppAction::BackendTask(task) => (
+                vec![with_context(task)],
+                BackendTasksExecutionMode::Sequential,
+            ),
+            AppAction::BackendTaskWithContext { task, context } => {
+                (vec![(task, context)], BackendTasksExecutionMode::Sequential)
+            }
+            AppAction::BackendTasks(tasks, mode) => {
+                (tasks.into_iter().map(with_context).collect(), mode)
+            }
+            AppAction::BackendTasksWithContexts(tasks, mode) => (tasks, mode),
+            other => return Err(other),
+        })
+    }
+}
+
 impl BitOrAssign for AppAction {
     fn bitor_assign(&mut self, rhs: Self) {
         if matches!(rhs, AppAction::None) {
@@ -870,7 +910,7 @@ impl AppState {
         let db_file_path =
             data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)
                 .map_err(|source| TaskError::FileSystem { source })?;
-        let database_error = TaskError::from_database_open_error;
+        let database_error = |e| TaskError::from_database_open_error(e, &db_file_path);
         let db = if db_file_path.exists() {
             Arc::new(Database::open_legacy_read_only(&db_file_path).map_err(database_error)?)
         } else {

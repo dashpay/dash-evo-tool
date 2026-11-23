@@ -1838,14 +1838,16 @@ mod tests {
     const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
-    fn wallet_with_password(password: Option<&str>) -> Wallet {
-        let password = password.map(Secret::new);
-        Wallet::new_from_seed([7; 64], Network::Testnet, None, password.as_ref()).expect("wallet")
+    fn wallet_with_password(protected: bool) -> Wallet {
+        use crate::test_support::keys;
+        let password = protected.then(|| Secret::new(hex::encode(keys::secret_bytes())));
+        Wallet::new_from_seed(keys::seed(), Network::Testnet, None, password.as_ref())
+            .expect("wallet")
     }
 
     #[test]
     fn a_passwordless_wallet_key_is_not_called_password_protected() {
-        let wallet = wallet_with_password(None);
+        let wallet = wallet_with_password(false);
 
         assert_eq!(
             wallet_key_notice(Some(&wallet)),
@@ -1859,7 +1861,7 @@ mod tests {
 
     #[test]
     fn a_password_wallet_key_asks_for_an_unlock_only_while_locked() {
-        let mut wallet = wallet_with_password(Some("correct horse battery"));
+        let mut wallet = wallet_with_password(true);
         assert_eq!(
             wallet_key_notice(Some(&wallet)),
             "The private key is in your password-protected wallet."

@@ -7085,6 +7085,53 @@ mod tests {
         assert_eq!(screen.recipient_description(&other_address), other_address);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirmation_names_an_own_address_entered_under_someone_else() {
+        use crate::model::wallet::DerivationPathHelpers;
+        let (mut screen, _temp_dir) = send_screen();
+        let ctx = screen.app_context.clone();
+        let seed = crate::test_support::keys::seed();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("Savings".to_string()), None)
+                .expect("receiving wallet");
+        let (seed_hash, _) = ctx
+            .register_wallet(
+                wallet,
+                &seed,
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .expect("loaded receiving wallet");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("offline wallet backend");
+        ctx.wallet_backend()
+            .expect("wallet backend")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("wallet addresses");
+        let owned = ctx
+            .snapshot_address_paths(&seed_hash)
+            .into_iter()
+            .find_map(|(address, path)| path.is_bip44_external(Network::Testnet).then_some(address))
+            .expect("owned receiving address");
+        assert_eq!(screen.form.to_mode(), ToMode::SomeoneElse);
+        screen.validated_destination = Some(ValidatedAddress::Core(owned.clone()));
+        let summary = screen.simple_send_confirmation_message();
+        let to = &summary
+            .rows
+            .iter()
+            .find(|(label, _)| *label == "To")
+            .expect("To row")
+            .1;
+        assert_eq!(to, &format!("Savings\n{owned}"));
+        let external = testnet_core_address(20).to_string();
+        assert_eq!(screen.recipient_description(&external), external);
+    }
+
     #[test]
     fn confirmation_separates_username_from_the_full_identity_id() {
         let (mut screen, _temp_dir) = send_screen();

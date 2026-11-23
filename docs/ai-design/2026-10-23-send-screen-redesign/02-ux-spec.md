@@ -200,18 +200,20 @@ Rule: validate on blur or on a completed paste, never on every keystroke. Errors
 
 ## 10. Confirmation and after sending
 
-`ConfirmationDialog`. Title: "Send 0.5000 DASH?" Body: a two-column grid:
+`ConfirmationDialog` with `ConfirmationSummary`. Title: "Send 0.5000 DASH?" Body: a two-column grid, up to 760 px wide and capped to the viewport, with 24 px between columns and 16 px between rows:
 
 ```
 From     Main · Core
-To       <the full recipient address>   (or "bob (<the full identity ID>)" / "your private balance in Main")
+To       <known owning wallet / identity name / username, when available>
+         <the full recipient address or identity ID>
+         (or "your private balance in Main")
 Amount   0.5000 DASH
 Fee      ≈ 0.0001 DASH
 Total    ≈ 0.5001 DASH
 <route note, if any>
 ```
 
-The confirmation always shows the recipient address in full, never middle-ellipsised. With a shortened address, an attacker only has to match a few characters at each end. A lookalike address pasted from history (address poisoning) would then pass this last check before an irreversible payment. A username shows with its full identity ID, and the own private balance shows by name.
+The confirmation always shows the recipient address in full, never middle-ellipsised. With a shortened address, an attacker only has to match a few characters at each end. A lookalike address pasted from history (address poisoning) would then pass this last check before an irreversible payment. Known wallet names, identity names and usernames appear on separate lines above the full recipient address or ID; the own private balance shows by name. Values are selectable and wrap on narrow windows without horizontal scrolling; copying preserves the original address. Notes appear below a separator.
 
 Buttons: [Cancel] [Send] (Confirm on the right; Escape = Cancel). The action is built at the moment Send is pressed, so the dialog shows exactly what will be sent even if Auto would re-resolve later. Danger mode stays as it is today (irreversible send).
 

@@ -51,7 +51,7 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
 /// Label/value rows and separate notes for a structured confirmation.
 #[derive(Debug, Clone, Default)]
 pub struct ConfirmationSummary {
-    /// Values remain selectable and never wrap inside a token.
+    /// Values remain selectable and wrap to fit without truncation.
     pub rows: Vec<(&'static str, String)>,
     /// Explanations shown below the summary, with normal wrapping.
     pub notes: Vec<String>,
@@ -239,7 +239,7 @@ impl ConfirmationDialog {
             |ui| {
                 if self.summary.is_some() {
                     ui.set_width(
-                        640.0_f32.min((ui.ctx().content_rect().width() - 64.0).max(240.0)),
+                        760.0_f32.min((ui.ctx().content_rect().width() - 64.0).max(240.0)),
                     );
                 } else {
                     ui.set_min_width(300.0);
@@ -250,27 +250,22 @@ impl ConfirmationDialog {
                 // Message content with bold text and proper color
                 ui.add_space(10.0);
                 if let Some(summary) = &self.summary {
-                    egui::ScrollArea::horizontal()
-                        .id_salt("confirmation_rows")
+                    egui::Grid::new("confirmation_summary")
+                        .num_columns(2)
+                        .spacing([Spacing::LG, Spacing::MD])
                         .show(ui, |ui| {
-                            egui::Grid::new("confirmation_summary")
-                                .spacing([Spacing::LG, Spacing::MD])
-                                .show(ui, |ui| {
-                                    for (label, value) in &summary.rows {
-                                        ui.label(
-                                            egui::RichText::new(*label)
-                                                .color(DashColors::text_secondary(dark_mode)),
-                                        );
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(value).monospace(),
-                                            )
-                                            .extend()
-                                            .selectable(true),
-                                        );
-                                        ui.end_row();
-                                    }
-                                });
+                            for (label, value) in &summary.rows {
+                                ui.label(
+                                    egui::RichText::new(*label)
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(value).monospace())
+                                        .wrap()
+                                        .selectable(true),
+                                );
+                                ui.end_row();
+                            }
                         });
                     ui.add_space(Spacing::MD);
                     ui.separator();
@@ -527,23 +522,70 @@ mod tests {
         use egui_kittest::kittest::Queryable;
         let address = format!("tdash1{}", "q".repeat(77));
         assert_eq!(address.len(), 83);
-        let summary = ConfirmationSummary {
-            rows: vec![("To", address.clone())],
-            notes: vec!["Check the recipient. Payments can't be undone.".to_string()],
-        };
-        let mut dialog =
-            ConfirmationDialog::new("Send 1 DASH?", summary.to_string()).with_summary(summary);
-        let mut harness = crate::test_support::harness_builder_with_app_fonts()
-            .with_size(egui::vec2(1280.0, 800.0))
-            .build_ui(move |ui| {
-                let _ = dialog.show(ui);
-            });
-        harness.run();
-        let window = harness.get_by_role(egui::accesskit::Role::Window).rect();
-        let value = harness.get_by_label(&address).rect();
-        assert!(
-            value.right() <= window.right(),
-            "the address runs past the dialog edge: value {value:?}, window {window:?}"
-        );
+        for width in [1280.0, 640.0, 360.0] {
+            let summary = ConfirmationSummary {
+                rows: vec![
+                    ("From", "Main · Private".to_string()),
+                    ("To", address.clone()),
+                    ("Amount", "1 DASH".to_string()),
+                    ("Fee", "0.0001 DASH".to_string()),
+                    ("Total", "1.0001 DASH".to_string()),
+                ],
+                notes: vec!["Check the recipient. Payments can't be undone.".to_string()],
+            };
+            let mut dialog =
+                ConfirmationDialog::new("Send 1 DASH?", summary.to_string()).with_summary(summary);
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(width, 800.0))
+                .build_ui(move |ui| {
+                    let _ = dialog.show(ui);
+                });
+            harness.run();
+            let window = harness.get_by_role(egui::accesskit::Role::Window).rect();
+            let value = harness.get_by_label(&address).rect();
+            assert!(window.left() >= 0.0 && window.right() <= width);
+            assert!(
+                window.contains_rect(value),
+                "the address runs past the dialog edge: value {value:?}, window {window:?}"
+            );
+            if width == 1280.0 {
+                assert!(value.height() < 25.0, "the address fits on one line");
+            }
+            assert!(harness.get_by_label("Amount").rect().top() > value.bottom());
+
+            // Select through visual line wraps; copying must preserve the original address.
+            for event in [
+                egui::Event::PointerMoved(value.left_top()),
+                egui::Event::PointerButton {
+                    pos: value.left_top(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerMoved(value.right_bottom()),
+                egui::Event::PointerButton {
+                    pos: value.right_bottom(),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ] {
+                harness.event(event);
+                harness.step();
+            }
+            harness.event(egui::Event::Copy);
+            harness.step();
+            assert!(
+                harness
+                    .output()
+                    .platform_output
+                    .commands
+                    .iter()
+                    .any(|command| {
+                        matches!(command, egui::OutputCommand::CopyText(text) if text == &address)
+                    }),
+                "copy the whole address at width {width}"
+            );
+        }
     }
 }

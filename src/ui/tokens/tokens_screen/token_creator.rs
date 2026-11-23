@@ -185,12 +185,15 @@ impl TokensScreen {
                             // Auto-select the first eligible key when:
                             // 1. Identity changed, OR
                             // 2. Identity is selected but no key is selected yet (first load)
+                            // 3. The selected key belongs to another identity
+                            let key_of_another_identity = !self.selected_key_held_by_selected_identity();
                             let should_auto_select_key = response.changed()
+                                || key_of_another_identity
                                 || (self.selected_identity.is_some() && self.selected_key.is_none());
 
                             if should_auto_select_key {
-                                if response.changed() {
-                                    self.selected_key = None; // Clear previous key only on identity change
+                                if response.changed() || key_of_another_identity {
+                                    self.selected_key = None; // The key belongs to another identity
                                 }
                                 if let Some(ref identity) = self.selected_identity {
                                     // Find first eligible key for RegisterContract
@@ -263,6 +266,10 @@ impl TokensScreen {
                                 .as_ref()
                                 .map(|qi| qi.identity.id());
                             if before_id != after_id {
+                                // Simple mode's selector shows this string; keep it on the same identity.
+                                self.identity_id_string = after_id
+                                    .map(|id| id.to_string(Encoding::Base58))
+                                    .unwrap_or_default();
                                 self.app_context
                                     .set_selected_identity(after_id);
                             }
@@ -937,6 +944,19 @@ impl TokensScreen {
             }
             self.selected_wallet = new_wallet;
         }
+    }
+
+    /// Whether the selected identity holds the selected key; no key counts as held.
+    fn selected_key_held_by_selected_identity(&self) -> bool {
+        let (Some(identity), Some(selected)) = (&self.selected_identity, &self.selected_key) else {
+            return true;
+        };
+        identity
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .map(|key_ref| &key_ref.1.identity_public_key)
+            .any(|key| key.id() == selected.id() && key.data() == selected.data())
     }
 
     fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {

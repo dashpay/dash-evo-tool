@@ -5438,4 +5438,122 @@ mod tests {
         assert!(!screen.show_json_popup);
         assert!(screen.json_popup_text.is_empty());
     }
+
+    /// A user identity named `alias`, holding private keys for `keys`.
+    fn named_creator_identity(
+        context: &AppContext,
+        id: u8,
+        alias: &str,
+        keys: &[(KeyID, Purpose, SecurityLevel)],
+    ) -> QualifiedIdentity {
+        let mut identity = identity_holding(context, id, IdentityType::User, keys);
+        identity.alias = Some(alias.to_owned());
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        identity
+    }
+
+    /// Renders the Token Creator form of `screen` frame by frame.
+    fn token_creator_harness(screen: TokensScreen) -> egui_kittest::Harness<'static, TokensScreen> {
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 2400.0))
+            // Unnamed creator inputs are named on the base branch, not here.
+            .with_accessibility_check(false)
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let ctx = ui.ctx().clone();
+                    let _ = screen.render_token_creator(&ctx, ui);
+                },
+                screen,
+            )
+    }
+
+    /// Regression: an identity chosen under Advanced Options did not reach Simple
+    /// mode's selector, which kept showing the previous identity while the form
+    /// signed with the new one. Both modes show and sign with the same identity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn advanced_identity_choice_carries_over_to_simple_mode() {
+        use egui_kittest::kittest::Queryable;
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
+        let alpha = named_creator_identity(&context, 0x41, "Alpha", &key);
+        let beta = named_creator_identity(&context, 0x42, "Beta", &key);
+        context.set_selected_identity(Some(alpha.identity.id()));
+        let alpha_label = context.identity_display_label(&alpha);
+        let beta_label = context.identity_display_label(&beta);
+        assert_ne!(alpha_label, beta_label);
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        screen.show_advanced_token_creator = true;
+        let mut harness = token_creator_harness(screen);
+        harness.run();
+
+        harness.get_by_value(&alpha_label).click();
+        harness.run();
+        harness.get_by_label(&beta_label).click();
+        harness.run();
+        harness.state_mut().show_advanced_token_creator = false;
+        harness.run();
+
+        let screen = harness.state();
+        let beta_id = beta.identity.id();
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(beta_id)
+        );
+        assert_eq!(
+            screen.identity_id_string,
+            beta_id.to_string(Encoding::Base58)
+        );
+        assert!(
+            harness.query_by_value(&alpha_label).is_none(),
+            "Simple mode must not show the previous identity"
+        );
+        assert!(harness.query_by_value(&beta_label).is_some());
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// Simple mode never signs with a key that belongs to another identity: a
+    /// selected key the shown identity does not hold is replaced by one it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn simple_mode_replaces_a_key_of_another_identity() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let alpha = named_creator_identity(
+            &context,
+            0x41,
+            "Alpha",
+            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        let beta = named_creator_identity(
+            &context,
+            0x42,
+            "Beta",
+            &[(2, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        let beta_key = beta
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .map(|key_ref| key_ref.1.identity_public_key.clone())
+            .next()
+            .expect("beta key");
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        screen.identity_id_string.clear();
+        screen.selected_identity = None;
+        screen.selected_key = Some(beta_key);
+        let mut harness = token_creator_harness(screen);
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(alpha.identity.id())
+        );
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
 }

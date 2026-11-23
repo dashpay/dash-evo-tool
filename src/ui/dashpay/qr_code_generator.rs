@@ -281,14 +281,14 @@ impl QRCodeGeneratorScreen {
 
                     ui.label(
                         RichText::new(
-                            "Share this QR code with someone to establish a mutual contact",
+                            "People who scan this QR code send you a contact request. Accept it to add them as a contact.",
                         )
                         .small()
                         .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(
-                            "WARNING: Anyone with this QR code can automatically become your contact",
+                            "WARNING: Anyone who has this QR code before it expires can send you a contact request.",
                         )
                         .small()
                         .color(DashColors::warning_color(dark_mode)),
@@ -417,6 +417,58 @@ mod tests {
 
     fn qr_result(qr: &str) -> BackendTaskSuccessResult {
         BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr.to_string())
+    }
+
+    /// Regression: the labels under a generated code promised that sharing
+    /// it establishes a mutual contact and that anyone holding it becomes a
+    /// contact automatically, while DET only receives a contact request the
+    /// user accepts by hand.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_generated_code_promises_no_automatic_contact() {
+        use egui_kittest::kittest::{By, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let identity = bare_user_identity(Identifier::new([1; 32]), context.network);
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        let mut screen = QRCodeGeneratorScreen::new(context.clone());
+        screen.selected_identity = Some(identity);
+        screen.generated_qr_data = Some("dash:contact".to_string());
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui_state(
+                |ui, screen: &mut QRCodeGeneratorScreen| {
+                    screen.render(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Generated QR Code")
+                .is_some()
+        );
+        for promise in ["mutual contact", "automatically become"] {
+            assert!(
+                harness
+                    .query_all(By::new().label_contains(promise))
+                    .next()
+                    .is_none(),
+                "{promise}"
+            );
+        }
+        assert!(
+            harness
+                .query_all(By::new().label_contains("contact request"))
+                .next()
+                .is_some(),
+            "the labels say what scanning the code does"
+        );
+        assert!(harness.query_by_label_contains("WARNING:").is_some());
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
     }
 
     /// Regression: a QR code generated for one identity arrived after the user

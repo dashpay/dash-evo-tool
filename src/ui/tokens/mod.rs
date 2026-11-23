@@ -342,7 +342,7 @@ pub(crate) mod tests {
         )
     }
 
-    pub(super) fn store_identity_with_wallet_key(
+    pub(crate) fn store_identity_with_wallet_key(
         ctx: &AppContext,
         mut identity: QualifiedIdentity,
         key_id: u32,

@@ -385,6 +385,20 @@ impl ScreenLike for WithdrawalScreen {
             self.identity = refreshed;
             self.max_amount = self.identity.identity.balance();
         }
+        let key_changed = super::reselect_unusable_key(
+            &self.identity,
+            &mut self.selected_key,
+            self.identity.withdrawal_signing_key(),
+        );
+        let wallet_changed = super::sync_signing_wallet(
+            Some(&self.identity),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+        if key_changed || wallet_changed {
+            self.confirmation_dialog = None;
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -667,5 +681,40 @@ impl ScreenLike for WithdrawalScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+
+    /// Regression: after a withdrawal key was added, a refresh reloaded the
+    /// identity but kept no key selected, so the form stayed blank.
+    #[test]
+    fn a_refresh_picks_the_withdrawal_key_that_became_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let mut screen = WithdrawalScreen::new(
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]),
+            &context,
+        );
+        assert!(screen.selected_key.is_none());
+        screen.confirmation_dialog = Some(ConfirmationDialog::new("Withdraw", "Withdraw 1?"));
+        let IdentityPublicKey::V0(mut transfer_key) = auth_key(2, SecurityLevel::CRITICAL) else {
+            panic!("auth_key builds a version 0 key");
+        };
+        transfer_key.purpose = Purpose::TRANSFER;
+        let seed_hash = crate::ui::tokens::tests::store_identity_with_wallet_key(
+            &context,
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL), transfer_key.into()]),
+            2,
+        );
+
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+        let wallet = screen.selected_wallet.as_ref().expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+        assert!(screen.confirmation_dialog.is_none());
     }
 }

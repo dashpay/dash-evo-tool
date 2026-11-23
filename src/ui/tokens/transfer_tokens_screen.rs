@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::parse_identity_id;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -263,13 +264,7 @@ impl TransferTokensScreen {
             );
             return;
         };
-        let Ok(recipient_id) = Identifier::from_string_try_encodings(
-            &self.receiver_identity_id,
-            &[
-                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
-            ],
-        ) else {
+        let Some(recipient_id) = parse_identity_id(&self.receiver_identity_id) else {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),

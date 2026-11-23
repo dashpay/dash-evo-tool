@@ -2022,9 +2022,9 @@ impl AppContext {
                 seed_hash,
                 inputs,
                 outputs,
-                fee_payer_index,
+                fee_strategy,
             } => {
-                self.transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
+                self.transfer_platform_credits(seed_hash, inputs, outputs, fee_strategy)
                     .await
             }
             WalletTask::FundPlatformAddressFromAssetLock {

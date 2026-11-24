@@ -139,12 +139,16 @@ POST runs with `if: always()` after stopping the GUI. It validates testnet addre
 then observes only Insight's UTXO list. Sending requires exactly one output with
 the recorded faucet transaction ID, burner address, exact payout amount, a valid
 output index and at least one confirmation. An empty list or matching unconfirmed
-payout is polled every 30 seconds for up to 12 minutes; transient HTTP or parse
-errors are retried within that same window. Each read is capped at five seconds
+output is polled every 30 seconds for up to 12 minutes. If a funding timeout left
+no transaction ID, the single output to the fresh burner address is accepted within
+`refund_amount`'s bounds (at most the payout); its observed transaction ID is saved
+before sending. Transient HTTP or parse errors are retried within that same window.
+Each read is capped at five seconds
 and the remaining observation budget. Extra or unrelated outputs, mismatched
-amounts or transaction IDs, and malformed fields stop POST immediately.
+amounts or transaction IDs for a known payout, and malformed fields stop POST
+immediately.
 After confirmation,
-`det-cli` is used solely for one Testnet send of the payout minus 226 duffs back
+`det-cli` is used solely for one Testnet send of the observed output minus 226 duffs back
 to the faucet. It receives the remaining 25-minute step budget minus 15 seconds
 for the final state write: about 12 minutes 45 seconds after a full observation
 window, allowing up to ten minutes for SPV sync. The existing 25-minute step and

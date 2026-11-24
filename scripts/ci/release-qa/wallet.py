@@ -181,7 +181,7 @@ def refund():
     destination = address(state["refund_address"])
     source = address(state["address"])
 
-    # Sweep only the known single confirmed faucet output; otherwise fail closed.
+    # The burner address is fresh per run; require a single confirmed output.
     def observe():
         remaining = observation_deadline - time.monotonic()
         if remaining <= 0:
@@ -215,6 +215,8 @@ def refund():
                 ):
                     raise ValueError("Refund UTXO is invalid")
                 if (
+                    state.get("txid") is not None or state.get("funding") != "unknown"
+                ) and (
                     coin["txid"] != state.get("txid")
                     or coin["satoshis"] != state["payout_duffs"]
                 ):
@@ -238,7 +240,7 @@ def refund():
         state["refund"] = "unknown"
         save(state)
         raise
-    state["refund"] = "unknown"
+    state.update(refund="unknown", txid=coin["txid"])
     save(state)
     remaining = deadline - time.monotonic()
     if remaining <= 0:

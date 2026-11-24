@@ -40,6 +40,10 @@ class WalletTests(unittest.TestCase):
             "excess_amount",
             "short_amount",
             "missing_txid",
+            "unknown_payout",
+            "unknown_short_amount",
+            "unknown_excess_amount",
+            "unknown_dust_amount",
             "invalid_txid",
             "overflow_vout",
             "negative_confirmations",
@@ -102,6 +106,15 @@ class WalletTests(unittest.TestCase):
                     coin["satoshis"] -= 1
                 if case == "missing_txid":
                     del state["txid"]
+                if case.startswith("unknown_"):
+                    del state["txid"]
+                    state["funding"] = "unknown"
+                if case == "unknown_short_amount":
+                    coin["satoshis"] -= 1
+                if case == "unknown_excess_amount":
+                    coin["satoshis"] += 1
+                if case == "unknown_dust_amount":
+                    coin["satoshis"] = 226
                 if case == "invalid_txid":
                     coin["txid"] = "invalid"
                 if case == "overflow_vout":
@@ -139,6 +152,7 @@ class WalletTests(unittest.TestCase):
                 def send(*args, **kwargs):
                     self.assertEqual(args[0], "core-funds-send")
                     self.assertEqual(json.loads(path.read_text())["refund"], "unknown")
+                    self.assertEqual(json.loads(path.read_text())["txid"], coin["txid"])
                     self.assertEqual(kwargs["timeout"], 1600 - 15 - now[0])
                     self.assertGreater(kwargs["timeout"], 650)
                     if case == "timeout":
@@ -172,7 +186,14 @@ class WalletTests(unittest.TestCase):
                     ),
                 ):
                     insight.query.side_effect = http
-                    if case in ("ok", "missing_address", "retry_http", "retry_parse"):
+                    if case in (
+                        "ok",
+                        "missing_address",
+                        "retry_http",
+                        "retry_parse",
+                        "unknown_payout",
+                        "unknown_short_amount",
+                    ):
                         wallet.refund()
                     else:
                         with self.assertRaises(
@@ -186,10 +207,15 @@ class WalletTests(unittest.TestCase):
                         "bad_send_txid",
                         "retry_http",
                         "retry_parse",
+                        "unknown_payout",
+                        "unknown_short_amount",
                     )
                     self.assertEqual(det.call_count, int(sends))
                     if sends:
-                        self.assertIn("amount_duffs=99999774", det.call_args.args)
+                        expected = (
+                            99999773 if case == "unknown_short_amount" else 99999774
+                        )
+                        self.assertIn(f"amount_duffs={expected}", det.call_args.args)
                         self.assertIn("network=testnet", det.call_args.args)
                         self.assertIn("address=" + REFUND_ADDRESS, det.call_args.args)
                         self.assertEqual(

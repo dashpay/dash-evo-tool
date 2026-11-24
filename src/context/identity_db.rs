@@ -193,8 +193,8 @@ fn top_up_err(source: KvAdapterError) -> TaskError {
 
 /// Merge `top_ups` into the stored history of `identity_id` (read-merge-write).
 ///
-/// Callers hold a partial view of the history — the top-up flow carries the
-/// entries it hydrated plus the one it just confirmed, and the legacy-data
+/// Callers hold a partial view of the history — the top-up flow carries only
+/// the entry it just confirmed, and the legacy-data
 /// import carries only what `data.db` held — so a replacing write would drop
 /// every entry the caller never saw. On a colliding index the caller's value
 /// wins: it is the fresher of the two. Removal is not expressible here; the
@@ -911,7 +911,18 @@ impl AppContext {
     /// The write carries no block height, so a balance other than the newest
     /// one observed is replaced by that one (see `balance_watermark`). A
     /// write that changes the balance uses
-    /// `update_local_qualified_identity_observed`.
+    /// `edit_local_qualified_identity_observed`.
+    ///
+    /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
+    /// caller that read the record before a concurrent change (for example a
+    /// key removed in Key Info) writes that change away, including keys whose
+    /// vault secrets are already gone. Resolved by moving identity keys and
+    /// scalar fields onto platform-wallet's `IdentityManager`: keys persist as
+    /// per-key `IdentityKeysChangeSet` upserts and removals, scalars as an
+    /// `IdentityChangeSet` snapshot, and every mutation goes through the one
+    /// shared manager under its state lock instead of a caller's stale copy.
+    /// Until then, prefer [`Self::edit_local_qualified_identity`] for new
+    /// writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -936,8 +947,8 @@ impl AppContext {
     /// # Errors
     ///
     /// [`TaskError::IdentityNotFoundLocally`] when nothing is stored under
-    /// `identity_id`, and whatever `edit` returns — in both cases nothing is
-    /// persisted.
+    /// `identity_id` or it is off the roster (an edit never re-lists), and
+    /// whatever `edit` returns — in every case nothing is persisted.
     pub fn edit_local_qualified_identity(
         &self,
         identity_id: &Identifier,
@@ -947,12 +958,23 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut fresh = self
-            .get_local_qualified_identity(identity_id)?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let mut fresh = self.read_listed_identity_locked(identity_id)?;
         edit(&mut fresh)?;
         self.write_local_qualified_identity_locked(&fresh)?;
         Ok(fresh)
+    }
+
+    /// The stored record of a listed identity, for an edit. The caller holds
+    /// the identity's record lock.
+    pub(crate) fn read_listed_identity_locked(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<QualifiedIdentity, TaskError> {
+        if !self.is_identity_listed(identity_id)? {
+            return Err(TaskError::IdentityNotFoundLocally);
+        }
+        self.get_local_qualified_identity(identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)
     }
 
     /// The write half of [`Self::update_local_qualified_identity`], for a
@@ -1411,7 +1433,7 @@ impl AppContext {
     /// store. A missing or unreadable entry is logged and treated as an
     /// empty map; pre-C5 SQLite data is intentionally not migrated and
     /// surfaces as empty under the "empty start" policy.
-    fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
+    pub(crate) fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
         let Ok(kv) = self.det_kv() else {
             return;
         };
@@ -2492,6 +2514,28 @@ pub(crate) mod test_staging {
             _dir: dir,
             _events: events,
         }
+    }
+
+    /// Drop `id` from the roster and keep its blob, with no unload marker:
+    /// the state an insert that stopped before its roster add leaves behind.
+    pub(crate) fn unlist_identity(ctx: &AppContext, id: &Identifier) {
+        index_remove_identity(&ctx.det_kv().expect("identity kv"), &id.to_buffer())
+            .expect("remove from the roster");
+    }
+
+    /// The top-up history stored for `id`, whether or not it is listed.
+    pub(crate) fn stored_top_ups(ctx: &AppContext, id: &Identifier) -> Option<BTreeMap<u32, u64>> {
+        ctx.det_kv()
+            .expect("identity kv")
+            .get(DetScope::Identity(&id.to_buffer()), TOP_UPS_KEY)
+            .expect("read the top-up history")
+    }
+
+    /// Fail the next save of a top-up history.
+    pub(crate) fn fail_next_top_up_save(ctx: &Arc<AppContext>) {
+        let store = ctx.det_kv().unwrap().failing_store();
+        store.fail_next_puts_containing(TOP_UPS_KEY, 1);
+        ctx.set_det_kv_override_for_test(DetKv::from_store(store));
     }
 
     /// Fail the top-up deletion after the identity has been delisted and its blob deleted.
@@ -4082,6 +4126,31 @@ mod tests {
                 .queue_scheduled_dpns_vote_target(scheduled.id, &scheduled.targets[0].target.key)
                 .unwrap()
         );
+    }
+
+    /// An edit targets a loaded identity: one off the roster with its blob
+    /// kept is refused, not put back on the roster.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_refuses_an_identity_off_the_roster() {
+        let staged = stage_identity_with_vaulted_keys(
+            crate::test_support::keys::secret_bytes(),
+            crate::test_support::keys::secret_bytes(),
+        )
+        .await;
+        unlist_identity(&staged.ctx, &staged.id);
+
+        let plain = staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |_| Ok(()));
+        let observed = staged.ctx.edit_local_qualified_identity_observed(
+            &staged.id,
+            crate::model::identity_balance::BalanceProvenance::ObservedAt(7),
+            |_| Ok(()),
+        );
+
+        assert!(matches!(plain, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(matches!(observed, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

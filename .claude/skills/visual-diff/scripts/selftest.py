@@ -8,6 +8,9 @@ changing any script in this directory.
 """
 
 import json
+import base64
+import re
+from pathlib import Path
 import os
 import shutil
 import subprocess
@@ -176,8 +179,13 @@ class Gallery(Case):
         self.assertTrue(os.path.exists(self.path("index.html")))
 
     def test_embedded_gallery_keeps_style_charset_and_both_images(self):
-        code, out = self.gallery(self.META, self.BOTH)
+        name = "01-a&b"
+        files = [("annotated", name + ".png"), ("annotated", "clean", name + ".png")]
+        code, out = self.gallery(
+            {"images": [{"name": name, "title": "A"}], "coverage": []}, files
+        )
         self.assertEqual(code, 0, out)
+        image(self.path(*files[1]), (RECT, (255, 0, 0)))
         code, out = run(
             "gallery.py",
             "--root",
@@ -191,7 +199,12 @@ class Gallery(Case):
             text = page.read()
         self.assertIn("<meta charset=utf-8>", text)
         self.assertIn("img{max-width:100%", text)
-        self.assertEqual(text.count("data:image/png;base64,"), 2)
+        for attribute, file in zip(("src", "href"), files):
+            encoded = re.search(attribute + r'="data:image/png;base64,([^"]+)"', text)
+            self.assertIsNotNone(encoded)
+            self.assertEqual(
+                base64.b64decode(encoded[1]), Path(self.path(*file)).read_bytes()
+            )
         self.assertNotIn('src="annotated/', text)
 
     def test_missing_labelled_image_stops_the_gallery(self):
@@ -223,12 +236,20 @@ class EnvValue(unittest.TestCase):
     NAME = "E2E_WALLET_MNEMONIC"
 
     def value(self, text):
-        with tempfile.NamedTemporaryFile("w", suffix=".env", newline="", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".env", newline="", delete=False
+        ) as f:
             f.write(text)
         self.addCleanup(os.unlink, f.name)
         with open(f.name) as stdin:
             r = subprocess.run(
-                ["awk", "-v", f"name={self.NAME}", "-f", os.path.join(HERE, "env-value.awk")],
+                [
+                    "awk",
+                    "-v",
+                    f"name={self.NAME}",
+                    "-f",
+                    os.path.join(HERE, "env-value.awk"),
+                ],
                 stdin=stdin,
                 capture_output=True,
                 text=True,
@@ -269,6 +290,7 @@ class EnvValue(unittest.TestCase):
             self.assertNotEqual(code, 0, repr(text))
             self.assertEqual(out, "", repr(text))
 
+
 class ProvisionWallet(unittest.TestCase):
     """provision-wallet.sh pipes the phrase to the det-cli it checked, read
     from the env file it was given. A fake det-cli records what it receives."""
@@ -279,7 +301,9 @@ class ProvisionWallet(unittest.TestCase):
         self.received = os.path.join(self.dir, "received")
         fake = os.path.join(self.dir, "det-cli")
         with open(fake, "w") as f:
-            f.write('#!/bin/sh\ncase "$*" in *core-wallet-import*) cat >"$RECEIVED" ;; esac\n')
+            f.write(
+                '#!/bin/sh\ncase "$*" in *core-wallet-import*) cat >"$RECEIVED" ;; esac\n'
+            )
         os.chmod(fake, 0o700)
         os.mkdir(os.path.join(self.dir, "data"))
 
@@ -287,7 +311,13 @@ class ProvisionWallet(unittest.TestCase):
         with open(os.path.join(self.dir, env_file), "w") as f:
             f.write("E2E_WALLET_MNEMONIC=alpha bravo\n")
         r = subprocess.run(
-            [os.path.join(HERE, "provision-wallet.sh"), det_cli, "data", "--env-file", env_file],
+            [
+                os.path.join(HERE, "provision-wallet.sh"),
+                det_cli,
+                "data",
+                "--env-file",
+                env_file,
+            ],
             cwd=self.dir,
             env={"PATH": "/usr/bin:/bin", "RECEIVED": self.received},
             capture_output=True,
@@ -344,11 +374,19 @@ class TypeSecret(unittest.TestCase):
             f.write(text)
         os.chmod(path, 0o700)
 
-    def type_secret(self, focus_pid, *args, env_file="test.env", switch_at="", extra_env=None):
+    def type_secret(
+        self, focus_pid, *args, env_file="test.env", switch_at="", extra_env=None
+    ):
         with open(os.path.join(self.dir, env_file), "w") as f:
             f.write(f"E2E_WALLET_MNEMONIC={self.VALUE}\n")
         r = subprocess.run(
-            [os.path.join(HERE, "type-secret.sh"), "--env-file", env_file, "E2E_WALLET_MNEMONIC", *args],
+            [
+                os.path.join(HERE, "type-secret.sh"),
+                "--env-file",
+                env_file,
+                "E2E_WALLET_MNEMONIC",
+                *args,
+            ],
             cwd=self.dir,
             env={
                 "PATH": self.path,
@@ -382,10 +420,14 @@ class TypeSecret(unittest.TestCase):
     def test_typing_stops_when_the_focus_moves(self):
         code, typed = self.type_secret(str(self.gui.pid), switch_at=4)
         self.assertEqual(code, 1)
-        self.assertTrue(self.VALUE.startswith(typed) and len(typed) < len(self.VALUE), repr(typed))
+        self.assertTrue(
+            self.VALUE.startswith(typed) and len(typed) < len(self.VALUE), repr(typed)
+        )
 
     def test_an_option_shaped_env_file_is_read_as_a_file(self):
-        self.assertEqual(self.type_secret(str(self.gui.pid), env_file="--version"), (0, self.VALUE))
+        self.assertEqual(
+            self.type_secret(str(self.gui.pid), env_file="--version"), (0, self.VALUE)
+        )
 
     def test_an_inherited_trace_never_prints_the_value(self):
         bash_env = os.path.join(self.dir, "trace.sh")

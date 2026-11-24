@@ -38,7 +38,7 @@ def embed_images(page, root):
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
             raise ValueError("Unsafe gallery image")
         page = page.replace(
-            f'"{path.relative_to(root)}"',
+            f'"{e(str(path.relative_to(root)))}"',
             '"data:image/png;base64,'
             + base64.b64encode(path.read_bytes()).decode()
             + '"',

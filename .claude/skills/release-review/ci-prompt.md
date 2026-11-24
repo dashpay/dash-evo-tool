@@ -16,10 +16,13 @@ If it is not, report incomplete and stop.
 2. Write scenarios.md and story-checklist.md in output only. Deep-test changed
    flows; tour reachable screens at basic and advanced levels, light/dark,
    validation and error states. No secret-entry/export screens, sends,
-   votes, registrations, shielding, profile mutations or final confirmations.
+   votes, registrations, shielding, DashPay profile/identity data mutations
+   or final confirmations.
+   On Welcome, choose "Just Explore". Completing onboarding and changing theme
+   or experience level on this disposable profile are allowed.
 3. Use only these Bash commands (no chaining, redirection or substitutions):
    `/usr/local/bin/qa-ui click X Y`, `key Tab`, `key ctrl+a`, `type 'public text'`,
-   `scroll up`, `scroll down`, `wait 10`, `tree`, `capture 10-screen`.
+   `scroll up`, `scroll down`, `wait 10`, `tree`, `capture 10-screen`, `gallery`.
    Coordinates use the 1280×800 display. `tree` prints labels and rectangles;
    verify them against a fresh capture before clicking. Read captures with Read.
    Do not capture a populated secret field. Wait for Synced before balance shots;

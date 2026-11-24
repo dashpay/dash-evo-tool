@@ -32,6 +32,19 @@ and the NEW tag's source SHA, then runs the zip's GUI and `det-cli`. There is no
 local build, OLD-build A/B or code review. The baseline is the newest older
 published pre-release that is an ancestor of NEW, or an explicitly selected older
 published ancestor pre-release.
+A selected `run_id` must come from a `release.yml` run invoked at the tag's commit
+(as weekly builds are). `--source-digest` refuses builds dispatched from another
+commit, even when `release.yml` checked out the requested tag.
+
+Before merging workflow changes, add the **`release-qa`** label to a PR from this
+repository. Remove and re-add the label to rerun. Fork PRs and other labels never
+run QA. This path checks out the PR head's controller and skills, reviews the
+newest **published weekly pre-release** as NEW, and selects the baseline
+automatically as described above. It is report-only: no sealing, finalization,
+release edits or publication; the burner may be funded and refunded normally.
+Once the workflow exists on the default branch, `workflow_dispatch` can override
+`tag`, `baseline` and `run_id`. The OAuth secret remains scoped to the agent step;
+that job has only `contents: read`.
 
 The prepare job alone has `contents: write` to read draft assets; it never
 executes release binaries. Normal weekly runs reuse their build artifact.
@@ -79,8 +92,9 @@ instructions. Text/tree scanning blocks WIF exports, but screenshots have no
 independent OCR scan. This residual is accepted for the low-value, at-most-1-tDASH
 burner; never use mainnet or an operator wallet here.
 
-Smoke launches an empty Testnet profile first. The controller then pauses the GUI
-for PRE (wallet import and SPV-dependent receiving address), resumes it even if PRE
+Smoke launches an empty Testnet profile first and requires a graceful window close
+with exit code 0. A timeout, forced termination or non-zero exit fails smoke.
+The controller keeps the GUI stopped for PRE (wallet import and SPV-dependent receiving address), resumes it even if PRE
 fails, and attempts HTTP-only funding when an address is available. Standalone
 `det-cli` never runs against a live GUI.
 Funding uses only `https://faucet.thepasta.org`: live `/api/status`, CAP PoW,
@@ -91,15 +105,17 @@ Solving has a shared
 redemption within the 10-minute lifetime; expired solutions are never redeemed.
 The testnet P2PKH refund
 address comes from `depositAddress`, with optional repository variable
-`QA_FAUCET_REFUND_ADDRESS` taking precedence. Missing or invalid addresses skip
-POST with a warning in the report and step summary. Funds are then abandoned with
+`QA_FAUCET_REFUND_ADDRESS` taking precedence when valid; an invalid override
+falls back to a valid `depositAddress`. If neither is valid, POST is skipped
+with a warning in the report and step summary. Funds are then abandoned with
 the disposable testnet wallet. Funding is capped at 1 tDASH. Known funding refusal
 is recorded while other reachable screens are still tested. An ambiguous payout is
 never retried; it requires a refund attempt and can leave the result incomplete.
 
 POST runs with `if: always()` after stopping the GUI. It checks Testnet, a single
-confirmed faucet UTXO and matching wallet/explorer balances, then sends the
-balance minus 226 duffs back to the faucet once. This allowance covers the current
+confirmed faucet UTXO and matching wallet/explorer balances (up to three read-only
+attempts, 30 seconds apart), then sends the balance minus 226 duffs back to the
+faucet once. Nothing is retried after the send starts. This allowance covers the current
 one-input P2PKH builder at 1 duff/byte; the sub-dust remainder is miner fee.
 Unexpected inputs, fee/API drift, unconfirmed funds or an uncertain broadcast
 produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and

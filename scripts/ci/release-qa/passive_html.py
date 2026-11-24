@@ -8,7 +8,9 @@ from logic import CAPTURE_NAME
 
 
 class PassiveHTML(HTMLParser):
-    tags = set("h1 h2 h3 p pre code table tr th td ul li b strong em img a br".split())
+    tags = set(
+        "h1 h2 h3 p pre code table tr th td ul li b strong em img a br details summary".split()
+    )
 
     def __init__(self):
         super().__init__(convert_charrefs=True)

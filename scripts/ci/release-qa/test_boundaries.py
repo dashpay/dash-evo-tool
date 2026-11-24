@@ -312,6 +312,7 @@ class WorkflowTests(unittest.TestCase):
                 )
                 env = dict(
                     os.environ,
+                    REPORT_ARTIFACT_ID="12345",
                     FINISH_RESULT="success",
                     REVIEW_RESULT=result,
                     GITHUB_REPOSITORY="test/repo",

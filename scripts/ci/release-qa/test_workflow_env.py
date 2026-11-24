@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import prepare
-from test_security_followup import workflow
+from test_security_followup import evaluate, workflow
 from test_process_and_export import SOURCE
 
 
@@ -141,3 +141,51 @@ class WorkflowEnvironmentTests(unittest.TestCase):
                         (Path(env["QA_ROOT"]) / binary.name).read_bytes(),
                         binary.read_bytes(),
                     )
+
+    def test_report_download_is_bound_to_successful_review_upload(self):
+        jobs = workflow()["jobs"]
+        review, report = jobs["review"], jobs["report"]
+        upload = next(
+            s
+            for s in review["steps"]
+            if s.get("with", {}).get("name") == "release-qa-report"
+        )
+        self.assertEqual(upload.get("id"), "upload")
+        self.assertEqual(
+            review["outputs"].get("report_artifact_id"),
+            "${{ steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id || '' }}",
+        )
+        self.assertIn("review", report["needs"])
+        downloads = [
+            s
+            for s in report["steps"]
+            if s.get("uses", "").startswith("actions/download-artifact@")
+        ]
+        self.assertEqual(len(downloads), 1)
+        download = downloads[0]
+        self.assertNotIn("name", download["with"])
+        self.assertNotIn("pattern", download["with"])
+        self.assertEqual(
+            download["with"].get("artifact-ids"),
+            "${{ needs.review.outputs.report_artifact_id }}",
+        )
+        self.assertEqual(download["with"].get("merge-multiple"), "true")
+        self.assertEqual(download["with"]["path"], "report")
+        for artifact_id, expected in (("", False), ("12345", True)):
+            with self.subTest(artifact_id=artifact_id):
+                self.assertEqual(
+                    bool(
+                        evaluate(
+                            download["if"],
+                            **{
+                                "needs.review.outputs.report_artifact_id": artifact_id,
+                            },
+                        )
+                    ),
+                    expected,
+                )
+        result = next(s for s in report["steps"] if s.get("id") == "result")
+        self.assertEqual(
+            result["env"].get("REPORT_ARTIFACT_ID"),
+            "${{ needs.review.outputs.report_artifact_id }}",
+        )

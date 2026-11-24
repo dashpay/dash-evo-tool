@@ -330,7 +330,7 @@ class ProcessAndExportTests(unittest.TestCase):
             wallet.det("network-info")
         self.assertEqual(execute.call_args.kwargs["env"]["BROWSER"], "/bin/true")
 
-    def test_report_rejects_partial_export_and_failed_finish(self):
+    def test_report_requires_complete_export_finish_and_upload(self):
         jobs = yaml.load(
             (SOURCE / ".github/workflows/release-qa.yml").read_text(),
             Loader=yaml.BaseLoader,
@@ -343,6 +343,9 @@ class ProcessAndExportTests(unittest.TestCase):
             ("success", "absent"),
             ("success", "missing"),
             ("success", "corrupt"),
+            ("success", "missing-id"),
+            ("success", "empty-id"),
+            ("success", "report-only-rerun"),
         ):
             with (
                 self.subTest(finish=finish, problem=problem),
@@ -375,12 +378,17 @@ class ProcessAndExportTests(unittest.TestCase):
                     (root / "report/visual-changelog.html").unlink()
                 if problem == "corrupt":
                     (root / "report/report.md").write_text("Changed after export.")
+                env = dict(os.environ)
+                env.pop("REPORT_ARTIFACT_ID", None)
+                if problem != "missing-id":
+                    env["REPORT_ARTIFACT_ID"] = "" if problem == "empty-id" else "12345"
                 subprocess.run(
                     ["bash", "-euc", script],
                     cwd=root,
                     check=True,
                     env=dict(
-                        os.environ,
+                        env,
+                        GITHUB_RUN_ATTEMPT="2",
                         REVIEW_RESULT="success",
                         FINISH_RESULT=finish,
                         GITHUB_REPOSITORY="test/repo",
@@ -389,7 +397,8 @@ class ProcessAndExportTests(unittest.TestCase):
                         GITHUB_STEP_SUMMARY=str(root / "summary"),
                     ),
                 )
-                self.assertIn("verdict=INCOMPLETE", (root / "output").read_text())
+                expected = "PASS" if problem == "report-only-rerun" else "INCOMPLETE"
+                self.assertIn(f"verdict={expected}\n", (root / "output").read_text())
 
     def test_smoke_precedes_wallet_and_does_not_require_it(self):
         jobs = yaml.load(

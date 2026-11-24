@@ -133,6 +133,7 @@ jobs:
       contents: read
     outputs:
       finish_result: ${{ steps.finish.outcome }}
+      report_artifact_id: ${{ steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id || '' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -203,6 +204,7 @@ jobs:
         continue-on-error: true
         run: python3 /opt/release-qa/run.py finish
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: upload
         if: always() && (needs.prepare_pr.result != 'skipped' || needs.prepare.result != 'skipped')
         continue-on-error: true
         with:
@@ -224,13 +226,16 @@ jobs:
       artifact_url: ${{ steps.result.outputs.artifact_url }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.review.outputs.report_artifact_id != ''
         continue-on-error: true
         with:
-          name: release-qa-report
+          artifact-ids: ${{ needs.review.outputs.report_artifact_id }}
+          merge-multiple: true
           path: report
       - name: Publish fail-closed summary
         id: result
         env:
+          REPORT_ARTIFACT_ID: ${{ needs.review.outputs.report_artifact_id }}
           REVIEW_RESULT: ${{ needs.review.result }}
           FINISH_RESULT: ${{ needs.review.outputs.finish_result }}
           GH_TOKEN: ${{ github.token }}
@@ -253,7 +258,7 @@ jobs:
                   path = pathlib.Path('report') / name
                   if not path.resolve().is_relative_to(pathlib.Path('report').resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                       complete = False
-              if complete and os.environ.get('FINISH_RESULT') == 'success' and os.environ['REVIEW_RESULT'] == 'success' and value in ('PASS', 'NOTE', 'FAIL'):
+              if complete and os.environ.get('REPORT_ARTIFACT_ID') and os.environ.get('FINISH_RESULT') == 'success' and os.environ['REVIEW_RESULT'] == 'success' and value in ('PASS', 'NOTE', 'FAIL'):
                   verdict = value
           except (OSError, ValueError, KeyError, TypeError, AttributeError):
               pass

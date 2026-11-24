@@ -15,6 +15,7 @@ from mnemonic import Mnemonic
 
 os.environ.setdefault("QA_ROOT", "/tmp/release-qa-tests-unused")
 import logic
+from passive_html import sanitize_html
 import run
 import ui
 import wallet
@@ -140,6 +141,22 @@ class HardeningTests(unittest.TestCase):
                         "export withheld", (root / "export/report.md").read_text()
                     )
                     self.assertFalse((root / "export/evidence.md").exists())
+
+    def test_html_keeps_clean_image_disclosure_without_active_attributes(self):
+        for src in ("annotated/clean/screen.png", "data:image/png;base64,aGVsbG8="):
+            with self.subTest(src=src):
+                text = sanitize_html(
+                    '<details ontoggle="alert(1)"><summary onclick="alert(2)">'
+                    "Version without labels</summary>"
+                    f'<img src="{src}" alt="Clean screenshot" onerror="alert(3)">'
+                    "</details>"
+                )
+                self.assertIn(
+                    "<details><summary>Version without labels</summary>"
+                    f'<img src="{src}" alt="Clean screenshot"></details>',
+                    text,
+                )
+                self.assertNotIn("alert", text)
 
     def test_html_export_is_passive_and_keeps_local_images(self):
         with tempfile.TemporaryDirectory() as temp:

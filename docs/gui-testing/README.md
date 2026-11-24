@@ -157,8 +157,8 @@ Profiles, vaults, env files and raw Claude transcripts are never uploaded.
 
 CI runs the Python suite in `release-qa-tests.yml` on release-QA script/workflow
 changes and visual-diff/release-review skill changes, on pull requests and pushes
-to `v*-dev`; it has no schedule. The same job runs the visual-diff selftest. Install Ubuntu `python3-yaml`, `python3-pil`
-and `python3-mnemonic` for local checks; the secret tests use the real BIP39 library.
+to `v*-dev`; it has no schedule. The same job runs the visual-diff selftest. Install Ubuntu `python3-yaml`, `python3-pil`,
+`python3-numpy`, `python3-mnemonic` and `fonts-dejavu-core` for local checks; the secret tests use the real BIP39 library.
 Offline checks (no faucet payouts or Claude usage):
 
 ```bash

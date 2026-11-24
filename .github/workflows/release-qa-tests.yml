@@ -36,7 +36,7 @@ jobs:
       - name: Install release QA test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-yaml python3-pil python3-mnemonic
+          sudo apt-get install -y --no-install-recommends python3-yaml python3-pil python3-numpy python3-mnemonic fonts-dejavu-core
 
       - name: Test release QA scripts
         run: |

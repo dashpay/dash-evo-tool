@@ -39,6 +39,46 @@ pub fn set_error_banner(app_context: &AppContext, msg: &str) {
     MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
 }
 
+/// Whether `identity_id` can send token transactions, for a token screen to
+/// show. A failed read leaves the actions enabled; the backend enforces the
+/// rule either way.
+pub fn load_token_action_availability(
+    app_context: &AppContext,
+    identity_id: &dash_sdk::platform::Identifier,
+) -> crate::model::token::TokenActionAvailability {
+    app_context
+        .token_action_availability(identity_id)
+        .unwrap_or_else(|error| {
+            tracing::debug!(%error, "Token action availability unreadable; leaving the actions enabled");
+            crate::model::token::TokenActionAvailability::Available
+        })
+}
+
+/// Re-reads `availability` while it waits for the identity's wallet, so an
+/// open screen offers its form once the wallet has loaded.
+pub fn recheck_token_action_availability(
+    app_context: &AppContext,
+    identity_id: &dash_sdk::platform::Identifier,
+    availability: &mut crate::model::token::TokenActionAvailability,
+) {
+    if *availability == crate::model::token::TokenActionAvailability::WalletNotOpen {
+        *availability = load_token_action_availability(app_context, identity_id);
+    }
+}
+
+/// Shows why token actions are unavailable, in place of an action form.
+/// Returns whether they are unavailable.
+pub fn show_token_actions_unavailable(
+    ui: &mut egui::Ui,
+    availability: crate::model::token::TokenActionAvailability,
+) -> bool {
+    let Some(reason) = availability.unavailable_reason() else {
+        return false;
+    };
+    ui.label(reason);
+    true
+}
+
 /// Validates that a signing key is selected before dispatching a backend task.
 ///
 /// Returns the signing key on success, or sets a global error banner and returns
@@ -57,5 +97,45 @@ pub fn validate_signing_key(
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::token::TokenActionAvailability;
+
+    /// While an identity waits for its wallet, the re-check keeps it waiting
+    /// until the wallet has loaded, then makes its actions available.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn availability_recheck_follows_the_wallet_loading() {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let seed_hash = crate::model::wallet::Wallet::new_from_seed(seed, ctx.network, None, None)
+            .expect("build wallet")
+            .seed_hash();
+        let identity = crate::context::test_support::bare_user_identity(
+            dash_sdk::platform::Identifier::from([0x61; 32]),
+            ctx.network,
+        );
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let id = identity.identity.id();
+
+        let mut availability = load_token_action_availability(&ctx, &id);
+        assert_eq!(availability, TokenActionAvailability::WalletNotOpen);
+        recheck_token_action_availability(&ctx, &id, &mut availability);
+        assert_eq!(availability, TokenActionAvailability::WalletNotOpen);
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        recheck_token_action_availability(&ctx, &id, &mut availability);
+        assert_eq!(availability, TokenActionAvailability::Available);
     }
 }

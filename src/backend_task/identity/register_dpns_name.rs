@@ -1450,7 +1450,8 @@ mod tests {
                         ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
                     allow_include_locked_and_abstaining_vote_tally: true,
                     start_at: None,
-                    limit: None,
+                    // The SDK reads the vote state in pages of this size.
+                    limit: Some(dash_sdk::drive::config::DEFAULT_QUERY_LIMIT),
                     offset: None,
                 },
                 Some(state),
@@ -1501,8 +1502,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
         let platform_version = PlatformVersion::latest();
-        let max_contenders = crate::model::dpns::username_contest_max_contenders(platform_version)
-            .expect("the latest protocol caps a vote");
+        let max_contenders = crate::model::dpns::username_contest_max_contenders(platform_version);
         let mock_sdk = || {
             dash_sdk::SdkBuilder::new_mock()
                 .with_version(platform_version)

@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use dash_sdk::dpp::dashcore::{Network, Txid};
 use eframe::egui;
 
+use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::{MigrationTask, migration_task_error};
-use crate::backend_task::{BackendTask, platform_info};
 use crate::context::AppContext;
 use crate::context::connection_status::{
     OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step, spv_progress_token,
@@ -611,6 +611,8 @@ pub(super) struct ConnectionBanner {
     handle: Option<BannerHandle>,
     /// Startup proof error cleared once quorum keys become available.
     quorum_startup_error: TransientBanner,
+    protocol_error: Option<BannerHandle>,
+    protocol_error_version: Option<u32>,
 }
 
 impl ConnectionBanner {
@@ -619,6 +621,8 @@ impl ConnectionBanner {
             previous_state: None,
             handle: None,
             quorum_startup_error: TransientBanner::default(),
+            protocol_error: None,
+            protocol_error_version: None,
         }
     }
 
@@ -633,21 +637,48 @@ impl ConnectionBanner {
             handle.clear();
         }
         self.quorum_startup_error.reset();
+        self.protocol_error.take_and_clear();
+        self.protocol_error_version = None;
         self.previous_state = None;
     }
 
     /// Update the banner for the current connection state. `spv_overlaying`
     /// suppresses the redundant Connecting/Syncing copy while the SPV block is
     /// up; `onboarding_active` suppresses the initial `Disconnected` banner while
-    /// the Welcome screen is showing (pre-sync, not a real failure). Returns a
-    /// [`BackendTask`] to dispatch on the first `Synced`.
+    /// the Welcome screen is showing (pre-sync, not a real failure).
     pub(super) fn update(
         &mut self,
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         spv_overlaying: bool,
         onboarding_active: bool,
-    ) -> Option<BackendTask> {
+    ) {
+        if self.protocol_error.was_evicted() {
+            self.protocol_error = None;
+        }
+        let old_version = app_context
+            .protocol_version_info()
+            .verified_version
+            .filter(|version| *version < crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version);
+        match old_version {
+            Some(verified_version)
+                if self.protocol_error.is_none() || self.protocol_error_version != old_version =>
+            {
+                let error = TaskError::PlatformNetworkTooOld { verified_version };
+                if let Some(handle) = &self.protocol_error {
+                    handle.with_details(error);
+                } else {
+                    let handle =
+                        MessageBanner::set_global(ctx, error.to_string(), MessageType::Error);
+                    handle.disable_auto_dismiss();
+                    handle.with_details(error);
+                    self.protocol_error = Some(handle);
+                }
+            }
+            None => self.protocol_error.take_and_clear(),
+            Some(_) => {}
+        }
+        self.protocol_error_version = old_version;
         let connection_status = app_context.connection_status();
         self.quorum_startup_error
             .clear_if(connection_status.masternodes_ready());
@@ -657,7 +688,7 @@ impl ConnectionBanner {
         // In Connecting state the banner text can change (normal → degraded)
         // without a transition, so re-evaluate every frame; skip otherwise.
         if !state_changed && current_state != OverallConnectionState::Connecting {
-            return None;
+            return;
         }
 
         // While the SPV-sync block is up it already conveys Connecting/Syncing
@@ -672,7 +703,7 @@ impl ConnectionBanner {
                 handle.clear();
             }
             self.previous_state = Some(current_state);
-            return None;
+            return;
         }
 
         // The Welcome screen initially reads Disconnected before sync starts.
@@ -683,7 +714,7 @@ impl ConnectionBanner {
             // Invalidate rather than cache either state so suppression exit and
             // recurring pre-suppression states both force reconciliation.
             self.previous_state = None;
-            return None;
+            return;
         }
 
         // Clear old banner on state transitions.
@@ -691,7 +722,6 @@ impl ConnectionBanner {
             handle.clear();
         }
 
-        let mut task = None;
         match current_state {
             OverallConnectionState::Disconnected => {
                 let msg = "Disconnected — check your internet connection";
@@ -729,18 +759,9 @@ impl ConnectionBanner {
                 }
                 self.handle = Some(handle);
             }
-            OverallConnectionState::Synced => {
-                // No banner. Fetch epoch info on first sync to populate protocol
-                // version and fee multiplier (needed for feature gating).
-                if state_changed {
-                    task = Some(BackendTask::PlatformInfo(
-                        platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
-                    ));
-                }
-            }
+            OverallConnectionState::Synced => {}
         }
         self.previous_state = Some(current_state);
-        task
     }
 }
 
@@ -1787,12 +1808,11 @@ impl PendingConfirmation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
     fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-        crate::app_dir::ensure_env_file(dir);
+        crate::app_dir::ensure_env_file(dir).expect("write .env");
         let db = Arc::new(crate::database::Database::new(dir.join("data.db")).expect("db"));
         db.create_tables(true).expect("create tables");
         db.set_default_version().expect("set version");
@@ -2491,6 +2511,79 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn startup_protocol_refresh_failure_is_quiet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_context = test_app_context(tmp.path());
+        crate::context::test_support::set_sdk_protocol_version(&app_context, 14);
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+        app_context
+            .refresh_platform_protocol(&app_context.sdk(), false)
+            .await;
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.is_none());
+        assert_eq!(app_context.protocol_version_info().verified_version, None);
+    }
+
+    #[test]
+    fn startup_protocol_refresh_only_warns_below_minimum() {
+        for version in [13, 14, 15, dash_sdk::dpp::version::LATEST_VERSION + 1] {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_context = test_app_context(tmp.path());
+            crate::context::test_support::prove_protocol_version(&app_context, version);
+            let ctx = egui::Context::default();
+            let mut banner = ConnectionBanner::new();
+            banner.update(&ctx, &app_context, false, true);
+            assert_eq!(
+                banner.protocol_error.is_some(),
+                version < 14,
+                "version {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn minimum_protocol_14_banner_tracks_upgrade_and_connection_reset() {
+        use crate::context::test_support::prove_protocol_version;
+        let tmp = tempfile::tempdir().unwrap();
+        let app_context = test_app_context(tmp.path());
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.is_none());
+        prove_protocol_version(&app_context, 12);
+        banner.update(&ctx, &app_context, false, true);
+        assert_eq!(banner.protocol_error_version, Some(12));
+        prove_protocol_version(&app_context, 13);
+        banner.update(&ctx, &app_context, false, true);
+        assert_eq!(banner.protocol_error_version, Some(13));
+        let old_handle = banner.protocol_error.clone().expect("old network banner");
+        assert_eq!(
+            old_handle.text().unwrap(),
+            TaskError::PlatformNetworkTooOld {
+                verified_version: 13
+            }
+            .to_string()
+        );
+        for index in 0..10 {
+            MessageBanner::set_global(&ctx, format!("Other message {index}"), MessageType::Info);
+        }
+        assert!(old_handle.was_evicted());
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.as_ref().unwrap().is_live());
+        prove_protocol_version(&app_context, 14);
+        banner.update(&ctx, &app_context, false, true);
+        assert!(banner.protocol_error.is_none());
+        assert!(!old_handle.is_live());
+        crate::context::test_support::set_sdk_protocol_version(&app_context, 14);
+        prove_protocol_version(&app_context, 13);
+        banner.update(&ctx, &app_context, false, true);
+        let reset_handle = banner.protocol_error.clone().unwrap();
+        banner.reset();
+        assert!(!reset_handle.is_live());
+    }
+
     /// Disconnected stays hidden throughout onboarding and appears on the first
     /// frame after onboarding ends, even when the connection state is unchanged.
     #[test]
@@ -2506,14 +2599,14 @@ mod tests {
         let mut banner = ConnectionBanner::new();
 
         // Frame 1: onboarding active, Disconnected — suppressed.
-        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        banner.update(&ctx, &app_context, false, true);
         assert!(
             banner.handle.is_none(),
             "the Disconnected banner must stay hidden while onboarding is active"
         );
 
         // Frame 2: onboarding still active, state unchanged — still suppressed.
-        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        banner.update(&ctx, &app_context, false, true);
         assert!(
             banner.handle.is_none(),
             "Disconnected must stay hidden for every frame while onboarding is active"
@@ -2521,7 +2614,7 @@ mod tests {
 
         // Frame 3: onboarding ends, connection is still Disconnected — the real
         // banner must now appear even though `current_state` never changed.
-        assert!(banner.update(&ctx, &app_context, false, false).is_none());
+        banner.update(&ctx, &app_context, false, false);
         assert!(
             banner.handle.is_some(),
             "a genuine Disconnected state must be reported once onboarding ends, \
@@ -2611,7 +2704,7 @@ mod tests {
 
         connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
         connection_status.refresh_state();
-        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        banner.update(&ctx, &app_context, false, true);
         assert!(
             banner.handle.is_some(),
             "the first SPV error must be reported"
@@ -2619,7 +2712,7 @@ mod tests {
 
         connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Idle);
         connection_status.refresh_state();
-        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        banner.update(&ctx, &app_context, false, true);
         assert!(
             banner.handle.is_none(),
             "Disconnected must be suppressed while onboarding is active"
@@ -2627,7 +2720,7 @@ mod tests {
 
         connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
         connection_status.refresh_state();
-        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        banner.update(&ctx, &app_context, false, true);
         assert!(
             banner.handle.is_some(),
             "a recurring SPV error must be restored after Disconnected suppression"
@@ -2638,7 +2731,6 @@ mod tests {
 #[cfg(test)]
 mod pending_confirmation_tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
 
     fn seen(status: TransactionStatus, height: Option<u32>) -> Option<TransactionConfirmation> {
         Some(TransactionConfirmation { status, height })

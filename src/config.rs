@@ -47,7 +47,7 @@ pub enum ConfigError {
     #[error("The saved settings contain an invalid entry. Correct the settings file and retry.")]
     InvalidEnvFile {
         #[source]
-        source: dotenvy::Error,
+        source: EnvFileError,
     },
 
     /// A network-specific value could not be parsed into its modeled type.
@@ -72,6 +72,34 @@ pub enum ConfigError {
         "No network configuration found. Please reinstall the application or check your settings."
     )]
     NoValidConfigs,
+}
+
+/// A `.env` parse failure without the file's text: `dotenvy::Error::LineParse`
+/// keeps the rejected input, which can run on to secrets on later lines.
+#[derive(Debug, thiserror::Error)]
+pub enum EnvFileError {
+    #[error("syntax error at offset {offset} of an entry")]
+    Syntax { offset: usize },
+    #[error("read failed: {kind}")]
+    Io { kind: io::ErrorKind },
+    #[error("environment variable is not set")]
+    EnvVarNotPresent,
+    #[error("environment variable is not valid Unicode")]
+    EnvVarNotUnicode,
+    #[error("unrecognized settings file error")]
+    Other,
+}
+
+impl From<dotenvy::Error> for EnvFileError {
+    fn from(error: dotenvy::Error) -> Self {
+        match error {
+            dotenvy::Error::LineParse(_, offset) => Self::Syntax { offset },
+            dotenvy::Error::Io(error) => Self::Io { kind: error.kind() },
+            dotenvy::Error::EnvVar(std::env::VarError::NotPresent) => Self::EnvVarNotPresent,
+            dotenvy::Error::EnvVar(std::env::VarError::NotUnicode(_)) => Self::EnvVarNotUnicode,
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -225,7 +253,9 @@ impl Config {
                     .as_bytes(),
             )
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| ConfigError::InvalidEnvFile { source })?,
+            .map_err(|error| ConfigError::InvalidEnvFile {
+                source: error.into(),
+            })?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(source) => return Err(ConfigError::LoadError { source }),
         };
@@ -237,7 +267,11 @@ impl Config {
                     "No .env file was found. Continuing with environment variables."
                 );
             }
-            Err(source) => return Err(ConfigError::InvalidEnvFile { source }),
+            Err(error) => {
+                return Err(ConfigError::InvalidEnvFile {
+                    source: error.into(),
+                });
+            }
         }
 
         let process_entries = std::env::vars().collect::<Vec<_>>();
@@ -435,7 +469,9 @@ fn validate_env_contents(contents: &str) -> Result<(), ConfigError> {
     let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
     let entries = dotenvy::Iter::new(contents.as_bytes())
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| ConfigError::InvalidEnvFile { source })?;
+        .map_err(|error| ConfigError::InvalidEnvFile {
+            source: error.into(),
+        })?;
     for (prefix, network) in [
         ("MAINNET_", "Mainnet"),
         ("TESTNET_", "Testnet"),
@@ -964,6 +1000,39 @@ mod tests {
         let error = Config::load_from(tmp.path()).expect_err("all networks are invalid");
 
         assert!(matches!(error, ConfigError::NoValidConfigs));
+    }
+
+    #[test]
+    fn invalid_env_file_error_omits_the_file_text() {
+        use crate::backend_task::error::TaskError;
+        use crate::context::NetworkContextError;
+        use crate::model::error_report::StartupFailure;
+
+        let marker = crate::test_support::keys::wif(Network::Testnet);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join(".env"),
+            format!("MAINNET_core_rpc_user=\"unterminated\nMAINNET_wallet_private_key={marker}\n"),
+        )
+        .expect("write test config");
+
+        let error = Config::load_from(tmp.path()).expect_err("unterminated quote");
+        assert!(matches!(error, ConfigError::InvalidEnvFile { .. }));
+        assert!(
+            !format!("{error:?}").contains(&marker),
+            "Debug leaks .env text"
+        );
+        assert!(
+            !error.to_string().contains(&marker),
+            "Display leaks .env text"
+        );
+
+        let startup = TaskError::NoNetworkAvailable {
+            source: Box::new(NetworkContextError::Config(error)),
+        };
+        let failure = StartupFailure::from_error(&startup, None);
+        assert!(!failure.report().details().contains(&marker));
+        assert!(!failure.report().message().contains(&marker));
     }
 
     // ── envy parsing roundtrip ──────────────────────────────────────

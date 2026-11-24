@@ -287,7 +287,7 @@ mod tests {
     /// from a top-up, so it is refused with the amount that would be accepted.
     #[test]
     fn top_up_below_the_network_fee_is_refused_with_the_minimum() {
-        let platform_version = PlatformVersion::get(13).expect("PV13");
+        let platform_version = PlatformVersion::get(14).expect("PV14");
         let err = ensure_top_up_covers_network_fee(5_237, platform_version)
             .expect_err("a funding below the network fee must be refused");
         assert!(
@@ -305,7 +305,7 @@ mod tests {
     /// The network accepts a funding equal to its fee, so the guard must too.
     #[test]
     fn top_up_equal_to_the_network_fee_passes() {
-        let platform_version = PlatformVersion::get(13).expect("PV13");
+        let platform_version = PlatformVersion::get(14).expect("PV14");
         assert!(ensure_top_up_covers_network_fee(50_500, platform_version).is_ok());
     }
 

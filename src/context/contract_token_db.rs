@@ -1,6 +1,8 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
+use crate::model::token::TokenActionAvailability;
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
@@ -22,6 +24,7 @@ use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 
 /// Key prefix for user-registered contract entries in the per-network
 /// wallet k/v store. The full key is `det:contract:<contract_id_base58>`
@@ -143,6 +146,43 @@ fn token_err(source: KvAdapterError) -> TaskError {
 }
 
 impl AppContext {
+    /// Whether `identity_id` can send token transactions. Those of a
+    /// wallet-held identity (see [`Self::token_action_wallet`]) wait for that
+    /// wallet to load.
+    ///
+    /// # Errors
+    /// Fails when the identity record cannot be read.
+    pub fn token_action_availability(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<TokenActionAvailability, TaskError> {
+        let linked_wallet_open = self.token_action_wallet(identity_id)?.map(|seed_hash| {
+            self.wallet_backend()
+                .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
+        });
+        Ok(TokenActionAvailability::from_wallet_link(
+            linked_wallet_open,
+        ))
+    }
+
+    /// The wallet that carries `identity_id`'s token actions: its DET wallet
+    /// link, unless that wallet is no longer in this app (it was removed), in
+    /// which case the identity acts as one no wallet holds. Until storage is
+    /// prepared the wallet list may still be filling, so the link is kept.
+    ///
+    /// # Errors
+    /// Fails when the identity record cannot be read.
+    pub(crate) fn token_action_wallet(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<Option<WalletSeedHash>, TaskError> {
+        let storage_prepared = self.storage_prepared.load(Ordering::Acquire);
+        Ok(self
+            .stored_identity_wallet_link(identity_id)?
+            .map(|(seed_hash, _)| seed_hash)
+            .filter(|seed_hash| !storage_prepared || self.wallet_context().contains_hd(seed_hash)))
+    }
+
     /// Retrieves all user-registered contracts from the per-network k/v
     /// store, prepended with the system contracts (DPNS, token history,
     /// withdrawals, keyword search, DashPay).
@@ -1160,6 +1200,157 @@ mod tests {
         })
     }
 
+    /// A user contract using what a token creator's contract can carry: a
+    /// group, keywords, a description, `$defs` with a `$ref`, a contested
+    /// unique index and a token with group-controlled rules, perpetual and
+    /// pre-programmed distribution.
+    fn rich_user_contract_at(platform_version: &PlatformVersion) -> DataContract {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+        use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
+        use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+        use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::group::Group;
+        use dash_sdk::dpp::data_contract::group::v0::GroupV0;
+        use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::data_contract::v1::DataContractV1;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use dash_sdk::dpp::version::TryFromPlatformVersioned;
+        use std::collections::BTreeMap;
+
+        let (owner, member) = (ident(7), ident(9));
+        let group_rules = |self_change: bool| {
+            ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::Group(0),
+                admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                changing_authorized_action_takers_to_no_one_allowed: true,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: self_change,
+            })
+        };
+        let mut token = TokenConfigurationV0::default_most_restrictive();
+        token.base_supply = 1_000_000;
+        token.max_supply = Some(10_000_000);
+        token.main_control_group = Some(0);
+        token.main_control_group_can_be_modified = AuthorizedActionTakers::ContractOwner;
+        token.manual_minting_rules = group_rules(true);
+        token.manual_burning_rules = group_rules(false);
+        token.freeze_rules = group_rules(false);
+        token.max_supply_change_rules = group_rules(false);
+        token.description = Some("A token to pin saved-contract bytes".to_string());
+        token.distribution_rules = TokenDistributionRules::V0(TokenDistributionRulesV0 {
+            perpetual_distribution: Some(TokenPerpetualDistribution::V0(
+                TokenPerpetualDistributionV0 {
+                    distribution_type: RewardDistributionType::BlockBasedDistribution {
+                        interval: 100,
+                        function: DistributionFunction::FixedAmount { amount: 7 },
+                    },
+                    distribution_recipient: TokenDistributionRecipient::ContractOwner,
+                },
+            )),
+            perpetual_distribution_rules: group_rules(false),
+            pre_programmed_distribution: Some(TokenPreProgrammedDistribution::V0(
+                TokenPreProgrammedDistributionV0 {
+                    distributions: BTreeMap::from([(
+                        1_700_000_000_000,
+                        BTreeMap::from([(member, 1_000)]),
+                    )]),
+                },
+            )),
+            new_tokens_destination_identity: Some(owner),
+            new_tokens_destination_identity_rules: group_rules(false),
+            minting_allow_choosing_destination: false,
+            minting_allow_choosing_destination_rules: group_rules(false),
+            change_direct_purchase_pricing_rules: group_rules(false),
+        });
+
+        let name = platform_value!({
+            "type": "object",
+            "documentsMutable": false,
+            "canBeDeleted": true,
+            "properties": {
+                "label": {"$ref": "#/$defs/label", "position": 0},
+                "normalizedLabel": {"type": "string", "position": 1, "maxLength": 63_u32},
+            },
+            "required": ["label", "normalizedLabel"],
+            "indices": [{
+                "name": "byNormalizedLabel",
+                "properties": [{"normalizedLabel": "asc"}],
+                "unique": true,
+                "contested": {
+                    "fieldMatches": [{"field": "normalizedLabel", "regexPattern": "^[a-z01-]{3,19}$"}],
+                    "resolution": 0,
+                    "description": "Short names are awarded by a masternode vote",
+                },
+            }],
+            "additionalProperties": false,
+        });
+        let id = ident(10);
+        let config = DataContractConfig::default_for_version(platform_version).expect("config");
+        let schema_defs = BTreeMap::from([(
+            "label".to_string(),
+            platform_value!({"type": "string", "minLength": 3_u32, "maxLength": 63_u32}),
+        )]);
+        let tokens = BTreeMap::from([(0, token.into())]);
+        let name = DocumentType::try_from_schema(
+            id,
+            1,
+            config.version(),
+            "name",
+            name,
+            Some(&schema_defs),
+            &tokens,
+            &config,
+            true,
+            &mut Vec::new(),
+            platform_version,
+        )
+        .expect("document type");
+        let contract = DataContract::V1(DataContractV1 {
+            id,
+            version: 1,
+            owner_id: owner,
+            document_types: BTreeMap::from([("name".to_string(), name)]),
+            config,
+            schema_defs: Some(schema_defs),
+            groups: BTreeMap::from([(
+                0,
+                Group::V0(GroupV0 {
+                    members: BTreeMap::from([(owner, 1), (member, 1)]),
+                    required_power: 2,
+                }),
+            )]),
+            tokens,
+            keywords: vec!["Pinned".to_string(), "bytes".to_string()],
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: Some("A contract to pin saved-contract bytes".to_string()),
+        });
+        // Read back through the serialization format, as a contract fetched
+        // from Platform is: that lowercases the keywords.
+        let format = DataContractInSerializationFormat::try_from_platform_versioned(
+            contract,
+            platform_version,
+        )
+        .expect("serialization format");
+        DataContract::try_from_platform_versioned(format, true, &mut Vec::new(), platform_version)
+            .expect("rich user contract")
+    }
+
     /// The contracts a user may hold locally, encoded as DET encodes them at
     /// `protocol_version`.
     fn stored_contracts_at(protocol_version: u32) -> Vec<(DataContract, StoredContract)> {
@@ -1171,6 +1362,7 @@ mod tests {
             load_system_data_contract(SystemDataContract::DPNS, pv).expect("dpns"),
             load_system_data_contract(SystemDataContract::Dashpay, pv).expect("dashpay"),
             load_system_data_contract(SystemDataContract::TokenHistory, pv).expect("history"),
+            rich_user_contract_at(pv),
         ]
         .into_iter()
         .map(|contract| {
@@ -1185,14 +1377,110 @@ mod tests {
         .collect()
     }
 
-    /// Contracts saved while DET built at protocol 12 still load, unchanged,
-    /// once DET builds at the network's 13 or 14.
+    /// Protocol versions the pinned contract fixtures were written at.
+    const PINNED_CONTRACT_PROTOCOLS: std::ops::RangeInclusive<u32> = 10..=15;
+
+    /// Labels of [`stored_contracts_at`]'s contracts, in its order.
+    const PINNED_CONTRACT_LABELS: [&str; 5] =
+        ["user", "dpns", "dashpay", "token-history", "rich-user"];
+
+    /// Pinned system contracts whose revision at their protocol version has
+    /// moved since they were written: `(protocol, label, contract version,
+    /// document types)` as the provenance build wrote them (see the fixtures'
+    /// README). This build makes a newer revision for that protocol, so these
+    /// are checked against the record, not against [`stored_contracts_at`].
+    const PINNED_EARLIER_REVISIONS: [(u32, &str, u32, &[&str]); 1] = [(
+        15,
+        "dashpay",
+        2,
+        &["contactInfo", "contactRequest", "profile"],
+    )];
+
+    fn pinned_contract_path(protocol_version: u32, label: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/context/testdata/stored_contracts")
+            .join(format!("p{protocol_version}-{label}.hex"))
+    }
+
+    /// Contract bytes written by an earlier DET build, pinned in
+    /// `testdata/stored_contracts` (see its README), still load after a
+    /// dependency bump: each decodes at the protocol it was written at, to the
+    /// contract this build makes, and at every later protocol version, without
+    /// losing a byte. A failure here means an upgrade would break contracts
+    /// users already saved. Never regenerate the fixtures to make it pass.
     #[test]
-    fn contracts_stored_at_protocol_12_decode_at_13_and_14() {
+    fn contracts_saved_by_an_earlier_build_still_load() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        for written_at in PINNED_CONTRACT_PROTOCOLS {
+            let written_version = PlatformVersion::get(written_at).expect("known version");
+            let built_now = stored_contracts_at(written_at);
+            for ((original, _), label) in built_now.into_iter().zip(PINNED_CONTRACT_LABELS) {
+                let path = pinned_contract_path(written_at, label);
+                let pinned = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                let bytes = hex::decode(pinned.trim()).expect("hex fixture");
+
+                for read_at in written_at..=*PINNED_CONTRACT_PROTOCOLS.end() {
+                    crate::context::test_support::set_sdk_protocol_version(&ctx, read_at);
+                    let decoded = ctx
+                        .decode_stored_contract(StoredContract {
+                            contract_bytes: bytes.clone(),
+                            alias: Some("saved".to_string()),
+                        })
+                        .unwrap_or_else(|e| panic!("p{written_at}-{label} at {read_at}: {e:?}"));
+                    assert_eq!(decoded.alias.as_deref(), Some("saved"));
+                    let earlier_revision = PINNED_EARLIER_REVISIONS
+                        .iter()
+                        .find(|(at, name, ..)| *at == written_at && *name == label);
+                    if let Some((_, _, version, document_types)) = earlier_revision {
+                        assert_eq!(
+                            decoded.contract.id(),
+                            original.id(),
+                            "p{written_at}-{label} id"
+                        );
+                        assert_eq!(
+                            decoded.contract.version(),
+                            *version,
+                            "p{written_at}-{label} version"
+                        );
+                        assert_eq!(
+                            decoded
+                                .contract
+                                .document_types()
+                                .keys()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>(),
+                            *document_types,
+                            "p{written_at}-{label} document types"
+                        );
+                    } else if read_at == written_at {
+                        assert_eq!(
+                            decoded.contract, original,
+                            "p{written_at}-{label} decodes to a different contract"
+                        );
+                    }
+                    assert_eq!(
+                        decoded
+                            .contract
+                            .serialize_to_bytes_with_platform_version(written_version)
+                            .expect("re-encode"),
+                        bytes,
+                        "p{written_at}-{label} read at {read_at} lost data"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Contracts saved while DET built at protocol 12 still load, unchanged,
+    /// once DET builds at the network's 14 or 15.
+    #[test]
+    fn contracts_stored_at_protocol_12_decode_at_14_and_15() {
         let v12 = PlatformVersion::get(12).expect("v12");
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(tmp.path());
-        for version in [13, 14] {
+        for version in [14, 15] {
             crate::context::test_support::set_sdk_protocol_version(&ctx, version);
             for (original, stored) in stored_contracts_at(12) {
                 let bytes = stored.contract_bytes.clone();
@@ -1214,18 +1502,14 @@ mod tests {
         }
     }
 
-    /// A contract saved at protocol 14 and read back while DET still builds at
-    /// 13 (after a restart, before the first proven response) decodes without
-    /// error. Protocol 14 features (here `actionFees`) are not parsed at 13,
-    /// but the saved bytes are untouched and decode in full once DET builds at
-    /// 14 again.
+    /// Saved protocol-14 action fees survive startup and the next supported version.
     #[test]
-    fn contracts_stored_at_protocol_14_decode_at_13_and_recover_at_14() {
+    fn contracts_stored_at_protocol_14_keep_action_fees_after_upgrade() {
         use dash_sdk::dpp::platform_value::platform_value;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(tmp.path());
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
         for (original, stored) in stored_contracts_at(14) {
             let decoded = ctx
                 .decode_stored_contract(stored)
@@ -1241,44 +1525,12 @@ mod tests {
                 .expect("encode"),
             alias: None,
         };
-        let at_13 = ctx.decode_stored_contract(stored()).expect("decodes at 13");
-        assert_eq!(at_13.contract.id(), charging.id());
-
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
         let at_14 = ctx.decode_stored_contract(stored()).expect("decodes at 14");
         assert_eq!(at_14.contract, charging);
-    }
 
-    /// The proof verifier reads a saved user contract at the version it
-    /// verifies with, as it reads system contracts: a contract saved at
-    /// protocol 14 comes back in full when asked at 14 while the SDK still
-    /// sits at 13.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_proof_verifier_reads_a_saved_contract_at_the_version_it_asks_for() {
-        use dash_sdk::dpp::platform_value::platform_value;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::wired_test_app_context(tmp.path()).await;
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
-        let v14 = PlatformVersion::get(14).expect("v14");
-        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
-        let stored = StoredContract {
-            contract_bytes: charging
-                .serialize_to_bytes_with_platform_version(v14)
-                .expect("encode"),
-            alias: None,
-        };
-        ctx.wallet_backend()
-            .expect("wired backend")
-            .kv()
-            .put(DetScope::Global, &contract_key(&charging.id()), &stored)
-            .expect("store the contract");
-
-        let resolved = crate::context_provider::resolve_data_contract(&ctx, &charging.id(), v14)
-            .expect("resolves")
-            .expect("the saved contract");
-
-        assert_eq!(*resolved, charging);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
+        let at_15 = ctx.decode_stored_contract(stored()).expect("decodes at 15");
+        assert_eq!(at_15.contract, charging);
     }
 
     #[test]

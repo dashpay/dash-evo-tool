@@ -1057,7 +1057,7 @@ fn platform_compatibility_lock_survives_concurrent_process_spawns() {
 }
 
 #[test]
-fn platform_compatibility_asset_lock_blobs_survive_with_no_operation_id() {
+fn platform_compatibility_asset_lock_blobs_survive_with_no_operation_id_or_shielded_recipient() {
     let (_dir, path, target) = fixture();
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(include_str!("../fixtures/public-rows.sql"))
@@ -1066,15 +1066,16 @@ fn platform_compatibility_asset_lock_blobs_survive_with_no_operation_id() {
     drop(conn);
     let backup = upgrade(&path, &target, |_| Ok(())).unwrap().unwrap();
     let conn = Connection::open(&path).unwrap();
-    let (blob, operation): (Vec<u8>, Option<Vec<u8>>) = conn
+    let (blob, operation, recipient): (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>) = conn
         .query_row(
-            "SELECT lifecycle_blob, operation_id FROM asset_locks",
+            "SELECT lifecycle_blob, operation_id, shielded_recipient FROM asset_locks",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
     assert_eq!(blob, [0xC1, 0xC2]);
     assert_eq!(operation, None);
+    assert_eq!(recipient, None);
     assert_eq!(
         Connection::open(backup)
             .unwrap()

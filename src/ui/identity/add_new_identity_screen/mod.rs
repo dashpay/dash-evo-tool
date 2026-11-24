@@ -1870,7 +1870,7 @@ mod funding_method_tests {
     use crate::model::amount::DASH_DECIMAL_PLACES;
     use crate::ui::Screen;
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid};
 
     fn different_asset_lock_inputs(seed_byte: u8) -> AssetLockInputState {
         AssetLockInputState::from_inputs([(

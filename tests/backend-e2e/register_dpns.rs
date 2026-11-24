@@ -170,7 +170,10 @@ async fn test_register_dpns_name() {
         .expect("DPNS search should succeed");
 
     match result {
-        BackendTaskSuccessResult::LoadedIdentity(found_identity) => {
+        BackendTaskSuccessResult::LoadedIdentity {
+            identity: found_identity,
+            ..
+        } => {
             assert_eq!(
                 found_identity.identity.id(),
                 qualified_identity.identity.id(),
@@ -513,7 +516,10 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
             .expect("DPNS search should succeed");
 
         match result {
-            BackendTaskSuccessResult::LoadedIdentity(found_identity) => {
+            BackendTaskSuccessResult::LoadedIdentity {
+                identity: found_identity,
+                ..
+            } => {
                 assert_eq!(
                     found_identity.identity.id(),
                     funded.identity.identity.id(),

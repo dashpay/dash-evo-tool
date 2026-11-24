@@ -49,6 +49,8 @@ Bot accounts, forks, other labels and other PR actions do not run QA.
 Unrelated label events use separate concurrency groups and cannot displace a
 queued QA run.
 
+Label rehearsals use the newest published weekly; builds older than #1173 lack `--mnemonic-stdin`, so those rehearsals run unfunded and end NOTE.
+
 Only label a PR whose exact head has been reviewed and trusted: this path checks
 out the event's PR head SHA and executes its controller and skills with access
 to the maintainer's OAuth token during the agent step. It reviews the newest
@@ -133,11 +135,13 @@ the disposable testnet wallet. Funding is capped at 1 tDASH. Known funding refus
 is recorded while other reachable screens are still tested. An ambiguous payout is
 never retried; it requires a refund attempt and can leave the result incomplete.
 
-POST runs with `if: always()` after stopping the GUI. It checks Testnet, a single
-confirmed faucet UTXO and matching wallet/explorer balances (up to three read-only
-attempts, 30 seconds apart), then sends the balance minus 226 duffs back to the
-faucet once. Nothing is retried after the send starts. This allowance covers the current
-one-input P2PKH builder at 1 duff/byte; the sub-dust remainder is miner fee.
+POST runs with `if: always()` after stopping the GUI. It validates testnet addresses,
+then checks a single confirmed faucet UTXO against Insight's address balance
+(up to three read-only attempts, one second apart, within 20 seconds). Only
+Insight supplies these observations. `det-cli` is used solely for one Testnet send
+of the balance minus 226 duffs back to the faucet, with the remaining 25-minute
+step budget minus 15 seconds for the final state write. Nothing is retried after
+the send starts. This allowance covers the current one-input P2PKH builder at 1 duff/byte; the sub-dust remainder is miner fee.
 Unexpected inputs, fee/API drift, unconfirmed funds or an uncertain broadcast
 produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and
 the Insight explorer; a lost runner or forced cancellation can prevent POST.
@@ -167,7 +171,10 @@ An empty working directory and explicit context/report/source directories avoid
 repository startup instructions. Do not add `--bare`: it disables explicit hooks
 and OAuth ([Claude automation documentation](https://code.claude.com/docs/en/headless)). No general shell, WebFetch, MCP servers or subagents.
 Xvfb/lavapipe follow the render-spike setup; the helper provides xdotool/scrot
-and AT-SPI labels/rectangles. Keyboard commands activate the recorded DET window
+and AT-SPI labels/rectangles. Its fixed `insight addr ADDRESS` / `insight tx TXID`
+commands allow read-only UI cross-checks against testnet Insight (GET only, no
+redirects, five seconds, 1 MB); response text is untrusted data. Keyboard commands
+activate the recorded DET window
 then use XTEST (`key`/`type` without `--window`). GUI scenarios stop before any
 broadcast or secret
 export. These controls reduce exposure; they do not make public on-chain text

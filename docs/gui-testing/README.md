@@ -136,14 +136,15 @@ is recorded while other reachable screens are still tested. An ambiguous payout 
 never retried; it requires a refund attempt and can leave the result incomplete.
 
 POST runs with `if: always()` after stopping the GUI. It validates testnet addresses,
-then checks a single faucet UTXO against Insight's address balance. A matching
-unconfirmed payout is polled every 30 seconds for up to 12 minutes; transient
-Insight errors are retried within that same window. Each read is capped at five
-seconds and the remaining observation budget. Confirmation-only disagreement
-between the two reads is polled again; other conflicting observations stop POST
-immediately. Sending requires both reads to agree that the payout is confirmed.
-Only Insight supplies these observations. After confirmation,
-`det-cli` is used solely for one Testnet send of the balance minus 226 duffs back
+then observes only Insight's UTXO list. Sending requires exactly one output with
+the recorded faucet transaction ID, burner address, exact payout amount, a valid
+output index and at least one confirmation. An empty list or matching unconfirmed
+payout is polled every 30 seconds for up to 12 minutes; transient HTTP or parse
+errors are retried within that same window. Each read is capped at five seconds
+and the remaining observation budget. Extra or unrelated outputs, mismatched
+amounts or transaction IDs, and malformed fields stop POST immediately.
+After confirmation,
+`det-cli` is used solely for one Testnet send of the payout minus 226 duffs back
 to the faucet. It receives the remaining 25-minute step budget minus 15 seconds
 for the final state write: about 12 minutes 45 seconds after a full observation
 window, allowing up to ten minutes for SPV sync. The existing 25-minute step and

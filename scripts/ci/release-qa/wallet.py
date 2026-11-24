@@ -182,51 +182,46 @@ def refund():
     source = address(state["address"])
 
     # Sweep only the known single confirmed faucet output; otherwise fail closed.
-    def observe(*, utxo=False):
+    def observe():
         remaining = observation_deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Refund observation deadline expired")
-        return insight.query("addr", source, utxo=utxo, timeout=min(5, remaining))
+        return insight.query("addr", source, utxo=True, timeout=min(5, remaining))
 
     try:
         while time.monotonic() < observation_deadline:
             try:
-                balance = observe()
-                utxos = observe(utxo=True)
+                utxos = observe()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 # Retry unavailable Insight reads within the same observation window.
                 remaining = observation_deadline - time.monotonic()
                 if remaining > 0:
                     time.sleep(min(30, remaining))
                 continue
-            if not isinstance(utxos, list) or len(utxos) != 1:
+            if not isinstance(utxos, list) or len(utxos) > 1:
                 raise ValueError("Refund needs exactly one unspent faucet output")
-            coin = utxos[0]
-            if (
-                not isinstance(balance, dict)
-                or not isinstance(coin, dict)
-                or balance.get("addrStr") != source
-                or type(balance.get("balanceSat")) is not int
-                or type(balance.get("unconfirmedBalanceSat")) is not int
-                or type(coin.get("satoshis")) is not int
-                or type(coin.get("confirmations")) is not int
-                or coin["confirmations"] < 0
-                or type(coin.get("vout")) is not int
-                or coin["vout"] < 0
-                or coin.get("address") != source
-                or not isinstance(coin.get("txid"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", coin["txid"])
-            ):
-                raise ValueError("Refund balance or UTXO is invalid")
-            if state.get("txid") and coin["txid"] != state["txid"]:
-                raise ValueError("Refund input is not the faucet payout")
-            amount = refund_amount(coin["satoshis"], state["payout_duffs"])
-            balance_pair = (balance["balanceSat"], balance["unconfirmedBalanceSat"])
-            if balance_pair not in ((coin["satoshis"], 0), (0, coin["satoshis"])):
-                raise ValueError("Refund balance disagrees with UTXO")
-            # Separate Insight reads can straddle a confirmation; wait for agreement.
-            if coin["confirmations"] > 0 and balance_pair == (coin["satoshis"], 0):
-                break
+            if utxos:
+                coin = utxos[0]
+                if (
+                    not isinstance(coin, dict)
+                    or type(coin.get("satoshis")) is not int
+                    or type(coin.get("confirmations")) is not int
+                    or coin["confirmations"] < 0
+                    or type(coin.get("vout")) is not int
+                    or not 0 <= coin["vout"] <= 0xFFFFFFFF
+                    or coin.get("address") != source
+                    or not isinstance(coin.get("txid"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", coin["txid"])
+                ):
+                    raise ValueError("Refund UTXO is invalid")
+                if (
+                    coin["txid"] != state.get("txid")
+                    or coin["satoshis"] != state["payout_duffs"]
+                ):
+                    raise ValueError("Refund input is not the faucet payout")
+                amount = refund_amount(coin["satoshis"], state["payout_duffs"])
+                if coin["confirmations"] >= 1:
+                    break
             remaining = observation_deadline - time.monotonic()
             if remaining > 0:
                 time.sleep(min(30, remaining))

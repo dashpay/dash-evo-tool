@@ -38,18 +38,22 @@ class WalletTests(unittest.TestCase):
             "bool_vout",
             "missing_vout",
             "excess_amount",
+            "short_amount",
+            "missing_txid",
+            "invalid_txid",
+            "overflow_vout",
+            "negative_confirmations",
+            "bool_amount",
+            "malformed_list",
+            "malformed_coin",
             "multiple",
             "missing_address",
             "bad_destination",
             "retry_http",
-            "retry_balance",
+            "retry_parse",
             "retry_exhausted",
-            "mismatch",
             "wrong_address",
-            "bool_balance",
             "bool_coin",
-            "missing_balance",
-            "negative_unconfirmed",
             "deadline",
             "slow_utxo",
         ):
@@ -71,11 +75,6 @@ class WalletTests(unittest.TestCase):
                     "vout": 0,
                     "txid": "a" * 64,
                 }
-                balance = {
-                    "addrStr": ADDRESS,
-                    "balanceSat": 100_000_000,
-                    "unconfirmedBalanceSat": 0,
-                }
                 coins = [coin]
                 if case == "missing_address":
                     del state["refund_address"]
@@ -93,27 +92,34 @@ class WalletTests(unittest.TestCase):
                     del coin["vout"]
                 if case == "excess_amount":
                     coin["satoshis"] += 1
-                    balance["balanceSat"] += 1
                 if case == "multiple":
-                    coins *= 2
-                if case == "mismatch":
-                    balance["balanceSat"] -= 1
+                    coins.append(dict(coin, txid="b" * 64))
                 if case == "wrong_address":
-                    balance["addrStr"] = REFUND_ADDRESS
-                if case == "bool_balance":
-                    balance["unconfirmedBalanceSat"] = False
+                    coin["address"] = REFUND_ADDRESS
                 if case == "bool_coin":
                     coin["confirmations"] = True
-                if case == "missing_balance":
-                    del balance["balanceSat"]
-                if case == "negative_unconfirmed":
-                    balance["unconfirmedBalanceSat"] = -1
+                if case == "short_amount":
+                    coin["satoshis"] -= 1
+                if case == "missing_txid":
+                    del state["txid"]
+                if case == "invalid_txid":
+                    coin["txid"] = "invalid"
+                if case == "overflow_vout":
+                    coin["vout"] = 2**32
+                if case == "negative_confirmations":
+                    coin["confirmations"] = -1
+                if case == "bool_amount":
+                    coin["satoshis"] = True
+                if case == "malformed_list":
+                    coins = {}
+                if case == "malformed_coin":
+                    coins = [None]
                 path.write_text(json.dumps(state))
                 now = [100.0]
                 calls = []
 
                 def http(kind, value, *, utxo=False, timeout):
-                    self.assertEqual((kind, value), ("addr", ADDRESS))
+                    self.assertEqual((kind, value, utxo), ("addr", ADDRESS, True))
                     self.assertGreater(timeout, 0)
                     self.assertLessEqual(timeout, 5)
                     calls.append(utxo)
@@ -124,9 +130,11 @@ class WalletTests(unittest.TestCase):
                         case == "retry_http" and len(calls) == 1
                     ):
                         raise OSError("unavailable")
-                    if case == "retry_balance" and len(calls) == 1:
-                        return dict(balance, unconfirmedBalanceSat=1)
-                    return coins if utxo else balance
+                    if case == "retry_parse" and len(calls) == 1:
+                        raise json.JSONDecodeError(
+                            "Temporary malformed response", "", 0
+                        )
+                    return coins
 
                 def send(*args, **kwargs):
                     self.assertEqual(args[0], "core-funds-send")
@@ -164,7 +172,7 @@ class WalletTests(unittest.TestCase):
                     ),
                 ):
                     insight.query.side_effect = http
-                    if case in ("ok", "missing_address", "retry_http"):
+                    if case in ("ok", "missing_address", "retry_http", "retry_parse"):
                         wallet.refund()
                     else:
                         with self.assertRaises(
@@ -177,6 +185,7 @@ class WalletTests(unittest.TestCase):
                         "timeout",
                         "bad_send_txid",
                         "retry_http",
+                        "retry_parse",
                     )
                     self.assertEqual(det.call_count, int(sends))
                     if sends:
@@ -200,15 +209,15 @@ class WalletTests(unittest.TestCase):
                     if case in ("slow_utxo", "retry_exhausted", "unconfirmed"):
                         self.assertEqual(now[0], 820)
                         self.assertLessEqual(len(calls), 48)
-                    elif case == "retry_http":
-                        self.assertEqual(len(calls), 3)
+                    elif case in ("retry_http", "retry_parse"):
+                        self.assertEqual(len(calls), 2)
                         sleep.assert_called_once_with(30)
                     else:
-                        self.assertLessEqual(len(calls), 2)
+                        self.assertLessEqual(len(calls), 1)
                         sleep.assert_not_called()
 
     def check_confirmation_wait(
-        self, confirmed_at, *, transient_error=False, initial_pair=None
+        self, confirmed_at, *, transient_error=False, initially_empty=False
     ):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "wallet.json"
@@ -235,39 +244,29 @@ class WalletTests(unittest.TestCase):
                 now[0] += seconds
 
             def query(kind, value, *, utxo=False, timeout):
-                self.assertEqual((kind, value), ("addr", ADDRESS))
+                self.assertEqual((kind, value, utxo), ("addr", ADDRESS, True))
                 self.assertGreater(timeout, 0)
                 self.assertLessEqual(timeout, min(5, 720 - now[0]))
                 if transient_error and 30 <= now[0] < 90:
                     raise OSError("Temporary Insight outage")
+                if initially_empty and now[0] == 0:
+                    return []
                 confirmed = confirmed_at is not None and now[0] >= confirmed_at
-                if initial_pair is not None and now[0] == 0:
-                    confirmed = initial_pair[int(utxo)]
-                if utxo:
-                    return [
-                        {
-                            "address": ADDRESS,
-                            "satoshis": 100_000_000,
-                            "confirmations": int(confirmed),
-                            "vout": 0,
-                            "txid": "a" * 64,
-                        }
-                    ]
-                return {
-                    "addrStr": ADDRESS,
-                    "balanceSat": 100_000_000 if confirmed else 0,
-                    "unconfirmedBalanceSat": 0 if confirmed else 100_000_000,
-                }
+                return [
+                    {
+                        "address": ADDRESS,
+                        "satoshis": 100_000_000,
+                        "confirmations": int(confirmed),
+                        "vout": 0,
+                        "txid": "a" * 64,
+                    }
+                ]
 
             def send(*args, timeout):
                 self.assertEqual(json.loads(path.read_text())["refund"], "unknown")
-                if initial_pair is not None:
-                    self.assertEqual(now[0], 30)
-                    self.assertEqual(insight_query.call_count, 4)
-                    self.assertEqual(
-                        [call.kwargs["utxo"] for call in insight_query.call_args_list],
-                        [False, True, False, True],
-                    )
+                self.assertEqual(now[0], confirmed_at)
+                if initially_empty:
+                    self.assertEqual(insight_query.call_count, 3)
                 self.assertEqual(args[0], "core-funds-send")
                 self.assertIn("amount_duffs=99999774", args)
                 self.assertEqual(timeout, 1485 - now[0])
@@ -307,11 +306,8 @@ class WalletTests(unittest.TestCase):
             with self.subTest(confirmed_at=confirmed_at):
                 self.check_confirmation_wait(confirmed_at)
 
-    def test_refund_confirmation_advances_between_reads(self):
-        self.check_confirmation_wait(30, initial_pair=(False, True))
-
-    def test_refund_confirmation_reverses_between_reads(self):
-        self.check_confirmation_wait(30, initial_pair=(True, False))
+    def test_refund_empty_then_unconfirmed_then_confirmed_sends_once(self):
+        self.check_confirmation_wait(60, initially_empty=True)
 
     def test_refund_confirmation_never_arrives(self):
         self.check_confirmation_wait(None)

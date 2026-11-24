@@ -46,7 +46,7 @@ do not resolve a development HEAD, fetch, build, create worktrees or run OLD.
   Read every kept screenshot before completing the report; omit secret-bearing
   captures and document any exposure. No profiles, env files or keys in output.
 
-Machine contract (write an incomplete draft early; set `complete` only at the end):
+Machine contract for `report.json` (write an incomplete draft early; set `complete` only at the end):
 
 ```json
 {
@@ -78,8 +78,10 @@ stable `id`, `title`, screen/scenario, evidence, attribution (`introduced` or `u
 reproduction count, recommendation and boolean `blocking`.
 
 This is the canonical CI verdict/publication contract: completed coverage with only
-declared scope limits may be PASS. Any finding or run-specific gap means at least
-NOTE; a blocking finding, failed scenario or app-attributable crash/smoke failure
+declared scope limits may be PASS only with at least one exercised PASS scenario
+in addition to controller launch smoke. An all-NOT_REACHED report is NOTE. Start
+the reachable tour with a navigation scenario. Any finding or run-specific gap
+means at least NOTE; a blocking finding, failed scenario or app-attributable crash/smoke failure
 means FAIL. Infrastructure failures, timeout/turn exhaustion, missing/invalid reports,
 unfinished tour, failed/partial export or pending/uncertain refund mean INCOMPLETE.
 Faucet funding unavailable remains NOTE. A missing refund address adds a warning only.

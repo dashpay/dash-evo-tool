@@ -44,10 +44,10 @@ or deletes a release.
 The [release-review CI contract](../../.claude/skills/release-review/SKILL.md#ci-mode-gui-only)
 defines scope limits, report categories, verdicts and publication eligibility.
 
-Build and migration-fixture failures retain existing releases and mark drafts
-DO NOT PUBLISH; only an orphaned tag without a release can be removed. QA failure
-cannot trigger cleanup, even through a failed/skipped dependency.
-Drafts are never pruned by later weekly runs; **a human must clean them up**.
+Build or migration-fixture failure on a newly created tag deletes that tag and
+its broken draft. Failed recuts retain their existing draft marked DO NOT PUBLISH.
+QA, seal and finalize outcomes never trigger deletion. Retained drafts are never
+pruned by later weekly runs; **a human must clean them up**.
 A normal run skips an existing tag or unchanged source. To rebuild a retained
 weekly, dispatch `weekly-build.yml` with `force=true` and its version: the tag
 may move only if the existing release is still a draft bearing our weekly marker.
@@ -107,10 +107,12 @@ the Insight explorer; a lost runner or forced cancellation can prevent POST.
 The ephemeral wallet is not uploaded and cannot be recovered after runner disposal.
 
 Claude uses pinned CLI `2.1.331`, `--permission-mode default`, 600 turns and a
-140-minute process timeout inside a 220-minute runner job, reserving time for
-PRE (12 min), smoke (5), funding (15), POST (25), setup (15) and artifacts.
+130-minute process timeout inside a 132-minute agent step and a 220-minute review
+job. Setup (15 min), smoke (5), PRE (12), resume (5), funding (15), agent (132)
+and POST (25) total 209 minutes, leaving 11 minutes for checkout/download,
+initialization, pause/stop, finish and artifact upload.
 600 turns allow roughly 180 action/capture/read loops plus 60 turns for changelog
-and reporting. The 140-minute timeout is the primary bound, not an expectation
+and reporting. The 130-minute timeout is the primary bound, not an expectation
 that every turn will be used; reserve the final 20 minutes for evidence/reporting.
 Measure actual turn usage in the first hosted dispatch before tuning this cap.
 Prepare/report jobs have 15/5-minute limits: the QA

@@ -93,16 +93,31 @@ class ProcessAndExportTests(unittest.TestCase):
                     "Path('ready').touch()\nsignal.pause()\n"
                 )
                 app.chmod(0o700)
+                # Force ready-before-pid ordering to exercise the monitor race.
+                monitor_code = (
+                    "import sys, time; from pathlib import Path; "
+                    f"sys.path.insert(0, {str(Path(run.__file__).parent)!r}); "
+                    "import run; original = run.atomic_write\n"
+                    "def delayed_write(path, value):\n"
+                    "    if path.name == 'gui.pid':\n"
+                    "        while not (path.parent / 'ready').exists(): time.sleep(0.01)\n"
+                    "        time.sleep(0.2)\n"
+                    "    original(path, value)\n"
+                    "run.atomic_write = delayed_write\nrun.monitor()\n"
+                )
                 with subprocess.Popen(
-                    [sys.executable, run.__file__, "monitor", temp],
+                    [sys.executable, "-c", monitor_code, "monitor", temp],
                     env=logic.isolated_env(root),
                 ) as monitor:
                     try:
                         for _ in range(200):
-                            if (root / "ready").exists():
+                            if (root / "ready").exists() and (
+                                root / "gui.pid"
+                            ).exists():
                                 break
                             time.sleep(0.01)
                         self.assertTrue((root / "ready").exists())
+                        self.assertTrue((root / "gui.pid").exists())
                         (root / "window").write_text("42")
 
                         def close(args, **kwargs):
@@ -143,6 +158,12 @@ class ProcessAndExportTests(unittest.TestCase):
                     finally:
                         if monitor.poll() is None:
                             monitor.kill()
+                            pid = root / "gui.pid"
+                            if pid.exists():
+                                try:
+                                    os.kill(int(pid.read_text()), signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
 
     def test_baseline_skips_newer_non_ancestor(self):
         candidates = [

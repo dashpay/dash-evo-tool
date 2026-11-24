@@ -173,7 +173,10 @@ and OAuth ([Claude automation documentation](https://code.claude.com/docs/en/hea
 Xvfb/lavapipe follow the render-spike setup; the helper provides xdotool/scrot
 and AT-SPI labels/rectangles. Its fixed `insight addr ADDRESS` / `insight tx TXID`
 commands allow read-only UI cross-checks against testnet Insight (GET only, no
-redirects, five seconds, 1 MB); response text is untrusted data. Keyboard commands
+redirects, five seconds, 1 MB); response text is untrusted data. Any well-formed
+address or transaction ID is accepted, so the agent could encode up to 32 bytes in a
+request URL; the maintainer accepts this, since the only reachable secret is the
+disposable testnet burner, already treated as exposed. Keyboard commands
 activate the recorded DET window
 then use XTEST (`key`/`type` without `--window`). GUI scenarios stop before any
 broadcast or secret

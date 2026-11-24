@@ -11,9 +11,9 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import insight
 from atomic import atomic_write
 from logic import (
-    b58check_decode,
     isolated_env,
     cap_endpoint,
     cap_solve,
@@ -51,7 +51,7 @@ def request(url, body=None):
             return error.code, {}
 
 
-def det(*args, phrase=None):
+def det(*args, phrase=None, timeout=650):
     env = isolated_env(ROOT)
     result = subprocess.run(
         [str(ROOT / "app/dash-evo-tool/det-cli"), "--standalone", *args],
@@ -60,21 +60,14 @@ def det(*args, phrase=None):
         input=phrase,
         capture_output=True,
         text=True,
-        timeout=650,
+        timeout=timeout,
     )
     if result.returncode:
         raise RuntimeError("det-cli command failed (output withheld)")
     return json.loads(result.stdout)
 
 
-def address(value):
-    if not isinstance(value, str) or not 26 <= len(value) <= 35:
-        raise ValueError("Expected a testnet P2PKH address")
-    payload = b58check_decode(value)
-    if len(payload) != 21 or payload[0] != 140:
-        raise ValueError("Expected a testnet P2PKH refund address")
-    return value
-
+address = insight.address
 
 REFUND_WARNING = "Refund skipped: no valid faucet depositAddress or QA_FAUCET_REFUND_ADDRESS is available. Funds remain in the disposable testnet wallet."
 
@@ -174,6 +167,8 @@ def fund():
 
 
 def refund():
+    deadline = time.monotonic() + 25 * 60 - 15  # Reserve final state-write time.
+    observation_deadline = time.monotonic() + 20
     state = json.loads(STATE.read_text())
     if state.get("refund") != "pending":
         return
@@ -182,38 +177,46 @@ def refund():
         save(state)
         print(REFUND_WARNING)
         return
-    # The only send is a sweep of the known single faucet output. Unexpected
-    # inputs or a changed fee implementation require manual recovery, not guesses.
-    if det("network-info").get("active") != "testnet":
-        raise ValueError("Profile changed network")
+    destination = address(state["refund_address"])
+    source = address(state["address"])
+
+    # Sweep only the known single confirmed faucet output; otherwise fail closed.
+    def observe(*, utxo=False):
+        return insight.query(
+            "addr",
+            source,
+            utxo=utxo,
+            timeout=min(5, min(observation_deadline, deadline) - time.monotonic()),
+        )
+
     for attempt in range(3):
         try:
-            balance = det(
-                "core-balances-get",
-                "network=testnet",
-                "wallet_id=" + state["wallet_id"],
-            )
-            status, utxos = request(
-                "https://insight.testnet.networks.dash.org/insight-api/addr/"
-                + address(state["address"])
-                + "/utxo"
-            )
-            if status != 200 or not isinstance(utxos, list) or len(utxos) != 1:
+            balance = observe()
+            utxos = observe(utxo=True)
+            if not isinstance(utxos, list) or len(utxos) != 1:
                 raise ValueError("Refund needs exactly one unspent faucet output")
             coin = utxos[0]
             if (
-                coin["satoshis"] != balance["confirmed_duffs"]
-                or balance["unconfirmed_duffs"]
+                not isinstance(balance, dict)
+                or not isinstance(coin, dict)
+                or balance.get("addrStr") != source
+                or type(balance.get("balanceSat")) is not int
+                or type(balance.get("unconfirmedBalanceSat")) is not int
+                or balance["unconfirmedBalanceSat"] != 0
+                or type(coin.get("satoshis")) is not int
+                or coin["satoshis"] != balance["balanceSat"]
                 or type(coin.get("confirmations")) is not int
                 or coin["confirmations"] < 1
-                or coin.get("address") != state["address"]
+                or coin.get("address") != source
+                or not isinstance(coin.get("txid"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", coin["txid"])
             ):
                 raise ValueError(
-                    "Refund balance is not confirmed or disagrees with explorer"
+                    "Refund balance is not confirmed or disagrees with UTXO"
                 )
             if state.get("txid") and coin["txid"] != state["txid"]:
                 raise ValueError("Refund input is not the faucet payout")
-            amount = refund_amount(balance["confirmed_duffs"], state["payout_duffs"])
+            amount = refund_amount(balance["balanceSat"], state["payout_duffs"])
             break
         except (
             OSError,
@@ -223,19 +226,24 @@ def refund():
             RuntimeError,
             subprocess.SubprocessError,
         ):
-            if attempt == 2:
+            remaining = min(observation_deadline, deadline) - time.monotonic()
+            if attempt == 2 or remaining <= 0:
                 state["refund"] = "unknown"
                 save(state)
                 raise
-            time.sleep(30)
+            time.sleep(min(1, remaining))
     state["refund"] = "unknown"
     save(state)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Refund deadline expired before send; do not resend")
     result = det(
         "core-funds-send",
         "network=testnet",
         "wallet_id=" + state["wallet_id"],
-        "address=" + address(state["refund_address"]),
+        "address=" + destination,
         f"amount_duffs={amount}",
+        timeout=remaining,
     )
     if not re.fullmatch(r"[0-9a-f]{64}", result.get("txid", "")):
         raise ValueError("No refund transaction ID; do not resend")

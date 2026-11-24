@@ -126,14 +126,16 @@ fi
 sed -n '/^      - name: Verify reviewed tag has not moved$/,/^      - name: Record QA outcome/p' \
     "$workflows/weekly-build.yml" | sed -n '/^          set -euo pipefail$/,/^          fi$/p' > "$scratch/tag-check.sh"
 test -s "$scratch/tag-check.sh"
-for actual in reviewed replaced; do
-    if ACTUAL_SHA="$actual" EXPECTED_SHA=reviewed GITHUB_REPOSITORY=owner/repo TAG=v1.0.0 \
-        bash -euc 'gh() { [[ "$*" == "api repos/owner/repo/commits/v1.0.0 --jq .sha" ]]; echo "$ACTUAL_SHA"; }; source "$1"' _ "$scratch/tag-check.sh" > "$scratch/log" 2>&1; then
+for actual in reviewed replaced wrong-endpoint; do
+    tag=v1.0.0
+    [[ "$actual" != wrong-endpoint ]] || tag=unexpected
+    if ACTUAL_SHA="${actual/wrong-endpoint/reviewed}" EXPECTED_SHA=reviewed GITHUB_REPOSITORY=owner/repo TAG="$tag" \
+        bash -euc 'gh() { [[ "$*" == "api repos/owner/repo/commits/v1.0.0 --jq .sha" ]] || return 1; echo "$ACTUAL_SHA"; }; source "$1"' _ "$scratch/tag-check.sh" > "$scratch/log" 2>&1; then
         result=accepted
     else
         result=refused
     fi
-    if [[ "$actual:$result" == reviewed:accepted || "$actual:$result" == replaced:refused ]]; then
+    if [[ "$actual:$result" == reviewed:accepted || "$actual:$result" == replaced:refused || "$actual:$result" == wrong-endpoint:refused ]]; then
         echo "PASS: finalize tag binding ($actual)"
     else
         failures=$((failures + 1))

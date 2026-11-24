@@ -7,12 +7,21 @@ import shlex
 import sys
 from pathlib import Path
 
+from insight import query_path
+
 
 def allowed(payload, root, checkout):
     tool, args = payload.get("tool_name"), payload.get("tool_input", {})
     if tool == "Bash":
         command = args.get("command", "")
         words = shlex.split(command)
+        if len(words) > 1 and words[1] == "insight":
+            if len(words) != 4:
+                return False
+            try:
+                query_path(words[2], words[3])
+            except (ValueError, TypeError):
+                return False
         return (
             not args.get("run_in_background")
             and bool(words)

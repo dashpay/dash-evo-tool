@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Narrow GUI command surface; no shell, network, wallet or arbitrary Python execution."""
+"""Narrow GUI command surface; fixed read-only Insight queries, no arbitrary execution."""
 
 import json
 import os
@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+import insight
 from logic import CAPTURE_NAME, has_secret
 
 ROOT = Path(os.environ["QA_ROOT"])
@@ -54,6 +55,11 @@ def tree():
 
 def main():
     command, *args = sys.argv[1:]
+    if command == "insight":
+        if len(args) != 2:
+            raise ValueError("Expected insight addr ADDRESS or insight tx TXID")
+        print(json.dumps(insight.query(*args)))
+        return
     wid = (ROOT / "window").read_text().strip()
     if command == "click" and len(args) == 2:
         x, y = map(int, args)

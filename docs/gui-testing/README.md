@@ -155,16 +155,16 @@ event handlers, frames and external links are removed. All text is scanned befor
 any file is copied, and a staged export becomes public only after completion.
 Profiles, vaults, env files and raw Claude transcripts are never uploaded.
 
-CI runs the Python suite in `tests.yml` on release-QA script/workflow changes
-and visual-diff/release-review skill changes; it is excluded from the Monday
-schedule. The same job runs the visual-diff selftest. Install Ubuntu `python3-yaml`, `python3-pil`
+CI runs the Python suite in `release-qa-tests.yml` on release-QA script/workflow
+changes and visual-diff/release-review skill changes, on pull requests and pushes
+to `v*-dev`; it has no schedule. The same job runs the visual-diff selftest. Install Ubuntu `python3-yaml`, `python3-pil`
 and `python3-mnemonic` for local checks; the secret tests use the real BIP39 library.
 Offline checks (no faucet payouts or Claude usage):
 
 ```bash
 python3 -m unittest discover -s scripts/ci/release-qa
 bash scripts/ci/test-weekly-jobs.sh
-actionlint .github/workflows/release-qa.yml .github/workflows/weekly-build.yml .github/workflows/tests.yml
+actionlint .github/workflows/release-qa.yml .github/workflows/release-qa-tests.yml .github/workflows/weekly-build.yml .github/workflows/tests.yml
 shellcheck scripts/ci/release-qa/setup.sh
 ```
 

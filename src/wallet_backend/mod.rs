@@ -102,6 +102,7 @@ pub(crate) use tokens::{TokenActionCommon, TokenActor};
 
 use coordinator_gate::CoordinatorGate;
 use identity_ops::Funding;
+pub(crate) use identity_ops::fold_fetched_identity;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;

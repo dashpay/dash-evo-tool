@@ -14,3 +14,17 @@ sudo chmod 755 /opt/release-qa/ui.py
 sudo ln -sf /opt/release-qa/ui.py /usr/local/bin/qa-ui
 sudo npm install --global @anthropic-ai/claude-code@2.1.331
 python3 .claude/skills/visual-diff/scripts/selftest.py
+# Ephemeral hosted runner: no privileged commands are needed after setup.
+sudo python3 - <<'PY'
+from pathlib import Path
+import subprocess
+for path in [Path('/etc/sudoers'), *Path('/etc/sudoers.d').glob('*')]:
+    if path.is_file():
+        path.write_text(path.read_text().replace('NOPASSWD:', 'PASSWD:'))
+subprocess.run(['visudo', '-c'], check=True)
+PY
+sudo -k
+if sudo -n true 2>/dev/null; then
+  echo "Passwordless sudo is still enabled; refusing to start QA." >&2
+  exit 1
+fi

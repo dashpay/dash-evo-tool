@@ -1,8 +1,10 @@
-"""Export only passive gallery markup; no active content, CSS or external URLs."""
+"""Export only passive gallery markup; no active content or external URLs."""
 
 import html
 import re
 from html.parser import HTMLParser
+
+from logic import CAPTURE_NAME
 
 
 class PassiveHTML(HTMLParser):
@@ -29,7 +31,7 @@ class PassiveHTML(HTMLParser):
             ):
                 safe.append((key, value))
             elif (tag, key) in (("img", "src"), ("a", "href")) and re.fullmatch(
-                r"annotated/(?:clean/)?[a-zA-Z0-9_-]+\.png|#[a-zA-Z0-9_-]+|data:image/png;base64,[A-Za-z0-9+/=]+",
+                rf"annotated/(?:clean/)?{CAPTURE_NAME}\.png|#[a-zA-Z0-9_-]+|data:image/png;base64,[A-Za-z0-9+/=]+",
                 value,
             ):
                 safe.append((key, value))
@@ -53,8 +55,12 @@ class PassiveHTML(HTMLParser):
             self.output.append(html.escape(data))
 
 
-def sanitize_html(text):
+def sanitize_html(text, *, trusted_css=""):
     parser = PassiveHTML()
     parser.feed(text)
     parser.close()
-    return "".join(parser.output)
+    return (
+        '<meta charset="utf-8">'
+        + (f"<style>{trusted_css}</style>" if trusted_css else "")
+        + "".join(parser.output)
+    )

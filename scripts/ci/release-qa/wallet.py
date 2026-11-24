@@ -1,6 +1,5 @@
 """Deterministic burner provisioning/refund. Never log CLI output or secret input."""
 
-import hashlib
 import json
 import os
 import re
@@ -12,7 +11,14 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from logic import cap_endpoint, cap_solve, payout_action, refund_amount
+from logic import (
+    b58check_decode,
+    isolated_env,
+    cap_endpoint,
+    cap_solve,
+    payout_action,
+    refund_amount,
+)
 
 FAUCET = "https://faucet.thepasta.org"
 ROOT = Path(os.environ["QA_ROOT"])
@@ -45,13 +51,7 @@ def request(url, body=None):
 
 
 def det(*args, phrase=None):
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(ROOT / "home"),
-        "LANG": "C.UTF-8",
-        "DASH_EVO_DATA_DIR": str(ROOT / "data"),
-        "RUST_LOG": "off",
-    }
+    env = isolated_env(ROOT)
     result = subprocess.run(
         [str(ROOT / "app/dash-evo-tool/det-cli"), "--standalone", *args],
         env=env,
@@ -69,15 +69,8 @@ def det(*args, phrase=None):
 def address(value):
     if not isinstance(value, str) or not 26 <= len(value) <= 35:
         raise ValueError("Expected a testnet P2PKH address")
-    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-    number = 0
-    for char in value:
-        number = number * 58 + alphabet.index(char)
-    raw = number.to_bytes(25, "big")
-    if (
-        raw[0] != 140
-        or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]
-    ):
+    payload = b58check_decode(value)
+    if len(payload) != 21 or payload[0] != 140:
         raise ValueError("Expected a testnet P2PKH refund address")
     return value
 
@@ -154,27 +147,24 @@ def fund():
     state["payout_duffs"] = int(Decimal(str(config["coreFaucetAmount"])) * 100_000_000)
     if not 0 < state["payout_duffs"] <= 100_000_000:
         raise ValueError("Faucet payout exceeds the 1 tDASH burner cap")
-    hard = False
     for _ in range(5):
-        cap = token(config["hardCapEndpoint" if hard else "capEndpoint"])
+        cap = token(config["capEndpoint"])
         # Persist uncertainty BEFORE sending: a lost response must never be retried.
         state.update(funding="unknown", refund="pending")
         save(state)
         status, response = request(
             FAUCET + "/api/core-faucet",
-            {"address": state["address"], "hardCapToken" if hard else "capToken": cap},
+            {"address": state["address"], "capToken": cap},
         )
         action = payout_action(status, response)
         if action in ("sent", "replay"):
             state.update(funding=action, txid=response["txid"])
             save(state)
             return
-        if 400 <= status < 500 or action == "stale":
+        if 400 <= status < 500 or action in ("stale", "refused"):
             state.update(funding="not_reached", refund="not_needed")
             save(state)
-        if action == "hard" and not hard:
-            hard = True
-        elif action != "stale":
+        if action != "stale":
             return
     state["funding"] = "not_reached"
     save(state)

@@ -1,0 +1,44 @@
+name: Release QA script tests
+
+on:
+  push:
+    branches:
+      - "v*-dev"
+    paths: &qa_paths
+      - "scripts/ci/release-qa/**"
+      - ".claude/skills/release-review/**"
+      - ".claude/skills/visual-diff/**"
+      - ".github/workflows/release-qa-tests.yml"
+      - ".github/workflows/release-qa.yml"
+      - ".github/workflows/weekly-build.yml"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: *qa_paths
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-qa-tests:
+    name: Release QA scripts
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install release QA test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-yaml python3-pil python3-mnemonic
+
+      - name: Test release QA scripts
+        run: |
+          /usr/bin/python3 -m unittest discover -s scripts/ci/release-qa -v
+          /usr/bin/python3 .claude/skills/visual-diff/scripts/selftest.py

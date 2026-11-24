@@ -57,16 +57,16 @@ outcome 'published' 'have published another weekly' FINALIZE_RESULT=success PUBL
     CLEANUP_RESULT=skipped
 outcome 'draft sealed' 'have sealed another weekly draft' FINALIZE_RESULT=success \
     CLEANUP_RESULT=skipped
-outcome 'build failed, cleaned up' 'the platform build faltered — I have swept' \
+outcome 'build failed, cleaned up' 'the platform build faltered — I have swept the newly created tag and its broken draft away' \
     RELEASE_RESULT=failure FIXTURE_RESULT=skipped
 outcome 'build failed, cleanup failed' 'the platform build faltered, and automatic cleanup did not finish' \
     FLATPAK_RESULT=failure CLEANUP_RESULT=failure
-outcome 'fixture capture failed, cleaned up' 'its migration fixture could not be captured — I have swept' \
+outcome 'fixture capture failed, cleaned up' 'its migration fixture could not be captured — I have removed the newly created tag and its broken draft' \
     FIXTURE_RESULT=failure
 outcome 'fixture capture failed, cleanup failed' \
     'its migration fixture could not be captured, and automatic cleanup did not finish' \
     FIXTURE_RESULT=failure CLEANUP_RESULT=failure
-outcome 'build and fixture capture failed' 'the platform build faltered — I have swept' \
+outcome 'build and fixture capture failed' 'the platform build faltered — I have swept the newly created tag and its broken draft away' \
     FLATPAK_RESULT=failure FIXTURE_RESULT=failure
 outcome 'tag failed' "could not even lay down this week's tag" TAG_RESULT=failure \
     RELEASE_RESULT=skipped FLATPAK_RESULT=skipped FIXTURE_RESULT=skipped CLEANUP_RESULT=skipped
@@ -83,6 +83,12 @@ outcome 'deleted draft has no QA suffix' 'I have swept' \
 outcome 'skipped QA has no suffix' 'finalization did not complete' \
     FINALIZE_RESULT=failure CLEANUP_RESULT=skipped FORBIDDEN_PHRASE='GUI QA:'
 outcome 'nothing to release'  '' SHOULD_RELEASE=false
+outcome 'PASS but publish failed' 'QA passed, but publishing failed' \
+    FINALIZE_RESULT=success CLEANUP_RESULT=skipped QA_VERDICT=PASS
+outcome 're-cut build failed' 'existing draft was retained and marked DO NOT PUBLISH' \
+    RELEASE_RESULT=failure CLEANUP_RESULT=skipped FORBIDDEN_PHRASE='cleanup did not finish'
+outcome 're-cut fixture failed' 'existing draft was retained and marked DO NOT PUBLISH' \
+    FIXTURE_RESULT=failure CLEANUP_RESULT=skipped FORBIDDEN_PHRASE='cleanup did not finish'
 outcome 'no webhook' '' SLACK_WEBHOOK_URL=
 
 # A called job that declares more than its caller grants fails the whole
@@ -99,6 +105,19 @@ if [[ -n "$granted" && -n "$declared" && -z "$missing" ]]; then
 else
     failures=$((failures + 1))
     echo "FAIL: the fixture job does not grant:${missing:- (no permissions found)}" >&2
+fi
+
+granted="$(sed -n '/^  qa:$/,/^  seal:$/p' "$workflows/weekly-build.yml" | permissions || true)"
+declared="$(permissions < "$workflows/release-qa.yml" || true)"
+missing=''
+while read -r scope level; do
+    grep -qxE "$scope (write|$level)" <<<"$granted" || missing+=" $scope$level"
+done <<<"$declared"
+if [[ -n "$granted" && -n "$declared" && -z "$missing" ]]; then
+    echo "PASS: the qa job grants what the release QA workflow declares"
+else
+    failures=$((failures + 1))
+    echo "FAIL: the qa job does not grant:${missing:- (no permissions found)}" >&2
 fi
 
 if [[ "$failures" -ne 0 ]]; then

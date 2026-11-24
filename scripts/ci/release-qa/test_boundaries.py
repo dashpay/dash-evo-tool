@@ -1,6 +1,7 @@
 """Security and workflow contracts; no network, Claude, display or payouts."""
 
 import json
+import hashlib
 import os
 import re
 import random
@@ -256,6 +257,8 @@ class WorkflowTests(unittest.TestCase):
             )
         )
         self.assertNotIn("Delete stale weekly drafts", workflow.read_text())
+        for name in ("qa", "seal", "finalize"):
+            self.assertNotIn("gh release delete", str(jobs[name]))
 
     def test_summary_fails_closed_and_reports_missing_refund_address(self):
         import yaml
@@ -286,8 +289,30 @@ class WorkflowTests(unittest.TestCase):
                 (root / "report").mkdir()
                 if content is not None:
                     (root / "report/result.json").write_text(content)
+                files = {}
+                if expected == "PASS":
+                    for name in (
+                        "report.json",
+                        "report.md",
+                        "verified-changelog.md",
+                        "scenarios.md",
+                        "story-checklist.md",
+                        "meta.json",
+                        "spec.json",
+                        "index.html",
+                        "visual-changelog.html",
+                    ):
+                        (root / "report" / name).write_text("test evidence")
+                    files = {
+                        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in (root / "report").iterdir()
+                    }
+                (root / "report/export-manifest.json").write_text(
+                    json.dumps({"complete": True, "files": files})
+                )
                 env = dict(
                     os.environ,
+                    FINISH_RESULT="success",
                     REVIEW_RESULT=result,
                     GITHUB_REPOSITORY="test/repo",
                     GITHUB_RUN_ID="1",
@@ -313,6 +338,49 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("always()", post["if"])
         self.assertNotIn("success", post["if"].split("&&")[0])
         self.assertLessEqual(sum(int(j["timeout-minutes"]) for j in jobs.values()), 240)
+        review = jobs["review"]
+        step_minutes = sum(int(s.get("timeout-minutes", 0)) for s in steps)
+        self.assertGreaterEqual(int(review["timeout-minutes"]) - step_minutes, 10)
+
+    def test_skill_changes_only_trigger_qa_script_workflow(self):
+        import fnmatch
+        import yaml
+
+        workflows = Path(__file__).resolve().parents[3] / ".github/workflows"
+        rust = yaml.load((workflows / "tests.yml").read_text(), Loader=yaml.BaseLoader)
+        skills = (
+            ".claude/skills/release-review/ci-prompt.md",
+            ".claude/skills/release-review/SKILL.md",
+            ".claude/skills/visual-diff/SKILL.md",
+            ".claude/skills/visual-diff/scripts/gallery.py",
+        )
+        for event in ("push", "pull_request"):
+            for path in skills:
+                with self.subTest(event=event, path=path):
+                    self.assertFalse(
+                        any(
+                            fnmatch.fnmatchcase(path, pattern)
+                            for pattern in rust["on"][event]["paths"]
+                        )
+                    )
+        qa = yaml.load(
+            (workflows / "release-qa-tests.yml").read_text(), Loader=yaml.BaseLoader
+        )
+        self.assertNotIn("schedule", qa["on"])
+        self.assertNotIn("release-qa-tests", rust["jobs"])
+        for event in ("push", "pull_request"):
+            for path in (
+                *skills,
+                "scripts/ci/release-qa/logic.py",
+                ".github/workflows/release-qa.yml",
+            ):
+                with self.subTest(event=event, path=path):
+                    self.assertTrue(
+                        any(
+                            fnmatch.fnmatchcase(path, pattern)
+                            for pattern in qa["on"][event]["paths"]
+                        )
+                    )
 
 
 class ReportTests(unittest.TestCase):
@@ -326,7 +394,7 @@ class ReportTests(unittest.TestCase):
             root, out = Path(temp), Path(temp) / "report"
             out.mkdir()
             (root / "receipt.json").write_text(
-                json.dumps({"smoke": True, "agent_ok": True})
+                json.dumps({"smoke": True, "agent_ok": True, "gui_stopped": True})
             )
             report = {
                 "summary": {"verdict": "PASS", "complete": True},
@@ -414,6 +482,55 @@ class ReportTests(unittest.TestCase):
                     (root / "export/visual-changelog.html").stat().st_size, 7_000_000
                 )
 
+                html = (root / "export/visual-changelog.html").read_text()
+                self.assertIn("<style>", html)
+                self.assertIn('charset="utf-8"', html)
+                self.assertIn("max-width:100%", html)
+                self.assertIn("data:image/png;base64,", html)
+                self.assertIs(
+                    json.loads((root / "export/export-manifest.json").read_text())[
+                        "complete"
+                    ],
+                    True,
+                )
+                write_text = Path.write_text
+
+                def fail_manifest(path, text, *args, **kwargs):
+                    if path == root / "export.tmp/export-manifest.json":
+                        raise OSError("disk full after copying PASS")
+                    return write_text(path, text, *args, **kwargs)
+
+                with patch.object(Path, "write_text", fail_manifest):
+                    (out / "report.json").write_text(json.dumps(report))
+                    self.assertFalse(run.finish())
+                self.assertEqual(
+                    json.loads((root / "export/result.json").read_text())["verdict"],
+                    "INCOMPLETE",
+                )
+                self.assertFalse((root / "export.tmp").exists())
+                with patch.object(run, "embed_images", return_value="x" * 30_000_001):
+                    (out / "report.json").write_text(json.dumps(report))
+                    self.assertFalse(run.finish())
+                self.assertEqual(
+                    json.loads((root / "export/result.json").read_text())["verdict"],
+                    "INCOMPLETE",
+                )
+                self.assertFalse((root / "export/visual-changelog.html").exists())
+                (out / "visual-changelog.html").unlink()
+                (root / "context/commits.txt").write_text(
+                    "abcdef0123456 visible\n123456789abc internal"
+                )
+                self.assertFalse(run.evidence_complete())
+                meta = json.loads((out / "meta.json").read_text())
+                meta["coverage"].append(
+                    {
+                        "commit": "1234567",
+                        "images": [],
+                        "note": "no user-visible change",
+                    }
+                )
+                (out / "meta.json").write_text(json.dumps(meta))
+                self.assertTrue(run.evidence_complete())
                 self.assertIn("Refund skipped", (out / "report.md").read_text())
                 (out / "meta.json").write_text("{}")
                 (out / "report.json").write_text(json.dumps(report))

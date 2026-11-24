@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from logic import has_secret
+from logic import CAPTURE_NAME, has_secret
 
 ROOT = Path(os.environ["QA_ROOT"])
 OUT = ROOT / "report"
@@ -20,7 +20,7 @@ def run(*args):
 
 
 def name(value):
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,80}", value):
+    if not re.fullmatch(CAPTURE_NAME, value):
         raise ValueError("Expected a capture name, without an extension")
     return value
 

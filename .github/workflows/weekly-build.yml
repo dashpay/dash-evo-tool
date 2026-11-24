@@ -72,7 +72,7 @@ jobs:
           # Missing history is absent, not red; force/version never bypass red CI.
           # A manual run never stands in for a push suite.
           red=false
-          for check in tests.yml:push clippy.yml:push; do
+          for check in tests.yml:push clippy.yml:push release-qa-tests.yml:push; do
             wf="${check%:*}"
             event="${check#*:}"
             concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --event "$event" --status completed \
@@ -266,7 +266,7 @@ jobs:
   # Captures this version's migration fixture with the binary just built and
   # attaches it to the draft, so a release never needs one captured by hand.
   # A failed capture blocks the release: `finalize` is skipped and `cleanup`
-  # removes the tag and the draft, exactly as for a failed build.
+  # removes a newly created tag and its draft, exactly as for a failed build.
   fixture:
     name: Capture migration fixture
     needs: [gate, release]
@@ -315,6 +315,14 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.gate.outputs.tag }}
     steps:
+      - name: Mark draft unsafe before sealing
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '<!-- weekly-version: %s -->\nDO NOT PUBLISH: GUI QA is pending or incomplete. Inspect the workflow before publication.\n' "$VERSION" > pending-notes.md
+          gh release edit "$TAG" --title "DO NOT PUBLISH: $TAG (QA pending)" --notes-file pending-notes.md -R "$GITHUB_REPOSITORY"
+
       - name: Download Flatpak artifacts
         uses: actions/download-artifact@v4
         with:
@@ -324,12 +332,8 @@ jobs:
 
       - name: Upload Flatpak bundles and fetch release URL
         id: upload
-        env:
-          VERSION: ${{ needs.gate.outputs.version }}
         run: |
           set -euo pipefail
-          printf '<!-- weekly-version: %s -->\nDO NOT PUBLISH: GUI QA is pending or incomplete. Inspect the workflow before publication.\n' "$VERSION" > pending-notes.md
-          gh release edit "$TAG" --title "DO NOT PUBLISH: $TAG (QA pending)" --notes-file pending-notes.md -R "$GITHUB_REPOSITORY"
           gh release upload "$TAG" fp/*.flatpak --clobber -R "$GITHUB_REPOSITORY"
           url=$(gh release view "$TAG" --json url --jq .url -R "$GITHUB_REPOSITORY")
           echo "url=$url" >>"$GITHUB_OUTPUT"
@@ -391,9 +395,9 @@ jobs:
           echo "published=true" >>"$GITHUB_OUTPUT"
           echo "Published $TAG as a pre-release."
 
-  # Build/fixture failures only. QA and finalize problems retain the draft.
+  # New-tag build/fixture failures only. QA, seal and finalize retain the draft.
   cleanup:
-    name: Clean up orphaned tag on build failure
+    name: Delete new draft and tag on build or fixture failure
     needs: [gate, tag, release, flatpak, fixture]
     if: always() && needs.gate.outputs.should_release == 'true' && needs.tag.result == 'success' && needs.tag.outputs.created == 'true' && (needs.release.result != 'success' || needs.flatpak.result != 'success' || needs.fixture.result != 'success')
     runs-on: ubuntu-24.04
@@ -403,7 +407,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.gate.outputs.tag }}
     steps:
-      - name: Delete orphaned weekly tag
+      - name: Delete broken draft and newly created weekly tag
         run: |
           set -euo pipefail
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -452,16 +456,20 @@ jobs:
             TEXT=":warning: *I, Claudius the Magnificent, decline to bless a broken week.* CI on \`${GITHUB_REF_NAME}\` is red — no weekly draft was cut. Mend the pipeline: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ] && [ "${PUBLISHED:-}" = "true" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have published another weekly for \`${REPO}\`.* Version \`${VERSION}\` is live as a pre-release, no assent required: <${RELEASE_URL}|the release page>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ] && [ "${QA_VERDICT:-}" = PASS ] && [ "${EVENT_NAME:-}" = schedule ]; then
+            TEXT=":warning: GUI QA passed, but publishing failed. The PASS draft can be published by hand: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` remains unpublished — inspect its QA status here: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$RELEASE_RESULT" = "success" ] && [ "$FLATPAK_RESULT" = "success" ] && [ "$FIXTURE_RESULT" = "success" ]; then
             TEXT=":warning: Weekly build artifacts are ready; finalization did not complete. The draft is retained: <${RUN_URL}|the run>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "skipped" ]; then
+            TEXT=":warning: The re-cut failed. The existing draft was retained and marked DO NOT PUBLISH; assets may be mixed: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FLATPAK_RESULT" = "success" ] && [ "$FIXTURE_RESULT" = "failure" ] && [ "$CLEANUP_RESULT" = "success" ]; then
-            TEXT=":rotating_light: *Even I, Claudius the Magnificent, will not publish a release whose upgrade I could not prove.* Version \`${VERSION}\` for \`${REPO}\` was built, yet its migration fixture could not be captured — I have swept the tag and the draft away. Mend it, then cut the week again: <${RUN_URL}|the run>."
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, will not publish a release whose upgrade I could not prove.* Version \`${VERSION}\` for \`${REPO}\` was built, yet its migration fixture could not be captured — I have removed the newly created tag and its broken draft. Mend it, then cut the week again: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FLATPAK_RESULT" = "success" ] && [ "$FIXTURE_RESULT" = "failure" ]; then
             TEXT=":rotating_light: *Even I, Claudius the Magnificent, will not publish a release whose upgrade I could not prove, and I could not clean up after myself either.* Version \`${VERSION}\` for \`${REPO}\` was built, yet its migration fixture could not be captured, and automatic cleanup did not finish — a stray tag or draft release may remain. Manual sweep required: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "success" ]; then
-            TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the orphaned tag away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the newly created tag and its broken draft away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ]; then
             TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot forge a release from a broken build, and I could not clean up after myself either.* Version \`${VERSION}\` for \`${REPO}\` was tagged, the platform build faltered, and automatic cleanup did not finish — a stray tag or draft release may remain. Manual sweep required: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ]; then

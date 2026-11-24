@@ -2,10 +2,54 @@
 
 import hashlib
 import re
-import os
 import time
-from multiprocessing import Pool
 from urllib.parse import urlsplit
+
+
+CAPTURE_NAME = r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,80}"
+CI_LIMITS = {
+    "ci_no_identity",
+    "ci_no_broadcast",
+    "ci_no_secrets",
+    "ci_new_only",
+    "ci_fixed_viewport",
+}
+GAP_CATEGORIES = CI_LIMITS | {"funding", "network", "app_error", "navigation"}
+
+
+def isolated_env(root, *, display=False):
+    result = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(root / "home"),
+        "LANG": "C.UTF-8",
+        "DASH_EVO_DATA_DIR": str(root / "data"),
+        "BROWSER": "/bin/true",
+        "RUST_LOG": "off",
+    }
+    if display:
+        result.update(
+            DISPLAY=":99",
+            DASH_EVO_TOOL_ACCESSIBILITY="1",
+            RUST_LOG="info,wgpu_hal=warn",
+        )
+    return result
+
+
+def b58check_decode(value):
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    number = 0
+    for char in value:
+        number = number * 58 + alphabet.index(char)
+    decoded = b"\0" * (len(value) - len(value.lstrip("1"))) + number.to_bytes(
+        (number.bit_length() + 7) // 8, "big"
+    )
+    payload, checksum = decoded[:-4], decoded[-4:]
+    if (
+        len(decoded) < 5
+        or hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4] != checksum
+    ):
+        raise ValueError("Invalid Base58Check checksum")
+    return payload
 
 
 def verdict(report, *, smoke, agent_ok):
@@ -42,8 +86,22 @@ def verdict(report, *, smoke, agent_ok):
             )
         ):
             return "INCOMPLETE"
+    gaps = {}
+    for item in report["not_reached"]:
+        if (
+            not isinstance(item, dict)
+            or item.get("category") not in GAP_CATEGORIES
+            or any(
+                not isinstance(item.get(k), str) or not item[k].strip()
+                for k in ("id", "reason")
+            )
+            or item["id"] in gaps
+        ):
+            return "INCOMPLETE"
+        gaps[item["id"]] = item["category"]
     if any(
-        not isinstance(item, str) or not item.strip() for item in report["not_reached"]
+        s["status"] == "NOT_REACHED" and s["id"] not in gaps
+        for s in report["scenarios"]
     ):
         return "INCOMPLETE"
     if (
@@ -54,8 +112,9 @@ def verdict(report, *, smoke, agent_ok):
         return "FAIL"
     if (
         report["findings"]
-        or report["not_reached"]
-        or any(s["status"] != "PASS" for s in report["scenarios"])
+        or not any(s["status"] == "PASS" for s in report["scenarios"])
+        or any(category not in CI_LIMITS for category in gaps.values())
+        or any(s["status"] == "NOTE" for s in report["scenarios"])
     ):
         return "NOTE"
     return value
@@ -71,6 +130,7 @@ def cap_endpoint(url):
         or parsed.port not in (None, 443)
         or parsed.query
         or parsed.fragment
+        or "hard" in parsed.path.lower()
         or not (host == "thepasta.org" or host.endswith(".thepasta.org"))
     ):
         raise ValueError("CAP endpoint is outside the faucet's HTTPS domain")
@@ -110,25 +170,31 @@ def cap_solve(token, challenge, *, deadline=None):
         (cap_prng(f"{token}{i}", size), cap_prng(f"{token}{i}d", difficulty), deadline)
         for i in range(1, count + 1)
     ]
-    if difficulty >= 5:
-        # Independent challenges share a deadline; Pool terminates on timeout.
-        with Pool(min(count, os.cpu_count() or 1)) as pool:
-            return pool.map_async(cap_nonce, tasks).get(
-                max(0, deadline - time.monotonic())
-            )
     return [cap_nonce(task) for task in tasks]
 
 
 def payout_action(status, body):
+    if not isinstance(body, dict):
+        return "stop"
     if status == 200 and re.fullmatch(r"[0-9a-f]{64}", body.get("txid", "")):
         return "replay" if body.get("replay") is True else "sent"
     if status == 429 and (
         body.get("requiresHardCaptcha") is True
-        or body.get("detail", {}).get("requiresHardCaptcha") is True
+        or (
+            isinstance(body.get("detail"), dict)
+            and body["detail"].get("requiresHardCaptcha") is True
+        )
     ):
         return "hard"
     if status == 503 and body.get("detailMessage") == "stale coin view, please retry":
         return "stale"
+    message = body.get("detailMessage") or body.get("error")
+    if (
+        status == 503
+        and isinstance(message, str)
+        and message.lower() in {"faucet has insufficient funds", "broadcast rejected"}
+    ):
+        return "refused"
     return "stop"
 
 
@@ -145,18 +211,15 @@ def refund_amount(balance, payout):
 
 
 def is_wif(candidate):
-    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-    number = 0
-    for char in candidate:
-        number = number * 58 + alphabet.index(char)
-    decoded = number.to_bytes((number.bit_length() + 7) // 8, "big")
-    # rust-dashcore: Dash mainnet 0xcc, testnet 0xef; also detect Bitcoin's 0x80.
-    if len(decoded) not in (37, 38) or decoded[0] not in (0xCC, 0xEF, 0x80):
+    try:
+        payload = b58check_decode(candidate)
+    except ValueError:
         return False
-    payload, checksum = decoded[:-4], decoded[-4:]
-    return (len(payload) == 33 or payload[-1] == 1) and checksum == hashlib.sha256(
-        hashlib.sha256(payload).digest()
-    ).digest()[:4]
+    return (
+        len(payload) in (33, 34)
+        and payload[0] in (0xCC, 0xEF, 0x80)
+        and (len(payload) == 33 or payload[-1] == 1)
+    )
 
 
 def has_secret(text):

@@ -19,6 +19,29 @@ def tag(value):
     return value
 
 
+def select_baseline(candidates, explicit, new_sha):
+    for release in candidates:
+        name = release["tag_name"]
+        if explicit and name != explicit:
+            continue
+        try:
+            name = tag(name)
+        except ValueError:
+            if explicit:
+                raise
+            continue
+        run("git", "fetch", "origin", f"+refs/tags/{name}:refs/tags/{name}")
+        sha = run("git", "rev-parse", f"{name}^{{commit}}")
+        try:
+            run("git", "merge-base", "--is-ancestor", sha, new_sha)
+        except subprocess.CalledProcessError as error:
+            if explicit or error.returncode != 1:
+                raise
+            continue
+        return name, sha
+    raise ValueError("No older published pre-release ancestor of NEW")
+
+
 def main():
     root = Path(os.environ["QA_ROOT"])
     root.mkdir(parents=True, exist_ok=True)
@@ -40,17 +63,9 @@ def main():
         and r["created_at"] < new_release["created_at"]
     ]
     candidates.sort(key=lambda r: r["published_at"], reverse=True)
-    if baseline:
-        if not any(r["tag_name"] == baseline for r in candidates):
-            raise ValueError("Baseline must be an older published pre-release")
-    else:
-        baseline = candidates[0]["tag_name"]
-    baseline = tag(baseline)
-    for ref in (new, baseline):
-        run("git", "fetch", "origin", f"+refs/tags/{ref}:refs/tags/{ref}")
+    run("git", "fetch", "origin", f"+refs/tags/{new}:refs/tags/{new}")
     new_sha = run("git", "rev-parse", f"{new}^{{commit}}")
-    old_sha = run("git", "rev-parse", f"{baseline}^{{commit}}")
-    run("git", "merge-base", "--is-ancestor", old_sha, new_sha)
+    baseline, old_sha = select_baseline(candidates, baseline, new_sha)
     binary = root / "dash-evo-tool-linux-x86_64.zip"
     if not binary.exists():
         run(
@@ -79,7 +94,9 @@ def main():
     )
     context = root / "context"
     context.mkdir(exist_ok=True)
-    commits = run("git", "log", "--format=%H %s", f"{old_sha}..{new_sha}")
+    commits = run(
+        "git", "log", "--no-merges", "--format=%H %s", f"{old_sha}..{new_sha}"
+    )
     (context / "commits.txt").write_text(commits)
     (context / "changes.diff").write_text(
         run("git", "diff", "--no-ext-diff", old_sha, new_sha)

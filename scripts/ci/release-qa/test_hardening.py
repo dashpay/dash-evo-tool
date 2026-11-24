@@ -159,14 +159,7 @@ class HardeningTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
             self.assertIn('src="annotated/screen.png"', text)
 
-    def test_hard_pow_parallel_and_expired_challenges_not_redeemed(self):
-        with patch.object(logic, "Pool") as pool:
-            pool.return_value.__enter__.return_value.map_async.return_value.get.return_value = [
-                1,
-                2,
-            ]
-            self.assertEqual(logic.cap_solve("test", {"c": 2, "s": 8, "d": 6}), [1, 2])
-            self.assertTrue(pool.called)
+    def test_expired_challenges_not_redeemed(self):
         with (
             patch.object(
                 wallet,
@@ -184,19 +177,6 @@ class HardeningTests(unittest.TestCase):
                 "test", {"c": 1, "s": 8, "d": 1}, deadline=time.monotonic() - 1
             )
 
-    def test_pow_workers_serialize_and_return_valid_solutions(self):
-        # Cheap targets exercise real process startup, ordering and worker imports.
-        with (
-            patch.object(logic, "cap_prng", return_value="0"),
-            patch.object(logic.os, "cpu_count", return_value=2),
-        ):
-            solutions = logic.cap_solve("test", {"c": 2, "s": 8, "d": 6})
-        self.assertEqual(len(solutions), 2)
-        for nonce in solutions:
-            self.assertTrue(
-                hashlib.sha256(f"0{nonce}".encode()).hexdigest().startswith("0")
-            )
-
     def test_faucet_retry_contract(self):
         stale = (503, {"detailMessage": "stale coin view, please retry"})
         hard = (429, {"requiresHardCaptcha": True})
@@ -204,8 +184,19 @@ class HardeningTests(unittest.TestCase):
         for responses, expected in (
             ([stale] * 5, "not_reached"),
             ([stale, sent], "sent"),
-            ([hard, sent], "sent"),
-            ([hard, hard], "not_reached"),
+            ([hard], "not_reached"),
+            ([(429, {"detail": "limit"})], "not_reached"),
+            ([(503, {"error": "Faucet has insufficient funds"})], "not_reached"),
+            ([(503, {"detailMessage": "broadcast rejected"})], "not_reached"),
+            (
+                [(503, {"error": "broadcast could not be confirmed; try later"})],
+                "unknown",
+            ),
+            ([(503, {})], "unknown"),
+            ([(503, {"error": "Broadcast failed: timeout"})], "unknown"),
+            ([(503, {"detailMessage": "provider response lost"})], "unknown"),
+            ([(503, {"error": "broadcast rejected after timeout?"})], "unknown"),
+            ([(500, {"error": "Faucet has insufficient funds"})], "unknown"),
             ([(429, {})], "not_reached"),
             ([(403, {})], "not_reached"),
             ([(200, {})], "unknown"),
@@ -256,11 +247,15 @@ class HardeningTests(unittest.TestCase):
                     len({p.get("capToken", p.get("hardCapToken")) for p in payloads}),
                     len(responses),
                 )
-                if responses[0] == hard:
-                    self.assertIn("hardCapToken", payloads[1])
-                    self.assertEqual(
-                        token.call_args_list[1].args[0], config["hardCapEndpoint"]
+                self.assertTrue(
+                    all(
+                        call.args[0] == config["capEndpoint"]
+                        for call in token.call_args_list
                     )
+                )
+                self.assertTrue(
+                    all("hardCapToken" not in payload for payload in payloads)
+                )
 
     def test_workflows_seal_before_qa_fund_after_smoke_and_run_tests(self):
         def workflow(name):
@@ -274,28 +269,30 @@ class HardeningTests(unittest.TestCase):
         self.assertNotIn("qa", weekly["seal"]["needs"])
         seal = "\n".join(s.get("run", "") for s in weekly["seal"]["steps"])
         self.assertIn("<!-- weekly-version:", seal)
-        self.assertIn("DO NOT PUBLISH", seal)
+        self.assertIn("DO NOT PUBLISH", weekly["seal"]["steps"][0]["run"])
         push = next(s["run"] for s in weekly["tag"]["steps"] if s.get("id") == "push")
         self.assertLess(push.index("DO NOT PUBLISH"), push.index("git tag -f"))
         steps = workflow("release-qa.yml")["jobs"]["review"]["steps"]
         ids = [s.get("id") for s in steps]
         self.assertLess(ids.index("smoke"), ids.index("fund"))
         self.assertEqual(
-            steps[ids.index("fund")]["if"], "steps.smoke.outcome == 'success'"
+            steps[ids.index("fund")]["if"],
+            "steps.resume.outcome == 'success' && steps.wallet.outcome == 'success'",
         )
         tests = workflow("tests.yml")
         self.assertIn(".github/workflows/release-qa.yml", tests["on"]["push"]["paths"])
+        qa_tests = workflow("release-qa-tests.yml")
         scripts = "\n".join(
-            s.get("run", "") for s in tests["jobs"]["release-qa-tests"]["steps"]
+            s.get("run", "") for s in qa_tests["jobs"]["release-qa-tests"]["steps"]
         )
         self.assertIn("unittest discover -s scripts/ci/release-qa", scripts)
         self.assertIn("python3-mnemonic", scripts)
+        self.assertIn(".claude/skills/visual-diff/scripts/selftest.py", scripts)
+        self.assertIn(".claude/skills/visual-diff/**", qa_tests["on"]["push"]["paths"])
         pin = tests["jobs"]["pin-ancestry"]
         self.assertNotIn("apt-get", "\n".join(s.get("run", "") for s in pin["steps"]))
         self.assertNotIn("needs", pin)
-        self.assertIn(
-            "github.event_name != 'schedule'", tests["jobs"]["release-qa-tests"]["if"]
-        )
+        self.assertNotIn("schedule", qa_tests["on"])
 
     def test_release_notes_match_event(self):
         jobs = yaml.load(

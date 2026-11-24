@@ -39,7 +39,9 @@ class LogicTests(unittest.TestCase):
         }
         self.assertEqual(verdict(report, smoke=True, agent_ok=True), "FAIL")
         report["findings"] = []
-        report["not_reached"] = ["faucet unavailable"]
+        report["not_reached"] = [
+            {"id": "F1", "category": "funding", "reason": "faucet unavailable"}
+        ]
         self.assertEqual(verdict(report, smoke=True, agent_ok=True), "NOTE")
 
     def test_invalid_shapes_fail_closed(self):

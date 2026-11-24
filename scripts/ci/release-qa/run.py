@@ -1,6 +1,7 @@
 """Trusted stage controller. Evidence is separate from Claude-writable reports."""
 
-import base64
+import hashlib
+import shutil
 import json
 import os
 import re
@@ -12,10 +13,20 @@ import zipfile
 from pathlib import Path
 
 from PIL import Image, ImageStat
-from logic import verdict, has_secret
+from logic import CAPTURE_NAME, isolated_env, verdict, has_secret
 from passive_html import sanitize_html
 
-ROOT = Path(os.environ["QA_ROOT"])
+VISUAL = Path(__file__).resolve().parent / "visual"
+if not VISUAL.exists():
+    VISUAL = Path(__file__).resolve().parents[3] / ".claude/skills/visual-diff/scripts"
+sys.path.insert(0, str(VISUAL))
+from gallery import CSS, embed_images  # noqa: E402 - installed and checkout paths differ
+
+ROOT = Path(
+    sys.argv[2]
+    if len(sys.argv) > 2 and sys.argv[1] == "monitor"
+    else os.environ["QA_ROOT"]
+)
 OUT = ROOT / "report"
 
 
@@ -33,15 +44,7 @@ def receipt(**values):
 
 
 def env():
-    result = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(ROOT / "home"),
-        "LANG": "C.UTF-8",
-        "DISPLAY": ":99",
-        "DASH_EVO_DATA_DIR": str(ROOT / "data"),
-        "DASH_EVO_TOOL_ACCESSIBILITY": "1",
-        "RUST_LOG": "info,wgpu_hal=warn",
-    }
+    result = isolated_env(ROOT, display=True)
     result.update(read(ROOT / "display.json", {}))
     return result
 
@@ -95,7 +98,8 @@ def init():
 def smoke():
     from wallet import det
 
-    receipt(smoke=False)
+    receipt(smoke=None)
+    det("network-switch", "network=testnet")
     if det("network-info").get("active") != "testnet":
         raise RuntimeError("Refusing to launch a non-testnet profile")
     bus = subprocess.check_output(
@@ -112,6 +116,8 @@ def smoke():
         if subprocess.run(["xdpyinfo"], env=env(), capture_output=True).returncode == 0:
             break
         time.sleep(0.1)
+    else:
+        raise RuntimeError("Xvfb did not become ready")
     launch(["openbox"], "openbox.log")
     for flag in ("ScreenReaderEnabled", "IsEnabled"):
         subprocess.run(
@@ -133,11 +139,45 @@ def smoke():
             check=True,
             timeout=30,
         )
-    app = launch([str(ROOT / "app/dash-evo-tool/dash-evo-tool")], "launch.log")
+    resume()
+
+
+def monitor():
+    app = subprocess.Popen(
+        [str(ROOT / "app/dash-evo-tool/dash-evo-tool")], env=env(), cwd=ROOT
+    )
+    (ROOT / "gui.pid").write_text(str(app.pid))
+    code = app.wait()
+    (ROOT / "gui-exit.json").write_text(
+        json.dumps({"code": code, "controlled": (ROOT / "gui-stopping").exists()})
+    )
+
+
+def resume():
+    from wallet import det
+
+    if read(ROOT / "receipt.json", {}).get("smoke") is False:
+        raise RuntimeError("An earlier GUI crash invalidated this run")
+    if det("network-info").get("active") != "testnet":
+        raise RuntimeError("Refusing to launch a non-testnet profile")
+    for name in ("gui.pid", "gui-exit.json", "gui-stopping"):
+        (ROOT / name).unlink(missing_ok=True)
+    receipt(smoke=None, gui_stopped=False)
+    app = launch(
+        [sys.executable, str(Path(__file__).resolve()), "monitor", str(ROOT)],
+        "launch.log",
+    )
+    for _ in range(100):
+        if (ROOT / "gui.pid").exists():
+            break
+        if app.poll() is not None:
+            raise RuntimeError("GUI monitor did not start")
+        time.sleep(0.1)
+    pid = int((ROOT / "gui.pid").read_text())
     window = ""
     for _ in range(120):
         found = subprocess.run(
-            ["xdotool", "search", "--onlyvisible", "--pid", str(app.pid)],
+            ["xdotool", "search", "--onlyvisible", "--pid", str(pid)],
             env=env(),
             capture_output=True,
             text=True,
@@ -146,10 +186,10 @@ def smoke():
             window = found.stdout.splitlines()[0]
             break
         if app.poll() is not None:
-            raise RuntimeError("GUI exited before mapping its window")
+            app_failure("GUI exited before mapping its window")
         time.sleep(1)
     if not window:
-        raise RuntimeError("No GUI window within 120 seconds")
+        app_failure("No GUI window within 120 seconds")
     (ROOT / "window").write_text(window)
     subprocess.run(
         [
@@ -181,17 +221,25 @@ def smoke():
             break
         time.sleep(1)
     else:
-        raise RuntimeError("Blank client area")
+        app_failure("Blank client area")
     time.sleep(5)
     if app.poll() is not None or panicked():
-        raise RuntimeError("GUI crashed during smoke")
+        app_failure("GUI crashed during smoke")
     receipt(smoke=True)
+
+
+def app_failure(message):
+    receipt(smoke=False)
+    raise RuntimeError(message)
 
 
 def panicked():
     paths = list((ROOT / "data").glob("*.log")) + [ROOT / "launch.log"]
     return any(
-        re.search(r"panicked at|location=.*\.rs:[0-9]+", p.read_text(errors="replace"))
+        re.search(
+            r"panicked at|location=.*\.rs:[0-9]+|FATAL:\s*SIG[A-Z]+",
+            p.read_text(errors="replace"),
+        )
         for p in paths
         if p.exists()
     )
@@ -268,12 +316,12 @@ def agent():
     ]
     with (ROOT / "agent.log").open("w") as log:
         result = subprocess.run(
-            ["timeout", "--signal=TERM", "--kill-after=30s", "140m", *args],
+            ["timeout", "--signal=TERM", "--kill-after=30s", "130m", *args],
             env=agent_env,
             cwd=work,
             stdout=log,
             stderr=subprocess.STDOUT,
-            timeout=8440,
+            timeout=7840,
         )
     response = read(ROOT / "agent.log", {})
     receipt(
@@ -286,21 +334,41 @@ def agent():
 
 
 def stop():
-    path = ROOT / "launch.log.pid"
-    if path.exists():
-        pid = int(path.read_text())
+    path = ROOT / "gui.pid"
+    if not path.exists():
+        if read(ROOT / "receipt.json", {}).get("smoke") is True:
+            receipt(smoke=False)
+        return False
+    pid = int(path.read_text())
+    ended = read(ROOT / "gui-exit.json")
+    if ended is None and not Path(f"/proc/{pid}").exists():
+        receipt(smoke=False, gui_stopped=False)
+        return False
+    if not (ROOT / "gui-stopping").exists():
+        if ended is not None:
+            receipt(smoke=False)
+        (ROOT / "gui-stopping").touch()
         try:
-            os.killpg(pid, signal.SIGTERM)
-            for _ in range(30):
-                if not Path(f"/proc/{pid}").exists():
-                    break
-                time.sleep(1)
-            else:
-                os.killpg(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            pass
-    if panicked():
+            receipt(smoke=False)
+    for _ in range(300):
+        ended = read(ROOT / "gui-exit.json")
+        if ended is not None:
+            break
+        time.sleep(0.1)
+    if ended is None:
+        receipt(gui_stopped=False)
+        if Path(f"/proc/{pid}").exists():
+            os.kill(pid, signal.SIGKILL)
+        return False
+    if (
+        not ended.get("controlled")
+        or ended.get("code") not in (0, -signal.SIGTERM)
+        or panicked()
+    ):
         receipt(smoke=False)
+    receipt(gui_stopped=True)
 
 
 def evidence_complete():
@@ -323,7 +391,7 @@ def evidence_complete():
             return False
         names = {item["name"] for item in meta["images"]}
         if not names.issubset(spec) or any(
-            not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,80}", name) for name in names
+            not re.fullmatch(CAPTURE_NAME, name) for name in names
         ):
             return False
         for name in names:
@@ -356,6 +424,27 @@ def evidence_complete():
 
 
 def finish():
+    export, stage = ROOT / "export", ROOT / "export.tmp"
+    for directory in (export, stage):
+        if directory.exists():
+            shutil.rmtree(directory)
+    try:
+        _finish()
+        return True
+    except Exception:
+        for directory in (export, stage):
+            if directory.exists():
+                shutil.rmtree(directory)
+        export.mkdir()
+        (export / "result.json").write_text('{"verdict":"INCOMPLETE"}')
+        (export / "report.md").write_text(
+            "# INCOMPLETE\nArtifact export withheld: scan or export failed.\n"
+        )
+        (export / "export-manifest.json").write_text('{"complete":false}')
+        return False
+
+
+def _finish():
     state = read(ROOT / "receipt.json", {})
     report = read(OUT / "report.json")
     try:
@@ -368,7 +457,7 @@ def finish():
     if not isinstance(wallet, dict):
         wallet = {}
     if value in ("PASS", "NOTE"):
-        if not evidence_complete():
+        if state.get("gui_stopped") is not True or not evidence_complete():
             value = "INCOMPLETE"
         elif wallet.get("refund") not in ("sent", "not_needed", "skipped_no_address"):
             value = "INCOMPLETE"
@@ -378,16 +467,8 @@ def finish():
         from wallet import REFUND_WARNING
 
         wallet["warning"] = REFUND_WARNING
-    # Embed gallery images deterministically, without granting arbitrary Python to Claude.
     if (OUT / "index.html").is_file():
-        page = (OUT / "index.html").read_text()
-        for path in (OUT / "annotated").rglob("*.png"):
-            page = page.replace(
-                f'"{path.relative_to(OUT)}"',
-                '"data:image/png;base64,'
-                + base64.b64encode(path.read_bytes()).decode()
-                + '"',
-            )
+        page = embed_images((OUT / "index.html").read_text(), OUT)
         (OUT / "visual-changelog.html").write_text(page)
     (OUT / "result.json").write_text(
         json.dumps({"verdict": value, "receipt": state, "wallet": wallet})
@@ -396,7 +477,7 @@ def finish():
         report = {
             "scenarios": [],
             "findings": [],
-            "not_reached": ["Review did not complete."],
+            "not_reached": [],
         }
     report["summary"] = {
         "verdict": "FAIL" if value == "INCOMPLETE" else value,
@@ -409,9 +490,7 @@ def finish():
             f"# Release GUI QA: {value}\nThe run did not complete. See result.json.\n"
         )
     with (OUT / "report.md").open("a") as output:
-        output.write(
-            f"\nController verdict: **{value}**. Only PASS permits scheduled publishing.\n"
-        )
+        output.write(f"\nController verdict: **{value}**.\n")
         if wallet.get("warning"):
             from wallet import REFUND_WARNING
 
@@ -419,10 +498,12 @@ def finish():
     for path in list(ROOT.glob("*.log")) + list((ROOT / "data").glob("*.log")):
         if path.name != "agent.log":
             (OUT / ("app-" + path.name)).write_bytes(path.read_bytes())
-    # Deliberate allowlist: never upload profiles, env files, vaults or transcripts.
-    export = ROOT / "export"
-    export.mkdir(exist_ok=True)
-    suspected = False
+    export_report(value)
+
+
+def export_report(value):
+    export, stage = ROOT / "export", ROOT / "export.tmp"
+    candidates = []
     for path in OUT.rglob("*"):
         if (
             path.is_symlink()
@@ -434,28 +515,56 @@ def finish():
             not path.resolve().is_relative_to(OUT.resolve())
             or path.stat().st_size > 30_000_000
         ):
-            continue
+            raise ValueError("Export file is unsafe or oversized")
+        data = path.read_bytes()
         if path.suffix != ".png":
-            text = path.read_text(errors="replace")
-            suspected = suspected or has_secret(text)
-        target = export / path.relative_to(OUT)
+            text = data.decode("utf-8")
+            if has_secret(text):
+                raise ValueError("Suspected credential text")
+            if path.suffix == ".html":
+                data = sanitize_html(text, trusted_css=CSS).encode()
+        candidates.append((path.relative_to(OUT), data))
+    names = {str(name) for name, _ in candidates}
+    required = {"result.json", "report.json", "report.md"}
+    if value in ("PASS", "NOTE"):
+        required |= {
+            "verified-changelog.md",
+            "scenarios.md",
+            "story-checklist.md",
+            "meta.json",
+            "spec.json",
+            "index.html",
+            "visual-changelog.html",
+        }
+        for item in read(OUT / "meta.json")["images"]:
+            required |= {
+                f"{directory}/{item['name']}.png"
+                for directory in ("new", "annotated", "annotated/clean")
+            }
+    if not required <= names:
+        raise ValueError("Missing required export")
+    stage.mkdir()
+    manifest = {}
+    for name, data in candidates:
+        target = stage / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        if path.suffix == ".html":
-            target.write_text(sanitize_html(path.read_text()))
-        else:
-            target.write_bytes(path.read_bytes())
-    if suspected:
-        import shutil
-
-        shutil.rmtree(export)
-        export.mkdir()
-        (export / "result.json").write_text('{"verdict":"INCOMPLETE"}')
-        (export / "report.md").write_text(
-            "# INCOMPLETE\nArtifact export withheld: suspected credential text.\n"
-        )
+        target.write_bytes(data)
+        manifest[str(name)] = hashlib.sha256(data).hexdigest()
+    (stage / "export-manifest.json").write_text(
+        json.dumps({"complete": True, "files": manifest})
+    )
+    stage.rename(export)
 
 
 if __name__ == "__main__":
-    {"init": init, "smoke": smoke, "agent": agent, "stop": stop, "finish": finish}[
-        sys.argv[1]
-    ]()
+    result = {
+        "init": init,
+        "smoke": smoke,
+        "resume": resume,
+        "monitor": monitor,
+        "agent": agent,
+        "stop": stop,
+        "finish": finish,
+    }[sys.argv[1]]()
+    if result is False:
+        sys.exit(1)

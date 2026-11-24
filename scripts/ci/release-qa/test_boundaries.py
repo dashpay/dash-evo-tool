@@ -337,7 +337,15 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertIn("always()", post["if"])
         self.assertNotIn("success", post["if"].split("&&")[0])
-        self.assertLessEqual(sum(int(j["timeout-minutes"]) for j in jobs.values()), 240)
+        # The two prepare jobs are mutually exclusive.
+        for prepare in ("prepare_pr", "prepare"):
+            self.assertLessEqual(
+                sum(
+                    int(jobs[name]["timeout-minutes"])
+                    for name in (prepare, "review", "report")
+                ),
+                240,
+            )
         review = jobs["review"]
         step_minutes = sum(int(s.get("timeout-minutes", 0)) for s in steps)
         self.assertGreaterEqual(int(review["timeout-minutes"]) - step_minutes, 10)
@@ -427,8 +435,14 @@ class ReportTests(unittest.TestCase):
                 (out / "meta.json").write_text(
                     json.dumps(
                         {
-                            "images": [{"name": "screen"}],
-                            "coverage": [{"commit": "abcdef0", "images": ["screen"]}],
+                            "images": [{"name": "screen", "title": "Screen"}],
+                            "coverage": [
+                                {
+                                    "commit": "abcdef0",
+                                    "subject": "Change",
+                                    "images": ["screen"],
+                                }
+                            ],
                         }
                     )
                 )
@@ -468,7 +482,7 @@ class ReportTests(unittest.TestCase):
                 # A real multi-MB PNG exercises the embedded-gallery export path.
                 Image.frombytes(
                     "RGB", (1600, 1200), random.Random(1).randbytes(1600 * 1200 * 3)
-                ).save(out / "annotated/screen.png")
+                ).save(out / "new/screen.png")
                 (out / "report.json").write_text(json.dumps(report))
                 run.finish()
                 self.assertEqual(
@@ -510,13 +524,14 @@ class ReportTests(unittest.TestCase):
                 self.assertFalse((root / "export.tmp").exists())
                 with patch.object(run, "embed_images", return_value="x" * 30_000_001):
                     (out / "report.json").write_text(json.dumps(report))
-                    self.assertFalse(run.finish())
+                    self.assertTrue(run.finish())
                 self.assertEqual(
                     json.loads((root / "export/result.json").read_text())["verdict"],
                     "INCOMPLETE",
                 )
                 self.assertFalse((root / "export/visual-changelog.html").exists())
-                (out / "visual-changelog.html").unlink()
+                self.assertTrue((root / "export/annotated/screen.png").exists())
+                self.assertTrue((root / "export/report.md").exists())
                 (root / "context/commits.txt").write_text(
                     "abcdef0123456 visible\n123456789abc internal"
                 )
@@ -525,6 +540,7 @@ class ReportTests(unittest.TestCase):
                 meta["coverage"].append(
                     {
                         "commit": "1234567",
+                        "subject": "Internal",
                         "images": [],
                         "note": "no user-visible change",
                     }

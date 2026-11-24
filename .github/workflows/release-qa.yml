@@ -1,7 +1,9 @@
 name: Release GUI QA
-# TODO: validate a hosted dispatch including typed-input assertion, turn usage, OAuth, sync and refund.
+# TODO: validate hosted label and dispatch runs, typed-input assertion, turn usage, OAuth, sync and refund.
 
 on:
+  pull_request:
+    types: [labeled]
   workflow_call:
     inputs:
       tag:
@@ -41,7 +43,7 @@ on:
 
 permissions: {}
 concurrency:
-  group: release-qa-${{ inputs.tag }}
+  group: release-qa-${{ github.event_name == 'pull_request' && (github.event.label.name == 'release-qa' && format('pr-{0}', github.event.pull_request.number) || format('ignored-{0}', github.run_id)) || inputs.tag }}
   cancel-in-progress: false
 
 env:
@@ -49,8 +51,44 @@ env:
   QA_SOURCE: ${{ github.workspace }}
 
 jobs:
+  prepare_pr:
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+      github.event.label.name == 'release-qa' &&
+      github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name &&
+      github.event.sender.type == 'User' && github.event.sender.login != '' &&
+      (contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(',{0},', github.event.sender.login)) ||
+       contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(',{0} ', github.event.sender.login)) ||
+       contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(' {0},', github.event.sender.login)) ||
+       contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(' {0} ', github.event.sender.login)))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify zip and prepare changelog evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ""
+          QA_DOWNLOAD: ${{ runner.temp }}/qa-download
+          BASELINE: ""
+        run: python3 scripts/ci/release-qa/prepare.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-qa-input
+          overwrite: true
+          path: ${{ env.QA_ROOT }}
+          retention-days: 7
+
   prepare:
-    if: github.ref == 'refs/heads/v1.0-dev'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/v1.0-dev'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -62,6 +100,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Download same-run or selected-run release zip
         if: inputs.binary_artifact != '' || inputs.run_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -69,11 +108,12 @@ jobs:
           name: ${{ inputs.binary_artifact || 'dash-evo-tool-linux-x86_64.zip' }}
           run-id: ${{ inputs.run_id || github.run_id }}
           github-token: ${{ github.token }}
-          path: ${{ env.QA_ROOT }}
+          path: ${{ runner.temp }}/qa-download
       - name: Verify zip and prepare changelog evidence
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_TAG: ${{ inputs.tag }}
+          QA_DOWNLOAD: ${{ runner.temp }}/qa-download
           BASELINE: ${{ inputs.baseline }}
         run: python3 scripts/ci/release-qa/prepare.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -84,7 +124,9 @@ jobs:
           retention-days: 7
 
   review:
-    needs: prepare
+    needs: [prepare_pr, prepare]
+    if: >-
+      !cancelled() && (needs.prepare_pr.result == 'success' || needs.prepare.result == 'success')
     runs-on: ubuntu-26.04
     timeout-minutes: 220
     permissions:
@@ -95,6 +137,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-qa-input
@@ -109,7 +152,7 @@ jobs:
       - name: Deterministic GUI smoke
         id: smoke
         if: steps.init.outcome == 'success'
-        timeout-minutes: 5
+        timeout-minutes: 6
         continue-on-error: true
         run: python3 /opt/release-qa/run.py smoke
       - name: Pause GUI for standalone wallet preparation
@@ -160,7 +203,7 @@ jobs:
         continue-on-error: true
         run: python3 /opt/release-qa/run.py finish
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
+        if: always() && (needs.prepare_pr.result != 'skipped' || needs.prepare.result != 'skipped')
         continue-on-error: true
         with:
           name: release-qa-report
@@ -170,8 +213,8 @@ jobs:
           retention-days: 90
 
   report:
-    needs: [prepare, review]
-    if: always()
+    needs: [prepare_pr, prepare, review]
+    if: always() && (needs.prepare_pr.result != 'skipped' || needs.prepare.result != 'skipped')
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:

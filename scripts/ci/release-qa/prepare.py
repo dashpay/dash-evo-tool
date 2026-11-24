@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -42,15 +43,31 @@ def select_baseline(candidates, explicit, new_sha):
     raise ValueError("No older published pre-release ancestor of NEW")
 
 
+def select_new_release(releases, explicit):
+    if explicit:
+        return next(r for r in releases if r["tag_name"] == tag(explicit))
+    candidates = [
+        r
+        for r in releases
+        if r["prerelease"]
+        and not r["draft"]
+        and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-weekly\.[0-9]{8}", r["tag_name"])
+    ]
+    if not candidates:
+        raise ValueError("No published weekly pre-release available")
+    return max(candidates, key=lambda r: r["published_at"])
+
+
 def main():
     root = Path(os.environ["QA_ROOT"])
-    root.mkdir(parents=True, exist_ok=True)
-    repo, new = os.environ["GITHUB_REPOSITORY"], tag(os.environ["NEW_TAG"])
+    root.mkdir(parents=True, exist_ok=False)
+    repo = os.environ["GITHUB_REPOSITORY"]
     releases = json.loads(
         run("gh", "api", f"repos/{repo}/releases", "--paginate", "--slurp")
     )
     releases = [r for page in releases for r in page]
-    new_release = next(r for r in releases if r["tag_name"] == new)
+    new_release = select_new_release(releases, os.environ.get("NEW_TAG", ""))
+    new = tag(new_release["tag_name"])
     if not new_release["prerelease"]:
         raise ValueError("Release QA requires a pre-release")
     baseline = os.environ.get("BASELINE", "")
@@ -66,7 +83,9 @@ def main():
     run("git", "fetch", "origin", f"+refs/tags/{new}:refs/tags/{new}")
     new_sha = run("git", "rev-parse", f"{new}^{{commit}}")
     baseline, old_sha = select_baseline(candidates, baseline, new_sha)
-    binary = root / "dash-evo-tool-linux-x86_64.zip"
+    staging = Path(os.environ["QA_DOWNLOAD"])
+    staging.mkdir(parents=True, exist_ok=True)
+    binary = staging / "dash-evo-tool-linux-x86_64.zip"
     if not binary.exists():
         run(
             "gh",
@@ -78,7 +97,7 @@ def main():
             "-p",
             binary.name,
             "-D",
-            str(root),
+            str(staging),
         )
     run(
         "gh",
@@ -92,6 +111,7 @@ def main():
         "--source-digest",
         new_sha,
     )
+    shutil.copyfile(binary, root / binary.name)
     context = root / "context"
     context.mkdir(exist_ok=True)
     commits = run(

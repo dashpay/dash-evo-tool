@@ -55,7 +55,9 @@ outcome() {
 outcome 'red CI' 'decline to bless a broken week' CI_RED=true SHOULD_RELEASE=false
 outcome 'published' 'have published another weekly' FINALIZE_RESULT=success PUBLISHED=true \
     CLEANUP_RESULT=skipped
-outcome 'draft sealed' 'have sealed another weekly draft' FINALIZE_RESULT=success \
+outcome 'missing QA outputs still show INCOMPLETE' 'GUI QA: INCOMPLETE.' FINALIZE_RESULT=success CLEANUP_RESULT=skipped
+outcome 'missing QA report links workflow run' '<https://github.com/owner/repo/actions/runs/7|the workflow run>' FINALIZE_RESULT=success CLEANUP_RESULT=skipped
+outcome 'draft sealed'  'have sealed another weekly draft' FINALIZE_RESULT=success \
     CLEANUP_RESULT=skipped
 outcome 'build failed, cleaned up' 'the platform build faltered — I have swept the newly created tag and its broken draft away' \
     RELEASE_RESULT=failure FIXTURE_RESULT=skipped
@@ -80,8 +82,8 @@ outcome 'QA suffix for failed QA' 'GUI QA: FAIL.' \
     FINALIZE_RESULT=success CLEANUP_RESULT=skipped QA_VERDICT=FAIL
 outcome 'deleted draft has no QA suffix' 'I have swept' \
     RELEASE_RESULT=failure FIXTURE_RESULT=skipped QA_VERDICT=INCOMPLETE FORBIDDEN_PHRASE='GUI QA:'
-outcome 'skipped QA has no suffix' 'finalization did not complete' \
-    FINALIZE_RESULT=failure CLEANUP_RESULT=skipped FORBIDDEN_PHRASE='GUI QA:'
+outcome 'missing QA after failed finalization' 'GUI QA: INCOMPLETE.' \
+    FINALIZE_RESULT=failure CLEANUP_RESULT=skipped
 outcome 'nothing to release'  '' SHOULD_RELEASE=false
 outcome 'PASS but publish failed' 'QA passed, but publishing failed' \
     FINALIZE_RESULT=success CLEANUP_RESULT=skipped QA_VERDICT=PASS
@@ -119,6 +121,25 @@ else
     failures=$((failures + 1))
     echo "FAIL: the qa job does not grant:${missing:- (no permissions found)}" >&2
 fi
+
+# Execute the first finalize step with a read-only API stub; no release edits.
+sed -n '/^      - name: Verify reviewed tag has not moved$/,/^      - name: Record QA outcome/p' \
+    "$workflows/weekly-build.yml" | sed -n '/^          set -euo pipefail$/,/^          fi$/p' > "$scratch/tag-check.sh"
+test -s "$scratch/tag-check.sh"
+for actual in reviewed replaced; do
+    if ACTUAL_SHA="$actual" EXPECTED_SHA=reviewed GITHUB_REPOSITORY=owner/repo TAG=v1.0.0 \
+        bash -euc 'gh() { [[ "$*" == "api repos/owner/repo/commits/v1.0.0 --jq .sha" ]]; echo "$ACTUAL_SHA"; }; source "$1"' _ "$scratch/tag-check.sh" > "$scratch/log" 2>&1; then
+        result=accepted
+    else
+        result=refused
+    fi
+    if [[ "$actual:$result" == reviewed:accepted || "$actual:$result" == replaced:refused ]]; then
+        echo "PASS: finalize tag binding ($actual)"
+    else
+        failures=$((failures + 1))
+        echo "FAIL: finalize tag binding ($actual): $result" >&2
+    fi
+done
 
 if [[ "$failures" -ne 0 ]]; then
     echo "$failures weekly job check(s) failed." >&2

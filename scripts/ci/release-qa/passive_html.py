@@ -8,9 +8,7 @@ from logic import CAPTURE_NAME
 
 
 class PassiveHTML(HTMLParser):
-    tags = set(
-        "html head body title h1 h2 h3 p pre code table tr th td ul li b strong em img a br".split()
-    )
+    tags = set("h1 h2 h3 p pre code table tr th td ul li b strong em img a br".split())
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -60,7 +58,10 @@ def sanitize_html(text, *, trusted_css=""):
     parser.feed(text)
     parser.close()
     return (
-        '<meta charset="utf-8">'
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
         + (f"<style>{trusted_css}</style>" if trusted_css else "")
+        + "</head><body>"
         + "".join(parser.output)
+        + "</body></html>"
     )

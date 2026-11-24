@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from atomic import atomic_write
 from logic import (
     b58check_decode,
     isolated_env,
@@ -79,17 +80,19 @@ REFUND_WARNING = "Refund skipped: no valid faucet depositAddress or QA_FAUCET_RE
 
 
 def refund_address(config):
-    candidate = os.environ.get("QA_FAUCET_REFUND_ADDRESS", "").strip() or config.get(
-        "depositAddress"
-    )
-    try:
-        return address(candidate)
-    except (ValueError, OverflowError, TypeError):
-        return None
+    for candidate in (
+        os.environ.get("QA_FAUCET_REFUND_ADDRESS", "").strip(),
+        config.get("depositAddress"),
+    ):
+        try:
+            return address(candidate)
+        except (ValueError, OverflowError, TypeError):
+            pass
+    return None
 
 
 def save(state):
-    STATE.write_text(json.dumps(state))
+    atomic_write(STATE, json.dumps(state))
 
 
 def token(endpoint):
@@ -183,28 +186,48 @@ def refund():
     # inputs or a changed fee implementation require manual recovery, not guesses.
     if det("network-info").get("active") != "testnet":
         raise ValueError("Profile changed network")
-    balance = det(
-        "core-balances-get", "network=testnet", "wallet_id=" + state["wallet_id"]
-    )
-    status, utxos = request(
-        "https://insight.testnet.networks.dash.org/insight-api/addr/"
-        + address(state["address"])
-        + "/utxo"
-    )
-    if status != 200 or not isinstance(utxos, list) or len(utxos) != 1:
-        raise ValueError("Refund needs exactly one unspent faucet output")
-    coin = utxos[0]
-    if (
-        coin["satoshis"] != balance["confirmed_duffs"]
-        or balance["unconfirmed_duffs"]
-        or type(coin.get("confirmations")) is not int
-        or coin["confirmations"] < 1
-        or coin.get("address") != state["address"]
-    ):
-        raise ValueError("Refund balance is not confirmed or disagrees with explorer")
-    if state.get("txid") and coin["txid"] != state["txid"]:
-        raise ValueError("Refund input is not the faucet payout")
-    amount = refund_amount(balance["confirmed_duffs"], state["payout_duffs"])
+    for attempt in range(3):
+        try:
+            balance = det(
+                "core-balances-get",
+                "network=testnet",
+                "wallet_id=" + state["wallet_id"],
+            )
+            status, utxos = request(
+                "https://insight.testnet.networks.dash.org/insight-api/addr/"
+                + address(state["address"])
+                + "/utxo"
+            )
+            if status != 200 or not isinstance(utxos, list) or len(utxos) != 1:
+                raise ValueError("Refund needs exactly one unspent faucet output")
+            coin = utxos[0]
+            if (
+                coin["satoshis"] != balance["confirmed_duffs"]
+                or balance["unconfirmed_duffs"]
+                or type(coin.get("confirmations")) is not int
+                or coin["confirmations"] < 1
+                or coin.get("address") != state["address"]
+            ):
+                raise ValueError(
+                    "Refund balance is not confirmed or disagrees with explorer"
+                )
+            if state.get("txid") and coin["txid"] != state["txid"]:
+                raise ValueError("Refund input is not the faucet payout")
+            amount = refund_amount(balance["confirmed_duffs"], state["payout_duffs"])
+            break
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            RuntimeError,
+            subprocess.SubprocessError,
+        ):
+            if attempt == 2:
+                state["refund"] = "unknown"
+                save(state)
+                raise
+            time.sleep(30)
     state["refund"] = "unknown"
     save(state)
     result = det(

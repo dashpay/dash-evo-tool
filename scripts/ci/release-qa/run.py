@@ -15,6 +15,7 @@ from pathlib import Path
 from PIL import Image, ImageStat
 from logic import CAPTURE_NAME, isolated_env, verdict, has_secret
 from passive_html import sanitize_html
+from atomic import atomic_write
 
 VISUAL = Path(__file__).resolve().parent / "visual"
 if not VISUAL.exists():
@@ -28,6 +29,7 @@ ROOT = Path(
     else os.environ["QA_ROOT"]
 )
 OUT = ROOT / "report"
+MAX_EXPORT_BYTES = 30_000_000
 
 
 def read(path, default=None):
@@ -40,12 +42,16 @@ def read(path, default=None):
 def receipt(**values):
     state = read(ROOT / "receipt.json", {})
     state.update(values)
-    (ROOT / "receipt.json").write_text(json.dumps(state))
+    atomic_write(ROOT / "receipt.json", json.dumps(state))
 
 
 def env():
     result = isolated_env(ROOT, display=True)
-    result.update(read(ROOT / "display.json", {}))
+    display = read(ROOT / "display.json", {})
+    if isinstance(display, dict) and isinstance(
+        display.get("DBUS_SESSION_BUS_ADDRESS"), str
+    ):
+        result["DBUS_SESSION_BUS_ADDRESS"] = display["DBUS_SESSION_BUS_ADDRESS"]
     return result
 
 
@@ -64,6 +70,18 @@ def launch(args, log):
 
 
 def init():
+    allowed = {"dash-evo-tool-linux-x86_64.zip", "context"}
+    if any(p.is_symlink() or p.name not in allowed for p in ROOT.iterdir()):
+        raise ValueError("Unexpected QA input; a fresh runtime is required")
+    context = ROOT / "context"
+    if any(
+        p.is_symlink()
+        or not p.is_file()
+        or p.name
+        not in {"inputs.json", "commits.txt", "changes.diff", "pull-requests.json"}
+        for p in context.iterdir()
+    ):
+        raise ValueError("Unexpected QA input in context")
     for directory in (ROOT, OUT, OUT / "new", ROOT / "data", ROOT / "home"):
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         directory.chmod(0o700)
@@ -140,16 +158,19 @@ def smoke():
             timeout=30,
         )
     resume()
+    if stop() is False:
+        raise RuntimeError("GUI did not close cleanly during smoke")
 
 
 def monitor():
     app = subprocess.Popen(
         [str(ROOT / "app/dash-evo-tool/dash-evo-tool")], env=env(), cwd=ROOT
     )
-    (ROOT / "gui.pid").write_text(str(app.pid))
+    atomic_write(ROOT / "gui.pid", str(app.pid))
     code = app.wait()
-    (ROOT / "gui-exit.json").write_text(
-        json.dumps({"code": code, "controlled": (ROOT / "gui-stopping").exists()})
+    atomic_write(
+        ROOT / "gui-exit.json",
+        json.dumps({"code": code, "controlled": (ROOT / "gui-stopping").exists()}),
     )
 
 
@@ -173,6 +194,8 @@ def resume():
         if app.poll() is not None:
             raise RuntimeError("GUI monitor did not start")
         time.sleep(0.1)
+    else:
+        raise RuntimeError("GUI monitor did not publish its PID within 10 seconds")
     pid = int((ROOT / "gui.pid").read_text())
     window = ""
     for _ in range(120):
@@ -342,33 +365,63 @@ def stop():
     pid = int(path.read_text())
     ended = read(ROOT / "gui-exit.json")
     if ended is None and not Path(f"/proc/{pid}").exists():
-        receipt(smoke=False, gui_stopped=False)
+        if not read(ROOT / "receipt.json", {}).get("gui_close_timed_out"):
+            receipt(smoke=False)
+        receipt(gui_stopped=False)
         return False
-    if not (ROOT / "gui-stopping").exists():
-        if ended is not None:
-            receipt(smoke=False)
+    if ended is None and not (ROOT / "gui-stopping").exists():
         (ROOT / "gui-stopping").touch()
+        # Openbox translates Alt+F4 to WM_DELETE_WINDOW; windowclose destroys it.
         try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            receipt(smoke=False)
-    for _ in range(300):
+            subprocess.run(
+                [
+                    "xdotool",
+                    "windowactivate",
+                    "--sync",
+                    (ROOT / "window").read_text().strip(),
+                    "key",
+                    "--clearmodifiers",
+                    "alt+F4",
+                ],
+                env=env(),
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    # DET allows 55 seconds for teardown; leave time for the monitor receipt.
+    deadline = time.monotonic() + 70
+    while time.monotonic() < deadline:
         ended = read(ROOT / "gui-exit.json")
         if ended is not None:
             break
         time.sleep(0.1)
+    fallback = ended is None
+    if fallback:
+        state = read(ROOT / "receipt.json", {})
+        receipt(
+            smoke=False if state.get("smoke") is False or panicked() else None,
+            gui_close_timed_out=True,
+        )
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for _ in range(50):
+            ended = read(ROOT / "gui-exit.json")
+            if ended is not None:
+                break
+            time.sleep(0.1)
+    receipt(gui_stopped=ended is not None)
     if ended is None:
-        receipt(gui_stopped=False)
         if Path(f"/proc/{pid}").exists():
             os.kill(pid, signal.SIGKILL)
         return False
-    if (
-        not ended.get("controlled")
-        or ended.get("code") not in (0, -signal.SIGTERM)
-        or panicked()
-    ):
+    if read(ROOT / "receipt.json", {}).get("gui_close_timed_out"):
+        return False
+    if not ended.get("controlled") or ended.get("code") != 0 or panicked():
         receipt(smoke=False)
-    receipt(gui_stopped=True)
+        return False
 
 
 def evidence_complete():
@@ -386,7 +439,7 @@ def evidence_complete():
         if (
             not isinstance(meta, dict)
             or not isinstance(spec, dict)
-            or not meta.get("images")
+            or not isinstance(meta.get("images"), list)
         ):
             return False
         names = {item["name"] for item in meta["images"]}
@@ -444,7 +497,54 @@ def finish():
         return False
 
 
+def render_gallery():
+    annotated = OUT / "annotated"
+    if annotated.exists():
+        shutil.rmtree(annotated)
+    for name in ("index.html", "visual-changelog.html"):
+        (OUT / name).unlink(missing_ok=True)
+    spec, meta = read(OUT / "spec.json"), read(OUT / "meta.json")
+    if not isinstance(spec, dict) or not isinstance(meta, dict):
+        return False
+    if any(
+        not re.fullmatch(CAPTURE_NAME, name)
+        for name in [*spec, *(item["name"] for item in meta["images"])]
+    ):
+        return False
+    for args in (
+        [
+            "render.py",
+            str(OUT / "spec.json"),
+            "--new-dir",
+            str(OUT / "new"),
+            "--out-dir",
+            str(annotated),
+        ],
+        [
+            "gallery.py",
+            "--root",
+            str(OUT),
+            "--meta",
+            str(OUT / "meta.json"),
+            "--title",
+            "Release GUI review (NEW only)",
+        ],
+    ):
+        subprocess.run(
+            [sys.executable, str(VISUAL / args[0]), *args[1:]],
+            env=env(),
+            check=True,
+            timeout=300,
+        )
+    return True
+
+
 def _finish():
+    try:
+        rendered = render_gallery()
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        rendered = False
+        (OUT / "index.html").unlink(missing_ok=True)
     state = read(ROOT / "receipt.json", {})
     report = read(OUT / "report.json")
     try:
@@ -457,7 +557,11 @@ def _finish():
     if not isinstance(wallet, dict):
         wallet = {}
     if value in ("PASS", "NOTE"):
-        if state.get("gui_stopped") is not True or not evidence_complete():
+        if (
+            not rendered
+            or state.get("gui_stopped") is not True
+            or not evidence_complete()
+        ):
             value = "INCOMPLETE"
         elif wallet.get("refund") not in ("sent", "not_needed", "skipped_no_address"):
             value = "INCOMPLETE"
@@ -470,6 +574,27 @@ def _finish():
     if (OUT / "index.html").is_file():
         page = embed_images((OUT / "index.html").read_text(), OUT)
         (OUT / "visual-changelog.html").write_text(page)
+    for path in list(ROOT.glob("*.log")) + list((ROOT / "data").glob("*.log")):
+        if path.name != "agent.log":
+            shutil.copyfile(path, OUT / ("app-" + path.name))
+    for path in [*OUT.rglob("*.log"), OUT / "visual-changelog.html"]:
+        if not path.exists() or path.stat().st_size <= MAX_EXPORT_BYTES:
+            continue
+        value = "INCOMPLETE"
+        if path.suffix == ".html":
+            path.unlink()
+        else:
+            marker = b"\n[TRUNCATED]\n"
+            size = (MAX_EXPORT_BYTES - len(marker)) // 2
+            with path.open("rb") as log:
+                head = log.read(size)
+                log.seek(-size, os.SEEK_END)
+                tail = log.read(size)
+            path.write_text(
+                head.decode("utf-8", errors="ignore")
+                + marker.decode()
+                + tail.decode("utf-8", errors="ignore")
+            )
     (OUT / "result.json").write_text(
         json.dumps({"verdict": value, "receipt": state, "wallet": wallet})
     )
@@ -495,25 +620,39 @@ def _finish():
             from wallet import REFUND_WARNING
 
             output.write(f"\nWARNING: {REFUND_WARNING}\n")
-    for path in list(ROOT.glob("*.log")) + list((ROOT / "data").glob("*.log")):
-        if path.name != "agent.log":
-            (OUT / ("app-" + path.name)).write_bytes(path.read_bytes())
     export_report(value)
 
 
 def export_report(value):
     export, stage = ROOT / "export", ROOT / "export.tmp"
     candidates = []
+    pngs = {"new/00-smoke.png"}
+    meta = read(OUT / "meta.json", {})
+    for item in (
+        meta.get("images", [])
+        if isinstance(meta, dict) and isinstance(meta.get("images"), list)
+        else []
+    ):
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and re.fullmatch(CAPTURE_NAME, item["name"])
+        ):
+            pngs.update(
+                f"{directory}/{item['name']}.png"
+                for directory in ("new", "annotated", "annotated/clean")
+            )
     for path in OUT.rglob("*"):
         if (
             path.is_symlink()
             or not path.is_file()
             or path.suffix not in (".json", ".md", ".html", ".png", ".log")
+            or (path.suffix == ".png" and str(path.relative_to(OUT)) not in pngs)
         ):
             continue
         if (
             not path.resolve().is_relative_to(OUT.resolve())
-            or path.stat().st_size > 30_000_000
+            or path.stat().st_size > MAX_EXPORT_BYTES
         ):
             raise ValueError("Export file is unsafe or oversized")
         data = path.read_bytes()

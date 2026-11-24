@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -81,32 +82,67 @@ class ProcessAndExportTests(unittest.TestCase):
         self.assertEqual(logic.verdict(report, smoke=True, agent_ok=True), "FAIL")
 
     def test_controlled_stop_waits_for_monitor_receipt(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            app = root / "app/dash-evo-tool/dash-evo-tool"
-            app.parent.mkdir(parents=True)
-            app.write_text("#!/bin/sh\nexec sleep 30\n")
-            app.chmod(0o700)
-            with subprocess.Popen(
-                [sys.executable, run.__file__, "monitor", temp],
-                env=logic.isolated_env(root),
-            ) as monitor:
-                try:
-                    for _ in range(100):
-                        if (root / "gui.pid").exists():
-                            break
-                        time.sleep(0.01)
-                    self.assertTrue((root / "gui.pid").exists())
-                    with patch.object(run, "ROOT", root):
-                        run.receipt(smoke=True)
-                        run.stop()
-                        state = run.read(root / "receipt.json")
-                        self.assertIs(state["gui_stopped"], True)
-                        self.assertIs(state["smoke"], True)
-                    self.assertEqual(monitor.wait(timeout=5), 0)
-                finally:
-                    if monitor.poll() is None:
-                        monitor.kill()
+        for code in (0, 1):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                app = root / "app/dash-evo-tool/dash-evo-tool"
+                app.parent.mkdir(parents=True)
+                app.write_text(
+                    "#!/usr/bin/python3\nimport signal, sys\nfrom pathlib import Path\n"
+                    f"signal.signal(signal.SIGUSR1, lambda *_: sys.exit({code}))\n"
+                    "Path('ready').touch()\nsignal.pause()\n"
+                )
+                app.chmod(0o700)
+                with subprocess.Popen(
+                    [sys.executable, run.__file__, "monitor", temp],
+                    env=logic.isolated_env(root),
+                ) as monitor:
+                    try:
+                        for _ in range(200):
+                            if (root / "ready").exists():
+                                break
+                            time.sleep(0.01)
+                        self.assertTrue((root / "ready").exists())
+                        (root / "window").write_text("42")
+
+                        def close(args, **kwargs):
+                            self.assertEqual(
+                                args,
+                                [
+                                    "xdotool",
+                                    "windowactivate",
+                                    "--sync",
+                                    "42",
+                                    "key",
+                                    "--clearmodifiers",
+                                    "alt+F4",
+                                ],
+                            )
+                            os.kill(int((root / "gui.pid").read_text()), signal.SIGUSR1)
+
+                        with (
+                            patch.object(run, "ROOT", root),
+                            patch.object(run.subprocess, "run", side_effect=close),
+                        ):
+                            run.receipt(smoke=True)
+                            self.assertEqual(run.stop() is False, code != 0)
+                            state = run.read(root / "receipt.json")
+                            self.assertIs(state["gui_stopped"], True)
+                            self.assertEqual(state["smoke"], code == 0)
+                            self.assertEqual(
+                                logic.verdict(
+                                    REPORT, smoke=state["smoke"], agent_ok=True
+                                ),
+                                "FAIL" if code else "PASS",
+                            )
+                            if code == 0:
+                                self.assertIsNot(
+                                    run.stop(), False
+                                )  # pause after smoke is idempotent
+                        self.assertEqual(monitor.wait(timeout=5), 0)
+                    finally:
+                        if monitor.poll() is None:
+                            monitor.kill()
 
     def test_baseline_skips_newer_non_ancestor(self):
         candidates = [
@@ -140,7 +176,7 @@ class ProcessAndExportTests(unittest.TestCase):
                 run.receipt(smoke=True)
                 run.monitor()
                 self.assertEqual(run.read(root / "gui-exit.json")["code"], -11)
-                run.stop()
+                self.assertIs(run.stop(), False)
                 self.assertIs(run.read(root / "receipt.json")["smoke"], False)
 
     def test_wallet_sync_failure_preserves_safe_unfunded_state(self):
@@ -276,18 +312,15 @@ class ProcessAndExportTests(unittest.TestCase):
                 patch.object(run, "OUT", out),
                 patch.object(
                     run, "has_secret", side_effect=[False, RuntimeError("scan")]
-                ),
+                ) as scanner,
             ):
-                try:
-                    run.finish()
-                except RuntimeError:
-                    pass
+                self.assertIs(run.finish(), False)
+                self.assertEqual(scanner.call_count, 2)
             self.assertFalse((root / "export/first.md").exists())
             self.assertFalse((root / "export/second.md").exists())
-            if (root / "export/result.json").exists():
-                self.assertEqual(
-                    run.read(root / "export/result.json")["verdict"], "INCOMPLETE"
-                )
+            self.assertEqual(
+                run.read(root / "export/result.json")["verdict"], "INCOMPLETE"
+            )
 
     def test_shared_env_disables_external_browser(self):
         self.assertEqual(run.env()["BROWSER"], "/bin/true")

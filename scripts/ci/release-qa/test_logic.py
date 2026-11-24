@@ -78,6 +78,7 @@ class LogicTests(unittest.TestCase):
     def test_cap_vectors(self):
         self.assertEqual(cap_prng("hello", 16), "eb492c6e1655ea8c")
         solutions = cap_solve("test-token", {"c": 2, "s": 8, "d": 1})
+        self.assertEqual(len(solutions), 2)
         for i, nonce in enumerate(solutions, 1):
             salt = cap_prng(f"test-token{i}", 8)
             target = cap_prng(f"test-token{i}d", 1)

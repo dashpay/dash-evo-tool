@@ -51,7 +51,9 @@ class HardeningTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 timeout=10,
+                check=False,
             )
+            self.assertEqual(result.returncode, 1)
             self.assertIn("Unsupported GUI command", result.stderr)
             self.assertNotIn("ModuleNotFoundError", result.stderr)
 
@@ -158,6 +160,12 @@ class HardeningTests(unittest.TestCase):
             ):
                 self.assertNotIn(forbidden, text)
             self.assertIn('src="annotated/screen.png"', text)
+            self.assertTrue(text.startswith('<!doctype html><html lang="en"><head>'))
+            self.assertIn(
+                '<meta name="viewport" content="width=device-width,initial-scale=1">',
+                text,
+            )
+            self.assertEqual(text.count("<html"), 1)
 
     def test_expired_challenges_not_redeemed(self):
         with (
@@ -299,7 +307,11 @@ class HardeningTests(unittest.TestCase):
             (SOURCE / ".github/workflows/weekly-build.yml").read_text(),
             Loader=yaml.BaseLoader,
         )["jobs"]
-        script = jobs["finalize"]["steps"][0]["run"]
+        script = next(
+            s["run"]
+            for s in jobs["finalize"]["steps"]
+            if s["name"] == "Record QA outcome on retained draft"
+        )
         for event in ("schedule", "workflow_dispatch"):
             with self.subTest(event=event), tempfile.TemporaryDirectory() as temp:
                 subprocess.run(

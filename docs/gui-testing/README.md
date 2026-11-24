@@ -36,18 +36,39 @@ A selected `run_id` must come from a `release.yml` run invoked at the tag's comm
 (as weekly builds are). `--source-digest` refuses builds dispatched from another
 commit, even when `release.yml` checked out the requested tag.
 
-Before merging workflow changes, add the **`release-qa`** label to a PR from this
-repository. Remove and re-add the label to rerun. Fork PRs and other labels never
-run QA. This path checks out the PR head's controller and skills, reviews the
-newest **published weekly pre-release** as NEW, and selects the baseline
-automatically as described above. It is report-only: no sealing, finalization,
-release edits or publication; the burner may be funded and refunded normally.
-Once the workflow exists on the default branch, `workflow_dispatch` can override
-`tag`, `baseline` and `run_id`. The OAuth secret remains scoped to the agent step;
-that job has only `contents: read`.
+Before merging workflow changes, an allowlisted maintainer can add the
+**`release-qa`** label to a PR from this repository. Remove and re-add the label
+to rerun. The first job checks the label event's `github.event.sender.login`
+against the repository variable **`RELEASE_QA_LABEL_ACTORS`**, a comma- or
+space-separated list of logins (for example, `lklimek, other-maintainer`).
+An unset or empty variable defaults to `lklimek`; a nonempty list replaces that
+default. Entries must match whole logins, case-insensitively. Repository-variable
+changes require administrator access. Other senders (including
+`Claudius-Maginificent` and `github-actions[bot]` under the default list), GitHub
+Bot accounts, forks, other labels and other PR actions do not run QA.
+Unrelated label events use separate concurrency groups and cannot displace a
+queued QA run.
 
-The prepare job alone has `contents: write` to read draft assets; it never
-executes release binaries. Normal weekly runs reuse their build artifact.
+Only label a PR whose exact head has been reviewed and trusted: this path checks
+out the event's PR head SHA and executes its controller and skills with access
+to the maintainer's OAuth token during the agent step. It reviews the newest
+**published weekly pre-release** as NEW and selects the baseline automatically
+as described above. It is report-only: no sealing, finalization, release edits or
+publication; the burner may be funded and refunded normally. Every job reachable
+from the label path has read-only repository permissions. Its `prepare_pr` job
+reads only published assets. The mutually exclusive `prepare` job for weekly or
+manual runs alone has `contents: write` to read draft assets; it never executes
+release binaries. Normal weekly runs reuse their build artifact.
+Once the workflow exists on the default branch, `workflow_dispatch` can override
+`tag`, `baseline` and `run_id`.
+
+For stronger protection, an administrator may move
+`CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK` into a protected GitHub Environment, remove the
+repository/organization secret accessible to this repository, require a
+maintainer's approval, and attach that Environment to the `review` job. This is
+optional, not required by the workflow. Unlike a guard in PR-controlled workflow
+code, Environment approval protects the secret even if a PR changes that guard.
+
 The review job has `contents: read`, the `CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK`
 secret only on the Claude step, and no Slack/write secret. A separate report job
 publishes a fixed verdict and artifact link. The existing weekly Slack job
@@ -124,15 +145,21 @@ The ephemeral wallet is not uploaded and cannot be recovered after runner dispos
 
 Claude uses pinned CLI `2.1.331`, `--permission-mode default`, 600 turns and a
 130-minute process timeout inside a 132-minute agent step and a 220-minute review
-job. Setup (15 min), smoke (5), PRE (12), resume (5), funding (15), agent (132)
-and POST (25) total 209 minutes, leaving 11 minutes for checkout/download,
-initialization, pause/stop, finish and artifact upload.
+job. Setup (15 min), smoke (6), PRE (12), resume (5), funding (15), agent (132)
+and POST (25) total 210 minutes, leaving 10 minutes for checkout/download,
+initialization, pause/stop, finish and artifact upload. Graceful GUI close waits
+70 seconds, beyond DET's 55-second shutdown deadline, with up to 10 seconds to
+request close and 5 seconds to observe the SIGTERM fallback before SIGKILL.
+A close timeout is INCOMPLETE, including a later exit caused by that fallback;
+an observed crash or nonzero exit before fallback remains FAIL. The smoke step
+has six minutes to accommodate startup and this longer close wait.
 600 turns allow roughly 180 action/capture/read loops plus 60 turns for changelog
 and reporting. The 130-minute timeout is the primary bound, not an expectation
 that every turn will be used; reserve the final 20 minutes for evidence/reporting.
 Measure actual turn usage in the first hosted dispatch before tuning this cap.
-Prepare/report jobs have 15/5-minute limits: the QA
-workflow totals at most four hours of job execution (queue time excluded).
+The mutually exclusive prepare jobs each have a 15-minute limit; report has
+five minutes. Each QA path therefore totals at most four hours of job execution
+(queue time excluded).
 `--restricted` and an explicit PreToolUse hook permit public-input reads, report
 writes and the fixed `qa-ui` helper only. The hook uses `onFailure: block`;
 controller receipts, wallet status and smoke evidence are not agent-writable.

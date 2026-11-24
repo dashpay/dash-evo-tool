@@ -189,6 +189,38 @@ class DriverTests(unittest.TestCase):
 
                 self.assertTrue(Mnemonic("english").check(phrase))
                 self.assertNotIn(phrase, (Path(temp) / "wallet.json").read_text())
+                self.assertNotIn("txid", state)
+
+                def send(*args, **kwargs):
+                    saved = json.loads(wallet.STATE.read_text())
+                    self.assertEqual(saved["refund"], "unknown")
+                    self.assertEqual(saved["txid"], "a" * 64)
+                    self.assertEqual(args[0], "core-funds-send")
+                    self.assertIn("amount_duffs=99999774", args)
+                    return {"txid": "b" * 64}
+
+                with patch.object(
+                    wallet.insight,
+                    "query",
+                    return_value=[
+                        {
+                            "address": state["address"],
+                            "satoshis": state["payout_duffs"],
+                            "confirmations": 1,
+                            "vout": 0,
+                            "txid": "a" * 64,
+                        }
+                    ],
+                ):
+                    det.reset_mock(side_effect=True)
+                    det.side_effect = send
+                    wallet.refund()
+                    self.assertEqual(
+                        json.loads(wallet.STATE.read_text())["refund"], "sent"
+                    )
+                    wallet.refund()
+                    det.assert_called_once()
+                    self.assertEqual(request.call_count, 2)
 
 
 class WorkflowTests(unittest.TestCase):

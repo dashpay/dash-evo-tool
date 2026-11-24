@@ -194,7 +194,7 @@ def refund():
                 balance = observe()
                 utxos = observe(utxo=True)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-                # Retry unavailable Insight reads, never conflicting observations.
+                # Retry unavailable Insight reads within the same observation window.
                 remaining = observation_deadline - time.monotonic()
                 if remaining > 0:
                     time.sleep(min(30, remaining))
@@ -211,6 +211,8 @@ def refund():
                 or type(coin.get("satoshis")) is not int
                 or type(coin.get("confirmations")) is not int
                 or coin["confirmations"] < 0
+                or type(coin.get("vout")) is not int
+                or coin["vout"] < 0
                 or coin.get("address") != source
                 or not isinstance(coin.get("txid"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", coin["txid"])
@@ -219,14 +221,11 @@ def refund():
             if state.get("txid") and coin["txid"] != state["txid"]:
                 raise ValueError("Refund input is not the faucet payout")
             amount = refund_amount(coin["satoshis"], state["payout_duffs"])
-            confirmed = coin["confirmations"] > 0
-            if balance["balanceSat"] != (
-                coin["satoshis"] if confirmed else 0
-            ) or balance["unconfirmedBalanceSat"] != (
-                0 if confirmed else coin["satoshis"]
-            ):
+            balance_pair = (balance["balanceSat"], balance["unconfirmedBalanceSat"])
+            if balance_pair not in ((coin["satoshis"], 0), (0, coin["satoshis"])):
                 raise ValueError("Refund balance disagrees with UTXO")
-            if confirmed:
+            # Separate Insight reads can straddle a confirmation; wait for agreement.
+            if coin["confirmations"] > 0 and balance_pair == (coin["satoshis"], 0):
                 break
             remaining = observation_deadline - time.monotonic()
             if remaining > 0:

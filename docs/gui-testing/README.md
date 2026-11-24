@@ -139,8 +139,10 @@ POST runs with `if: always()` after stopping the GUI. It validates testnet addre
 then checks a single faucet UTXO against Insight's address balance. A matching
 unconfirmed payout is polled every 30 seconds for up to 12 minutes; transient
 Insight errors are retried within that same window. Each read is capped at five
-seconds and the remaining observation budget. Conflicting observations stop POST
-immediately. Only Insight supplies these observations. After confirmation,
+seconds and the remaining observation budget. Confirmation-only disagreement
+between the two reads is polled again; other conflicting observations stop POST
+immediately. Sending requires both reads to agree that the payout is confirmed.
+Only Insight supplies these observations. After confirmation,
 `det-cli` is used solely for one Testnet send of the balance minus 226 duffs back
 to the faucet. It receives the remaining 25-minute step budget minus 15 seconds
 for the final state write: about 12 minutes 45 seconds after a full observation

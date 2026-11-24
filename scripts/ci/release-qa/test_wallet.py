@@ -34,6 +34,10 @@ class WalletTests(unittest.TestCase):
             "bad_send_txid",
             "unconfirmed",
             "wrong_tx",
+            "bad_vout",
+            "bool_vout",
+            "missing_vout",
+            "excess_amount",
             "multiple",
             "missing_address",
             "bad_destination",
@@ -64,6 +68,7 @@ class WalletTests(unittest.TestCase):
                     "address": ADDRESS,
                     "satoshis": 100_000_000,
                     "confirmations": 1,
+                    "vout": 0,
                     "txid": "a" * 64,
                 }
                 balance = {
@@ -80,6 +85,15 @@ class WalletTests(unittest.TestCase):
                     coin["confirmations"] = 0
                 if case == "wrong_tx":
                     coin["txid"] = "b" * 64
+                if case == "bad_vout":
+                    coin["vout"] = -1
+                if case == "bool_vout":
+                    coin["vout"] = True
+                if case == "missing_vout":
+                    del coin["vout"]
+                if case == "excess_amount":
+                    coin["satoshis"] += 1
+                    balance["balanceSat"] += 1
                 if case == "multiple":
                     coins *= 2
                 if case == "mismatch":
@@ -183,7 +197,7 @@ class WalletTests(unittest.TestCase):
                         self.assertEqual(saved["refund"], "unknown")
                     if case in ("missing_address", "bad_destination"):
                         insight.query.assert_not_called()
-                    if case in ("slow_utxo", "retry_exhausted"):
+                    if case in ("slow_utxo", "retry_exhausted", "unconfirmed"):
                         self.assertEqual(now[0], 820)
                         self.assertLessEqual(len(calls), 48)
                     elif case == "retry_http":
@@ -193,7 +207,9 @@ class WalletTests(unittest.TestCase):
                         self.assertLessEqual(len(calls), 2)
                         sleep.assert_not_called()
 
-    def check_confirmation_wait(self, confirmed_at, *, transient_error=False):
+    def check_confirmation_wait(
+        self, confirmed_at, *, transient_error=False, initial_pair=None
+    ):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "wallet.json"
             path.write_text(
@@ -225,12 +241,15 @@ class WalletTests(unittest.TestCase):
                 if transient_error and 30 <= now[0] < 90:
                     raise OSError("Temporary Insight outage")
                 confirmed = confirmed_at is not None and now[0] >= confirmed_at
+                if initial_pair is not None and now[0] == 0:
+                    confirmed = initial_pair[int(utxo)]
                 if utxo:
                     return [
                         {
                             "address": ADDRESS,
                             "satoshis": 100_000_000,
                             "confirmations": int(confirmed),
+                            "vout": 0,
                             "txid": "a" * 64,
                         }
                     ]
@@ -242,6 +261,13 @@ class WalletTests(unittest.TestCase):
 
             def send(*args, timeout):
                 self.assertEqual(json.loads(path.read_text())["refund"], "unknown")
+                if initial_pair is not None:
+                    self.assertEqual(now[0], 30)
+                    self.assertEqual(insight_query.call_count, 4)
+                    self.assertEqual(
+                        [call.kwargs["utxo"] for call in insight_query.call_args_list],
+                        [False, True, False, True],
+                    )
                 self.assertEqual(args[0], "core-funds-send")
                 self.assertIn("amount_duffs=99999774", args)
                 self.assertEqual(timeout, 1485 - now[0])
@@ -253,7 +279,9 @@ class WalletTests(unittest.TestCase):
                 patch.object(wallet, "STATE", path),
                 patch.object(wallet.time, "monotonic", side_effect=lambda: now[0]),
                 patch.object(wallet.time, "sleep", side_effect=sleep),
-                patch.object(wallet.insight, "query", side_effect=query),
+                patch.object(
+                    wallet.insight, "query", side_effect=query
+                ) as insight_query,
                 patch.object(wallet, "det", side_effect=send) as det,
                 patch.object(
                     wallet, "request", side_effect=AssertionError("No faucet")
@@ -278,6 +306,12 @@ class WalletTests(unittest.TestCase):
         for confirmed_at in (60, 690):
             with self.subTest(confirmed_at=confirmed_at):
                 self.check_confirmation_wait(confirmed_at)
+
+    def test_refund_confirmation_advances_between_reads(self):
+        self.check_confirmation_wait(30, initial_pair=(False, True))
+
+    def test_refund_confirmation_reverses_between_reads(self):
+        self.check_confirmation_wait(30, initial_pair=(True, False))
 
     def test_refund_confirmation_never_arrives(self):
         self.check_confirmation_wait(None)

@@ -168,7 +168,8 @@ def fund():
 
 def refund():
     deadline = time.monotonic() + 25 * 60 - 15  # Reserve final state-write time.
-    observation_deadline = time.monotonic() + 20
+    # Twelve minutes for confirmation leaves 12m45s for SPV sync and the send.
+    observation_deadline = deadline - (12 * 60 + 45)
     state = json.loads(STATE.read_text())
     if state.get("refund") != "pending":
         return
@@ -182,17 +183,22 @@ def refund():
 
     # Sweep only the known single confirmed faucet output; otherwise fail closed.
     def observe(*, utxo=False):
-        return insight.query(
-            "addr",
-            source,
-            utxo=utxo,
-            timeout=min(5, min(observation_deadline, deadline) - time.monotonic()),
-        )
+        remaining = observation_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Refund observation deadline expired")
+        return insight.query("addr", source, utxo=utxo, timeout=min(5, remaining))
 
-    for attempt in range(3):
-        try:
-            balance = observe()
-            utxos = observe(utxo=True)
+    try:
+        while time.monotonic() < observation_deadline:
+            try:
+                balance = observe()
+                utxos = observe(utxo=True)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                # Retry unavailable Insight reads, never conflicting observations.
+                remaining = observation_deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(30, remaining))
+                continue
             if not isinstance(utxos, list) or len(utxos) != 1:
                 raise ValueError("Refund needs exactly one unspent faucet output")
             coin = utxos[0]
@@ -202,36 +208,42 @@ def refund():
                 or balance.get("addrStr") != source
                 or type(balance.get("balanceSat")) is not int
                 or type(balance.get("unconfirmedBalanceSat")) is not int
-                or balance["unconfirmedBalanceSat"] != 0
                 or type(coin.get("satoshis")) is not int
-                or coin["satoshis"] != balance["balanceSat"]
                 or type(coin.get("confirmations")) is not int
-                or coin["confirmations"] < 1
+                or coin["confirmations"] < 0
                 or coin.get("address") != source
                 or not isinstance(coin.get("txid"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", coin["txid"])
             ):
-                raise ValueError(
-                    "Refund balance is not confirmed or disagrees with UTXO"
-                )
+                raise ValueError("Refund balance or UTXO is invalid")
             if state.get("txid") and coin["txid"] != state["txid"]:
                 raise ValueError("Refund input is not the faucet payout")
-            amount = refund_amount(balance["balanceSat"], state["payout_duffs"])
-            break
-        except (
-            OSError,
-            ValueError,
-            KeyError,
-            TypeError,
-            RuntimeError,
-            subprocess.SubprocessError,
-        ):
-            remaining = min(observation_deadline, deadline) - time.monotonic()
-            if attempt == 2 or remaining <= 0:
-                state["refund"] = "unknown"
-                save(state)
-                raise
-            time.sleep(min(1, remaining))
+            amount = refund_amount(coin["satoshis"], state["payout_duffs"])
+            confirmed = coin["confirmations"] > 0
+            if balance["balanceSat"] != (
+                coin["satoshis"] if confirmed else 0
+            ) or balance["unconfirmedBalanceSat"] != (
+                0 if confirmed else coin["satoshis"]
+            ):
+                raise ValueError("Refund balance disagrees with UTXO")
+            if confirmed:
+                break
+            remaining = observation_deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(30, remaining))
+        else:
+            raise TimeoutError("Refund confirmation window expired; no send attempted")
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ):
+        state["refund"] = "unknown"
+        save(state)
+        raise
     state["refund"] = "unknown"
     save(state)
     remaining = deadline - time.monotonic()

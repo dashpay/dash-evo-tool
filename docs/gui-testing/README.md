@@ -136,14 +136,20 @@ is recorded while other reachable screens are still tested. An ambiguous payout 
 never retried; it requires a refund attempt and can leave the result incomplete.
 
 POST runs with `if: always()` after stopping the GUI. It validates testnet addresses,
-then checks a single confirmed faucet UTXO against Insight's address balance
-(up to three read-only attempts, one second apart, within 20 seconds). Only
-Insight supplies these observations. `det-cli` is used solely for one Testnet send
-of the balance minus 226 duffs back to the faucet, with the remaining 25-minute
-step budget minus 15 seconds for the final state write. Nothing is retried after
-the send starts. This allowance covers the current one-input P2PKH builder at 1 duff/byte; the sub-dust remainder is miner fee.
-Unexpected inputs, fee/API drift, unconfirmed funds or an uncertain broadcast
-produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and
+then checks a single faucet UTXO against Insight's address balance. A matching
+unconfirmed payout is polled every 30 seconds for up to 12 minutes; transient
+Insight errors are retried within that same window. Each read is capped at five
+seconds and the remaining observation budget. Conflicting observations stop POST
+immediately. Only Insight supplies these observations. After confirmation,
+`det-cli` is used solely for one Testnet send of the balance minus 226 duffs back
+to the faucet. It receives the remaining 25-minute step budget minus 15 seconds
+for the final state write: about 12 minutes 45 seconds after a full observation
+window, allowing up to ten minutes for SPV sync. The existing 25-minute step and
+220-minute job limits are unchanged. The refund state is saved as `unknown`
+before sending, and nothing is retried after the send starts. This allowance
+covers the current one-input P2PKH builder at 1 duff/byte; the sub-dust remainder
+is miner fee. Unexpected inputs, fee/API drift, funds still unconfirmed after the
+window or an uncertain broadcast produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and
 the Insight explorer; a lost runner or forced cancellation can prevent POST.
 The ephemeral wallet is not uploaded and cannot be recovered after runner disposal.
 

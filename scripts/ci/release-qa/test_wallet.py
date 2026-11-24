@@ -150,7 +150,7 @@ class WalletTests(unittest.TestCase):
                     ),
                 ):
                     insight.query.side_effect = http
-                    if case in ("ok", "missing_address", "retry_http", "retry_balance"):
+                    if case in ("ok", "missing_address", "retry_http"):
                         wallet.refund()
                     else:
                         with self.assertRaises(
@@ -163,7 +163,6 @@ class WalletTests(unittest.TestCase):
                         "timeout",
                         "bad_send_txid",
                         "retry_http",
-                        "retry_balance",
                     )
                     self.assertEqual(det.call_count, int(sends))
                     if sends:
@@ -184,13 +183,107 @@ class WalletTests(unittest.TestCase):
                         self.assertEqual(saved["refund"], "unknown")
                     if case in ("missing_address", "bad_destination"):
                         insight.query.assert_not_called()
-                    if case == "slow_utxo":
-                        self.assertEqual(now[0], 120)
-                        self.assertEqual(len(calls), 4)
-                    self.assertLessEqual(len(calls), 6)
-                    self.assertLessEqual(
-                        sum(c.args[0] for c in sleep.call_args_list), 2
-                    )
+                    if case in ("slow_utxo", "retry_exhausted"):
+                        self.assertEqual(now[0], 820)
+                        self.assertLessEqual(len(calls), 48)
+                    elif case == "retry_http":
+                        self.assertEqual(len(calls), 3)
+                        sleep.assert_called_once_with(30)
+                    else:
+                        self.assertLessEqual(len(calls), 2)
+                        sleep.assert_not_called()
+
+    def check_confirmation_wait(self, confirmed_at, *, transient_error=False):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "wallet.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "refund": "pending",
+                        "funding": "sent",
+                        "wallet_id": "id",
+                        "address": ADDRESS,
+                        "refund_address": REFUND_ADDRESS,
+                        "txid": "a" * 64,
+                        "payout_duffs": 100_000_000,
+                    }
+                )
+            )
+            now = [0.0]
+            sleeps = []
+
+            def sleep(seconds):
+                self.assertGreater(seconds, 0)
+                self.assertLessEqual(seconds, 30)
+                sleeps.append(seconds)
+                now[0] += seconds
+
+            def query(kind, value, *, utxo=False, timeout):
+                self.assertEqual((kind, value), ("addr", ADDRESS))
+                self.assertGreater(timeout, 0)
+                self.assertLessEqual(timeout, min(5, 720 - now[0]))
+                if transient_error and 30 <= now[0] < 90:
+                    raise OSError("Temporary Insight outage")
+                confirmed = confirmed_at is not None and now[0] >= confirmed_at
+                if utxo:
+                    return [
+                        {
+                            "address": ADDRESS,
+                            "satoshis": 100_000_000,
+                            "confirmations": int(confirmed),
+                            "txid": "a" * 64,
+                        }
+                    ]
+                return {
+                    "addrStr": ADDRESS,
+                    "balanceSat": 100_000_000 if confirmed else 0,
+                    "unconfirmedBalanceSat": 0 if confirmed else 100_000_000,
+                }
+
+            def send(*args, timeout):
+                self.assertEqual(json.loads(path.read_text())["refund"], "unknown")
+                self.assertEqual(args[0], "core-funds-send")
+                self.assertIn("amount_duffs=99999774", args)
+                self.assertEqual(timeout, 1485 - now[0])
+                self.assertGreaterEqual(timeout, 765)
+                now[0] += 600  # A cold standalone wallet can need ten minutes to sync.
+                return {"txid": "c" * 64}
+
+            with (
+                patch.object(wallet, "STATE", path),
+                patch.object(wallet.time, "monotonic", side_effect=lambda: now[0]),
+                patch.object(wallet.time, "sleep", side_effect=sleep),
+                patch.object(wallet.insight, "query", side_effect=query),
+                patch.object(wallet, "det", side_effect=send) as det,
+                patch.object(
+                    wallet, "request", side_effect=AssertionError("No faucet")
+                ),
+            ):
+                if confirmed_at is None:
+                    with self.assertRaises(TimeoutError):
+                        wallet.refund()
+                    self.assertEqual(now[0], 720)
+                    self.assertEqual(json.loads(path.read_text())["refund"], "unknown")
+                    det.assert_not_called()
+                else:
+                    wallet.refund()
+                    self.assertEqual(json.loads(path.read_text())["refund"], "sent")
+                    det.assert_called_once()
+                self.assertLess(now[0], 1500)
+                self.assertGreater(sum(sleeps), 20)
+                wallet.refund()
+                self.assertEqual(det.call_count, int(confirmed_at is not None))
+
+    def test_refund_waits_for_late_payout_confirmation(self):
+        for confirmed_at in (60, 690):
+            with self.subTest(confirmed_at=confirmed_at):
+                self.check_confirmation_wait(confirmed_at)
+
+    def test_refund_confirmation_never_arrives(self):
+        self.check_confirmation_wait(None)
+
+    def test_refund_retries_transient_insight_errors_while_waiting(self):
+        self.check_confirmation_wait(120, transient_error=True)
 
     def test_det_honors_send_timeout(self):
         with patch.object(wallet.subprocess, "run") as execute:

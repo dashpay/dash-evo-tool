@@ -177,6 +177,12 @@ class Gallery(Case):
         code, out = self.gallery(self.META, self.BOTH)
         self.assertEqual(code, 0, out)
         self.assertTrue(os.path.exists(self.path("index.html")))
+        text = Path(self.path("index.html")).read_text()
+        self.assertIn(
+            "<details><summary>Version without labels</summary>"
+            '<img src="annotated/clean/01-a.png" alt="A"></details>',
+            text,
+        )
 
     def test_embedded_gallery_keeps_style_charset_and_both_images(self):
         name = "01-a&b"
@@ -199,12 +205,18 @@ class Gallery(Case):
             text = page.read()
         self.assertIn("<meta charset=utf-8>", text)
         self.assertIn("img{max-width:100%", text)
-        for attribute, file in zip(("src", "href"), files):
-            encoded = re.search(attribute + r'="data:image/png;base64,([^"]+)"', text)
-            self.assertIsNotNone(encoded)
+        images = re.findall(r'<img src="data:image/png;base64,([^"]+)"', text)
+        self.assertEqual(len(images), 2)
+        for encoded, file in zip(images, files):
             self.assertEqual(
-                base64.b64decode(encoded[1]), Path(self.path(*file)).read_bytes()
+                base64.b64decode(encoded), Path(self.path(*file)).read_bytes()
             )
+        self.assertRegex(
+            text,
+            r"<details><summary>Version without labels</summary>"
+            r'<img src="data:image/png;base64,[^"]+" alt="A"></details>',
+        )
+        self.assertNotIn('href="data:', text)
         self.assertNotIn('src="annotated/', text)
 
     def test_missing_labelled_image_stops_the_gallery(self):

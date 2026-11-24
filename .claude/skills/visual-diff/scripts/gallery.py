@@ -77,7 +77,8 @@ def main():
         )
         o.append(f'<img src="annotated/{e(n)}.png" alt="{e(i["title"])}">')
         o.append(
-            f'<p><a href="annotated/clean/{e(n)}.png">Version without labels</a></p>'
+            "<details><summary>Version without labels</summary>"
+            f'<img src="annotated/clean/{e(n)}.png" alt="{e(i["title"])}"></details>'
         )
     o.append(
         "<h2>Commit coverage</h2><table><tr><th>Commit<th>Subject<th>Screen<th>Image<th>Note</tr>"

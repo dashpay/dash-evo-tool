@@ -31,6 +31,15 @@ const LOCAL_SAVE_ATTEMPTS: u32 = 3;
 /// Pause between attempts at saving a confirmed contract.
 const LOCAL_SAVE_RETRY_DELAY: Duration = Duration::from_millis(200);
 
+/// An identity's contract registration that was sent but not settled. A
+/// retry reuses its nonce, so every attempt carries the same contract ID and
+/// Platform executes at most one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingContractRegistration {
+    pub(crate) identity_nonce: IdentityNonce,
+    pub(crate) contract_id: Identifier,
+}
+
 /// What the user registered. The registration is the same; its result and
 /// wording differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,12 +115,10 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let alias = (!alias.is_empty()).then_some(alias);
         ensure_private_document_entries_fit(&data_contract, None)?;
-        let identity_nonce = sdk
-            .get_identity_nonce(data_contract.owner_id(), true, None)
-            .await?;
+        let owner_id = data_contract.owner_id();
         self.register_signed_contract(
             data_contract,
-            identity_nonce,
+            || async move { sdk.get_identity_nonce(owner_id, true, None).await },
             signing_key,
             &identity,
             sdk.version(),
@@ -127,18 +134,19 @@ impl AppContext {
         .await
     }
 
-    /// [`Self::register_data_contract`] once the identity nonce is known, with
-    /// the network steps passed in: `submit` sends the signed transition and
-    /// waits for its result; `find` looks a registration whose result could
-    /// not be read up under its Platform-assigned ID.
+    /// [`Self::register_data_contract`] with the network steps passed in:
+    /// `fresh_nonce` reads and bumps the owner's identity nonce, `submit` sends
+    /// the signed transition and waits for its result, and `find` looks a
+    /// registration whose result could not be read up under its
+    /// Platform-assigned ID.
     #[expect(
         clippy::too_many_arguments,
         reason = "the transition's inputs plus the two network steps"
     )]
-    async fn register_signed_contract<S, Submitted, Found>(
+    async fn register_signed_contract<S, Nonce, Submitted, Found>(
         &self,
         data_contract: DataContract,
-        identity_nonce: IdentityNonce,
+        fresh_nonce: impl FnOnce() -> Nonce,
         signing_key: IdentityPublicKey,
         signer: &S,
         platform_version: &PlatformVersion,
@@ -149,11 +157,13 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError>
     where
         S: Signer<IdentityPublicKey>,
+        Nonce: Future<Output = Result<IdentityNonce, SdkError>>,
         Submitted: Future<Output = Result<DataContract, SdkError>>,
         Found: Future<Output = Result<Option<DataContract>, TaskError>>,
     {
         let fee_result =
             FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
+        let identity_nonce = fresh_nonce().await?;
         let (transition, contract_id) = contract_create_transition(
             data_contract,
             identity_nonce,
@@ -227,6 +237,18 @@ impl AppContext {
         });
         kind.registered(fee_result, save_warning)
     }
+
+    /// `owner`'s registration sent but not settled, if any.
+    pub(crate) fn pending_contract_registration(
+        &self,
+        owner: &Identifier,
+    ) -> Option<PendingContractRegistration> {
+        self.pending_contract_registrations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(owner)
+            .copied()
+    }
 }
 
 /// Builds and signs the create transition for `data_contract`, as the SDK's
@@ -298,7 +320,11 @@ async fn retry_local_save(
 mod tests {
     use super::*;
     use crate::context::test_support::{test_app_context, wired_test_app_context};
+    use dash_sdk::dpp::consensus::ConsensusError;
+    use dash_sdk::dpp::consensus::state::identity::invalid_identity_contract_nonce_error::InvalidIdentityNonceError;
+    use dash_sdk::dpp::consensus::state::state_error::StateError;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_nonce::MergeIdentityNonceResult;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::state_transition::data_contract_create_transition::accessors::DataContractCreateTransitionAccessorsV0;
 
@@ -393,9 +419,63 @@ mod tests {
         assert_ne!(next_id, contract_id);
     }
 
-    /// Drives [`AppContext::register_signed_contract`] for the DPNS contract at
-    /// identity nonce 5, with `submitted` as the network's answer; returns the
-    /// outcome and the ID the lookup was asked for, if any.
+    /// What one registration attempt did, seen from its network steps.
+    struct Attempt {
+        outcome: Result<BackendTaskSuccessResult, TaskError>,
+        /// The ID the lookup was asked for, if it ran.
+        asked: Option<Identifier>,
+        /// The identity nonce the sent transition carries.
+        sent_nonce: Option<IdentityNonce>,
+        /// Whether a fresh nonce was read.
+        fresh_nonce_read: bool,
+    }
+
+    /// Drives [`AppContext::register_signed_contract`] for the DPNS contract,
+    /// offering `fresh_nonce` as the owner's next nonce and `submitted` as the
+    /// network's answer; the lookup answers `found`.
+    async fn attempt(
+        ctx: &AppContext,
+        fresh_nonce: IdentityNonce,
+        submitted: Result<DataContract, SdkError>,
+        found: Option<DataContract>,
+    ) -> Attempt {
+        let contract = ctx.dpns_contract().as_ref().clone();
+        let asked = std::cell::Cell::new(None);
+        let sent_nonce = std::cell::Cell::new(None);
+        let fresh_nonce_read = std::cell::Cell::new(false);
+        let outcome = ctx
+            .register_signed_contract(
+                contract,
+                || {
+                    fresh_nonce_read.set(true);
+                    std::future::ready(Ok(fresh_nonce))
+                },
+                signing_key(),
+                &FixedSigner,
+                ctx.platform_version(),
+                None,
+                RegistrationKind::Contract,
+                |transition| {
+                    if let StateTransition::DataContractCreate(create) = &transition {
+                        sent_nonce.set(Some(create.identity_nonce()));
+                    }
+                    std::future::ready(submitted)
+                },
+                |contract_id| {
+                    asked.set(Some(contract_id));
+                    std::future::ready(Ok(found))
+                },
+            )
+            .await;
+        Attempt {
+            outcome,
+            asked: asked.get(),
+            sent_nonce: sent_nonce.get(),
+            fresh_nonce_read: fresh_nonce_read.get(),
+        }
+    }
+
+    /// [`attempt`] at a fresh nonce of 5, as most tests need.
     async fn register_with(
         ctx: &AppContext,
         submitted: Result<DataContract, SdkError>,
@@ -404,25 +484,185 @@ mod tests {
         Result<BackendTaskSuccessResult, TaskError>,
         Option<Identifier>,
     ) {
-        let contract = ctx.dpns_contract().as_ref().clone();
-        let asked = std::cell::Cell::new(None);
-        let outcome = ctx
-            .register_signed_contract(
-                contract,
-                5,
-                signing_key(),
-                &FixedSigner,
-                ctx.platform_version(),
-                None,
-                RegistrationKind::Contract,
-                |_transition| std::future::ready(submitted),
-                |contract_id| {
-                    asked.set(Some(contract_id));
-                    std::future::ready(Ok(found))
-                },
-            )
-            .await;
-        (outcome, asked.get())
+        let done = attempt(ctx, 5, submitted, found).await;
+        (done.outcome, done.asked)
+    }
+
+    fn unread() -> SdkError {
+        SdkError::StateTransitionResultUnconfirmed(Box::new(proof_error()))
+    }
+
+    /// Platform's refusal of a transition whose identity nonce is unusable
+    /// for the reason `merge`.
+    fn nonce_refused(merge: MergeIdentityNonceResult) -> SdkError {
+        SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(
+            ConsensusError::StateError(StateError::InvalidIdentityNonceError(
+                InvalidIdentityNonceError::new(Identifier::from([0x21; 32]), Some(5), 5, merge),
+            )),
+        )))
+    }
+
+    fn assigned_id(ctx: &AppContext, nonce: IdentityNonce) -> Identifier {
+        DataContract::generate_data_contract_id_v0(ctx.dpns_contract().owner_id(), nonce)
+    }
+
+    /// A retry after an unresolved registration reuses its nonce instead of
+    /// reading a fresh one, so both attempts carry one contract ID.
+    #[tokio::test]
+    async fn a_retry_after_an_unresolved_registration_reuses_its_nonce() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+
+        let first = attempt(&ctx, 5, Err(unread()), None).await;
+        assert!(first.fresh_nonce_read);
+        assert_eq!(first.sent_nonce, Some(5));
+        assert_eq!(
+            ctx.pending_contract_registration(&owner),
+            Some(PendingContractRegistration {
+                identity_nonce: 5,
+                contract_id: assigned_id(&ctx, 5),
+            })
+        );
+
+        let retry = attempt(&ctx, 6, Err(unread()), None).await;
+        assert!(!retry.fresh_nonce_read);
+        assert_eq!(retry.sent_nonce, Some(5));
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+    }
+
+    /// A retry refused because its nonce is already used looks the contract up
+    /// under the shared ID: found, the registration is confirmed and no longer
+    /// pending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retry_refused_for_its_used_nonce_finds_the_earlier_registration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let owner = ctx.dpns_contract().owner_id();
+
+        for used in [
+            MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+            MergeIdentityNonceResult::NonceAlreadyPresentInPast(2),
+        ] {
+            attempt(&ctx, 5, Err(unread()), None).await;
+            let earlier = ctx.dpns_contract().as_ref().clone();
+            let retry = attempt(&ctx, 6, Err(nonce_refused(used)), Some(earlier)).await;
+
+            assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+            assert!(
+                matches!(
+                    retry.outcome,
+                    Ok(BackendTaskSuccessResult::RegisteredContract { .. })
+                ),
+                "{:?}",
+                retry.outcome
+            );
+            assert_eq!(ctx.pending_contract_registration(&owner), None);
+        }
+    }
+
+    /// A contract already present under the shared ID is the earlier attempt's.
+    #[tokio::test]
+    async fn a_retry_refused_for_an_existing_contract_looks_it_up() {
+        use dash_sdk::dpp::consensus::state::data_contract::data_contract_already_present_error::DataContractAlreadyPresentError;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        attempt(&ctx, 5, Err(unread()), None).await;
+        let present = SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(
+            ConsensusError::StateError(StateError::DataContractAlreadyPresentError(
+                DataContractAlreadyPresentError::new(assigned_id(&ctx, 5)),
+            )),
+        )));
+
+        let retry = attempt(&ctx, 6, Err(present), None).await;
+
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+    }
+
+    /// A used nonce whose contract is not found leaves the registration
+    /// unresolved and still pending: a later retry must not pay again.
+    #[tokio::test]
+    async fn a_used_nonce_without_its_contract_stays_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        attempt(&ctx, 5, Err(unread()), None).await;
+
+        let retry = attempt(
+            &ctx,
+            6,
+            Err(nonce_refused(
+                MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+            )),
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &retry.outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { contract_id, .. })
+                    if *contract_id == assigned_id(&ctx, 5)
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(
+            ctx.pending_contract_registration(&owner)
+                .map(|p| p.identity_nonce),
+            Some(5)
+        );
+    }
+
+    /// A nonce Platform can no longer accept means the earlier attempt can
+    /// never execute: it is no longer pending and the next attempt reads a
+    /// fresh nonce.
+    #[tokio::test]
+    async fn an_unusable_nonce_is_no_longer_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        attempt(&ctx, 5, Err(unread()), None).await;
+
+        let retry = attempt(
+            &ctx,
+            6,
+            Err(nonce_refused(MergeIdentityNonceResult::NonceTooFarInPast)),
+            None,
+        )
+        .await;
+
+        assert_eq!(retry.asked, None);
+        assert!(
+            !matches!(
+                retry.outcome,
+                Ok(_) | Err(TaskError::ContractRegistrationUnconfirmed { .. })
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), None);
+        let next = attempt(&ctx, 7, Err(unread()), None).await;
+        assert_eq!(next.sent_nonce, Some(7));
+    }
+
+    /// A confirmed registration is no longer pending: the next one reads a
+    /// fresh nonce.
+    #[tokio::test]
+    async fn a_confirmed_registration_is_no_longer_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        attempt(&ctx, 5, Err(unread()), None).await;
+
+        let confirmed = ctx.dpns_contract().as_ref().clone();
+        attempt(&ctx, 6, Ok(confirmed), None).await;
+        assert_eq!(ctx.pending_contract_registration(&owner), None);
+
+        let next = attempt(&ctx, 7, Err(unread()), None).await;
+        assert!(next.fresh_nonce_read);
+        assert_eq!(next.sent_nonce, Some(7));
     }
 
     /// A registration whose result could not be read is looked up under the

@@ -408,6 +408,11 @@ pub struct AppContext {
     /// newest addresses. Held across the whole rebuild, which never awaits;
     /// taken before any other lock of this context, never under one.
     connection_rebuild: Mutex<()>,
+    /// Each identity's contract registration sent but not settled, so a
+    /// retry reuses its nonce. In memory only: a restart forgets it.
+    pub(crate) pending_contract_registrations: Mutex<
+        HashMap<Identifier, crate::backend_task::register_contract::PendingContractRegistration>,
+    >,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via
@@ -661,6 +666,7 @@ impl AppContext {
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
             connection_rebuild: Mutex::new(()),
+            pending_contract_registrations: Mutex::new(HashMap::new()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),

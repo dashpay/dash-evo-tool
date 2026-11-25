@@ -201,15 +201,17 @@ impl IdentityHubScreen {
 
     /// Hint for locked wallets, whose identities are looked for only once unlocked.
     fn locked_wallet_hint(&self) -> Option<LockedWalletHint> {
+        let locked_hashes = self.app_context.locked_wallet_hashes();
+        if locked_hashes.is_empty() {
+            return None;
+        }
         let wallets = self.app_context.wallet_context();
         // An unreadable store lists no identity, so the hint stays.
         let with_identities = self
             .app_context
             .wallet_seed_hashes_with_user_identities()
             .unwrap_or_default();
-        let locked: Vec<_> = self
-            .app_context
-            .locked_wallet_hashes()
+        let locked: Vec<_> = locked_hashes
             .into_iter()
             .map(|seed_hash| LockedWallet {
                 seed_hash,

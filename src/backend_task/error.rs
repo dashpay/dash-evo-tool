@@ -2415,9 +2415,7 @@ pub enum TaskError {
     /// from this identity in this app, of a different contract or token; that
     /// one was completed and kept under its own name. The next registration
     /// gets a new place.
-    #[error(
-        "Your earlier contract or token registration from this identity was completed instead of this contract. It has contract ID {contract_id}. Register this contract again."
-    )]
+    #[error("{}", contract_replaced_by_earlier_message(*contract_id, unsaved.as_ref()))]
     ContractRegistrationReplacedByEarlier {
         contract_id: dash_sdk::platform::Identifier,
         /// Set when the earlier registration could not be saved here.
@@ -2426,9 +2424,7 @@ pub enum TaskError {
     },
 
     /// [`Self::ContractRegistrationReplacedByEarlier`] for a token.
-    #[error(
-        "Your earlier contract or token registration from this identity was completed instead of this token. It has contract ID {contract_id}. Create this token again."
-    )]
+    #[error("{}", token_replaced_by_earlier_message(*contract_id, unsaved.as_ref()))]
     TokenRegistrationReplacedByEarlier {
         contract_id: dash_sdk::platform::Identifier,
         /// Set when the earlier registration could not be saved here.
@@ -5511,6 +5507,45 @@ fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
         | SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_))
         | SdkError::NoAvailableAddressesToRetry(_) => true,
         _ => false,
+    }
+}
+
+/// User-facing text for [`TaskError::ContractRegistrationReplacedByEarlier`]:
+/// when the earlier registration could not be saved here, how to add it, in
+/// the words of what it is.
+fn contract_replaced_by_earlier_message(
+    contract_id: dash_sdk::platform::Identifier,
+    unsaved: Option<&ContractSaveWarning>,
+) -> String {
+    match unsaved {
+        None => format!(
+            "Your earlier contract or token registration from this identity was completed instead of this contract. It has contract ID {contract_id}. Register this contract again."
+        ),
+        Some(ContractSaveWarning::Contract { contract_id, .. }) => format!(
+            "Your earlier contract registration from this identity was completed instead of this contract, but it could not be saved on this device. To add it here, open Contracts, choose Load Contracts and enter contract ID {contract_id}. Register this contract again."
+        ),
+        Some(ContractSaveWarning::Token { contract_id, .. }) => format!(
+            "Your earlier token from this identity was created instead of this contract, but it could not be saved on this device. To add it here, open Tokens, choose Import Token and enter contract ID {contract_id}. Register this contract again."
+        ),
+    }
+}
+
+/// [`contract_replaced_by_earlier_message`] for
+/// [`TaskError::TokenRegistrationReplacedByEarlier`].
+fn token_replaced_by_earlier_message(
+    contract_id: dash_sdk::platform::Identifier,
+    unsaved: Option<&ContractSaveWarning>,
+) -> String {
+    match unsaved {
+        None => format!(
+            "Your earlier contract or token registration from this identity was completed instead of this token. It has contract ID {contract_id}. Create this token again."
+        ),
+        Some(ContractSaveWarning::Contract { contract_id, .. }) => format!(
+            "Your earlier contract registration from this identity was completed instead of this token, but it could not be saved on this device. To add it here, open Contracts, choose Load Contracts and enter contract ID {contract_id}. Create this token again."
+        ),
+        Some(ContractSaveWarning::Token { contract_id, .. }) => format!(
+            "Your earlier token from this identity was created instead of this token, but it could not be saved on this device. To add it here, open Tokens, choose Import Token and enter contract ID {contract_id}. Create this token again."
+        ),
     }
 }
 

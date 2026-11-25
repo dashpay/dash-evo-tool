@@ -72,7 +72,10 @@ enum FoundRegistration {
     /// earlier attempt of the same request sent it.
     ThisRequest { earlier_version: bool },
     /// An earlier attempt of another request: a different kind or name.
-    EarlierRequest { alias: Option<String> },
+    EarlierRequest {
+        kind: RegistrationKind,
+        alias: Option<String>,
+    },
     /// No attempt from this app: registered elsewhere with the same nonce.
     Elsewhere,
 }
@@ -138,15 +141,19 @@ impl RegistrationKind {
         }
     }
 
-    fn replaced_by_earlier(self, contract_id: Identifier) -> TaskError {
+    fn replaced_by_earlier(
+        self,
+        contract_id: Identifier,
+        unsaved: Option<ContractSaveWarning>,
+    ) -> TaskError {
         match self {
             Self::Contract => TaskError::ContractRegistrationReplacedByEarlier {
                 contract_id,
-                unsaved: None,
+                unsaved,
             },
             Self::Token => TaskError::TokenRegistrationReplacedByEarlier {
                 contract_id,
-                unsaved: None,
+                unsaved,
             },
         }
     }
@@ -332,18 +339,22 @@ impl AppContext {
                                 earlier_version,
                             )
                             .await),
-                        FoundRegistration::EarlierRequest { alias } => {
-                            if let Err(source) = self
+                        FoundRegistration::EarlierRequest {
+                            kind: earlier_kind,
+                            alias,
+                        } => {
+                            let saved = self
                                 .save_registered_contract(&registered, alias.as_deref())
-                                .await
-                            {
+                                .await;
+                            let unsaved = saved.err().map(|source| {
                                 tracing::warn!(
                                     ?source,
                                     %contract_id,
                                     "An earlier request's registered contract could not be saved locally"
                                 );
-                            }
-                            Err(kind.replaced_by_earlier(contract_id))
+                                earlier_kind.save_warning(registered.id(), source)
+                            });
+                            Err(kind.replaced_by_earlier(contract_id, unsaved))
                         }
                         // The identity registered it elsewhere with the same
                         // nonce, so this registration cannot run.
@@ -493,6 +504,7 @@ impl AppContext {
         }
         match matching.first() {
             Some(sent) => FoundRegistration::EarlierRequest {
+                kind: sent.kind,
                 alias: sent.alias.clone(),
             },
             None => FoundRegistration::Elsewhere,

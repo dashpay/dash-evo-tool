@@ -63,9 +63,6 @@ pub struct RegisterDataContractScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
-    /// The contract last sent for registration, offered again after a
-    /// definite refusal.
-    sent_contract: Option<Box<DataContract>>,
 }
 
 impl RegisterDataContractScreen {
@@ -130,7 +127,6 @@ impl RegisterDataContractScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
             refresh_banner: None,
-            sent_contract: None,
         }
     }
 
@@ -335,9 +331,8 @@ impl RegisterDataContractScreen {
         }
 
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
-            && let ContractTask::RegisterDataContract(contract, ..) = &**contract_task
+            && let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task
         {
-            self.sent_contract = Some(Box::new(contract.clone()));
             self.broadcast_status = BroadcastStatus::Broadcasting;
             self.refresh_banner.take_and_clear();
             let handle =
@@ -401,12 +396,19 @@ impl ScreenLike for RegisterDataContractScreen {
             _ => return false,
         };
         self.refresh_banner.take_and_clear();
-        // Only a refused registration is offered again; one that may have run
-        // keeps its guidance to check the contract ID first.
-        self.broadcast_status = match (refused_before_it_ran, self.sent_contract.clone()) {
-            (true, Some(contract)) => BroadcastStatus::Refused(error.to_string(), contract),
-            _ => BroadcastStatus::NotRegistered(error.to_string()),
-        };
+        // Only a refused registration is offered again, as the fields show it
+        // now; one that may have run keeps its guidance to check the contract
+        // ID first.
+        if refused_before_it_ran {
+            self.parse_contract();
+        }
+        self.broadcast_status =
+            match std::mem::replace(&mut self.broadcast_status, BroadcastStatus::Idle) {
+                BroadcastStatus::ValidContract(contract) if refused_before_it_ran => {
+                    BroadcastStatus::Refused(error.to_string(), contract)
+                }
+                _ => BroadcastStatus::NotRegistered(error.to_string()),
+            };
         true
     }
 

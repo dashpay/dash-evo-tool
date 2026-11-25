@@ -4110,6 +4110,7 @@ impl TaskError {
     ) -> Self {
         if !availability.all_configured_addresses_are_exhausted()
             || self.is_dapi_availability_contextualized()
+            || self.is_unconfirmed_registration()
             || !self.contains_dapi_reachability_failure()
         {
             return self;
@@ -4169,12 +4170,24 @@ impl TaskError {
     ) -> std::sync::Arc<Self> {
         if !availability.all_configured_addresses_are_exhausted()
             || self.is_dapi_availability_contextualized()
+            || self.is_unconfirmed_registration()
             || !self.contains_dapi_reachability_failure()
         {
             return self;
         }
 
         std::sync::Arc::new(Self::DapiAllAddressesExhausted { source: self })
+    }
+
+    /// A registration that may have run keeps its own message, which names the
+    /// contract ID to check before registering again, whatever the network
+    /// state.
+    fn is_unconfirmed_registration(&self) -> bool {
+        matches!(
+            self,
+            Self::ContractRegistrationUnconfirmed { .. }
+                | Self::TokenRegistrationUnconfirmed { .. }
+        )
     }
 
     fn is_dapi_availability_contextualized(&self) -> bool {

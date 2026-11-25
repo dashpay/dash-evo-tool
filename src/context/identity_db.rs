@@ -1388,6 +1388,7 @@ impl AppContext {
         let kv = self.det_kv()?;
         let mut ids = load_identity_index(&kv)?;
         ids.sort_unstable();
+        let roster: std::collections::BTreeSet<[u8; 32]> = ids.iter().copied().collect();
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let Some(stored) = kv
@@ -1406,7 +1407,7 @@ impl AppContext {
         // right label and hint. Display-only and best-effort — the vault scheme,
         // not this index, decides whether a prompt fires.
         if let Ok(backend) = self.wallet_backend() {
-            backend.seed_identity_prompt_index(&out);
+            backend.seed_identity_prompt_index(&out, &roster);
         }
         Ok(out)
     }
@@ -1632,6 +1633,9 @@ impl AppContext {
         );
         index_remove_identity(&kv, &id)?;
         self.invalidate_identity_load(*identifier);
+        if let Ok(backend) = self.wallet_backend() {
+            backend.secret_access().forget_identity_prompt(&id);
+        }
         purge_identity_scope(&kv, &id)?;
         self.save_identity_profile_name(*identifier, None);
         let sidecar_cleanup =
@@ -5838,6 +5842,76 @@ mod tests {
                 .is_empty()
         );
         staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// Store one bare identity of `identity_type` whose id repeats `byte`.
+    fn insert_bare_identity(ctx: &AppContext, byte: u8, identity_type: IdentityType) {
+        let mut qi = crate::context::test_support::bare_user_identity(
+            Identifier::from([byte; 32]),
+            ctx.network,
+        );
+        qi.identity_type = identity_type;
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("store the identity");
+    }
+
+    /// A filtered load refreshes the prompt copy of the identities it read and
+    /// keeps every other stored identity's, so a password prompt for one of
+    /// those still shows its name and hint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_filtered_load_keeps_other_identities_prompt_copy() {
+        let (ctx, _store, _dir, _events) = staged_context().await;
+        insert_bare_identity(&ctx, 0x71, IdentityType::User);
+        insert_bare_identity(&ctx, 0x72, IdentityType::Masternode);
+        let prompts = ctx.wallet_backend().unwrap().secret_access();
+
+        ctx.load_local_voting_identities()
+            .expect("masternode-only load");
+        ctx.load_local_user_identities().expect("user-only load");
+        assert!(prompts.identity_prompt_meta(&[0x71; 32]).is_some());
+        assert!(
+            prompts.identity_prompt_meta(&[0x72; 32]).is_some(),
+            "a user-only load must keep the masternode's prompt copy"
+        );
+
+        ctx.load_local_voting_identities()
+            .expect("masternode-only load");
+        assert!(
+            prompts.identity_prompt_meta(&[0x71; 32]).is_some(),
+            "a masternode-only load must keep the user identity's prompt copy"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity that leaves the roster leaves the prompt index too: at once
+    /// when it is removed, and at the next load when something else delisted it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removed_identity_drops_out_of_the_prompt_index() {
+        let (ctx, _store, _dir, _events) = staged_context().await;
+        for byte in [0x81, 0x82, 0x83] {
+            insert_bare_identity(&ctx, byte, IdentityType::User);
+        }
+        ctx.load_local_user_identities()
+            .expect("list every identity");
+        let prompts = ctx.wallet_backend().unwrap().secret_access();
+
+        ctx.delete_local_qualified_identity(&Identifier::from([0x81; 32]))
+            .expect("remove the identity");
+        assert!(
+            prompts.identity_prompt_meta(&[0x81; 32]).is_none(),
+            "a removed identity must leave the prompt index at once"
+        );
+
+        ctx.remove_local_qualified_identity_from_index_only(&Identifier::from([0x82; 32]))
+            .expect("delist the identity");
+        ctx.load_local_voting_identities()
+            .expect("a load of other identities");
+        assert!(
+            prompts.identity_prompt_meta(&[0x82; 32]).is_none(),
+            "a delisted identity must leave the prompt index at the next load"
+        );
+        assert!(prompts.identity_prompt_meta(&[0x83; 32]).is_some());
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

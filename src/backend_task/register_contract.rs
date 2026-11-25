@@ -48,6 +48,15 @@ pub(crate) struct PendingContractRegistration {
     pub(crate) contract_id: Identifier,
 }
 
+/// A pending registration with every contract sent under its nonce, so a
+/// contract found under its ID can be told apart from one registered
+/// elsewhere.
+#[derive(Debug)]
+pub(crate) struct PendingContractAttempts {
+    registration: PendingContractRegistration,
+    sent: Vec<DataContract>,
+}
+
 /// Marks an owner's registration as being sent while alive; dropping it, on
 /// any outcome, cancellation included, lets the owner register again.
 struct RegistrationBeingSent<'a> {
@@ -105,6 +114,20 @@ impl RegistrationKind {
             Self::Token => ContractSaveWarning::Token {
                 contract_id,
                 source,
+            },
+        }
+    }
+
+    fn preempted(self, contract_id: Identifier, source: SdkError) -> TaskError {
+        let source_error = Box::new(source);
+        match self {
+            Self::Contract => TaskError::ContractRegistrationPreempted {
+                contract_id,
+                source_error,
+            },
+            Self::Token => TaskError::TokenRegistrationPreempted {
+                contract_id,
+                source_error,
             },
         }
     }
@@ -221,7 +244,14 @@ impl AppContext {
             identity_nonce,
             contract_id,
         };
-        self.pending_registrations().insert(owner_id, pending);
+        self.pending_registrations()
+            .entry(owner_id)
+            .or_insert_with(|| PendingContractAttempts {
+                registration: pending,
+                sent: Vec::new(),
+            })
+            .sent
+            .push(submitted.clone());
 
         let error = match submit(transition).await {
             Ok(contract) => {
@@ -242,9 +272,20 @@ impl AppContext {
         if earlier_attempt_may_have_run {
             match find(contract_id).await {
                 Ok(Some(registered)) => {
-                    self.settle_pending_contract_registration(owner_id, pending);
                     let earlier_version =
                         !is_submitted_contract(&submitted, &registered, platform_version);
+                    let sent_here = !earlier_version
+                        || self.was_sent_for(owner_id, &registered, platform_version);
+                    self.settle_pending_contract_registration(owner_id, pending);
+                    // Never sent here: the identity registered it elsewhere
+                    // with the same nonce, so this registration cannot run.
+                    if !sent_here {
+                        tracing::warn!(
+                            %contract_id,
+                            "A contract this app did not send was found under a registration's assigned ID"
+                        );
+                        return Err(kind.preempted(contract_id, error));
+                    }
                     return Ok(self
                         .finish_confirmed_registration(
                             &registered,
@@ -318,7 +359,27 @@ impl AppContext {
         &self,
         owner: &Identifier,
     ) -> Option<PendingContractRegistration> {
-        self.pending_registrations().get(owner).copied()
+        self.pending_registrations()
+            .get(owner)
+            .map(|attempts| attempts.registration)
+    }
+
+    /// Whether `registered` is a contract this app sent under `owner`'s
+    /// pending registration.
+    fn was_sent_for(
+        &self,
+        owner: Identifier,
+        registered: &DataContract,
+        platform_version: &PlatformVersion,
+    ) -> bool {
+        self.pending_registrations()
+            .get(&owner)
+            .is_some_and(|attempts| {
+                attempts
+                    .sent
+                    .iter()
+                    .any(|sent| is_submitted_contract(sent, registered, platform_version))
+            })
     }
 
     /// Marks `owner`'s registration as being sent until the returned guard
@@ -350,14 +411,18 @@ impl AppContext {
         settled: PendingContractRegistration,
     ) {
         let mut registrations = self.pending_registrations();
-        if registrations.get(&owner) == Some(&settled) {
+        if registrations
+            .get(&owner)
+            .map(|attempts| attempts.registration)
+            == Some(settled)
+        {
             registrations.remove(&owner);
         }
     }
 
     fn pending_registrations(
         &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<Identifier, PendingContractRegistration>>
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<Identifier, PendingContractAttempts>>
     {
         self.pending_contract_registrations
             .lock()

@@ -412,9 +412,8 @@ pub struct AppContext {
     pub(crate) contract_registrations_in_flight: Mutex<HashSet<Identifier>>,
     /// Each identity's contract registration sent but not settled, so a
     /// retry reuses its nonce. In memory only: a restart forgets it.
-    pub(crate) pending_contract_registrations: Mutex<
-        HashMap<Identifier, crate::backend_task::register_contract::PendingContractRegistration>,
-    >,
+    pub(crate) pending_contract_registrations:
+        Mutex<HashMap<Identifier, crate::backend_task::register_contract::PendingContractAttempts>>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via

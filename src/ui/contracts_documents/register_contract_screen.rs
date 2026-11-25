@@ -368,6 +368,7 @@ impl ScreenLike for RegisterDataContractScreen {
             TaskError::ContractRegistrationUnconfirmed { .. }
                 | TaskError::ContractRegistrationInProgress
                 | TaskError::RegistrationNonceRefused { .. }
+                | TaskError::ContractRegistrationPreempted { .. }
         ) {
             return false;
         }

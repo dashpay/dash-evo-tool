@@ -692,9 +692,23 @@ mod tests {
         }
     }
 
-    /// After a definite refusal the contract can be sent again with an
-    /// explicit click, next to the refusal; an unconfirmed registration keeps
-    /// only its guidance to check the contract ID.
+    /// The JSON text of `contract`, as a user would paste it.
+    fn contract_json(app_context: &AppContext, contract: &DataContract) -> String {
+        use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
+        use dash_sdk::dpp::version::TryFromPlatformVersioned;
+
+        let format = DataContractInSerializationFormat::try_from_platform_versioned(
+            contract,
+            app_context.platform_version(),
+        )
+        .expect("contract in its serialization format");
+        serde_json::to_string(&format).expect("contract to JSON")
+    }
+
+    /// After a definite refusal the contract the fields show can be sent
+    /// again with an explicit click, next to the refusal, even when the JSON
+    /// was edited while the refused one was being sent; an unconfirmed
+    /// registration keeps only its guidance to check the contract ID.
     #[test]
     fn a_refused_registration_can_be_registered_again() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -702,6 +716,8 @@ mod tests {
         let mut screen = RegisterDataContractScreen::new(&app_context);
         let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
         let source = || Box::new(dash_sdk::Error::Generic("refused".to_string()));
+        let sent = contract_json(&app_context, &app_context.dashpay_contract());
+        let edited = contract_json(&app_context, &app_context.dpns_contract());
 
         for error in [
             TaskError::RegistrationNonceRefused {
@@ -712,16 +728,32 @@ mod tests {
                 contract_id,
                 source_error: source(),
             },
-            TaskError::ContractRegistrationReplacedByEarlier { contract_id },
+            TaskError::ContractRegistrationReplacedByEarlier {
+                contract_id,
+                unsaved: None,
+            },
         ] {
-            screen.sent_contract = Some(Box::new(app_context.dpns_contract().as_ref().clone()));
+            screen.contract_json_input = sent.clone();
+            screen.parse_contract();
+            assert!(
+                screen.registrable_contract().is_some(),
+                "the sent JSON parses"
+            );
             screen.broadcast_status = BroadcastStatus::Broadcasting;
+            screen.contract_json_input = edited.clone();
+
             assert!(screen.display_task_error(&error), "{error:?}");
             assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
-            assert!(screen.registrable_contract().is_some(), "{error:?}");
+            let retry = screen
+                .registrable_contract()
+                .unwrap_or_else(|| panic!("{error:?}: the contract is offered again"));
+            assert!(
+                dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters::has_document_type_for_name(retry, "domain"),
+                "{error:?}: the retry sends the edited contract"
+            );
         }
 
-        screen.sent_contract = Some(Box::new(app_context.dpns_contract().as_ref().clone()));
+        screen.contract_json_input = sent;
         screen.broadcast_status = BroadcastStatus::Broadcasting;
         let unconfirmed = TaskError::ContractRegistrationUnconfirmed {
             contract_id,

@@ -140,8 +140,14 @@ impl RegistrationKind {
 
     fn replaced_by_earlier(self, contract_id: Identifier) -> TaskError {
         match self {
-            Self::Contract => TaskError::ContractRegistrationReplacedByEarlier { contract_id },
-            Self::Token => TaskError::TokenRegistrationReplacedByEarlier { contract_id },
+            Self::Contract => TaskError::ContractRegistrationReplacedByEarlier {
+                contract_id,
+                unsaved: None,
+            },
+            Self::Token => TaskError::TokenRegistrationReplacedByEarlier {
+                contract_id,
+                unsaved: None,
+            },
         }
     }
 
@@ -1244,7 +1250,7 @@ mod tests {
         assert!(
             matches!(
                 &token.outcome,
-                Err(TaskError::TokenRegistrationReplacedByEarlier { contract_id })
+                Err(TaskError::TokenRegistrationReplacedByEarlier { contract_id, unsaved: None })
                     if *contract_id == assigned_id(&ctx, 5)
             ),
             "{:?}",
@@ -1259,6 +1265,58 @@ mod tests {
 
         let next = attempt(&ctx, RegistrationKind::Token, 7, Err(unread()), None).await;
         assert_eq!(next.sent_nonce, Some(7));
+    }
+
+    /// An earlier request's contract found under the shared ID that cannot be
+    /// saved here is still reported to the current request, with how to add
+    /// it in the words of what it is: here, an earlier plain contract.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_earlier_request_that_cannot_be_saved_says_how_to_add_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No wallet backend is wired, so every local save fails.
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let plain = as_created(&ctx.dpns_contract());
+        let mut token_contract = as_created(&ctx.dashpay_contract());
+        token_contract.set_owner_id(owner);
+
+        attempt_registering(
+            &ctx,
+            plain.clone(),
+            Some("plain"),
+            RegistrationKind::Contract,
+            5,
+            Err(unread()),
+            Ok(None),
+        )
+        .await;
+        let token = attempt_registering(
+            &ctx,
+            token_contract,
+            Some("MyToken"),
+            RegistrationKind::Token,
+            6,
+            Err(unread()),
+            Ok(Some(plain.clone())),
+        )
+        .await;
+
+        let error = token.outcome.expect_err("the token was not created");
+        assert!(
+            matches!(
+                &error,
+                TaskError::TokenRegistrationReplacedByEarlier {
+                    unsaved: Some(ContractSaveWarning::Contract { contract_id, .. }),
+                    ..
+                } if *contract_id == plain.id()
+            ),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("Load Contracts"), "{message}");
+        assert!(message.contains(&format!("{}", plain.id())), "{message}");
+        assert!(message.contains("Create this token again"), "{message}");
+        assert_eq!(ctx.pending_contract_registration(&owner), None);
     }
 
     /// Platform refusing a reused nonce as ahead of the network says nothing

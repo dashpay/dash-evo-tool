@@ -2420,6 +2420,9 @@ pub enum TaskError {
     )]
     ContractRegistrationReplacedByEarlier {
         contract_id: dash_sdk::platform::Identifier,
+        /// Set when the earlier registration could not be saved here.
+        #[source]
+        unsaved: Option<ContractSaveWarning>,
     },
 
     /// [`Self::ContractRegistrationReplacedByEarlier`] for a token.
@@ -2428,6 +2431,9 @@ pub enum TaskError {
     )]
     TokenRegistrationReplacedByEarlier {
         contract_id: dash_sdk::platform::Identifier,
+        /// Set when the earlier registration could not be saved here.
+        #[source]
+        unsaved: Option<ContractSaveWarning>,
     },
 
     /// Another contract or token registration by the same identity is still

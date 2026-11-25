@@ -19,7 +19,9 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::put_contract::ensure_private_document_entries_fit;
 use dash_sdk::{
     Error as SdkError, Sdk,
-    dpp::data_contract::accessors::v0::DataContractV0Getters,
+    dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters},
+    dpp::data_contract::accessors::v1::DataContractV1Setters,
+    dpp::serialization::PlatformSerializableWithPlatformVersion,
     platform::{DataContract, Identifier, IdentityPublicKey},
 };
 
@@ -173,6 +175,7 @@ impl AppContext {
         let fee_result =
             FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
         let owner_id = data_contract.owner_id();
+        let submitted = data_contract.clone();
         let identity_nonce = match self.pending_contract_registration(&owner_id) {
             Some(pending) => {
                 tracing::info!(
@@ -215,8 +218,16 @@ impl AppContext {
                     return Err(kind.unconfirmed(contract_id, error));
                 };
                 self.settle_pending_contract_registration(owner_id, pending);
+                let earlier_version =
+                    !is_submitted_contract(&submitted, &registered, platform_version);
                 Ok(self
-                    .finish_confirmed_registration(&registered, alias, fee_result, kind, false)
+                    .finish_confirmed_registration(
+                        &registered,
+                        alias,
+                        fee_result,
+                        kind,
+                        earlier_version,
+                    )
                     .await)
             }
             Err(error) => {
@@ -321,6 +332,34 @@ async fn contract_create_transition<S: Signer<IdentityPublicKey>>(
         .map_err(|e| TaskError::from(SdkError::from(e)))?;
     let contract_id = DataContract::generate_data_contract_id_v0(owner_id, identity_nonce);
     Ok((transition, contract_id))
+}
+
+/// Whether `registered`, as Platform holds it, is the contract in `submitted`.
+/// The fields Platform sets (ID, owner, creation times) are left out; a pair
+/// that cannot be compared counts as the same.
+fn is_submitted_contract(
+    submitted: &DataContract,
+    registered: &DataContract,
+    platform_version: &PlatformVersion,
+) -> bool {
+    let comparable = |contract: &DataContract| {
+        let mut contract = contract.clone();
+        contract.set_id(registered.id());
+        contract.set_owner_id(registered.owner_id());
+        contract.set_created_at(None);
+        contract.set_updated_at(None);
+        contract.set_created_at_block_height(None);
+        contract.set_updated_at_block_height(None);
+        contract.set_created_at_epoch(None);
+        contract.set_updated_at_epoch(None);
+        contract
+            .serialize_to_bytes_with_platform_version(platform_version)
+            .ok()
+    };
+    match (comparable(submitted), comparable(registered)) {
+        (Some(submitted), Some(registered)) => submitted == registered,
+        _ => true,
+    }
 }
 
 /// Whether a failed registration may still have been executed: its result

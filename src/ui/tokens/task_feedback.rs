@@ -29,6 +29,18 @@ impl DomainFeedback for TokensFeedback {
         {
             show_contract_save_warning(feedback.ctx, warning);
         }
+        if let BackendTaskSuccessResult::RegisteredTokenContract {
+            earlier_version: true,
+            ..
+        } = result
+        {
+            MessageBanner::set_global(
+                feedback.ctx,
+                "Your token was created from your earlier attempt, so your latest changes are not in it. Open Tokens to see the token as it was created.",
+                MessageType::Info,
+            )
+            .disable_auto_dismiss();
+        }
         if feedback.delivery.sender_gone
             && let BackendTaskSuccessResult::TransferredTokens(_) = result
         {

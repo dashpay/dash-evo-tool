@@ -21,6 +21,18 @@ impl DomainFeedback for ContractsFeedback {
         {
             show_contract_save_warning(feedback.ctx, warning);
         }
+        if let BackendTaskSuccessResult::RegisteredContract {
+            earlier_version: true,
+            ..
+        } = result
+        {
+            MessageBanner::set_global(
+                feedback.ctx,
+                "Your contract was registered from your earlier attempt, so your latest changes are not in it. To apply them, open Contracts and choose Update Contract.",
+                MessageType::Info,
+            )
+            .disable_auto_dismiss();
+        }
         Vec::new()
     }
 }

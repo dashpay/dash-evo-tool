@@ -202,6 +202,11 @@ impl IdentityHubScreen {
     /// Hint for locked wallets, whose identities are looked for only once unlocked.
     fn locked_wallet_hint(&self) -> Option<LockedWalletHint> {
         let wallets = self.app_context.wallet_context();
+        // An unreadable store lists no identity, so the hint stays.
+        let with_identities = self
+            .app_context
+            .wallet_seed_hashes_with_user_identities()
+            .unwrap_or_default();
         let locked: Vec<_> = self
             .app_context
             .locked_wallet_hashes()
@@ -209,16 +214,7 @@ impl IdentityHubScreen {
             .map(|seed_hash| LockedWallet {
                 seed_hash,
                 alias: wallets.hd_alias(&seed_hash),
-                // Same User-only set the hub lists; an unreadable list keeps the hint.
-                has_listed_identity: self
-                    .app_context
-                    .load_local_qualified_identities_for_wallet(&seed_hash)
-                    .is_ok_and(|identities| {
-                        identities.iter().any(|identity| {
-                            identity.identity_type
-                                == crate::model::qualified_identity::IdentityType::User
-                        })
-                    }),
+                has_listed_identity: with_identities.contains(&seed_hash),
             })
             .collect();
         locked_wallet_hint(&locked, self.app_context.selected_wallet_hash().as_ref())
@@ -1617,6 +1613,46 @@ mod tests {
             .insert_local_qualified_identity(&qualified_identity, &None)
             .expect("seed identity");
         identity_id
+    }
+
+    /// The locked-wallet hint is built every frame, after the hub listed its
+    /// identities. Building it must not replace the sign-time prompt copy of
+    /// the identities the hub listed, or a password prompt for one of them
+    /// loses its name and hint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_locked_wallet_hint_keeps_the_listed_identities_prompt_copy() {
+        use crate::model::secret::Secret;
+        use crate::model::wallet::Wallet;
+
+        let (_dir, context) = wired_test_context().await;
+        let listed = seed_user_identity(&context, 0x61);
+        let mut locked = Wallet::new_from_seed(
+            crate::test_support::keys::seed(),
+            context.network,
+            Some("Savings".to_string()),
+            Some(&Secret::new("correct password")),
+        )
+        .expect("protected wallet");
+        locked.wallet_seed.close();
+        context
+            .wallet_context()
+            .insert_test_wallet(locked.seed_hash(), Arc::new(RwLock::new(locked)));
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // One hub frame: list the identities, then build the hint.
+        assert_eq!(screen.landing(context.egui_ctx()), HubLanding::Home);
+        assert!(
+            screen.locked_wallet_hint().is_some(),
+            "precondition: the locked wallet without an identity is hinted"
+        );
+
+        let prompt_index = context.wallet_backend().expect("backend").secret_access();
+        assert!(
+            prompt_index
+                .identity_prompt_meta(&listed.to_buffer())
+                .is_some(),
+            "the hint must leave the listed identity's prompt copy in place"
+        );
     }
 
     /// Right after the app starts, the network's masternode list is not synced

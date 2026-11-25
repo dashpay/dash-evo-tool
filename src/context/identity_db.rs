@@ -1208,6 +1208,35 @@ impl AppContext {
             })
     }
 
+    /// Wallets owning at least one listed User identity — the wallets whose
+    /// identities the Identities hub lists.
+    ///
+    /// Reads only the stored wrappers: no identity decode and no prompt-index
+    /// seeding, so a screen may call it once per frame.
+    pub(crate) fn wallet_seed_hashes_with_user_identities(
+        &self,
+    ) -> std::result::Result<std::collections::BTreeSet<WalletSeedHash>, TaskError> {
+        let kv = self.det_kv()?;
+        let mut owners = std::collections::BTreeSet::new();
+        for id in load_identity_index(&kv)? {
+            let Some(stored) = kv
+                .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .map_err(identity_err)?
+            else {
+                continue;
+            };
+            if let (Some(seed_hash), Some(_)) = (stored.wallet_hash, stored.wallet_index)
+                && matches!(
+                    IdentityType::from_tag(&stored.identity_type),
+                    Some(IdentityType::User)
+                )
+            {
+                owners.insert(seed_hash);
+            }
+        }
+        Ok(owners)
+    }
+
     /// The masternode/evonode identities for the active network — the
     /// Masternodes-page card list and the page-scoped masternode pill source.
     /// The complement of [`Self::load_local_user_identities`] over the FR-6 type
@@ -2844,6 +2873,59 @@ mod tests {
             TaskError::IdentityBalancesUnavailable { source }
                 if matches!(**source, TaskError::IdentityEncoding { .. })
         ));
+    }
+
+    #[test]
+    fn wallets_with_user_identities_lists_only_owners_of_a_user_identity() {
+        let kv = empty_kv();
+        let (user_owner, node_owner, unindexed) = ([0xA1; 32], [0xB2; 32], [0xC3; 32]);
+        let put = |byte: u8, stored: StoredQualifiedIdentity| {
+            kv.put(DetScope::Identity(&id(byte)), IDENTITY_KEY, &stored)
+                .unwrap();
+            index_add_identity(&kv, &id(byte)).unwrap();
+        };
+        put(
+            1,
+            StoredQualifiedIdentity {
+                wallet_hash: Some(user_owner),
+                wallet_index: Some(0),
+                ..stored("User")
+            },
+        );
+        put(
+            2,
+            StoredQualifiedIdentity {
+                wallet_hash: Some(node_owner),
+                wallet_index: Some(0),
+                ..stored("Masternode")
+            },
+        );
+        put(3, stored("User"));
+        put(
+            4,
+            StoredQualifiedIdentity {
+                wallet_hash: Some(unindexed),
+                ..stored("User")
+            },
+        );
+        // A record still on disk but dropped from the roster is not listed.
+        kv.put(
+            DetScope::Identity(&id(5)),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                wallet_hash: Some([0xD4; 32]),
+                wallet_index: Some(0),
+                ..stored("User")
+            },
+        )
+        .unwrap();
+        let (ctx, _dir) = app_context_over(kv);
+
+        assert_eq!(
+            ctx.wallet_seed_hashes_with_user_identities()
+                .expect("readable store"),
+            std::collections::BTreeSet::from([user_owner])
+        );
     }
 
     #[test]

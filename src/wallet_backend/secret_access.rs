@@ -388,6 +388,17 @@ impl SecretAccess {
         *guard = index;
     }
 
+    /// The prompt copy indexed for `identity_id`, if any.
+    #[cfg(test)]
+    pub(crate) fn identity_prompt_meta(&self, identity_id: &[u8; 32]) -> Option<PromptMeta> {
+        self.inner
+            .identity_prompt_index
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(identity_id)
+            .cloned()
+    }
+
     /// Run `f` with the plaintext secret for `scope`, obtaining it
     /// just-in-time.
     ///

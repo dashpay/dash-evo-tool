@@ -5989,6 +5989,56 @@ mod tests {
         }
     }
 
+    /// A contract or token registration whose result is unknown may have
+    /// run, so with every server unreachable it keeps its own message, which
+    /// names the contract ID to check before registering again.
+    #[test]
+    fn dapi_availability_context_keeps_an_unconfirmed_registration() {
+        let contract_id = Identifier::from([0x42; 32]);
+        let sources = || {
+            let mut sources = Vec::from(unconfirmed_result_errors());
+            sources.push(SdkError::DapiClientError(DapiClientError::Transport(
+                TransportError::Grpc(dash_sdk::dapi_grpc::tonic::Status::unavailable(
+                    "connection refused",
+                )),
+            )));
+            sources.push(SdkError::NoAvailableAddressesToRetry(Box::new(
+                SdkError::DapiClientError(DapiClientError::NoAvailableAddresses),
+            )));
+            sources
+        };
+        let registrations = sources()
+            .into_iter()
+            .map(|source_error| TaskError::ContractRegistrationUnconfirmed {
+                contract_id,
+                source_error: Box::new(source_error),
+            })
+            .chain(sources().into_iter().map(|source_error| {
+                TaskError::TokenRegistrationUnconfirmed {
+                    contract_id,
+                    source_error: Box::new(source_error),
+                }
+            }));
+
+        for error in registrations {
+            let message = error.to_string();
+            let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+            assert!(
+                matches!(
+                    contextualized,
+                    TaskError::ContractRegistrationUnconfirmed { .. }
+                        | TaskError::TokenRegistrationUnconfirmed { .. }
+                ),
+                "expected an unconfirmed registration, got {contextualized:?}"
+            );
+            assert_eq!(contextualized.to_string(), message);
+
+            let shared = std::sync::Arc::new(contextualized)
+                .contextualize_shared_dapi_availability(availability(1, 0));
+            assert_eq!(shared.to_string(), message);
+        }
+    }
+
     /// Each enrolment path names the credential the user is editing, while a
     /// vault read explains how to recover data written by an older build.
     #[test]

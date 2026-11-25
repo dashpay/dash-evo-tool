@@ -2540,10 +2540,11 @@ impl WalletBackend {
     /// scheme does). Best-effort — a missing hint degrades to "no hint", never
     /// an error. Called whenever identities are (re)loaded so the sign-time
     /// prompt for an opted-in identity shows its label and hint.
+    /// `roster` must be sorted by identity ID.
     pub fn seed_identity_prompt_index(
         &self,
         identities: &[crate::model::qualified_identity::QualifiedIdentity],
-        roster: &std::collections::BTreeSet<[u8; 32]>,
+        roster: &[[u8; 32]],
     ) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;

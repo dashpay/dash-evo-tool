@@ -1388,11 +1388,10 @@ impl AppContext {
         let kv = self.det_kv()?;
         let mut ids = load_identity_index(&kv)?;
         ids.sort_unstable();
-        let roster: std::collections::BTreeSet<[u8; 32]> = ids.iter().copied().collect();
         let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
+        for id in &ids {
             let Some(stored) = kv
-                .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
                 .map_err(identity_err)?
             else {
                 continue;
@@ -1407,7 +1406,7 @@ impl AppContext {
         // right label and hint. Display-only and best-effort — the vault scheme,
         // not this index, decides whether a prompt fires.
         if let Ok(backend) = self.wallet_backend() {
-            backend.seed_identity_prompt_index(&out, &roster);
+            backend.seed_identity_prompt_index(&out, &ids);
         }
         Ok(out)
     }
@@ -5860,26 +5859,60 @@ mod tests {
     /// those still shows its name and hint.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_filtered_load_keeps_other_identities_prompt_copy() {
+        use crate::model::qualified_identity::identity_meta::IdentityMeta;
+
         let (ctx, _store, _dir, _events) = staged_context().await;
-        insert_bare_identity(&ctx, 0x71, IdentityType::User);
-        insert_bare_identity(&ctx, 0x72, IdentityType::Masternode);
+        // Insert in reverse ID order so the stored roster is not already sorted.
+        for (byte, identity_type, label, hint) in [
+            (0x72, IdentityType::Masternode, "My masternode", "node hint"),
+            (0x71, IdentityType::User, "alice.dash", "user hint"),
+        ] {
+            let mut qi = crate::context::test_support::bare_user_identity(
+                Identifier::from([byte; 32]),
+                ctx.network,
+            );
+            qi.identity_type = identity_type;
+            if identity_type == IdentityType::User {
+                qi.dpns_names.push(DPNSNameInfo {
+                    name: label.to_string(),
+                    acquired_at: 0,
+                });
+            } else {
+                qi.alias = Some(label.to_string());
+            }
+            ctx.insert_local_qualified_identity(&qi, &None)
+                .expect("store the identity");
+            ctx.wallet_backend()
+                .unwrap()
+                .identity_meta()
+                .set(
+                    ctx.network,
+                    &[byte; 32],
+                    &IdentityMeta {
+                        password_hint: Some(hint.to_string()),
+                    },
+                )
+                .expect("store the password hint");
+        }
         let prompts = ctx.wallet_backend().unwrap().secret_access();
 
         ctx.load_local_voting_identities()
             .expect("masternode-only load");
         ctx.load_local_user_identities().expect("user-only load");
         assert!(prompts.identity_prompt_meta(&[0x71; 32]).is_some());
-        assert!(
-            prompts.identity_prompt_meta(&[0x72; 32]).is_some(),
-            "a user-only load must keep the masternode's prompt copy"
-        );
+        let masternode = prompts
+            .identity_prompt_meta(&[0x72; 32])
+            .expect("a user-only load must keep the masternode's prompt copy");
+        assert_eq!(masternode.alias.as_deref(), Some("My masternode"));
+        assert_eq!(masternode.password_hint.as_deref(), Some("node hint"));
 
         ctx.load_local_voting_identities()
             .expect("masternode-only load");
-        assert!(
-            prompts.identity_prompt_meta(&[0x71; 32]).is_some(),
-            "a masternode-only load must keep the user identity's prompt copy"
-        );
+        let user = prompts
+            .identity_prompt_meta(&[0x71; 32])
+            .expect("a masternode-only load must keep the user identity's prompt copy");
+        assert_eq!(user.alias.as_deref(), Some("alice.dash"));
+        assert_eq!(user.password_hint.as_deref(), Some("user hint"));
         ctx.wallet_backend().unwrap().shutdown().await;
     }
 

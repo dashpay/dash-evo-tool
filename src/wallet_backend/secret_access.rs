@@ -33,7 +33,6 @@
 //! [`secret_prompt`](crate::wallet_backend::secret_prompt) contract.
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -378,9 +377,10 @@ impl SecretAccess {
     /// entry whose identity is no longer in `roster`, in one step. A filtered
     /// load then refreshes only what it read and keeps the rest. Display-only —
     /// never gates whether a prompt fires (the vault scheme does). Poison-safe.
+    /// `roster` must be sorted by identity ID.
     pub fn merge_identity_prompt_index(
         &self,
-        roster: &BTreeSet<[u8; 32]>,
+        roster: &[[u8; 32]],
         loaded: BTreeMap<[u8; 32], PromptMeta>,
     ) {
         let mut guard = self
@@ -388,7 +388,7 @@ impl SecretAccess {
             .identity_prompt_index
             .write()
             .unwrap_or_else(|poison| poison.into_inner());
-        guard.retain(|identity_id, _| roster.contains(identity_id));
+        guard.retain(|identity_id, _| roster.binary_search(identity_id).is_ok());
         guard.extend(loaded);
     }
 
@@ -2425,7 +2425,7 @@ mod tests {
         let alias_of = |id: &[u8; 32]| sa.identity_prompt_meta(id).and_then(|m| m.alias);
         let (kept, refreshed, delisted) = ([0x01; 32], [0x02; 32], [0x03; 32]);
         sa.merge_identity_prompt_index(
-            &BTreeSet::from([kept, refreshed, delisted]),
+            &[kept, refreshed, delisted],
             BTreeMap::from([
                 (kept, meta("kept")),
                 (refreshed, meta("old")),
@@ -2434,7 +2434,7 @@ mod tests {
         );
 
         sa.merge_identity_prompt_index(
-            &BTreeSet::from([kept, refreshed]),
+            &[kept, refreshed],
             BTreeMap::from([(refreshed, meta("new"))]),
         );
 
@@ -2464,7 +2464,7 @@ mod tests {
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(store, prompt.clone());
         sa.merge_identity_prompt_index(
-            &BTreeSet::from([identity_id]),
+            &[identity_id],
             BTreeMap::from([(
                 identity_id,
                 PromptMeta {

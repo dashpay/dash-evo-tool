@@ -974,6 +974,106 @@ mod tests {
         assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
     }
 
+    /// A contract found under the assigned ID that was updated since it was
+    /// created may be this registration, changed later (for example from
+    /// another device); what it was created as is unknown. It stays
+    /// unconfirmed under that ID, and pending, never reported as taken by
+    /// another registration, on a first attempt and on a retry.
+    #[tokio::test]
+    async fn an_updated_contract_under_the_assigned_id_stays_unconfirmed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let mut updated = ctx.dashpay_contract().as_ref().clone();
+        updated.set_version(2);
+        let still_pending = Some(PendingContractRegistration {
+            identity_nonce: 5,
+            contract_id: assigned_id(&ctx, 5),
+        });
+
+        let first = attempt(
+            &ctx,
+            RegistrationKind::Contract,
+            5,
+            Err(unread()),
+            Some(updated.clone()),
+        )
+        .await;
+        assert!(
+            matches!(
+                &first.outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { contract_id, .. })
+                    if *contract_id == assigned_id(&ctx, 5)
+            ),
+            "{:?}",
+            first.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
+
+        let retry = attempt(
+            &ctx,
+            RegistrationKind::Token,
+            6,
+            Err(nonce_refused(
+                MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+            )),
+            Some(updated),
+        )
+        .await;
+        assert_eq!(retry.sent_nonce, Some(5));
+        assert!(
+            matches!(
+                &retry.outcome,
+                Err(TaskError::TokenRegistrationUnconfirmed { contract_id, .. })
+                    if *contract_id == assigned_id(&ctx, 5)
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
+    }
+
+    /// A retry after an unresolved registration that fails before anything
+    /// is sent still leaves the earlier attempt unresolved: it is looked up
+    /// and, not found, reported as unconfirmed with its ID, and stays
+    /// pending.
+    #[tokio::test]
+    async fn a_retry_failing_before_it_is_sent_keeps_the_earlier_attempt_unconfirmed() {
+        use dash_sdk::dapi_client::DapiClientError;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
+
+        let retry = attempt(
+            &ctx,
+            RegistrationKind::Contract,
+            6,
+            Err(SdkError::DapiClientError(
+                DapiClientError::NoAvailableAddresses,
+            )),
+            None,
+        )
+        .await;
+
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+        assert!(
+            matches!(
+                &retry.outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { contract_id, .. })
+                    if *contract_id == assigned_id(&ctx, 5)
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(
+            ctx.pending_contract_registration(&owner)
+                .map(|p| p.identity_nonce),
+            Some(5)
+        );
+    }
+
     /// An earlier attempt found under the shared ID after its nonce became
     /// unusable is the registration: confirmed and no longer pending.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

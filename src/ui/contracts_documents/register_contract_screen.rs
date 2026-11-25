@@ -40,6 +40,9 @@ enum BroadcastStatus {
     /// The registration was refused before it ran, or the network has not
     /// confirmed it; the message says what to do.
     NotRegistered(String),
+    /// The registration was refused before it ran; the contract can be sent
+    /// again.
+    Refused(String, Box<DataContract>),
     Done,
 }
 
@@ -188,9 +191,12 @@ impl RegisterDataContractScreen {
     }
 
     /// The contract the Register button would send now, if any.
+    #[cfg(test)]
     fn registrable_contract(&self) -> Option<&DataContract> {
         match &self.broadcast_status {
-            BroadcastStatus::ValidContract(contract) => Some(contract),
+            BroadcastStatus::ValidContract(contract) | BroadcastStatus::Refused(_, contract) => {
+                Some(contract)
+            }
             _ => None,
         }
     }
@@ -200,7 +206,9 @@ impl RegisterDataContractScreen {
         match &self.broadcast_status {
             BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
             BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
-            BroadcastStatus::NotRegistered(msg) => Some(msg.clone()),
+            BroadcastStatus::NotRegistered(msg) | BroadcastStatus::Refused(msg, _) => {
+                Some(msg.clone())
+            }
             _ => None,
         }
     }
@@ -220,7 +228,15 @@ impl RegisterDataContractScreen {
                         ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
                         ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
-                            self.broadcast_status = BroadcastStatus::Idle;
+                            self.broadcast_status = match std::mem::replace(
+                                &mut self.broadcast_status,
+                                BroadcastStatus::Idle,
+                            ) {
+                                BroadcastStatus::Refused(_, contract) => {
+                                    BroadcastStatus::ValidContract(contract)
+                                }
+                                _ => BroadcastStatus::Idle,
+                            };
                         }
                     });
                 });
@@ -242,7 +258,7 @@ impl RegisterDataContractScreen {
             | BroadcastStatus::NotRegistered(_) => {
                 // Errors are now shown at the top via render_error_bubble
             }
-            BroadcastStatus::ValidContract(contract) => {
+            BroadcastStatus::ValidContract(contract) | BroadcastStatus::Refused(_, contract) => {
                 // Display estimated fee using SDK's registration_cost method
                 // This accounts for document types, indexes, tokens, and keywords
                 let platform_version = self.app_context.platform_version();
@@ -319,8 +335,9 @@ impl RegisterDataContractScreen {
         }
 
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
-            && let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task
+            && let ContractTask::RegisterDataContract(contract, ..) = &**contract_task
         {
+            self.sent_contract = Some(Box::new(contract.clone()));
             self.broadcast_status = BroadcastStatus::Broadcasting;
             self.refresh_banner.take_and_clear();
             let handle =
@@ -375,17 +392,21 @@ impl ScreenLike for RegisterDataContractScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if !matches!(
-            error,
-            TaskError::ContractRegistrationUnconfirmed { .. }
-                | TaskError::ContractRegistrationInProgress
-                | TaskError::RegistrationNonceRefused { .. }
-                | TaskError::ContractRegistrationPreempted { .. }
-        ) {
-            return false;
-        }
+        let refused_before_it_ran = match error {
+            TaskError::ContractRegistrationUnconfirmed { .. } => false,
+            TaskError::ContractRegistrationInProgress
+            | TaskError::RegistrationNonceRefused { .. }
+            | TaskError::ContractRegistrationPreempted { .. }
+            | TaskError::ContractRegistrationReplacedByEarlier { .. } => true,
+            _ => return false,
+        };
         self.refresh_banner.take_and_clear();
-        self.broadcast_status = BroadcastStatus::NotRegistered(error.to_string());
+        // Only a refused registration is offered again; one that may have run
+        // keeps its guidance to check the contract ID first.
+        self.broadcast_status = match (refused_before_it_ran, self.sent_contract.clone()) {
+            (true, Some(contract)) => BroadcastStatus::Refused(error.to_string(), contract),
+            _ => BroadcastStatus::NotRegistered(error.to_string()),
+        };
         true
     }
 

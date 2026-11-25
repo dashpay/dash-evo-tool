@@ -15,23 +15,35 @@ impl DomainFeedback for ContractsFeedback {
         result: &BackendTaskSuccessResult,
     ) -> Vec<CacheUpdate> {
         if let BackendTaskSuccessResult::RegisteredContract {
-            save_warning: Some(warning),
+            save_warning,
+            earlier_version,
             ..
         } = result
         {
-            show_contract_save_warning(feedback.ctx, warning);
-        }
-        if let BackendTaskSuccessResult::RegisteredContract {
-            earlier_version: true,
-            ..
-        } = result
-        {
-            MessageBanner::set_global(
-                feedback.ctx,
-                "Your contract was registered from your earlier attempt, so your latest changes are not in it. To apply them, open Contracts and choose Update Contract.",
-                MessageType::Info,
-            )
-            .disable_auto_dismiss();
+            match (save_warning, earlier_version) {
+                (Some(warning), true) => {
+                    let contract_id = warning.contract_id();
+                    let banner = MessageBanner::set_global(
+                        feedback.ctx,
+                        format!(
+                            "Your contract was registered from your earlier attempt, so your latest changes are not in it, and it could not be saved on this device. To apply your changes, first open Contracts, choose Load Contracts and enter contract ID {contract_id}. Then choose Update Contract."
+                        ),
+                        MessageType::Warning,
+                    );
+                    banner.with_details(warning);
+                    banner.disable_auto_dismiss();
+                }
+                (Some(warning), false) => show_contract_save_warning(feedback.ctx, warning),
+                (None, true) => {
+                    MessageBanner::set_global(
+                        feedback.ctx,
+                        "Your contract was registered from your earlier attempt, so your latest changes are not in it. To apply them, open Contracts and choose Update Contract.",
+                        MessageType::Info,
+                    )
+                    .disable_auto_dismiss();
+                }
+                (None, false) => {}
+            }
         }
         Vec::new()
     }

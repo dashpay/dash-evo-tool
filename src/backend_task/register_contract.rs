@@ -49,13 +49,32 @@ pub(crate) struct PendingContractRegistration {
     pub(crate) contract_id: Identifier,
 }
 
-/// A pending registration with every contract sent under its nonce, so a
-/// contract found under its ID can be told apart from one registered
-/// elsewhere.
+/// A pending registration with every attempt under its nonce that may still
+/// run, so a contract found under its ID can be matched to the request that
+/// sent it, or told apart from one registered elsewhere.
 #[derive(Debug)]
 pub(crate) struct PendingContractAttempts {
     registration: PendingContractRegistration,
-    sent: Vec<DataContract>,
+    sent: Vec<SentAttempt>,
+}
+
+/// One request's contract sent under a pending nonce.
+#[derive(Debug, Clone)]
+struct SentAttempt {
+    contract: DataContract,
+    kind: RegistrationKind,
+    alias: Option<String>,
+}
+
+/// Whose registration a contract found under the assigned ID is.
+enum FoundRegistration {
+    /// The current request's, as sent now or, if `earlier_version`, as an
+    /// earlier attempt of the same request sent it.
+    ThisRequest { earlier_version: bool },
+    /// An earlier attempt of another request: a different kind or name.
+    EarlierRequest { alias: Option<String> },
+    /// No attempt from this app: registered elsewhere with the same nonce.
+    Elsewhere,
 }
 
 /// Marks an owner's registration as being sent while alive; dropping it, on
@@ -116,6 +135,13 @@ impl RegistrationKind {
                 contract_id,
                 source,
             },
+        }
+    }
+
+    fn replaced_by_earlier(self, contract_id: Identifier) -> TaskError {
+        match self {
+            Self::Contract => TaskError::ContractRegistrationReplacedByEarlier { contract_id },
+            Self::Token => TaskError::TokenRegistrationReplacedByEarlier { contract_id },
         }
     }
 
@@ -245,6 +271,12 @@ impl AppContext {
             identity_nonce,
             contract_id,
         };
+        // Reserved before anything is sent, so a cancelled send still counts.
+        let attempt = SentAttempt {
+            contract: submitted,
+            kind,
+            alias: alias.map(str::to_owned),
+        };
         self.pending_registrations()
             .entry(owner_id)
             .or_insert_with(|| PendingContractAttempts {
@@ -252,7 +284,7 @@ impl AppContext {
                 sent: Vec::new(),
             })
             .sent
-            .push(submitted.clone());
+            .push(attempt.clone());
 
         let error = match submit(transition).await {
             Ok(contract) => {
@@ -263,15 +295,12 @@ impl AppContext {
             }
             Err(error) => error,
         };
-        // A refused nonce hints at an earlier attempt only when this one reused
-        // it; a fresh nonce already used was spent elsewhere. Any other failure
-        // leaves an earlier unresolved attempt as unresolved as it was.
         let refusal = nonce_refusal(&error);
-        let earlier_attempt_may_have_run = match refusal {
-            Some(_) => reused.is_some(),
-            None => reused.is_some() || may_have_registered(&error),
-        };
-        if earlier_attempt_may_have_run {
+        // A refused or unsent attempt cannot run; any other may still.
+        let this_may_run = !(error.consensus_error().is_some() || was_never_sent(&error));
+        let earlier_may_run = self.forget_last_attempt_unless(owner_id, pending, this_may_run);
+        let look_up = may_have_registered(&error) || earlier_may_run;
+        if look_up {
             match find(contract_id).await {
                 // Updated since it was created, so what it was created as is
                 // unknown: it may be this registration, changed later.
@@ -284,29 +313,42 @@ impl AppContext {
                     return Err(kind.unconfirmed(contract_id, error));
                 }
                 Ok(Some(registered)) => {
-                    let earlier_version =
-                        !is_submitted_contract(&submitted, &registered, platform_version);
-                    let sent_here = !earlier_version
-                        || self.was_sent_for(owner_id, &registered, platform_version);
+                    let found =
+                        self.whose_registration(owner_id, &registered, &attempt, platform_version);
                     self.settle_pending_contract_registration(owner_id, pending);
-                    // Never sent here: the identity registered it elsewhere
-                    // with the same nonce, so this registration cannot run.
-                    if !sent_here {
-                        tracing::warn!(
-                            %contract_id,
-                            "A contract this app did not send was found under a registration's assigned ID"
-                        );
-                        return Err(kind.preempted(contract_id, error));
-                    }
-                    return Ok(self
-                        .finish_confirmed_registration(
-                            &registered,
-                            alias,
-                            fee_result,
-                            kind,
-                            earlier_version,
-                        )
-                        .await);
+                    return match found {
+                        FoundRegistration::ThisRequest { earlier_version } => Ok(self
+                            .finish_confirmed_registration(
+                                &registered,
+                                alias,
+                                fee_result,
+                                kind,
+                                earlier_version,
+                            )
+                            .await),
+                        FoundRegistration::EarlierRequest { alias } => {
+                            if let Err(source) = self
+                                .save_registered_contract(&registered, alias.as_deref())
+                                .await
+                            {
+                                tracing::warn!(
+                                    ?source,
+                                    %contract_id,
+                                    "An earlier request's registered contract could not be saved locally"
+                                );
+                            }
+                            Err(kind.replaced_by_earlier(contract_id))
+                        }
+                        // The identity registered it elsewhere with the same
+                        // nonce, so this registration cannot run.
+                        FoundRegistration::Elsewhere => {
+                            tracing::warn!(
+                                %contract_id,
+                                "A contract this app did not send was found under a registration's assigned ID"
+                            );
+                            Err(kind.preempted(contract_id, error))
+                        }
+                    };
                 }
                 Ok(None) => {}
                 // A failed lookup tells nothing, so the registration stays pending.
@@ -320,20 +362,21 @@ impl AppContext {
                 }
             }
         }
+        // Not found: an attempt that may still run keeps the registration
+        // pending and unresolved, never a failure inviting a second one.
         match refusal {
-            // Not found, the registration stays pending and unresolved, never
-            // a failure inviting a second registration.
-            Some(NonceRefusal::AlreadyUsed) if reused.is_some() => {
-                Err(kind.unconfirmed(contract_id, error))
-            }
-            None if earlier_attempt_may_have_run => Err(kind.unconfirmed(contract_id, error)),
             // No attempt carrying this nonce has executed or ever will.
-            Some(_) => {
+            Some(NonceRefusal::Unusable) => {
                 self.settle_pending_contract_registration(owner_id, pending);
                 Err(TaskError::RegistrationNonceRefused {
                     source_error: Box::new(error),
                 })
             }
+            _ if look_up => Err(kind.unconfirmed(contract_id, error)),
+            // Refused, with no attempt left that may run: nothing is pending.
+            Some(_) => Err(TaskError::RegistrationNonceRefused {
+                source_error: Box::new(error),
+            }),
             None => Err(TaskError::from(error)),
         }
     }
@@ -351,10 +394,7 @@ impl AppContext {
         kind: RegistrationKind,
         earlier_version: bool,
     ) -> BackendTaskSuccessResult {
-        let saved = retry_local_save(|| {
-            self.insert_contract_if_not_exists(contract, alias, AllTokensShouldBeAdded)
-        })
-        .await;
+        let saved = self.save_registered_contract(contract, alias).await;
         let save_warning = saved.err().map(|source| {
             tracing::warn!(
                 ?source,
@@ -376,22 +416,81 @@ impl AppContext {
             .map(|attempts| attempts.registration)
     }
 
-    /// Whether `registered` is a contract this app sent under `owner`'s
-    /// pending registration.
-    fn was_sent_for(
+    /// Saves a contract Platform confirmed under `alias`, with its tokens.
+    async fn save_registered_contract(
+        &self,
+        contract: &DataContract,
+        alias: Option<&str>,
+    ) -> Result<(), TaskError> {
+        retry_local_save(|| {
+            self.insert_contract_if_not_exists(contract, alias, AllTokensShouldBeAdded)
+        })
+        .await
+    }
+
+    /// Unless `may_run`, forgets the attempt just sent under `owner`'s
+    /// pending registration, and the registration itself when no attempt is
+    /// left. Returns whether an earlier attempt may still run.
+    fn forget_last_attempt_unless(
+        &self,
+        owner: Identifier,
+        pending: PendingContractRegistration,
+        may_run: bool,
+    ) -> bool {
+        let mut registrations = self.pending_registrations();
+        let Some(attempts) = registrations
+            .get_mut(&owner)
+            .filter(|attempts| attempts.registration == pending)
+        else {
+            return false;
+        };
+        let earlier = attempts.sent.len().saturating_sub(1);
+        if !may_run {
+            attempts.sent.pop();
+            if attempts.sent.is_empty() {
+                registrations.remove(&owner);
+            }
+        }
+        earlier > 0
+    }
+
+    /// Whose registration `registered`, found under `owner`'s assigned ID, is:
+    /// the current request's (`current`), an earlier request's sent from
+    /// here under the same nonce, or one registered elsewhere.
+    fn whose_registration(
         &self,
         owner: Identifier,
         registered: &DataContract,
+        current: &SentAttempt,
         platform_version: &PlatformVersion,
-    ) -> bool {
-        self.pending_registrations()
+    ) -> FoundRegistration {
+        if is_submitted_contract(&current.contract, registered, platform_version) {
+            return FoundRegistration::ThisRequest {
+                earlier_version: false,
+            };
+        }
+        let registrations = self.pending_registrations();
+        let matching: Vec<&SentAttempt> = registrations
             .get(&owner)
-            .is_some_and(|attempts| {
-                attempts
-                    .sent
-                    .iter()
-                    .any(|sent| is_submitted_contract(sent, registered, platform_version))
-            })
+            .map(|attempts| attempts.sent.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .filter(|sent| is_submitted_contract(&sent.contract, registered, platform_version))
+            .collect();
+        if matching
+            .iter()
+            .any(|sent| sent.kind == current.kind && sent.alias == current.alias)
+        {
+            return FoundRegistration::ThisRequest {
+                earlier_version: true,
+            };
+        }
+        match matching.first() {
+            Some(sent) => FoundRegistration::EarlierRequest {
+                alias: sent.alias.clone(),
+            },
+            None => FoundRegistration::Elsewhere,
+        }
     }
 
     /// Marks `owner`'s registration as being sent until the returned guard
@@ -511,6 +610,14 @@ fn is_submitted_contract(
     }
 }
 
+/// Whether `error` came before the transition was sent to any node.
+fn was_never_sent(error: &SdkError) -> bool {
+    matches!(
+        error,
+        SdkError::DapiClientError(dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses)
+    )
+}
+
 /// Whether a failed registration may still have been executed: its result
 /// could not be read or proved, so only a lookup can tell.
 fn may_have_registered(error: &SdkError) -> bool {
@@ -527,6 +634,9 @@ enum NonceRefusal {
     /// The nonce can no longer be accepted, so no attempt carrying it will
     /// ever execute.
     Unusable,
+    /// The nonce is ahead of what the node has seen. The node may lag, so an
+    /// earlier attempt carrying it may still execute.
+    NotYet,
 }
 
 /// The nonce refusal behind `error`, read from its typed consensus cause.
@@ -538,6 +648,7 @@ fn nonce_refusal(error: &SdkError) -> Option<NonceRefusal> {
                 | MergeIdentityNonceResult::NonceAlreadyPresentInPast(_) => {
                     NonceRefusal::AlreadyUsed
                 }
+                MergeIdentityNonceResult::NonceTooFarInFuture => NonceRefusal::NotYet,
                 _ => NonceRefusal::Unusable,
             })
         }

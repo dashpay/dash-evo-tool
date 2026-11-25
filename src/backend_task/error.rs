@@ -294,6 +294,15 @@ pub enum ContractSaveWarning {
     },
 }
 
+impl ContractSaveWarning {
+    /// The ID of the registered contract that could not be saved.
+    pub(crate) fn contract_id(&self) -> dash_sdk::platform::Identifier {
+        match self {
+            Self::Contract { contract_id, .. } | Self::Token { contract_id, .. } => *contract_id,
+        }
+    }
+}
+
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
 /// Shared, so one stopped task batch can report it for each of its tasks.
 #[derive(Clone)]

@@ -439,8 +439,9 @@ impl AppContext {
             // told to check the contract ID before registering again.
             // Trade-off: registering again without that check, while a node
             // still misses a created contract, pays for a second one.
-            // TODO(DET-1230-D53): link the dashpay/platform umbrella issue for
-            // generic handling of unknown state-transition outcomes.
+            // TODO: switch to generic handling of unknown state-transition
+            // outcomes once https://github.com/dashpay/platform/issues/6308
+            // provides it.
             Some(NonceRefusal::AlreadyUsed) if look_up => {
                 self.settle_pending_contract_registration(owner_id, pending);
                 Err(kind.identity_changed(contract_id, owner_id, self.network(), error))

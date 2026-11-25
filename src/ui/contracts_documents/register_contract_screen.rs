@@ -29,16 +29,6 @@ use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
-/// Progress text while a sent registration awaits the network's
-/// confirmation; the form stays without a Register button until it ends.
-fn contract_awaiting_confirmation() -> String {
-    format!(
-        "Your contract was sent, but the network has not confirmed it yet. The app keeps checking for up to {minutes} minutes. You do not need to do anything.",
-        minutes =
-            crate::backend_task::register_contract::registration_confirmation_window_minutes()
-    )
-}
-
 #[derive(PartialEq)]
 enum BroadcastStatus {
     Idle,
@@ -47,8 +37,8 @@ enum BroadcastStatus {
     Broadcasting,
     ProofError,
     BroadcastError(String),
-    /// The network did not confirm a sent registration in time; the message
-    /// says how to check before registering again.
+    /// The network has not confirmed a sent registration; the message says
+    /// how to check it.
     NotConfirmed(String),
     Done,
 }
@@ -394,11 +384,6 @@ impl ScreenLike for RegisterDataContractScreen {
             BackendTaskSuccessResult::ProofErrorLogged => {
                 self.broadcast_status = BroadcastStatus::ProofError;
             }
-            BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation => {
-                if let Some(banner) = &self.refresh_banner {
-                    banner.set_message(contract_awaiting_confirmation());
-                }
-            }
             BackendTaskSuccessResult::ContractSavedAfterProofError => {
                 self.refresh_banner.take_and_clear();
                 self.broadcast_status = BroadcastStatus::Done;
@@ -623,8 +608,8 @@ impl ScreenLike for RegisterDataContractScreen {
 mod tests {
     use super::*;
 
-    /// A registration the network did not confirm in time is shown by the
-    /// screen in its own words, not as a broadcast error, and needs no extra
+    /// A registration the network has not confirmed is shown by the screen
+    /// in its own words, not as a broadcast error, and needs no extra
     /// banner; other errors keep the generic handling.
     #[test]
     fn an_unconfirmed_registration_is_not_shown_as_a_broadcast_error() {

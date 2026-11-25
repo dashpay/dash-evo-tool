@@ -65,6 +65,7 @@ mod tests {
             &BackendTaskSuccessResult::RegisteredContract {
                 fee_result: FeeResult::estimated_only(1),
                 save_warning: None,
+                earlier_version: false,
             },
         );
         assert!(global_banner_texts(&ctx).is_empty());
@@ -78,6 +79,7 @@ mod tests {
                     contract_id,
                     source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
                 }),
+                earlier_version: false,
             },
         );
         let texts = global_banner_texts(&ctx);
@@ -88,5 +90,24 @@ mod tests {
         );
         assert!(texts[0].contains("Load Contracts"), "{texts:?}");
         assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
+    }
+
+    /// A registration Platform holds as an earlier attempt sent it says so,
+    /// with how to apply the latest changes.
+    #[test]
+    fn an_earlier_version_registered_is_reported() {
+        let ctx = egui::Context::default();
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredContract {
+                fee_result: FeeResult::estimated_only(1),
+                save_warning: None,
+                earlier_version: true,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("earlier attempt"), "{texts:?}");
+        assert!(texts[0].contains("Update Contract"), "{texts:?}");
     }
 }

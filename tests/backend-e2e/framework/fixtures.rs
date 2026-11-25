@@ -119,7 +119,9 @@ pub async fn shared_token() -> &'static SharedToken {
                 .expect("SharedToken: token contract registration failed");
 
             match result {
-                BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None } => {
+                BackendTaskSuccessResult::RegisteredTokenContract {
+                    save_warning: None, ..
+                } => {
                     tracing::info!("SharedToken: contract registered, fetching from Platform...");
                 }
                 other => panic!(

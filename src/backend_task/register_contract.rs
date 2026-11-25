@@ -58,13 +58,18 @@ impl RegistrationKind {
         self,
         fee_result: FeeResult,
         save_warning: Option<ContractSaveWarning>,
+        earlier_version: bool,
     ) -> BackendTaskSuccessResult {
         match self {
             Self::Contract => BackendTaskSuccessResult::RegisteredContract {
                 fee_result,
                 save_warning,
+                earlier_version,
             },
-            Self::Token => BackendTaskSuccessResult::RegisteredTokenContract { save_warning },
+            Self::Token => BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning,
+                earlier_version,
+            },
         }
     }
 
@@ -197,26 +202,22 @@ impl AppContext {
             Ok(contract) => {
                 self.settle_pending_contract_registration(owner_id, pending);
                 Ok(self
-                    .finish_confirmed_registration(&contract, alias, fee_result, kind)
+                    .finish_confirmed_registration(&contract, alias, fee_result, kind, false)
                     .await)
             }
             Err(error)
                 if may_have_registered(&error)
                     || nonce_refusal(&error) == Some(NonceRefusal::AlreadyUsed) =>
             {
-                let found = find(contract_id).await?;
-                if found.is_some() {
-                    self.settle_pending_contract_registration(owner_id, pending);
-                }
-                self.settle_unconfirmed_registration(
-                    found,
-                    contract_id,
-                    error,
-                    alias,
-                    fee_result,
-                    kind,
-                )
-                .await
+                // Not found, the registration stays pending and unresolved,
+                // never a failure inviting a second registration.
+                let Some(registered) = find(contract_id).await? else {
+                    return Err(kind.unconfirmed(contract_id, error));
+                };
+                self.settle_pending_contract_registration(owner_id, pending);
+                Ok(self
+                    .finish_confirmed_registration(&registered, alias, fee_result, kind, false)
+                    .await)
             }
             Err(error) => {
                 if nonce_refusal(&error) == Some(NonceRefusal::Unusable) {
@@ -227,35 +228,18 @@ impl AppContext {
         }
     }
 
-    /// Settles a registration whose result could not be read, by the lookup
-    /// under its Platform-assigned ID: found is confirmed; not found stays
-    /// unresolved, never a failure inviting a second registration.
-    async fn settle_unconfirmed_registration(
-        &self,
-        found: Option<DataContract>,
-        contract_id: Identifier,
-        error: SdkError,
-        alias: Option<&str>,
-        fee_result: FeeResult,
-        kind: RegistrationKind,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        match found {
-            Some(contract) => Ok(self
-                .finish_confirmed_registration(&contract, alias, fee_result, kind)
-                .await),
-            None => Err(kind.unconfirmed(contract_id, error)),
-        }
-    }
-
     /// Saves a contract Platform confirmed and reports the registration as
     /// done. The fee is already paid, so a save that keeps failing becomes a
     /// warning on the success, never an error inviting a second registration.
+    /// `earlier_version`: the contract is an earlier attempt's, not the one
+    /// last submitted.
     async fn finish_confirmed_registration(
         &self,
         contract: &DataContract,
         alias: Option<&str>,
         fee_result: FeeResult,
         kind: RegistrationKind,
+        earlier_version: bool,
     ) -> BackendTaskSuccessResult {
         let saved = retry_local_save(|| {
             self.insert_contract_if_not_exists(contract, alias, AllTokensShouldBeAdded)
@@ -269,7 +253,7 @@ impl AppContext {
             );
             kind.save_warning(contract.id(), source)
         });
-        kind.registered(fee_result, save_warning)
+        kind.registered(fee_result, save_warning, earlier_version)
     }
 
     /// `owner`'s registration sent but not settled, if any.
@@ -510,11 +494,12 @@ mod tests {
         fresh_nonce_read: bool,
     }
 
-    /// Drives [`AppContext::register_signed_contract`] for the DPNS contract,
-    /// offering `fresh_nonce` as the owner's next nonce and `submitted` as the
-    /// network's answer; the lookup answers `found`.
+    /// Drives [`AppContext::register_signed_contract`] for the DPNS contract
+    /// as `kind`, offering `fresh_nonce` as the owner's next nonce and
+    /// `submitted` as the network's answer; the lookup answers `found`.
     async fn attempt(
         ctx: &AppContext,
+        kind: RegistrationKind,
         fresh_nonce: IdentityNonce,
         submitted: Result<DataContract, SdkError>,
         found: Option<DataContract>,
@@ -534,7 +519,7 @@ mod tests {
                 &FixedSigner,
                 ctx.platform_version(),
                 None,
-                RegistrationKind::Contract,
+                kind,
                 |transition| {
                     if let StateTransition::DataContractCreate(create) = &transition {
                         sent_nonce.set(Some(create.identity_nonce()));
@@ -564,7 +549,7 @@ mod tests {
         Result<BackendTaskSuccessResult, TaskError>,
         Option<Identifier>,
     ) {
-        let done = attempt(ctx, 5, submitted, found).await;
+        let done = attempt(ctx, RegistrationKind::Contract, 5, submitted, found).await;
         (done.outcome, done.asked)
     }
 
@@ -594,7 +579,7 @@ mod tests {
         let ctx = test_app_context(dir.path());
         let owner = ctx.dpns_contract().owner_id();
 
-        let first = attempt(&ctx, 5, Err(unread()), None).await;
+        let first = attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
         assert!(first.fresh_nonce_read);
         assert_eq!(first.sent_nonce, Some(5));
         assert_eq!(
@@ -605,7 +590,7 @@ mod tests {
             })
         );
 
-        let retry = attempt(&ctx, 6, Err(unread()), None).await;
+        let retry = attempt(&ctx, RegistrationKind::Contract, 6, Err(unread()), None).await;
         assert!(!retry.fresh_nonce_read);
         assert_eq!(retry.sent_nonce, Some(5));
         assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
@@ -624,9 +609,16 @@ mod tests {
             MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
             MergeIdentityNonceResult::NonceAlreadyPresentInPast(2),
         ] {
-            attempt(&ctx, 5, Err(unread()), None).await;
+            attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
             let earlier = ctx.dpns_contract().as_ref().clone();
-            let retry = attempt(&ctx, 6, Err(nonce_refused(used)), Some(earlier)).await;
+            let retry = attempt(
+                &ctx,
+                RegistrationKind::Contract,
+                6,
+                Err(nonce_refused(used)),
+                Some(earlier),
+            )
+            .await;
 
             assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
             assert!(
@@ -648,14 +640,14 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
-        attempt(&ctx, 5, Err(unread()), None).await;
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
         let present = SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(
             ConsensusError::StateError(StateError::DataContractAlreadyPresentError(
                 DataContractAlreadyPresentError::new(assigned_id(&ctx, 5)),
             )),
         )));
 
-        let retry = attempt(&ctx, 6, Err(present), None).await;
+        let retry = attempt(&ctx, RegistrationKind::Contract, 6, Err(present), None).await;
 
         assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
     }
@@ -667,10 +659,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
         let owner = ctx.dpns_contract().owner_id();
-        attempt(&ctx, 5, Err(unread()), None).await;
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
 
         let retry = attempt(
             &ctx,
+            RegistrationKind::Contract,
             6,
             Err(nonce_refused(
                 MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
@@ -703,10 +696,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
         let owner = ctx.dpns_contract().owner_id();
-        attempt(&ctx, 5, Err(unread()), None).await;
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
 
         let retry = attempt(
             &ctx,
+            RegistrationKind::Contract,
             6,
             Err(nonce_refused(MergeIdentityNonceResult::NonceTooFarInPast)),
             None,
@@ -723,7 +717,7 @@ mod tests {
             retry.outcome
         );
         assert_eq!(ctx.pending_contract_registration(&owner), None);
-        let next = attempt(&ctx, 7, Err(unread()), None).await;
+        let next = attempt(&ctx, RegistrationKind::Contract, 7, Err(unread()), None).await;
         assert_eq!(next.sent_nonce, Some(7));
     }
 
@@ -734,13 +728,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
         let owner = ctx.dpns_contract().owner_id();
-        attempt(&ctx, 5, Err(unread()), None).await;
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
 
         let confirmed = ctx.dpns_contract().as_ref().clone();
-        attempt(&ctx, 6, Ok(confirmed), None).await;
+        attempt(&ctx, RegistrationKind::Contract, 6, Ok(confirmed), None).await;
         assert_eq!(ctx.pending_contract_registration(&owner), None);
 
-        let next = attempt(&ctx, 7, Err(unread()), None).await;
+        let next = attempt(&ctx, RegistrationKind::Contract, 7, Err(unread()), None).await;
         assert!(next.fresh_nonce_read);
         assert_eq!(next.sent_nonce, Some(7));
     }
@@ -851,55 +845,91 @@ mod tests {
     }
 
     /// A registration found under its assigned ID after an unread result is
-    /// confirmed, saved, and reported as done, for both kinds.
+    /// confirmed, saved, and reported as done, for both kinds; found as it
+    /// was submitted, it is not an earlier version.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_registration_found_after_an_unread_result_is_confirmed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
-        let contract = ctx.dpns_contract().as_ref().clone();
+        let registered = ctx.dpns_contract().as_ref().clone();
 
-        let result = ctx
-            .settle_unconfirmed_registration(
-                Some(contract.clone()),
-                contract.id(),
-                SdkError::StateTransitionResultUnconfirmed(Box::new(proof_error())),
-                Some("alias"),
-                FeeResult::estimated_only(7),
-                RegistrationKind::Contract,
-            )
-            .await;
+        let contract = attempt(
+            &ctx,
+            RegistrationKind::Contract,
+            5,
+            Err(unread()),
+            Some(registered.clone()),
+        )
+        .await;
         assert!(
             matches!(
-                result,
+                contract.outcome,
                 Ok(BackendTaskSuccessResult::RegisteredContract {
                     save_warning: None,
+                    earlier_version: false,
                     ..
                 })
             ),
-            "{result:?}"
+            "{:?}",
+            contract.outcome
         );
         assert!(
-            ctx.get_contract_by_id(&contract.id())
+            ctx.get_contract_by_id(&registered.id())
                 .expect("read saved contract")
                 .is_some()
         );
 
-        let result = ctx
-            .settle_unconfirmed_registration(
-                Some(contract.clone()),
-                contract.id(),
-                proof_error(),
-                None,
-                FeeResult::estimated_only(7),
-                RegistrationKind::Token,
-            )
-            .await;
+        let token = attempt(
+            &ctx,
+            RegistrationKind::Token,
+            6,
+            Err(proof_error()),
+            Some(registered),
+        )
+        .await;
         assert!(
             matches!(
-                result,
-                Ok(BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None })
+                token.outcome,
+                Ok(BackendTaskSuccessResult::RegisteredTokenContract {
+                    save_warning: None,
+                    earlier_version: false,
+                })
             ),
-            "{result:?}"
+            "{:?}",
+            token.outcome
+        );
+    }
+
+    /// Found under the shared ID in a version an earlier attempt sent, the
+    /// registration is done, and the result says it is that earlier version;
+    /// the contract saved here is the one Platform holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_registration_found_in_an_earlier_version_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let earlier = ctx.dashpay_contract().as_ref().clone();
+
+        for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
+            let done = attempt(&ctx, kind, 5, Err(unread()), Some(earlier.clone())).await;
+            assert!(
+                matches!(
+                    done.outcome,
+                    Ok(BackendTaskSuccessResult::RegisteredContract {
+                        earlier_version: true,
+                        ..
+                    }) | Ok(BackendTaskSuccessResult::RegisteredTokenContract {
+                        earlier_version: true,
+                        ..
+                    })
+                ),
+                "{kind:?}: {:?}",
+                done.outcome
+            );
+        }
+        assert!(
+            ctx.get_contract_by_id(&earlier.id())
+                .expect("read saved contract")
+                .is_some()
         );
     }
 
@@ -909,19 +939,12 @@ mod tests {
     async fn a_registration_not_found_after_an_unread_result_stays_unresolved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
-        let contract_id = Identifier::from([0x42; 32]);
+        let assigned = assigned_id(&ctx, 5);
 
         for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
-            let error = ctx
-                .settle_unconfirmed_registration(
-                    None,
-                    contract_id,
-                    SdkError::StateTransitionResultUnconfirmed(Box::new(proof_error())),
-                    None,
-                    FeeResult::estimated_only(7),
-                    kind,
-                )
+            let error = attempt(&ctx, kind, 5, Err(unread()), None)
                 .await
+                .outcome
                 .expect_err("an unresolved registration is not a success");
             let named_id = match (&error, kind) {
                 (
@@ -934,9 +957,9 @@ mod tests {
                 ) => *contract_id,
                 _ => panic!("{kind:?}: expected an unconfirmed registration, got {error:?}"),
             };
-            assert_eq!(named_id, contract_id);
+            assert_eq!(named_id, assigned);
             let message = error.to_string();
-            assert!(message.contains(&format!("{contract_id}")), "{message}");
+            assert!(message.contains(&format!("{assigned}")), "{message}");
             assert!(message.contains("safe"), "{message}");
             assert!(!message.contains("try again"), "{message}");
         }
@@ -958,11 +981,13 @@ mod tests {
                 Some("alias"),
                 FeeResult::estimated_only(7),
                 RegistrationKind::Contract,
+                false,
             )
             .await;
         let BackendTaskSuccessResult::RegisteredContract {
             fee_result,
             save_warning: Some(ContractSaveWarning::Contract { contract_id, .. }),
+            ..
         } = result
         else {
             panic!("expected a registered contract with a save warning, got {result:?}");
@@ -976,10 +1001,12 @@ mod tests {
                 None,
                 FeeResult::estimated_only(7),
                 RegistrationKind::Token,
+                false,
             )
             .await;
         let BackendTaskSuccessResult::RegisteredTokenContract {
             save_warning: Some(warning @ ContractSaveWarning::Token { .. }),
+            ..
         } = result
         else {
             panic!("expected a registered token with a save warning, got {result:?}");
@@ -1001,6 +1028,7 @@ mod tests {
                 Some("alias"),
                 FeeResult::estimated_only(7),
                 RegistrationKind::Contract,
+                false,
             )
             .await;
 

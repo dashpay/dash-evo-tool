@@ -24,6 +24,7 @@ impl DomainFeedback for TokensFeedback {
         }
         if let BackendTaskSuccessResult::RegisteredTokenContract {
             save_warning: Some(warning),
+            ..
         } = result
         {
             show_contract_save_warning(feedback.ctx, warning);
@@ -87,7 +88,10 @@ mod tests {
         let ctx = egui::Context::default();
         react(
             &ctx,
-            &BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: None,
+                earlier_version: false,
+            },
         );
         assert!(global_banner_texts(&ctx).is_empty());
 
@@ -99,6 +103,7 @@ mod tests {
                     contract_id,
                     source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
                 }),
+                earlier_version: false,
             },
         );
         let texts = global_banner_texts(&ctx);
@@ -106,6 +111,22 @@ mod tests {
         assert!(texts[0].contains("was created on the network"), "{texts:?}");
         assert!(texts[0].contains("Import Token"), "{texts:?}");
         assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
+    }
+
+    /// A token Platform holds as an earlier attempt sent it says so.
+    #[test]
+    fn an_earlier_token_version_created_is_reported() {
+        let ctx = egui::Context::default();
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: None,
+                earlier_version: true,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("earlier attempt"), "{texts:?}");
     }
 
     #[test]

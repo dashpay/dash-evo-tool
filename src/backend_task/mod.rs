@@ -1400,11 +1400,17 @@ pub enum BackendTaskSuccessResult {
         /// Set when Platform confirmed the registration but this device could
         /// not save the contract.
         save_warning: Option<error::ContractSaveWarning>,
+        /// Platform holds the contract as an earlier attempt sent it, not as
+        /// the user last submitted it.
+        earlier_version: bool,
     },
     RegisteredTokenContract {
         /// Set when Platform confirmed the registration but this device could
         /// not save the token's contract.
         save_warning: Option<error::ContractSaveWarning>,
+        /// Platform holds the token's contract as an earlier attempt sent it,
+        /// not as the user last submitted it.
+        earlier_version: bool,
     },
     SavedContract,
     ContractNotFound,

@@ -1238,16 +1238,36 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
         let owner = ctx.dpns_contract().owner_id();
-        let mut updated = as_created(&ctx.dashpay_contract());
-        updated.set_version(2);
-
-        for (kind, nonce) in [
-            (RegistrationKind::Contract, 5),
-            (RegistrationKind::Token, 6),
+        // Found by the first lookup, or by the lookup after a retry with the
+        // reserved nonce is refused as already used.
+        for (kind, nonce, after_refused_retry) in [
+            (RegistrationKind::Contract, 5, false),
+            (RegistrationKind::Token, 6, false),
+            (RegistrationKind::Contract, 7, true),
+            (RegistrationKind::Token, 8, true),
         ] {
-            let first = attempt(&ctx, kind, nonce, Err(unread()), Some(updated.clone())).await;
-            assert_eq!(first.sent_nonce, Some(nonce));
-            let reported = match &first.outcome {
+            let mut updated = as_created(&ctx.dashpay_contract());
+            updated.set_version(2);
+            updated.set_id(assigned_id(&ctx, nonce));
+            let found = if after_refused_retry {
+                let first = attempt(&ctx, kind, nonce, Err(unread()), None).await;
+                assert_eq!(first.sent_nonce, Some(nonce));
+                attempt(
+                    &ctx,
+                    kind,
+                    nonce + 100,
+                    Err(nonce_refused(
+                        MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+                    )),
+                    Some(updated),
+                )
+                .await
+            } else {
+                attempt(&ctx, kind, nonce, Err(unread()), Some(updated)).await
+            };
+            assert_eq!(found.sent_nonce, Some(nonce), "{kind:?}");
+            assert_eq!(found.asked, Some(assigned_id(&ctx, nonce)), "{kind:?}");
+            let reported = match &found.outcome {
                 Err(TaskError::ContractRegistrationModifiedSince { contract_id, .. })
                     if kind == RegistrationKind::Contract =>
                 {
@@ -1263,15 +1283,16 @@ mod tests {
             assert_eq!(reported, assigned_id(&ctx, nonce));
             assert_eq!(ctx.pending_contract_registration(&owner), None);
             assert!(
-                ctx.get_contract_by_id(&updated.id())
+                ctx.get_contract_by_id(&assigned_id(&ctx, nonce))
                     .expect("read saved contract")
                     .is_none(),
-                "not saved as this request's contract"
+                "{kind:?}: not saved as this request's contract"
             );
         }
 
-        let next = attempt(&ctx, RegistrationKind::Contract, 7, Err(unread()), None).await;
-        assert_eq!(next.sent_nonce, Some(7));
+        let next = attempt(&ctx, RegistrationKind::Contract, 9, Err(unread()), None).await;
+        assert!(next.fresh_nonce_read);
+        assert_eq!(next.sent_nonce, Some(9));
     }
 
     /// A retry after an unresolved registration that fails before anything

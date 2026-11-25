@@ -1,12 +1,10 @@
 use super::AppContext;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{IdentitySaveWarning, TaskError};
 use crate::model::identity_discovery::DiscoveryIntent;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::MessageType;
-use crate::ui::components::MessageBanner;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Network;
@@ -195,8 +193,8 @@ fn top_up_err(source: KvAdapterError) -> TaskError {
 
 /// Merge `top_ups` into the stored history of `identity_id` (read-merge-write).
 ///
-/// Callers hold a partial view of the history — the top-up flow carries the
-/// entries it hydrated plus the one it just confirmed, and the legacy-data
+/// Callers hold a partial view of the history — the top-up flow carries only
+/// the entry it just confirmed, and the legacy-data
 /// import carries only what `data.db` held — so a replacing write would drop
 /// every entry the caller never saw. On a colliding index the caller's value
 /// wins: it is the fresher of the two. Removal is not expressible here; the
@@ -602,11 +600,12 @@ impl AppContext {
     /// ([`Self::stored_wallet_scope`]) already says:
     ///
     /// - **Linked to a wallet** — the link is kept against the caller's `None`
-    ///   hint, and the user is told. The outcome differs from what was asked
-    ///   for and only a retry (or loading the identity from its wallet)
-    ///   changes it, because a kept association takes the record out of the
-    ///   wallet-less set `AppContext::reconcile_unowned_identities` drives
-    ///   off, so no boot revisits it. This is at worst a **mislabel, not a
+    ///   hint, and once the write lands the user is told. The outcome differs
+    ///   from what was asked for and only a retry (or loading the identity
+    ///   from its wallet) changes it, because a kept association takes the
+    ///   record out of the wallet-less set
+    ///   `AppContext::reconcile_unowned_identities` drives off, so no boot
+    ///   revisits it. This is at worst a **mislabel, not a
     ///   loss**: if the mirror write was merely lost (upstream swallows a
     ///   persist failure into `Ok(())`, so a lost write and a refused one are
     ///   indistinguishable here) there is no upstream row for any `ON DELETE
@@ -636,6 +635,10 @@ impl AppContext {
     /// Serialized against every other whole-record writer of this identity by
     /// [`Self::identity_record_lock`].
     ///
+    /// The user is told with a banner; a request that reports to its own
+    /// requester takes the [`IdentitySaveWarning`] from
+    /// [`Self::insert_local_qualified_identity_under_lock`] instead.
+    ///
     /// # Errors
     /// The mirror's own error, when a wallet-free record cannot be shown to be
     /// durable and no earlier record stands in for the proof. Also whatever
@@ -650,19 +653,32 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.insert_local_qualified_identity_under_lock(
+        let warning = self.insert_local_qualified_identity_under_lock(
             qualified_identity,
             wallet_and_identity_id_info,
-        )
+        )?;
+        self.show_identity_save_warning(warning);
+        Ok(())
+    }
+
+    /// Tell the GUI user about a save warning no requester carries.
+    pub(crate) fn show_identity_save_warning(&self, warning: Option<IdentitySaveWarning>) {
+        if let Some(warning) = warning {
+            crate::ui::identity::task_feedback::show_identity_save_warning(
+                self.egui_ctx(),
+                &warning,
+            );
+        }
     }
 
     /// Deliberate import, including retirement of an unload marker. The caller
     /// must hold this identity's record lock across authorization and this write.
+    /// Returns what the requester needs to know about a save that landed.
     pub(crate) fn insert_local_qualified_identity_under_lock(
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
-    ) -> std::result::Result<(), TaskError> {
+    ) -> std::result::Result<Option<IdentitySaveWarning>, TaskError> {
         // Deliberate: asking for an identity is the one act that means the user
         // changed their mind about unloading it, so this is the only place the
         // unload marker is retired. Under the same guard as the write, so a
@@ -693,7 +709,7 @@ impl AppContext {
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
-    ) -> std::result::Result<(), TaskError> {
+    ) -> std::result::Result<Option<IdentitySaveWarning>, TaskError> {
         let kv = self.det_kv()?;
         let mut wallet_link = match wallet_and_identity_id_info {
             Some((seed, idx)) => Some((*seed, *idx)),
@@ -725,29 +741,26 @@ impl AppContext {
         // stranding placeholders no record points at. An orphan mirror left by
         // a failure of the writes below is withdrawn by the next boot's
         // reconcile.
-        let mut unconfirmed_wallet_free = None;
+        let mut warning = None;
         if wallet_link.is_none()
             && let Err(error) = self.mirror_identity_unowned(qualified_identity)
         {
             match self.stored_wallet_scope(&identity_id) {
                 Ok(StoredWalletScope::Linked(seed, index)) => {
                     wallet_link = Some((seed, index));
-                    // Logged here rather than left to the banner: a banner logs
-                    // only when a frame renders it, which never happens headless
-                    // (MCP/CLI) and need not happen in the GUI, where it is an
-                    // evictable toast. No boot revisits this record, so it gets
-                    // the durable record and a banner that stays put.
+                    // Logged here rather than left to the requester: a banner
+                    // logs only when a frame renders it, which never happens
+                    // headless (MCP/CLI) and need not happen in the GUI, where it
+                    // is an evictable toast. No boot revisits this record.
                     tracing::warn!(
                         identity_id = %identity_id,
                         wallet = %hex::encode(seed),
                         error = %error,
                         "Identity kept its wallet link: the wallet store could not confirm a wallet-free row for it, so a wallet-free record would not be durable. Retry, or load the identity from the wallet that holds it."
                     );
-                    let banner =
-                        MessageBanner::set_global(self.egui_ctx(), &error, MessageType::Warning);
-                    banner.with_details(error);
-                    banner.disable_auto_dismiss();
-                    self.egui_ctx().request_repaint();
+                    warning = Some(IdentitySaveWarning::WalletLinkKept {
+                        source: Arc::new(error),
+                    });
                 }
                 // The record already claims no wallet, so this write restates
                 // that claim rather than making it. Nothing is at stake in the
@@ -761,9 +774,9 @@ impl AppContext {
                         error = %error,
                         "Identity already recorded as belonging to no wallet; storing it again leaves that unchanged, but the wallet store still could not confirm a wallet-free row for it. Retry, or restart the application."
                     );
-                    // Reported once the record is on disk, not here: the writes
-                    // below can still fail.
-                    unconfirmed_wallet_free = Some(error);
+                    warning = Some(IdentitySaveWarning::WalletFreeUnconfirmed {
+                        source: Arc::new(error),
+                    });
                 }
                 // Nothing on file to restate, so a wallet-free record here
                 // would be this method's own invention. Refuse rather than
@@ -818,22 +831,9 @@ impl AppContext {
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .map_err(identity_err)?;
-        // Raised only now, because the writes above can still fail. Carries no
-        // identity id — the tray holds five, this banner never auto-dismisses
-        // and dedup is by exact text, so one per identity would evict whatever
-        // the user was reading. The id is in the log line above.
-        if let Some(error) = unconfirmed_wallet_free {
-            let banner = MessageBanner::set_global(
-                self.egui_ctx(),
-                "An identity was saved, but this device's wallet data does not yet confirm that \
-                 it belongs to no wallet. Restart the application to complete the update.",
-                MessageType::Warning,
-            );
-            banner.with_details(error);
-            banner.disable_auto_dismiss();
-            self.egui_ctx().request_repaint();
-        }
-        Ok(())
+        // Returned only now, because the writes above can still fail: the
+        // warning reports a record on disk.
+        Ok(warning)
     }
 
     /// Test-only: store a wallet-less sidecar without its upstream mirror,
@@ -911,7 +911,18 @@ impl AppContext {
     /// The write carries no block height, so a balance other than the newest
     /// one observed is replaced by that one (see `balance_watermark`). A
     /// write that changes the balance uses
-    /// `update_local_qualified_identity_observed`.
+    /// `edit_local_qualified_identity_observed`.
+    ///
+    /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
+    /// caller that read the record before a concurrent change (for example a
+    /// key removed in Key Info) writes that change away, including keys whose
+    /// vault secrets are already gone. Resolved by moving identity keys and
+    /// scalar fields onto platform-wallet's `IdentityManager`: keys persist as
+    /// per-key `IdentityKeysChangeSet` upserts and removals, scalars as an
+    /// `IdentityChangeSet` snapshot, and every mutation goes through the one
+    /// shared manager under its state lock instead of a caller's stale copy.
+    /// Until then, prefer [`Self::edit_local_qualified_identity`] for new
+    /// writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -936,8 +947,8 @@ impl AppContext {
     /// # Errors
     ///
     /// [`TaskError::IdentityNotFoundLocally`] when nothing is stored under
-    /// `identity_id`, and whatever `edit` returns — in both cases nothing is
-    /// persisted.
+    /// `identity_id` or it is off the roster (an edit never re-lists), and
+    /// whatever `edit` returns — in every case nothing is persisted.
     pub fn edit_local_qualified_identity(
         &self,
         identity_id: &Identifier,
@@ -947,12 +958,23 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut fresh = self
-            .get_local_qualified_identity(identity_id)?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let mut fresh = self.read_listed_identity_locked(identity_id)?;
         edit(&mut fresh)?;
         self.write_local_qualified_identity_locked(&fresh)?;
         Ok(fresh)
+    }
+
+    /// The stored record of a listed identity, for an edit. The caller holds
+    /// the identity's record lock.
+    pub(crate) fn read_listed_identity_locked(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<QualifiedIdentity, TaskError> {
+        if !self.is_identity_listed(identity_id)? {
+            return Err(TaskError::IdentityNotFoundLocally);
+        }
+        self.get_local_qualified_identity(identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)
     }
 
     /// The write half of [`Self::update_local_qualified_identity`], for a
@@ -1411,7 +1433,7 @@ impl AppContext {
     /// store. A missing or unreadable entry is logged and treated as an
     /// empty map; pre-C5 SQLite data is intentionally not migrated and
     /// surfaces as empty under the "empty start" policy.
-    fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
+    pub(crate) fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
         let Ok(kv) = self.det_kv() else {
             return;
         };
@@ -2061,7 +2083,11 @@ impl AppContext {
                         other => other,
                     })?;
             }
-            None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
+            None => {
+                let warning =
+                    self.insert_local_qualified_identity_locked(qualified_identity, wallet)?;
+                self.show_identity_save_warning(warning);
+            }
         }
         self.seed_balance_watermark_locked(pending)?;
         Ok(true)
@@ -2488,6 +2514,28 @@ pub(crate) mod test_staging {
             _dir: dir,
             _events: events,
         }
+    }
+
+    /// Drop `id` from the roster and keep its blob, with no unload marker:
+    /// the state an insert that stopped before its roster add leaves behind.
+    pub(crate) fn unlist_identity(ctx: &AppContext, id: &Identifier) {
+        index_remove_identity(&ctx.det_kv().expect("identity kv"), &id.to_buffer())
+            .expect("remove from the roster");
+    }
+
+    /// The top-up history stored for `id`, whether or not it is listed.
+    pub(crate) fn stored_top_ups(ctx: &AppContext, id: &Identifier) -> Option<BTreeMap<u32, u64>> {
+        ctx.det_kv()
+            .expect("identity kv")
+            .get(DetScope::Identity(&id.to_buffer()), TOP_UPS_KEY)
+            .expect("read the top-up history")
+    }
+
+    /// Fail the next save of a top-up history.
+    pub(crate) fn fail_next_top_up_save(ctx: &Arc<AppContext>) {
+        let store = ctx.det_kv().unwrap().failing_store();
+        store.fail_next_puts_containing(TOP_UPS_KEY, 1);
+        ctx.set_det_kv_override_for_test(DetKv::from_store(store));
     }
 
     /// Fail the top-up deletion after the identity has been delisted and its blob deleted.
@@ -4078,6 +4126,31 @@ mod tests {
                 .queue_scheduled_dpns_vote_target(scheduled.id, &scheduled.targets[0].target.key)
                 .unwrap()
         );
+    }
+
+    /// An edit targets a loaded identity: one off the roster with its blob
+    /// kept is refused, not put back on the roster.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_refuses_an_identity_off_the_roster() {
+        let staged = stage_identity_with_vaulted_keys(
+            crate::test_support::keys::secret_bytes(),
+            crate::test_support::keys::secret_bytes(),
+        )
+        .await;
+        unlist_identity(&staged.ctx, &staged.id);
+
+        let plain = staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |_| Ok(()));
+        let observed = staged.ctx.edit_local_qualified_identity_observed(
+            &staged.id,
+            crate::model::identity_balance::BalanceProvenance::ObservedAt(7),
+            |_| Ok(()),
+        );
+
+        assert!(matches!(plain, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(matches!(observed, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

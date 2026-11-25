@@ -87,7 +87,7 @@ run() {
         --arg headSha "${5:-$head_sha}" --arg headBranch "${6:-v1.0-dev}" \
         --argjson jobs "${7:-$all_checks}" '$ARGS.named'
 }
-green_pushes=("$(run tests.yml push success "$older")" "$(run clippy.yml push success "$older")")
+green_pushes=("$(run tests.yml push success "$older")" "$(run clippy.yml push success "$older")" "$(run release-qa-tests.yml push success "$older")")
 
 failures=0
 # scenario NAME EXPECTED_CI_RED RUN...
@@ -124,12 +124,12 @@ scenario() {
 
 # Every slot is gated on its own newest completed run. Pull-request runs and
 # manual runs of another commit never stand in for it.
-for check in tests.yml:push clippy.yml:push tests.yml:schedule; do
+for check in tests.yml:push clippy.yml:push release-qa-tests.yml:push tests.yml:schedule; do
     workflow="${check%:*}"
     event="${check#*:}"
     for conclusion in "${reds[@]}" success absent; do
         slots=()
-        for slot in tests.yml:push clippy.yml:push tests.yml:schedule; do
+        for slot in tests.yml:push clippy.yml:push release-qa-tests.yml:push tests.yml:schedule; do
             [[ "$slot" == "$check" ]] || slots+=("$(run "${slot%:*}" "${slot#*:}" success "$older")")
         done
         slots+=("$(run "$workflow" workflow_dispatch success "$newest" "$other_sha")"

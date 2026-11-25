@@ -1083,11 +1083,8 @@ impl AppContext {
         let mut updated_identity = qualified_identity.clone();
         updated_identity.identity.set_balance(new_balance);
 
-        // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        let updated_identity =
+            self.store_topped_up_identity(updated_identity, BalanceProvenance::ObservedAt(height));
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1138,10 +1135,6 @@ impl AppContext {
             }
         }
 
-        // Update the identity balance in memory
-        let mut updated_identity = qualified_identity;
-        updated_identity.identity.set_balance(new_balance);
-
         // Calculate actual fee
         let total_outputs: Credits = outputs.values().sum();
         let actual_fee = balance_before
@@ -1162,20 +1155,157 @@ impl AppContext {
             );
         }
 
-        // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
+        self.store_observed_balance(
+            &identity.id(),
+            new_balance,
             BalanceProvenance::ObservedAt(height),
-        )?;
+        );
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+    }
+
+    /// Store `credits`, observed per `provenance`, as `id`'s balance on its
+    /// record as stored now, so a change made meanwhile (such as a key removed
+    /// in Key Info) is kept. Returns the stored record; `None` when the
+    /// identity is not loaded here or the save failed. The task that moved the
+    /// credits already happened, so a failure is only logged; it never reads
+    /// as a failed task the user might repeat.
+    ///
+    /// TODO(platform-wallet): interim DET-side write. Once `IdentityManager`
+    /// holds the identity record, wallet-owned payers go through the
+    /// manager-backed `IdentityWallet::*_with_external_signer`, which store the
+    /// payer's confirmed balance via `persist_confirmed_balance`; the
+    /// `*_with_signer` variants store none, and a receiver loaded here still
+    /// needs this write.
+    fn store_observed_balance(
+        &self,
+        id: &Identifier,
+        credits: Credits,
+        provenance: BalanceProvenance,
+    ) -> Option<QualifiedIdentity> {
+        match self.edit_local_qualified_identity_observed(id, provenance, |stored| {
+            stored.identity.set_balance(credits);
+            Ok(())
+        }) {
+            Ok(stored) => Some(stored),
+            Err(TaskError::IdentityNotFoundLocally) => {
+                tracing::debug!(identity_id = %id, "Identity is not loaded here; its new balance is not stored");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(identity_id = %id, ?error, "Identity balance could not be stored locally; it updates on the next identity refresh");
+                None
+            }
+        }
+    }
+
+    /// `topped_up` as stored with its new balance (see
+    /// [`Self::store_observed_balance`]), keeping its top-up history, which
+    /// lives outside the record; `topped_up` itself when it was not stored.
+    fn store_topped_up_identity(
+        &self,
+        topped_up: QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) -> QualifiedIdentity {
+        let id = topped_up.identity.id();
+        match self.store_observed_balance(&id, topped_up.identity.balance(), provenance) {
+            Some(stored) => QualifiedIdentity {
+                top_ups: topped_up.top_ups,
+                ..stored
+            },
+            None => topped_up,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paid task's network call can outlast a key removed in Key Info;
+    /// storing its new balance must not bring that key back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paid_balance_keeps_a_change_made_while_the_task_ran() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let removed_key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1);
+        let mut paid = read();
+        assert!(paid.private_keys.has(&removed_key));
+        let mut removed = paid.clone();
+        removed.private_keys.remove_at(&removed_key);
+        staged
+            .ctx
+            .update_local_qualified_identity(&removed)
+            .unwrap();
+
+        paid.identity.set_balance(1_234);
+        paid.top_ups.insert(3, 50_000);
+        let stored = staged
+            .ctx
+            .store_topped_up_identity(paid.clone(), BalanceProvenance::ObservedAt(7));
+
+        assert!(!stored.private_keys.has(&removed_key));
+        assert_eq!(stored.top_ups, paid.top_ups, "the caller keeps its top-ups");
+        let after = read();
+        assert!(
+            !after.private_keys.has(&removed_key),
+            "a paid task must not bring back a key removed while it ran"
+        );
+        assert_eq!(after.identity.balance(), 1_234);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A stored balance keeps public keys and a revision written meanwhile,
+    /// such as those of a key added while a withdrawal ran.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stored_balance_keeps_a_concurrent_key_set_and_revision() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let mut changed = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        changed
+            .identity
+            .add_public_key(IdentityPublicKey::random_key(
+                9,
+                Some(9),
+                PlatformVersion::latest(),
+            ));
+        changed.identity.bump_revision();
+        staged
+            .ctx
+            .update_local_qualified_identity(&changed)
+            .unwrap();
+
+        let stored = staged
+            .ctx
+            .store_observed_balance(&staged.id, 4_321, BalanceProvenance::ObservedAt(7))
+            .expect("the balance is stored");
+
+        assert_eq!(
+            stored.identity.public_keys(),
+            changed.identity.public_keys()
+        );
+        assert_eq!(stored.identity.revision(), changed.identity.revision());
+        assert_eq!(stored.identity.balance(), 4_321);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
 
     /// RUST-001: every seed-recovery scan must cover the highest derivation
     /// index the Add Key chooser can offer. Once the derived key is on-chain the
@@ -1645,12 +1775,12 @@ mod tests {
         );
     }
 
-    /// IDKEY-V0-001: under protocol versions 13 and 14 the spec set's keys,
+    /// IDKEY-V0-001: under protocol versions 14 and 15 the spec set's keys,
     /// in both the public keys map and the key storage, are the V0 keys the
     /// hand-built literals produced, so the identity-create encoding is
     /// unchanged.
     #[test]
-    fn identity_key_specs_build_v0_keys_at_protocols_13_and_14() {
+    fn identity_key_specs_build_v0_keys_at_supported_protocols() {
         let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
@@ -1678,7 +1808,7 @@ mod tests {
             disabled_at: None,
         });
 
-        for protocol_version in [13, 14] {
+        for protocol_version in [14, 15] {
             let platform_version = PlatformVersion::get(protocol_version).expect("version");
             let public_map = specs
                 .to_public_keys_map(platform_version)

@@ -209,6 +209,24 @@ impl RegisterDataContractScreen {
         }
     }
 
+    /// Dismisses the error bubble. A refusal leaves its contract ready to
+    /// send again; any other error leaves the form idle, unless the fields
+    /// hold JSON that does not parse, whose error is shown instead.
+    fn dismiss_error(&mut self) {
+        self.broadcast_status =
+            match std::mem::replace(&mut self.broadcast_status, BroadcastStatus::Idle) {
+                BroadcastStatus::Refused(_, contract) => BroadcastStatus::ValidContract(contract),
+                BroadcastStatus::NotRegistered(_) => {
+                    self.parse_contract();
+                    match std::mem::replace(&mut self.broadcast_status, BroadcastStatus::Idle) {
+                        parse_error @ BroadcastStatus::ParsingError(_) => parse_error,
+                        _ => BroadcastStatus::Idle,
+                    }
+                }
+                _ => BroadcastStatus::Idle,
+            };
+    }
+
     /// Renders an error message at the top of the screen with a styled bubble
     fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
         if let Some(msg) = self.error_bubble_text() {
@@ -224,15 +242,7 @@ impl RegisterDataContractScreen {
                         ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
                         ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
-                            self.broadcast_status = match std::mem::replace(
-                                &mut self.broadcast_status,
-                                BroadcastStatus::Idle,
-                            ) {
-                                BroadcastStatus::Refused(_, contract) => {
-                                    BroadcastStatus::ValidContract(contract)
-                                }
-                                _ => BroadcastStatus::Idle,
-                            };
+                            self.dismiss_error();
                         }
                     });
                 });
@@ -757,6 +767,25 @@ mod tests {
             );
         }
 
+        // An edit that does not parse is not offered again, and its parse
+        // error shows once the refusal is dismissed.
+        screen.contract_json_input = sent.clone();
+        screen.parse_contract();
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+        screen.contract_json_input = "{ not json".to_string();
+        let refused = TaskError::RegistrationNonceRefused {
+            source_error: source(),
+        };
+        assert!(screen.display_task_error(&refused));
+        assert_eq!(screen.error_bubble_text(), Some(refused.to_string()));
+        assert!(screen.registrable_contract().is_none());
+        screen.dismiss_error();
+        assert!(
+            matches!(screen.broadcast_status, BroadcastStatus::ParsingError(_)),
+            "{:?}",
+            screen.error_bubble_text()
+        );
+
         screen.contract_json_input = sent;
         for to_check in [
             TaskError::ContractRegistrationUnconfirmed {
@@ -772,6 +801,11 @@ mod tests {
             assert!(screen.display_task_error(&to_check), "{to_check:?}");
             assert_eq!(screen.error_bubble_text(), Some(to_check.to_string()));
             assert!(screen.registrable_contract().is_none(), "{to_check:?}");
+            screen.dismiss_error();
+            assert!(
+                matches!(screen.broadcast_status, BroadcastStatus::Idle),
+                "{to_check:?}: dismissing leaves nothing to send"
+            );
         }
     }
 }

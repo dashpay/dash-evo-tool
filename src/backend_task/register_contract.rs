@@ -1298,6 +1298,11 @@ mod tests {
         let plain = as_created(&ctx.dpns_contract());
         let mut token_contract = as_created(&ctx.dashpay_contract());
         token_contract.set_owner_id(owner);
+        // Platform keeps the plain contract under the ID it assigned.
+        let registered_id = assigned_id(&ctx, 5);
+        let mut registered = plain.clone();
+        registered.set_id(registered_id);
+        assert_ne!(registered_id, plain.id());
 
         attempt_registering(
             &ctx,
@@ -1316,24 +1321,25 @@ mod tests {
             RegistrationKind::Token,
             6,
             Err(unread()),
-            Ok(Some(plain.clone())),
+            Ok(Some(registered)),
         )
         .await;
 
+        assert_eq!(token.asked, Some(registered_id));
         let error = token.outcome.expect_err("the token was not created");
         assert!(
             matches!(
                 &error,
                 TaskError::TokenRegistrationReplacedByEarlier {
+                    contract_id: replaced_id,
                     unsaved: Some(ContractSaveWarning::Contract { contract_id, .. }),
-                    ..
-                } if *contract_id == plain.id()
+                } if *contract_id == registered_id && *replaced_id == registered_id
             ),
             "{error:?}"
         );
         let message = error.to_string();
         assert!(message.contains("Load Contracts"), "{message}");
-        assert!(message.contains(&format!("{}", plain.id())), "{message}");
+        assert!(message.contains(&format!("{registered_id}")), "{message}");
         assert!(message.contains("Create this token again"), "{message}");
         assert_eq!(ctx.pending_contract_registration(&owner), None);
     }

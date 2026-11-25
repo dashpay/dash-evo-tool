@@ -1,5 +1,6 @@
 //! User notifications for token task outcomes.
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, CacheUpdate};
+use crate::ui::contracts_documents::task_feedback::show_contract_save_warning;
 use crate::ui::task_feedback::{DomainFeedback, Feedback};
 use crate::ui::{MessageType, components::MessageBanner};
 
@@ -20,6 +21,12 @@ impl DomainFeedback for TokensFeedback {
                 "Token balances are already refreshing. Wait a moment before refreshing again.",
                 MessageType::Info,
             );
+        }
+        if let BackendTaskSuccessResult::RegisteredTokenContract {
+            save_warning: Some(warning),
+        } = result
+        {
+            show_contract_save_warning(feedback.ctx, warning);
         }
         if feedback.delivery.sender_gone
             && let BackendTaskSuccessResult::TransferredTokens(_) = result
@@ -69,6 +76,36 @@ mod tests {
         react_with(&ctx, true, &sent);
         let texts = global_banner_texts(&ctx);
         assert_eq!(texts, vec!["Tokens sent successfully.".to_string()]);
+    }
+
+    /// A token Platform created but this device could not save is reported
+    /// with how to import it, never as a failure to retry.
+    #[test]
+    fn an_unsaved_token_registration_is_reported_as_a_warning() {
+        use crate::backend_task::error::{ContractSaveWarning, TaskError};
+
+        let ctx = egui::Context::default();
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
+        );
+        assert!(global_banner_texts(&ctx).is_empty());
+
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: Some(ContractSaveWarning::Token {
+                    contract_id,
+                    source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
+                }),
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("was created on the network"), "{texts:?}");
+        assert!(texts[0].contains("Import Token"), "{texts:?}");
+        assert!(texts[0].contains(&contract_id.to_string()), "{texts:?}");
     }
 
     #[test]

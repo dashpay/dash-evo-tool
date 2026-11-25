@@ -58,6 +58,7 @@ const DOMAINS: &[&dyn DomainFeedback] = &[
     &crate::ui::identity::task_feedback::IdentityFeedback,
     &crate::ui::wallets::task_feedback::WalletsFeedback,
     &crate::ui::tokens::task_feedback::TokensFeedback,
+    &crate::ui::contracts_documents::task_feedback::ContractsFeedback,
     &crate::ui::network_chooser_screen::task_feedback::SettingsFeedback,
     &crate::ui::dpns::task_feedback::DpnsFeedback,
 ];

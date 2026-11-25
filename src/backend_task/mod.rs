@@ -1395,8 +1395,17 @@ pub enum BackendTaskSuccessResult {
     UpdatedContract(FeeResult),
     RemovedContract,
     FetchedNonce,
-    RegisteredContract(FeeResult),
-    RegisteredTokenContract,
+    RegisteredContract {
+        fee_result: FeeResult,
+        /// Set when Platform confirmed the registration but this device could
+        /// not save the contract.
+        save_warning: Option<error::ContractSaveWarning>,
+    },
+    RegisteredTokenContract {
+        /// Set when Platform confirmed the registration but this device could
+        /// not save the token's contract.
+        save_warning: Option<error::ContractSaveWarning>,
+    },
     SavedContract,
     ContractNotFound,
     TokenNotFound,

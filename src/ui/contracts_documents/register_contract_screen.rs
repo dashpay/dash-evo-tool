@@ -357,7 +357,7 @@ impl ScreenLike for RegisterDataContractScreen {
             BackendTaskSuccessResult::FetchedNonce => {
                 self.broadcast_status = BroadcastStatus::Broadcasting;
             }
-            BackendTaskSuccessResult::RegisteredContract(fee_result) => {
+            BackendTaskSuccessResult::RegisteredContract { fee_result, .. } => {
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;

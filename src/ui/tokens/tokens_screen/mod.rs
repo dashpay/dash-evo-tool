@@ -3322,7 +3322,7 @@ impl ScreenLike for TokensScreen {
                     &self.token_pricing_data,
                 );
             }
-            BackendTaskSuccessResult::RegisteredTokenContract
+            BackendTaskSuccessResult::RegisteredTokenContract { .. }
                 if self.awaits_token_registration()
                     && self.token_registration_context.as_ref() == Some(context) =>
             {
@@ -3495,7 +3495,7 @@ mod tests {
 
         screen.display_backend_task_result(
             &registration,
-            BackendTaskSuccessResult::RegisteredTokenContract,
+            BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
         );
 
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
@@ -4819,7 +4819,7 @@ mod tests {
         let registration = screen.begin_token_registration_for_test();
         screen.display_backend_task_result(
             &registration,
-            BackendTaskSuccessResult::RegisteredTokenContract,
+            BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
         );
 
         screen.keep_token_creator_across_navigation();
@@ -5554,7 +5554,7 @@ mod tests {
         screen.reset_for_network_switch();
         screen.display_backend_task_result(
             &BackendTaskContext::Other,
-            BackendTaskSuccessResult::RegisteredTokenContract,
+            BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
         );
         assert_eq!(
             screen.token_creator_status,
@@ -5781,7 +5781,7 @@ mod tests {
 
         screen.display_backend_task_result(
             &previous,
-            BackendTaskSuccessResult::RegisteredTokenContract,
+            BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
         );
         assert_eq!(
             screen.token_creator_status,
@@ -5791,7 +5791,7 @@ mod tests {
 
         screen.display_backend_task_result(
             &current,
-            BackendTaskSuccessResult::RegisteredTokenContract,
+            BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None },
         );
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
     }

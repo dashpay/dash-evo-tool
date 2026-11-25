@@ -271,6 +271,45 @@ pub enum IdentitySaveWarning {
     },
 }
 
+/// A registration Platform confirmed whose contract could not be saved on
+/// this device. The registration stands, so the remedy is adding it here,
+/// never registering it again.
+#[derive(Debug, Clone, Error)]
+pub enum ContractSaveWarning {
+    #[error(
+        "Your contract was registered on the network, but it could not be saved on this device. You do not need to register it again. To add it here, open Contracts, choose Load Contracts and enter contract ID {contract_id}."
+    )]
+    Contract {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+    #[error(
+        "Your token was created on the network, but it could not be saved on this device. You do not need to create it again. To add it here, open Tokens, choose Import Token and enter contract ID {contract_id}."
+    )]
+    Token {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+}
+
+impl ContractSaveWarning {
+    /// The same warning, worded for a contract the token creator registered.
+    pub(crate) fn for_token(self) -> Self {
+        match self {
+            Self::Contract {
+                contract_id,
+                source,
+            } => Self::Token {
+                contract_id,
+                source,
+            },
+            token @ Self::Token { .. } => token,
+        }
+    }
+}
+
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
 /// Shared, so one stopped task batch can report it for each of its tasks.
 #[derive(Clone)]

@@ -892,7 +892,9 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
             } else {
                 TaskResult::Success {
                     context: previous,
-                    result: Box::new(BackendTaskSuccessResult::RegisteredTokenContract),
+                    result: Box::new(BackendTaskSuccessResult::RegisteredTokenContract {
+                        save_warning: None,
+                    }),
                 }
             };
             deliver(&mut harness, late);

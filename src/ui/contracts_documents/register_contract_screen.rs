@@ -388,7 +388,8 @@ impl ScreenLike for RegisterDataContractScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         let refused_before_it_ran = match error {
-            TaskError::ContractRegistrationUnconfirmed { .. } => false,
+            TaskError::ContractRegistrationUnconfirmed { .. }
+            | TaskError::ContractRegistrationModifiedSince { .. } => false,
             TaskError::ContractRegistrationInProgress
             | TaskError::RegistrationNonceRefused { .. }
             | TaskError::ContractRegistrationPreempted { .. }
@@ -710,7 +711,8 @@ mod tests {
     /// After a definite refusal the contract the fields show can be sent
     /// again with an explicit click, next to the refusal, even when the JSON
     /// was edited while the refused one was being sent; an unconfirmed
-    /// registration keeps only its guidance to check the contract ID.
+    /// registration, or one found changed since its creation, keeps only its
+    /// guidance to check the contract ID.
     #[test]
     fn a_refused_registration_can_be_registered_again() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -756,13 +758,20 @@ mod tests {
         }
 
         screen.contract_json_input = sent;
-        screen.broadcast_status = BroadcastStatus::Broadcasting;
-        let unconfirmed = TaskError::ContractRegistrationUnconfirmed {
-            contract_id,
-            source_error: source(),
-        };
-        assert!(screen.display_task_error(&unconfirmed));
-        assert_eq!(screen.error_bubble_text(), Some(unconfirmed.to_string()));
-        assert!(screen.registrable_contract().is_none());
+        for to_check in [
+            TaskError::ContractRegistrationUnconfirmed {
+                contract_id,
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationModifiedSince {
+                contract_id,
+                source_error: source(),
+            },
+        ] {
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            assert!(screen.display_task_error(&to_check), "{to_check:?}");
+            assert_eq!(screen.error_bubble_text(), Some(to_check.to_string()));
+            assert!(screen.registrable_contract().is_none(), "{to_check:?}");
+        }
     }
 }

@@ -2389,6 +2389,29 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A contract found under this registration's Platform-assigned ID was
+    /// changed after it was created, so whether it is this registration
+    /// cannot be told. Its ID comes from the identity and its nonce, so the
+    /// registration can never run again; it is settled and not saved here.
+    #[error(
+        "A contract with ID {contract_id} was created for this registration, but it has been changed since, so the app cannot confirm it is yours. To check it, open Contracts, choose Load Contracts and enter that contract ID. If it is not your contract, register yours again."
+    )]
+    ContractRegistrationModifiedSince {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationModifiedSince`] for a token's contract.
+    #[error(
+        "A token contract with ID {contract_id} was created for this request, but it has been changed since, so the app cannot confirm it is your token. To check it, open Tokens, choose Import Token and enter that contract ID. If it is not your token, create yours again."
+    )]
+    TokenRegistrationModifiedSince {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// A different contract by the same identity, registered elsewhere, took
     /// the place this registration was sent for, so it can never run. A new
     /// registration gets a new place.
@@ -4232,9 +4255,9 @@ impl TaskError {
     }
 
     /// A sent registration's outcome keeps its own message, whatever the
-    /// network state: one that may have run names the contract ID to check
-    /// before registering again; one another registration preempted says to
-    /// register again.
+    /// network state: one that may have run, or found changed since its
+    /// creation, names the contract ID to check before registering again; one
+    /// another registration preempted says to register again.
     fn is_registration_outcome(&self) -> bool {
         matches!(
             self,
@@ -4242,6 +4265,8 @@ impl TaskError {
                 | Self::TokenRegistrationUnconfirmed { .. }
                 | Self::ContractRegistrationPreempted { .. }
                 | Self::TokenRegistrationPreempted { .. }
+                | Self::ContractRegistrationModifiedSince { .. }
+                | Self::TokenRegistrationModifiedSince { .. }
         )
     }
 
@@ -6097,8 +6122,9 @@ mod tests {
     }
 
     /// A contract or token registration whose result is unknown may have
-    /// run, so with every server unreachable it keeps its own message, which
-    /// names the contract ID to check before registering again.
+    /// run, and one found changed since its creation may be the user's, so
+    /// with every server unreachable each keeps its own message, which names
+    /// the contract ID to check before registering again.
     #[test]
     fn dapi_availability_context_keeps_an_unconfirmed_registration() {
         let contract_id = Identifier::from([0x42; 32]);
@@ -6125,6 +6151,18 @@ mod tests {
                     contract_id,
                     source_error: Box::new(source_error),
                 }
+            }))
+            .chain(sources().into_iter().map(|source_error| {
+                TaskError::ContractRegistrationModifiedSince {
+                    contract_id,
+                    source_error: Box::new(source_error),
+                }
+            }))
+            .chain(sources().into_iter().map(|source_error| {
+                TaskError::TokenRegistrationModifiedSince {
+                    contract_id,
+                    source_error: Box::new(source_error),
+                }
             }));
 
         for error in registrations {
@@ -6135,8 +6173,10 @@ mod tests {
                     contextualized,
                     TaskError::ContractRegistrationUnconfirmed { .. }
                         | TaskError::TokenRegistrationUnconfirmed { .. }
+                        | TaskError::ContractRegistrationModifiedSince { .. }
+                        | TaskError::TokenRegistrationModifiedSince { .. }
                 ),
-                "expected an unconfirmed registration, got {contextualized:?}"
+                "expected the registration outcome, got {contextualized:?}"
             );
             assert_eq!(contextualized.to_string(), message);
 

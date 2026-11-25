@@ -172,6 +172,20 @@ impl RegistrationKind {
         }
     }
 
+    fn modified_since(self, contract_id: Identifier, source: SdkError) -> TaskError {
+        let source_error = Box::new(source);
+        match self {
+            Self::Contract => TaskError::ContractRegistrationModifiedSince {
+                contract_id,
+                source_error,
+            },
+            Self::Token => TaskError::TokenRegistrationModifiedSince {
+                contract_id,
+                source_error,
+            },
+        }
+    }
+
     fn unconfirmed(self, contract_id: Identifier, source: SdkError) -> TaskError {
         let source_error = Box::new(source);
         match self {
@@ -316,14 +330,18 @@ impl AppContext {
         if look_up {
             match find(contract_id).await {
                 // Updated since it was created, so what it was created as is
-                // unknown: it may be this registration, changed later.
+                // unknown: it may be this registration, changed later. Its ID
+                // comes from the owner and the nonce, so the nonce is used and
+                // no attempt with it can run: the registration is settled,
+                // without saving that contract as this request's.
                 Ok(Some(registered)) if registered.version() != INITIAL_DATA_CONTRACT_VERSION => {
                     tracing::warn!(
                         %contract_id,
                         version = registered.version(),
                         "A contract updated since its creation was found under a registration's assigned ID"
                     );
-                    return Err(kind.unconfirmed(contract_id, error));
+                    self.settle_pending_contract_registration(owner_id, pending);
+                    return Err(kind.modified_since(contract_id, error));
                 }
                 Ok(Some(registered)) => {
                     let found =
@@ -1125,61 +1143,50 @@ mod tests {
 
     /// A contract found under the assigned ID that was updated since it was
     /// created may be this registration, changed later (for example from
-    /// another device); what it was created as is unknown. It stays
-    /// unconfirmed under that ID, and pending, never reported as taken by
-    /// another registration, on a first attempt and on a retry.
-    #[tokio::test]
-    async fn an_updated_contract_under_the_assigned_id_stays_unconfirmed() {
+    /// another device); what it was created as is unknown. Its ID comes from
+    /// the owner and the nonce, so the nonce is used and no attempt with it
+    /// can run any more: the registration is settled, reported as created but
+    /// changed since, and not saved here as this request's contract. The next
+    /// registration gets a fresh nonce.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_updated_contract_under_the_assigned_id_settles_the_registration() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = test_app_context(dir.path());
+        let ctx = wired_test_app_context(dir.path()).await;
         let owner = ctx.dpns_contract().owner_id();
         let mut updated = as_created(&ctx.dashpay_contract());
         updated.set_version(2);
-        let still_pending = Some(PendingContractRegistration {
-            identity_nonce: 5,
-            contract_id: assigned_id(&ctx, 5),
-        });
 
-        let first = attempt(
-            &ctx,
-            RegistrationKind::Contract,
-            5,
-            Err(unread()),
-            Some(updated.clone()),
-        )
-        .await;
-        assert!(
-            matches!(
-                &first.outcome,
-                Err(TaskError::ContractRegistrationUnconfirmed { contract_id, .. })
-                    if *contract_id == assigned_id(&ctx, 5)
-            ),
-            "{:?}",
-            first.outcome
-        );
-        assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
+        for (kind, nonce) in [
+            (RegistrationKind::Contract, 5),
+            (RegistrationKind::Token, 6),
+        ] {
+            let first = attempt(&ctx, kind, nonce, Err(unread()), Some(updated.clone())).await;
+            assert_eq!(first.sent_nonce, Some(nonce));
+            let reported = match &first.outcome {
+                Err(TaskError::ContractRegistrationModifiedSince { contract_id, .. })
+                    if kind == RegistrationKind::Contract =>
+                {
+                    *contract_id
+                }
+                Err(TaskError::TokenRegistrationModifiedSince { contract_id, .. })
+                    if kind == RegistrationKind::Token =>
+                {
+                    *contract_id
+                }
+                other => panic!("{kind:?}: {other:?}"),
+            };
+            assert_eq!(reported, assigned_id(&ctx, nonce));
+            assert_eq!(ctx.pending_contract_registration(&owner), None);
+            assert!(
+                ctx.get_contract_by_id(&updated.id())
+                    .expect("read saved contract")
+                    .is_none(),
+                "not saved as this request's contract"
+            );
+        }
 
-        let retry = attempt(
-            &ctx,
-            RegistrationKind::Token,
-            6,
-            Err(nonce_refused(
-                MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
-            )),
-            Some(updated),
-        )
-        .await;
-        assert_eq!(retry.sent_nonce, Some(5));
-        assert!(
-            matches!(
-                &retry.outcome,
-                Err(TaskError::TokenRegistrationUnconfirmed { contract_id, .. })
-                    if *contract_id == assigned_id(&ctx, 5)
-            ),
-            "{:?}",
-            retry.outcome
-        );
-        assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
+        let next = attempt(&ctx, RegistrationKind::Contract, 7, Err(unread()), None).await;
+        assert_eq!(next.sent_nonce, Some(7));
     }
 
     /// A retry after an unresolved registration that fails before anything

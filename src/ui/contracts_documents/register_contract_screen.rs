@@ -399,7 +399,8 @@ impl ScreenLike for RegisterDataContractScreen {
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         let refused_before_it_ran = match error {
             TaskError::ContractRegistrationUnconfirmed { .. }
-            | TaskError::ContractRegistrationModifiedSince { .. } => false,
+            | TaskError::ContractRegistrationModifiedSince { .. }
+            | TaskError::ContractRegistrationIdentityChanged { .. } => false,
             TaskError::ContractRegistrationInProgress
             | TaskError::RegistrationNonceRefused { .. }
             | TaskError::ContractRegistrationPreempted { .. }
@@ -794,6 +795,12 @@ mod tests {
             },
             TaskError::ContractRegistrationModifiedSince {
                 contract_id,
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationIdentityChanged {
+                contract_id,
+                identity_id: contract_id,
+                network: dash_sdk::dpp::dashcore::Network::Testnet,
                 source_error: source(),
             },
         ] {

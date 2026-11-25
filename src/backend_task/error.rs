@@ -2412,6 +2412,36 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The identity nonce a registration was sent with was used by another
+    /// operation, and no contract was found under the ID it gives. No attempt
+    /// of the registration can run any more, so it is settled, but a node
+    /// that lags may not show it yet: the user checks the ID before
+    /// registering again.
+    #[error(
+        "Identity {identity_id} was changed by another operation while your contract was being registered, so the result cannot be confirmed yet. Check again later: open Contracts, choose Load Contracts and enter contract ID {contract_id} on {}. If the contract is not there, register it again.",
+        crate::ui::theme::network_label(*network)
+    )]
+    ContractRegistrationIdentityChanged {
+        contract_id: dash_sdk::platform::Identifier,
+        identity_id: dash_sdk::platform::Identifier,
+        network: Network,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationIdentityChanged`] for a token's contract.
+    #[error(
+        "Identity {identity_id} was changed by another operation while your token was being created, so the result cannot be confirmed yet. Check again later: open Tokens, choose Import Token and enter contract ID {contract_id} on {}. If the token is not there, create it again.",
+        crate::ui::theme::network_label(*network)
+    )]
+    TokenRegistrationIdentityChanged {
+        contract_id: dash_sdk::platform::Identifier,
+        identity_id: dash_sdk::platform::Identifier,
+        network: Network,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// A different contract by the same identity, registered elsewhere, took
     /// the place this registration was sent for, so it can never run. A new
     /// registration gets a new place.
@@ -4256,8 +4286,9 @@ impl TaskError {
 
     /// A sent registration's outcome keeps its own message, whatever the
     /// network state: one that may have run, or found changed since its
-    /// creation, names the contract ID to check before registering again; one
-    /// another registration preempted says to register again.
+    /// creation, or sent while its identity changed, names the contract ID to
+    /// check before registering again; one another registration preempted
+    /// says to register again.
     fn is_registration_outcome(&self) -> bool {
         matches!(
             self,
@@ -4267,6 +4298,8 @@ impl TaskError {
                 | Self::TokenRegistrationPreempted { .. }
                 | Self::ContractRegistrationModifiedSince { .. }
                 | Self::TokenRegistrationModifiedSince { .. }
+                | Self::ContractRegistrationIdentityChanged { .. }
+                | Self::TokenRegistrationIdentityChanged { .. }
         )
     }
 
@@ -6183,6 +6216,46 @@ mod tests {
             let shared = std::sync::Arc::new(contextualized)
                 .contextualize_shared_dapi_availability(availability(1, 0));
             assert_eq!(shared.to_string(), message);
+        }
+    }
+
+    /// A registration sent while its identity was changed by another
+    /// operation says the result is not confirmed yet and how to check it
+    /// (contract ID, identity, network, where to look) before registering
+    /// again.
+    #[test]
+    fn a_registration_sent_while_its_identity_changed_says_how_to_check_it() {
+        let contract_id = Identifier::from([0x42; 32]);
+        let identity_id = Identifier::from([0x21; 32]);
+        let source_error = || Box::new(SdkError::Generic("nonce already used".to_string()));
+        let contract = TaskError::ContractRegistrationIdentityChanged {
+            contract_id,
+            identity_id,
+            network: Network::Testnet,
+            source_error: source_error(),
+        };
+        let token = TaskError::TokenRegistrationIdentityChanged {
+            contract_id,
+            identity_id,
+            network: Network::Mainnet,
+            source_error: source_error(),
+        };
+
+        assert_eq!(
+            contract.to_string(),
+            format!(
+                "Identity {identity_id} was changed by another operation while your contract was being registered, so the result cannot be confirmed yet. Check again later: open Contracts, choose Load Contracts and enter contract ID {contract_id} on Testnet. If the contract is not there, register it again."
+            )
+        );
+        assert_eq!(
+            token.to_string(),
+            format!(
+                "Identity {identity_id} was changed by another operation while your token was being created, so the result cannot be confirmed yet. Check again later: open Tokens, choose Import Token and enter contract ID {contract_id} on Mainnet. If the token is not there, create it again."
+            )
+        );
+        for message in [contract.to_string(), token.to_string()] {
+            assert!(message.contains(&contract_id.to_string(Encoding::Base58)));
+            assert!(message.contains(&identity_id.to_string(Encoding::Base58)));
         }
     }
 

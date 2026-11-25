@@ -186,6 +186,30 @@ impl RegistrationKind {
         }
     }
 
+    fn identity_changed(
+        self,
+        contract_id: Identifier,
+        identity_id: Identifier,
+        network: dash_sdk::dpp::dashcore::Network,
+        source: SdkError,
+    ) -> TaskError {
+        let source_error = Box::new(source);
+        match self {
+            Self::Contract => TaskError::ContractRegistrationIdentityChanged {
+                contract_id,
+                identity_id,
+                network,
+                source_error,
+            },
+            Self::Token => TaskError::TokenRegistrationIdentityChanged {
+                contract_id,
+                identity_id,
+                network,
+                source_error,
+            },
+        }
+    }
+
     fn unconfirmed(self, contract_id: Identifier, source: SdkError) -> TaskError {
         let source_error = Box::new(source);
         match self {
@@ -406,6 +430,20 @@ impl AppContext {
                 Err(TaskError::RegistrationNonceRefused {
                     source_error: Box::new(error),
                 })
+            }
+            // The nonce is used and no attempt carrying it can run, yet its
+            // contract was not found: another operation, such as a paid
+            // rejection, consumed it, or a lagging node does not show it yet.
+            // Keeping the registration pending would block the identity's
+            // registrations until restart, so it is settled and the user is
+            // told to check the contract ID before registering again.
+            // Trade-off: registering again without that check, while a node
+            // still misses a created contract, pays for a second one.
+            // TODO(DET-1230-D53): link the dashpay/platform umbrella issue for
+            // generic handling of unknown state-transition outcomes.
+            Some(NonceRefusal::AlreadyUsed) if look_up => {
+                self.settle_pending_contract_registration(owner_id, pending);
+                Err(kind.identity_changed(contract_id, owner_id, self.network(), error))
             }
             _ if look_up => Err(kind.unconfirmed(contract_id, error)),
             // Refused, with no attempt left that may run: nothing is pending.
@@ -664,9 +702,12 @@ fn may_have_registered(error: &SdkError) -> bool {
 /// pending registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NonceRefusal {
-    /// The nonce, or the contract ID it gives, is already used: an earlier
-    /// attempt may have executed.
+    /// The nonce is already used: an earlier attempt may have executed, or
+    /// something else, such as a paid rejection, consumed it.
     AlreadyUsed,
+    /// A contract is already present under the ID the nonce gives: an
+    /// earlier attempt may have executed.
+    ContractPresent,
     /// The nonce can no longer be accepted, so no attempt carrying it will
     /// ever execute.
     Unusable,
@@ -689,7 +730,7 @@ fn nonce_refusal(error: &SdkError) -> Option<NonceRefusal> {
             })
         }
         ConsensusError::StateError(StateError::DataContractAlreadyPresentError(_)) => {
-            Some(NonceRefusal::AlreadyUsed)
+            Some(NonceRefusal::ContractPresent)
         }
         _ => None,
     }
@@ -1000,7 +1041,8 @@ mod tests {
         }
     }
 
-    /// A contract already present under the shared ID is the earlier attempt's.
+    /// A contract already present under the shared ID is the earlier attempt's,
+    /// so it is looked up, and a miss keeps the registration pending.
     #[tokio::test]
     async fn a_retry_refused_for_an_existing_contract_looks_it_up() {
         use dash_sdk::dpp::consensus::state::data_contract::data_contract_already_present_error::DataContractAlreadyPresentError;
@@ -1017,28 +1059,8 @@ mod tests {
         let retry = attempt(&ctx, RegistrationKind::Contract, 6, Err(present), None).await;
 
         assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
-    }
-
-    /// A used nonce whose contract is not found leaves the registration
-    /// unresolved and still pending: a later retry must not pay again.
-    #[tokio::test]
-    async fn a_used_nonce_without_its_contract_stays_pending() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = test_app_context(dir.path());
-        let owner = ctx.dpns_contract().owner_id();
-        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
-
-        let retry = attempt(
-            &ctx,
-            RegistrationKind::Contract,
-            6,
-            Err(nonce_refused(
-                MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
-            )),
-            None,
-        )
-        .await;
-
+        // Platform says the contract exists, so a miss is a lagging node: the
+        // registration stays unconfirmed and pending.
         assert!(
             matches!(
                 &retry.outcome,
@@ -1049,10 +1071,73 @@ mod tests {
             retry.outcome
         );
         assert_eq!(
-            ctx.pending_contract_registration(&owner)
+            ctx.pending_contract_registration(&ctx.dpns_contract().owner_id())
                 .map(|p| p.identity_nonce),
             Some(5)
         );
+    }
+
+    /// A used nonce whose contract is not found can carry no attempt that may
+    /// still run, so the registration is settled and reported with the IDs and
+    /// network to check, and the next attempt reads a fresh nonce instead of
+    /// being blocked.
+    #[tokio::test]
+    async fn a_used_nonce_without_its_contract_is_settled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+
+        for (kind, used, nonce) in [
+            (
+                RegistrationKind::Contract,
+                MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+                5,
+            ),
+            (
+                RegistrationKind::Token,
+                MergeIdentityNonceResult::NonceAlreadyPresentInPast(2),
+                7,
+            ),
+        ] {
+            attempt(&ctx, kind, nonce, Err(unread()), None).await;
+
+            let retry = attempt(&ctx, kind, nonce + 1, Err(nonce_refused(used)), None).await;
+
+            assert_eq!(retry.sent_nonce, Some(nonce));
+            assert_eq!(retry.asked, Some(assigned_id(&ctx, nonce)));
+            assert!(
+                match (kind, &retry.outcome) {
+                    (
+                        RegistrationKind::Contract,
+                        Err(TaskError::ContractRegistrationIdentityChanged {
+                            contract_id,
+                            identity_id,
+                            network,
+                            ..
+                        }),
+                    )
+                    | (
+                        RegistrationKind::Token,
+                        Err(TaskError::TokenRegistrationIdentityChanged {
+                            contract_id,
+                            identity_id,
+                            network,
+                            ..
+                        }),
+                    ) =>
+                        *contract_id == assigned_id(&ctx, nonce)
+                            && *identity_id == owner
+                            && *network == ctx.network(),
+                    _ => false,
+                },
+                "{:?}",
+                retry.outcome
+            );
+            assert_eq!(ctx.pending_contract_registration(&owner), None);
+        }
+        let next = attempt(&ctx, RegistrationKind::Contract, 9, Err(unread()), None).await;
+        assert!(next.fresh_nonce_read);
+        assert_eq!(next.sent_nonce, Some(9));
     }
 
     /// A retry refused because Platform can no longer accept its nonce looks

@@ -408,10 +408,10 @@ pub struct AppContext {
     /// newest addresses. Held across the whole rebuild, which never awaits;
     /// taken before any other lock of this context, never under one.
     connection_rebuild: Mutex<()>,
-    /// Each identity's contract registration sent but not settled, so a
-    /// retry reuses its nonce. In memory only: a restart forgets it.
     /// Identities with a contract registration being sent right now.
     pub(crate) contract_registrations_in_flight: Mutex<HashSet<Identifier>>,
+    /// Each identity's contract registration sent but not settled, so a
+    /// retry reuses its nonce. In memory only: a restart forgets it.
     pub(crate) pending_contract_registrations: Mutex<
         HashMap<Identifier, crate::backend_task::register_contract::PendingContractRegistration>,
     >,

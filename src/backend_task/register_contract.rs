@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dash_sdk::dash_platform_queries::transition::validation::ensure_valid_state_transition_structure;
 use dash_sdk::dpp::identity::PartialIdentity;
@@ -11,6 +12,7 @@ use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::state_transition::data_contract_create_transition::DataContractCreateTransition;
 use dash_sdk::dpp::state_transition::data_contract_create_transition::methods::DataContractCreateTransitionMethodsV0;
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::platform::Fetch;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::put_contract::ensure_private_document_entries_fit;
 use dash_sdk::{
@@ -29,6 +31,15 @@ const LOCAL_SAVE_ATTEMPTS: u32 = 3;
 
 /// Pause between attempts at saving a confirmed contract.
 const LOCAL_SAVE_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+/// How long after submission an unconfirmed registration is looked for.
+/// Platform creates a block, empty if need be, about every three minutes, so a
+/// transition still unconfirmed five minutes after submission was dropped and
+/// will not execute; paying again is then safe.
+const REGISTRATION_CONFIRMATION_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// Pause between lookups of an unconfirmed registration.
+const REGISTRATION_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// What the user registered. The registration is the same; its result and
 /// wording differ.
@@ -120,6 +131,7 @@ impl AppContext {
         )
         .await?;
 
+        let submitted_at = Instant::now();
         match transition
             .broadcast_and_wait::<DataContract>(sdk, None)
             .await
@@ -129,7 +141,7 @@ impl AppContext {
                 .await),
             Err(error) if may_have_registered(&error) => {
                 let found = self
-                    .refetch_contract_after_unread_result(sdk, contract_id, &sender)
+                    .find_unconfirmed_registration(sdk, contract_id, submitted_at, &sender)
                     .await?;
                 self.settle_unconfirmed_registration(
                     found,
@@ -145,9 +157,45 @@ impl AppContext {
         }
     }
 
+    /// Looks for a registration whose result could not be read under its
+    /// Platform-assigned ID until it is found or
+    /// [`REGISTRATION_CONFIRMATION_WINDOW`] after `submitted_at` ends. The
+    /// task runs throughout, so its form offers no second payment meanwhile.
+    async fn find_unconfirmed_registration(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+        submitted_at: Instant,
+        sender: &crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<Option<DataContract>, TaskError> {
+        if let Some(contract) = self
+            .refetch_contract_after_unread_result(sdk, contract_id, sender)
+            .await?
+        {
+            return Ok(Some(contract));
+        }
+        tracing::info!(
+            %contract_id,
+            "Contract registration not confirmed yet; checking the network until the confirmation window ends"
+        );
+        let awaiting = TaskResult::interim_success(
+            self.network,
+            BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation,
+        );
+        if sender.send(awaiting).await.is_err() {
+            tracing::debug!(%contract_id, "No frame loop took the registration's awaiting-confirmation report");
+        }
+        Ok(watch_for_registration(
+            || async move { DataContract::fetch(sdk, contract_id).await.ok().flatten() },
+            || submitted_at.elapsed(),
+            tokio::time::sleep,
+        )
+        .await)
+    }
+
     /// Settles a registration whose result could not be read, by the lookup
-    /// under its Platform-assigned ID: found is confirmed; not found stays
-    /// unresolved, never a failure inviting a second registration.
+    /// under its Platform-assigned ID: found is confirmed; not found by the end
+    /// of the confirmation window is reported as most likely not registered.
     async fn settle_unconfirmed_registration(
         &self,
         found: Option<DataContract>,
@@ -225,6 +273,36 @@ async fn contract_create_transition<S: Signer<IdentityPublicKey>>(
         .map_err(|e| TaskError::from(SdkError::from(e)))?;
     let contract_id = DataContract::generate_data_contract_id_v0(owner_id, identity_nonce);
     Ok((transition, contract_id))
+}
+
+/// The pause before the next lookup of an unconfirmed registration submitted
+/// `elapsed` ago, cut so the last lookup falls at the window's end; `None`
+/// once the window is over.
+fn next_registration_check(elapsed: Duration) -> Option<Duration> {
+    let remaining = REGISTRATION_CONFIRMATION_WINDOW
+        .checked_sub(elapsed)
+        .filter(|remaining| !remaining.is_zero())?;
+    Some(remaining.min(REGISTRATION_RECHECK_INTERVAL))
+}
+
+/// Runs `lookup` on the [`next_registration_check`] schedule until it finds
+/// the registration or the window ends. `elapsed` and `sleep` are the clock.
+async fn watch_for_registration<T, Found, Slept>(
+    mut lookup: impl FnMut() -> Found,
+    elapsed: impl Fn() -> Duration,
+    mut sleep: impl FnMut(Duration) -> Slept,
+) -> Option<T>
+where
+    Found: Future<Output = Option<T>>,
+    Slept: Future<Output = ()>,
+{
+    while let Some(pause) = next_registration_check(elapsed()) {
+        sleep(pause).await;
+        if let Some(found) = lookup().await {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Whether a failed registration may still have been executed: its result
@@ -427,10 +505,11 @@ mod tests {
         );
     }
 
-    /// A registration not found after an unread result stays unresolved: the
-    /// error names the assigned ID and asks the user to check, not to retry.
+    /// A registration not found by the end of the confirmation window is
+    /// reported as most likely not registered: the error names the assigned
+    /// ID to check before registering again.
     #[tokio::test]
-    async fn a_registration_not_found_after_an_unread_result_stays_unresolved() {
+    async fn a_registration_not_found_in_the_window_is_reported_unconfirmed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
         let contract_id = Identifier::from([0x42; 32]);
@@ -461,8 +540,83 @@ mod tests {
             assert_eq!(named_id, contract_id);
             let message = error.to_string();
             assert!(message.contains(&format!("{contract_id}")), "{message}");
+            assert!(message.contains("five minutes"), "{message}");
             assert!(!message.contains("try again"), "{message}");
         }
+    }
+
+    /// Lookups come every recheck interval, the last one exactly when the
+    /// confirmation window ends, and none after it.
+    #[test]
+    fn an_unconfirmed_registration_is_checked_until_the_window_ends() {
+        assert_eq!(
+            next_registration_check(Duration::ZERO),
+            Some(REGISTRATION_RECHECK_INTERVAL)
+        );
+        assert_eq!(
+            next_registration_check(REGISTRATION_CONFIRMATION_WINDOW - Duration::from_secs(10)),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            next_registration_check(REGISTRATION_CONFIRMATION_WINDOW),
+            None
+        );
+        assert_eq!(
+            next_registration_check(REGISTRATION_CONFIRMATION_WINDOW + Duration::from_secs(1)),
+            None
+        );
+    }
+
+    /// The watch stops at the first lookup that finds the registration.
+    #[tokio::test]
+    async fn the_watch_stops_once_the_registration_is_found() {
+        use std::cell::Cell;
+        let now = Cell::new(Duration::ZERO);
+        let lookups = Cell::new(0u32);
+
+        let found = watch_for_registration(
+            || {
+                lookups.set(lookups.get() + 1);
+                std::future::ready((lookups.get() == 3).then_some(7u8))
+            },
+            || now.get(),
+            |pause| {
+                now.set(now.get() + pause);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert_eq!(found, Some(7));
+        assert_eq!(lookups.get(), 3);
+        assert_eq!(now.get(), REGISTRATION_RECHECK_INTERVAL * 3);
+    }
+
+    /// A registration never found is looked for until the window ends, and
+    /// no longer: the form then offers paying again.
+    #[tokio::test]
+    async fn the_watch_gives_up_when_the_window_ends() {
+        use std::cell::Cell;
+        let now = Cell::new(Duration::from_secs(40));
+        let lookups = Cell::new(0u32);
+
+        let found = watch_for_registration(
+            || {
+                lookups.set(lookups.get() + 1);
+                std::future::ready(None::<u8>)
+            },
+            || now.get(),
+            |pause| {
+                now.set(now.get() + pause);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert_eq!(found, None);
+        assert_eq!(now.get(), REGISTRATION_CONFIRMATION_WINDOW);
+        // 260 s left: eight 30 s pauses, then the last 20 s.
+        assert_eq!(lookups.get(), 9);
     }
 
     /// Platform confirmed the registration, but the contract cannot be saved

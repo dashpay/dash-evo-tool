@@ -177,6 +177,10 @@ fn sanitize_u64(input: &mut String) {
     input.retain(|c| c.is_ascii_digit());
 }
 
+/// Progress text while a sent token registration awaits the network's
+/// confirmation; the creator stays blocked until it ends.
+const TOKEN_AWAITING_CONFIRMATION: &str = "Your token was sent, but the network has not confirmed it yet. The app keeps checking for up to five minutes. You do not need to do anything.";
+
 /// Which token sub-screen is currently showing.
 #[derive(PartialEq)]
 pub enum TokensSubscreen {
@@ -3322,6 +3326,14 @@ impl ScreenLike for TokensScreen {
                     &self.token_pricing_data,
                 );
             }
+            BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation
+                if self.awaits_token_registration()
+                    && context.interim_request() == self.token_registration_context.as_ref() =>
+            {
+                if let Some(banner) = &self.registration_banner {
+                    banner.set_message(TOKEN_AWAITING_CONFIRMATION);
+                }
+            }
             BackendTaskSuccessResult::RegisteredTokenContract { .. }
                 if self.awaits_token_registration()
                     && self.token_registration_context.as_ref() == Some(context) =>
@@ -5412,6 +5424,51 @@ mod tests {
         ));
         assert_eq!(screen.simple_mode_blocked_reason(), None);
         assert_eq!(screen.advanced_mode_blocked_reason(), None);
+    }
+
+    /// While a sent registration awaits the network's confirmation, the
+    /// creator stays blocked and its progress banner says the app is still
+    /// checking; another request's report changes nothing.
+    #[test]
+    fn an_unconfirmed_registration_keeps_the_creator_blocked() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        let registration = screen.begin_token_registration_for_test();
+        let other = BackendTaskContext::for_dispatch_on(
+            &BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            app_context.network,
+        );
+        let banner_text = |screen: &TokensScreen| {
+            screen
+                .registration_banner
+                .as_ref()
+                .and_then(|banner| banner.text())
+        };
+
+        screen.display_backend_task_result(
+            &BackendTaskContext::interim(app_context.network, other),
+            BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation,
+        );
+        assert_ne!(
+            banner_text(&screen).as_deref(),
+            Some(TOKEN_AWAITING_CONFIRMATION)
+        );
+
+        screen.display_backend_task_result(
+            &BackendTaskContext::interim(app_context.network, registration),
+            BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation,
+        );
+        assert_eq!(
+            banner_text(&screen).as_deref(),
+            Some(TOKEN_AWAITING_CONFIRMATION)
+        );
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::WaitingForResult
+        );
+        assert!(screen.advanced_mode_blocked_reason().is_some());
+        assert!(screen.simple_mode_blocked_reason().is_some());
     }
 
     /// A failed registration ends the creator's wait in its error state and

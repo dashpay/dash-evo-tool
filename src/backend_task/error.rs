@@ -2358,11 +2358,11 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// A contract registration may have been accepted, but neither its result
-    /// nor a lookup under its Platform-assigned ID confirmed it. Registering
-    /// again would pay for a second contract.
+    /// A contract registration whose result could not be read was not found
+    /// under its Platform-assigned ID within the confirmation window, so the
+    /// transition was most likely dropped.
     #[error(
-        "Your contract was submitted, but the network has not confirmed it yet. Wait a few minutes, then open Contracts, choose Load Contracts and enter contract ID {contract_id} to see whether it was registered. Do not register it again until you have checked."
+        "The network did not confirm your contract within five minutes, so it was most likely not registered. To check, open Contracts, choose Load Contracts and enter contract ID {contract_id}. If it is not found, you can register it again."
     )]
     ContractRegistrationUnconfirmed {
         contract_id: dash_sdk::platform::Identifier,
@@ -2372,7 +2372,7 @@ pub enum TaskError {
 
     /// [`Self::ContractRegistrationUnconfirmed`] for a token's contract.
     #[error(
-        "Your token was submitted, but the network has not confirmed it yet. Wait a few minutes, then open Tokens, choose Import Token and enter contract ID {contract_id} to see whether it was created. Do not create it again until you have checked."
+        "The network did not confirm your token within five minutes, so it was most likely not created. To check, open Tokens, choose Import Token and enter contract ID {contract_id}. If it is not found, you can create it again."
     )]
     TokenRegistrationUnconfirmed {
         contract_id: dash_sdk::platform::Identifier,

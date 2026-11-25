@@ -28,6 +28,10 @@ use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
+/// Progress text while a sent registration awaits the network's
+/// confirmation; the form stays without a Register button until it ends.
+const CONTRACT_AWAITING_CONFIRMATION: &str = "Your contract was sent, but the network has not confirmed it yet. The app keeps checking for up to five minutes. You do not need to do anything.";
+
 #[derive(PartialEq)]
 enum BroadcastStatus {
     Idle,
@@ -364,6 +368,11 @@ impl ScreenLike for RegisterDataContractScreen {
             }
             BackendTaskSuccessResult::ProofErrorLogged => {
                 self.broadcast_status = BroadcastStatus::ProofError;
+            }
+            BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation => {
+                if let Some(banner) = &self.refresh_banner {
+                    banner.set_message(CONTRACT_AWAITING_CONFIRMATION);
+                }
             }
             BackendTaskSuccessResult::ContractSavedAfterProofError => {
                 self.refresh_banner.take_and_clear();

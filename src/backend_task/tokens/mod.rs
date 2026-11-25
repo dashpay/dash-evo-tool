@@ -1,5 +1,6 @@
 use super::{BackendTaskSuccessResult, FeeResult};
-use crate::backend_task::error::{ContractSaveWarning, TaskError};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::register_contract::RegistrationKind;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::wallet_backend::{TokenActionCommon, TokenActor};
@@ -316,11 +317,11 @@ impl AppContext {
                     alias,
                     identity,
                     *signing_key,
+                    RegistrationKind::Token,
                     sdk,
                     sender,
                 )
                 .await
-                .map(token_registration_result)
             }
             TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
             TokenTask::MintTokens {
@@ -822,65 +823,9 @@ impl AppContext {
     }
 }
 
-/// The token creator's result for a finished contract registration, with any
-/// local-save warning worded for the token.
-fn token_registration_result(result: BackendTaskSuccessResult) -> BackendTaskSuccessResult {
-    let save_warning = match result {
-        BackendTaskSuccessResult::RegisteredContract { save_warning, .. } => {
-            save_warning.map(ContractSaveWarning::for_token)
-        }
-        _ => None,
-    };
-    BackendTaskSuccessResult::RegisteredTokenContract { save_warning }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A token registration Platform confirmed but this device could not
-    /// save still completes, with the warning worded for the token.
-    #[test]
-    fn a_token_registration_keeps_its_save_warning() {
-        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
-        let registered = BackendTaskSuccessResult::RegisteredContract {
-            fee_result: FeeResult::estimated_only(1),
-            save_warning: Some(ContractSaveWarning::Contract {
-                contract_id,
-                source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
-            }),
-        };
-
-        let result = token_registration_result(registered);
-
-        let BackendTaskSuccessResult::RegisteredTokenContract {
-            save_warning: Some(warning @ ContractSaveWarning::Token { .. }),
-        } = result
-        else {
-            panic!("expected a token registration with a token save warning, got {result:?}");
-        };
-        let message = warning.to_string();
-        assert!(message.contains("Import Token"), "{message}");
-        assert!(message.contains(&contract_id.to_string()), "{message}");
-    }
-
-    /// A saved registration, or one recovered after a proof error, completes
-    /// with no warning.
-    #[test]
-    fn a_saved_token_registration_has_no_warning() {
-        for registered in [
-            BackendTaskSuccessResult::RegisteredContract {
-                fee_result: FeeResult::estimated_only(1),
-                save_warning: None,
-            },
-            BackendTaskSuccessResult::ContractSavedAfterProofError,
-        ] {
-            assert!(matches!(
-                token_registration_result(registered),
-                BackendTaskSuccessResult::RegisteredTokenContract { save_warning: None }
-            ));
-        }
-    }
 
     #[tokio::test]
     async fn token_lookup_timeout_is_typed_and_actionable() {

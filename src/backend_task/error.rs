@@ -294,22 +294,6 @@ pub enum ContractSaveWarning {
     },
 }
 
-impl ContractSaveWarning {
-    /// The same warning, worded for a contract the token creator registered.
-    pub(crate) fn for_token(self) -> Self {
-        match self {
-            Self::Contract {
-                contract_id,
-                source,
-            } => Self::Token {
-                contract_id,
-                source,
-            },
-            token @ Self::Token { .. } => token,
-        }
-    }
-}
-
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
 /// Shared, so one stopped task batch can report it for each of its tasks.
 #[derive(Clone)]
@@ -2370,6 +2354,28 @@ pub enum TaskError {
         "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
     )]
     PlatformResultUnconfirmed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract registration may have been accepted, but neither its result
+    /// nor a lookup under its Platform-assigned ID confirmed it. Registering
+    /// again would pay for a second contract.
+    #[error(
+        "Your contract was submitted, but the network has not confirmed it yet. Wait a few minutes, then open Contracts, choose Load Contracts and enter contract ID {contract_id} to see whether it was registered. Do not register it again until you have checked."
+    )]
+    ContractRegistrationUnconfirmed {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationUnconfirmed`] for a token's contract.
+    #[error(
+        "Your token was submitted, but the network has not confirmed it yet. Wait a few minutes, then open Tokens, choose Import Token and enter contract ID {contract_id} to see whether it was created. Do not create it again until you have checked."
+    )]
+    TokenRegistrationUnconfirmed {
+        contract_id: dash_sdk::platform::Identifier,
         #[source]
         source_error: Box<SdkError>,
     },

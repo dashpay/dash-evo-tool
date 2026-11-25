@@ -1340,6 +1340,29 @@ impl AppContext {
         sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         persist: impl FnOnce(&Self, &DataContract),
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
+        let task_error =
+            self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
+
+        if let Some(contract) = self
+            .refetch_contract_after_unread_result(sdk, contract_id, sender)
+            .await?
+        {
+            persist(self, &contract);
+            return Ok(crate::backend_task::BackendTaskSuccessResult::ContractSavedAfterProofError);
+        }
+
+        Err(task_error)
+    }
+
+    /// Notifies the UI that a contract transition's result is being checked,
+    /// waits for the block to propagate, then fetches the contract by id.
+    /// `None` when the contract is not found or the fetch fails.
+    pub(crate) async fn refetch_contract_after_unread_result(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
+    ) -> Result<Option<DataContract>, TaskError> {
         use crate::backend_task::BackendTaskSuccessResult;
         use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
@@ -1347,9 +1370,6 @@ impl AppContext {
         // Give the network time to propagate the block before re-fetching.
         const REFETCH_DELAY_REGTEST: std::time::Duration = std::time::Duration::from_secs(3);
         const REFETCH_DELAY_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
-
-        let task_error =
-            self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
             .send(TaskResult::interim_success(
@@ -1365,12 +1385,7 @@ impl AppContext {
         };
         tokio::time::sleep(delay).await;
 
-        if let Ok(Some(contract)) = DataContract::fetch(sdk, contract_id).await {
-            persist(self, &contract);
-            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
-        }
-
-        Err(task_error)
+        Ok(DataContract::fetch(sdk, contract_id).await.ok().flatten())
     }
 
     /// Lazily build the wallet seam, idempotently.

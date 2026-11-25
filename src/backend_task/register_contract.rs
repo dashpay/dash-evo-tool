@@ -601,6 +601,17 @@ mod tests {
         submitted: Result<DataContract, SdkError>,
         found: Option<DataContract>,
     ) -> Attempt {
+        attempt_with_lookup(ctx, kind, fresh_nonce, submitted, Ok(found)).await
+    }
+
+    /// [`attempt`] whose lookup answers `lookup`, which may be a failure.
+    async fn attempt_with_lookup(
+        ctx: &AppContext,
+        kind: RegistrationKind,
+        fresh_nonce: IdentityNonce,
+        submitted: Result<DataContract, SdkError>,
+        lookup: Result<Option<DataContract>, TaskError>,
+    ) -> Attempt {
         let contract = ctx.dpns_contract().as_ref().clone();
         let asked = std::cell::Cell::new(None);
         let sent_nonce = std::cell::Cell::new(None);
@@ -625,7 +636,7 @@ mod tests {
                 },
                 |contract_id| {
                     asked.set(Some(contract_id));
-                    std::future::ready(Ok(found))
+                    std::future::ready(lookup)
                 },
             )
             .await;
@@ -817,6 +828,58 @@ mod tests {
         assert_eq!(ctx.pending_contract_registration(&owner), None);
         let next = attempt(&ctx, RegistrationKind::Contract, 7, Err(unread()), None).await;
         assert_eq!(next.sent_nonce, Some(7));
+    }
+
+    /// A lookup that fails tells nothing: the registration stays unconfirmed
+    /// and pending, after an unread result and after an unusable nonce alike,
+    /// so a retry still cannot create a second one.
+    #[tokio::test]
+    async fn a_failed_lookup_leaves_the_registration_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let still_pending = Some(PendingContractRegistration {
+            identity_nonce: 5,
+            contract_id: assigned_id(&ctx, 5),
+        });
+
+        let first = attempt_with_lookup(
+            &ctx,
+            RegistrationKind::Contract,
+            5,
+            Err(unread()),
+            Err(TaskError::InternalSendError),
+        )
+        .await;
+        assert_eq!(first.asked, Some(assigned_id(&ctx, 5)));
+        assert!(
+            matches!(
+                first.outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { .. })
+            ),
+            "{:?}",
+            first.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
+
+        let retry = attempt_with_lookup(
+            &ctx,
+            RegistrationKind::Token,
+            6,
+            Err(nonce_refused(MergeIdentityNonceResult::NonceTooFarInPast)),
+            Err(TaskError::InternalSendError),
+        )
+        .await;
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+        assert!(
+            matches!(
+                retry.outcome,
+                Err(TaskError::TokenRegistrationUnconfirmed { .. })
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), still_pending);
     }
 
     /// An earlier attempt found under the shared ID after its nonce became

@@ -628,4 +628,24 @@ mod tests {
         assert!(screen.display_task_error(&error));
         assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
     }
+
+    /// A registration refused before it could run is shown in its own words,
+    /// not as a broadcast error.
+    #[test]
+    fn a_refused_registration_is_not_shown_as_a_broadcast_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = RegisterDataContractScreen::new(&app_context);
+
+        for error in [
+            TaskError::ContractRegistrationInProgress,
+            TaskError::RegistrationNonceRefused {
+                source_error: Box::new(dash_sdk::Error::Generic("refused".to_string())),
+            },
+        ] {
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            assert!(screen.display_task_error(&error), "{error:?}");
+            assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
+        }
+    }
 }

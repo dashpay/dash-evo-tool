@@ -283,6 +283,31 @@ async fn persist_account_registrations(
     .await
 }
 
+/// `stored` with `fetched`, answered at `metadata`, folded in by upstream's
+/// `ManagedIdentity::take_fetched_identity`: raised key limits are kept, and
+/// below the stored revision so are the stored keys and any permanent
+/// disable. The balance is the fetched one; the caller orders it.
+///
+/// TODO(platform-wallet): a fetch at the stored revision still takes
+/// reversible key states whole, so a lagging proof can undo one
+/// (dashpay/platform#5542 item 6).
+pub(crate) fn fold_fetched_identity(
+    stored: &dash_sdk::platform::Identity,
+    fetched: &dash_sdk::platform::Identity,
+    metadata: &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata,
+) -> dash_sdk::platform::Identity {
+    let mut managed = platform_wallet::ManagedIdentity::new_out_of_wallet(stored.clone());
+    managed.take_fetched_identity(
+        fetched,
+        platform_wallet::BlockTime::new(
+            metadata.height,
+            metadata.core_chain_locked_height,
+            metadata.time_ms,
+        ),
+    );
+    managed.identity
+}
+
 impl WalletBackend {
     /// Register a new identity on Platform funded by an asset lock built and
     /// tracked-to-finality by the upstream `AssetLockManager`. Returns the

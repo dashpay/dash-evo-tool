@@ -23,6 +23,15 @@ const KEYWORD_SEARCH_INFO_TEXT: &str = "Keyword Search allows you to find tokens
     - Each keyword costs 0.1 Dash to register, so creators choose them carefully.";
 
 impl TokensScreen {
+    /// Ends the keyword search, retiring the progress banner of one still
+    /// waiting for results; another operation's banner stays.
+    pub(super) fn end_keyword_search(&mut self) {
+        if self.contract_search_status == ContractSearchStatus::WaitingForResult {
+            self.operation_banner.take_and_clear();
+        }
+        self.contract_search_status = ContractSearchStatus::NotStarted;
+    }
+
     pub(super) fn render_keyword_search(&mut self, ui: &mut Ui) -> AppAction {
         ui.set_min_width(ui.available_width());
         ui.set_max_width(ui.available_width());
@@ -88,8 +97,7 @@ impl TokensScreen {
                         self.token_search_query = Some("".to_string());
                         // Clear the search results
                         self.search_results.lock_recover().clear();
-                        // Reset the search status
-                        self.contract_search_status = ContractSearchStatus::NotStarted;
+                        self.end_keyword_search();
                         // Clear pagination state
                         self.search_current_page = 1;
                         self.next_cursors.clear();

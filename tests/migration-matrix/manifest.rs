@@ -1,8 +1,8 @@
 //! Serde model for `tests/migration-fixtures/manifest.json`.
 //!
-//! The manifest is the only permanent pointer to a fixture: the archives
-//! themselves live as GitHub Actions build artifacts with a finite retention,
-//! so the committed manifest records which run produced which fixture.
+//! A committed entry names an archive stored in the repository by path and
+//! digest. CI merges in the entries of fixtures attached to releases, which
+//! name an archive the download placed in the fixtures directory instead.
 //!
 //! Every field except `id` and `network` is optional and defaulted. The
 //! capture tooling and this harness ship in separate changes, so an unknown
@@ -20,6 +20,10 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 
 /// Overrides the manifest path when the file lives outside the fixtures dir.
 pub const MANIFEST_PATH_ENV: &str = "MIGRATION_FIXTURES_MANIFEST";
+
+/// Directory an [`InRepoArchive`] path is relative to, wherever the manifest
+/// that names it lives.
+pub const IN_REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/migration-fixtures");
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
@@ -51,6 +55,12 @@ pub struct Fixture {
     pub profile: String,
     #[serde(default)]
     pub captured_at: String,
+    /// An archive committed to the repository. Takes precedence over
+    /// `artifact`.
+    #[serde(default)]
+    pub archive: Option<InRepoArchive>,
+    /// The archive of a fixture attached to a release, downloaded into the
+    /// fixtures directory.
     #[serde(default, alias = "artifacts")]
     pub artifact: Artifact,
     #[serde(default, alias = "expectations")]
@@ -159,9 +169,38 @@ impl Scenario {
     }
 }
 
-/// Where the fixture bytes came from. `archive` is the only field the harness
-/// reads; the rest exist so a human (or a re-fetch script) can find the
-/// artifact again after the local copy is gone.
+/// An archive committed to the repository, held to its size and digest
+/// before it is unpacked.
+#[derive(Debug, Deserialize)]
+pub struct InRepoArchive {
+    /// Relative to [`IN_REPO_ROOT`].
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+impl InRepoArchive {
+    /// The archive's location below `root`; a path that could leave it is
+    /// rejected.
+    pub fn locate(&self, root: &Path) -> Result<PathBuf, String> {
+        let relative = Path::new(&self.path);
+        let contained = relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+        match contained && !self.path.is_empty() {
+            true => Ok(root.join(relative)),
+            false => Err(format!(
+                "archive path {} must be a plain path below {}",
+                self.path,
+                root.display()
+            )),
+        }
+    }
+}
+
+/// Where a release-attached fixture's bytes came from. `archive` and
+/// `sha256` are the fields the harness reads; the rest identify the capture
+/// run in a failure report.
 #[derive(Debug, Default, Deserialize)]
 pub struct Artifact {
     /// Archive (or directory) name inside the fixtures directory.
@@ -175,8 +214,6 @@ pub struct Artifact {
     pub artifact_name: Option<String>,
     #[serde(default)]
     pub workflow_run_id: Option<u64>,
-    #[serde(default)]
-    pub retention_days: Option<u32>,
 }
 
 /// What the harness must observe after booting this fixture.
@@ -214,8 +251,7 @@ impl Default for Expectations {
 }
 
 impl Artifact {
-    /// Where the bytes came from, for a failure report: a local archive name
-    /// is useless once the CI artifact has expired, the run id is not.
+    /// Where the bytes came from, for a failure report.
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
         if let Some(name) = &self.artifact_name {
@@ -223,9 +259,6 @@ impl Artifact {
         }
         if let Some(run) = self.workflow_run_id {
             parts.push(format!("run {run}"));
-        }
-        if let Some(days) = self.retention_days {
-            parts.push(format!("retention {days}d"));
         }
         match parts.is_empty() {
             true => "no artifact pointer".to_string(),
@@ -251,7 +284,10 @@ impl Fixture {
             field("capture", &self.capture_method),
             field("profile", &self.profile),
             field("captured", &self.captured_at),
-            self.artifact.describe(),
+            match &self.archive {
+                Some(archive) => format!("in-repo {}", archive.path),
+                None => self.artifact.describe(),
+            },
         )
     }
 
@@ -430,7 +466,7 @@ mod tests {
             fixture.expect.finish_unwire_sentinel && fixture.expect.derive_address,
             "the sentinel and address checks default to on"
         );
-        assert!(fixture.artifact.archive.is_none());
+        assert!(fixture.archive.is_none() && fixture.artifact.archive.is_none());
     }
 
     #[test]
@@ -472,12 +508,12 @@ mod tests {
     }
 
     /// Reads the committed manifest rather than a hand-written sample, so the
-    /// key names the capture tooling writes and the ones this reader expects
-    /// cannot drift apart unnoticed. A pointer that fails to deserialize is
-    /// silently `None` (every field is defaulted), which would send the
-    /// stager hunting for `<id>.tar.zst` instead of the archive CI downloaded.
+    /// key names the manifest uses and the ones this reader expects cannot
+    /// drift apart unnoticed, and holds every committed archive to its entry.
     #[test]
-    fn the_committed_manifest_resolves_every_artifact_pointer() {
+    fn every_committed_fixture_is_an_in_repo_archive_matching_its_entry() {
+        use sha2::{Digest, Sha256};
+
         let manifest: Manifest =
             serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
                 .expect("the committed manifest must parse");
@@ -486,22 +522,45 @@ mod tests {
             "the committed manifest lists no fixtures"
         );
         for fixture in &manifest.fixtures {
-            let artifact = &fixture.artifact;
-            assert!(
-                artifact.archive.is_some(),
-                "fixture '{}' has no archive file name the stager can resolve",
-                fixture.id
+            let archive = fixture
+                .archive
+                .as_ref()
+                .unwrap_or_else(|| panic!("fixture '{}' names no in-repo archive", fixture.id));
+            let path = archive
+                .locate(Path::new(IN_REPO_ROOT))
+                .unwrap_or_else(|error| panic!("fixture '{}': {error}", fixture.id));
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("{} cannot be read: {error}", path.display()));
+            assert_eq!(bytes.len() as u64, archive.bytes, "{} size", path.display());
+            assert_eq!(
+                hex::encode(Sha256::digest(&bytes)),
+                archive.sha256,
+                "{} digest",
+                path.display()
             );
-            assert!(
-                artifact.sha256.is_some(),
-                "fixture '{}' has no sha256 to verify the download against",
-                fixture.id
-            );
-            assert!(
-                artifact.artifact_name.is_some(),
-                "fixture '{}' has no artifact name",
-                fixture.id
-            );
+        }
+    }
+
+    #[test]
+    fn an_in_repo_archive_path_stays_below_the_root() {
+        let root = Path::new("/fixtures");
+        let archive = |path: &str| InRepoArchive {
+            path: path.to_string(),
+            sha256: String::new(),
+            bytes: 0,
+        };
+        assert_eq!(
+            archive("archives/a.tar.zst").locate(root),
+            Ok(root.join("archives/a.tar.zst"))
+        );
+        for escaping in [
+            "",
+            "/etc/a.tar.zst",
+            "../a.tar.zst",
+            "archives/../../a.tar.zst",
+            "./a",
+        ] {
+            assert!(archive(escaping).locate(root).is_err(), "{escaping:?}");
         }
     }
 

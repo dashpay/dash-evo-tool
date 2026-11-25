@@ -17,18 +17,24 @@ use crate::context::AppContext;
 use crate::model::dashpay::{ContactInfoField, UnreadableContactInfoPolicy};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::inline_notice::InlineNotice;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
+use crate::ui::state::locked_wallet_hint::{
+    LockedWalletHint, UNLOCK_LINK_LABEL, locked_wallet_hint,
+};
+use crate::ui::theme::Spacing;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Context};
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::home::HomeState;
 use super::landing::HubLanding;
@@ -112,6 +118,9 @@ pub struct IdentityHubScreen {
     /// screen's write, so the context-free handler that follows it ignores it.
     foreign_contact_info_error: bool,
     pending_contact_info_confirmations: VecDeque<ContactInfoTaskKey>,
+    /// Unlock prompt opened from the locked-wallet hint, and the wallet it unlocks.
+    wallet_unlock_popup: WalletUnlockPopup,
+    unlock_wallet: Option<Arc<RwLock<crate::model::wallet::Wallet>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -185,7 +194,21 @@ impl IdentityHubScreen {
             contact_info_dispatches: HashMap::new(),
             foreign_contact_info_error: false,
             pending_contact_info_confirmations: VecDeque::new(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            unlock_wallet: None,
         }
+    }
+
+    /// Hint for locked wallets, whose identities are looked for only once unlocked.
+    fn locked_wallet_hint(&self) -> Option<LockedWalletHint> {
+        let wallets = self.app_context.wallet_context();
+        let locked: Vec<_> = self
+            .app_context
+            .locked_wallet_hashes()
+            .into_iter()
+            .map(|seed_hash| (seed_hash, wallets.hd_alias(&seed_hash)))
+            .collect();
+        locked_wallet_hint(&locked, self.app_context.selected_wallet_hash().as_ref())
     }
 
     fn capture_contact_info_update(&mut self, action: &AppAction) {
@@ -360,6 +383,8 @@ impl IdentityHubScreen {
         self.avatar_cache.invalidate();
         self.pending_avatars.clear();
         self.load_error_banner.take_and_clear();
+        self.wallet_unlock_popup.close();
+        self.unlock_wallet = None;
     }
 
     /// Resolve the current landing state from the active-network identity
@@ -703,10 +728,21 @@ impl ScreenLike for IdentityHubScreen {
         let mut picked_identity: Option<String> = None;
         // The tab whose content this frame rendered, if the hub shows one.
         let mut rendered_tab: Option<IdentityHubTab> = None;
+        let locked_hint = self.locked_wallet_hint();
+        let mut unlock_requested = None;
         action |= island_central_panel(ui, |ui| {
             // Claim the island's full width so its bordered panel reaches the
             // window edges; each view lays out its own content inside it.
             ui.set_min_width(ui.available_width());
+            if let Some(hint) = &locked_hint {
+                let response = InlineNotice::new(MessageType::Info, &hint.text)
+                    .with_link(UNLOCK_LINK_LABEL)
+                    .show(ui);
+                if response.clicked.is_some() {
+                    unlock_requested = Some(hint.unlock_target);
+                }
+                ui.add_space(Spacing::SM);
+            }
             match view {
                 HubView::Onboarding => super::onboarding::render(ui, &self.app_context),
                 HubView::Picker => super::picker::render(
@@ -831,6 +867,22 @@ impl ScreenLike for IdentityHubScreen {
         // add entries.
         if let Some(effect) = breadcrumb_switcher::add_identity_command_effect(&action) {
             action = self.apply_breadcrumb_effect(effect);
+        }
+
+        if let Some(seed_hash) = unlock_requested
+            && let Some(wallet) = self.app_context.wallet_context().hd_wallet(&seed_hash)
+        {
+            self.unlock_wallet = Some(wallet);
+            self.wallet_unlock_popup.open();
+        }
+        // Unlocking starts identity discovery for the wallet on its own.
+        if let Some(wallet) = self.unlock_wallet.clone()
+            && self
+                .wallet_unlock_popup
+                .show(ctx, &wallet, &self.app_context)
+                != WalletUnlockResult::Pending
+        {
+            self.unlock_wallet = None;
         }
 
         self.prepare_contact_info_dialog();

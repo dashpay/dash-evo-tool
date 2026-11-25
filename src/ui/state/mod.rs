@@ -19,6 +19,7 @@ pub mod global_nav;
 pub mod hub_selection;
 pub mod identity_home;
 pub mod legacy_recovery;
+pub mod locked_wallet_hint;
 pub mod masternodes_view;
 pub mod own_receive_addresses;
 pub mod pending_request;

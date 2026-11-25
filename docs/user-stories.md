@@ -800,6 +800,7 @@ As a user, I want my wallet's identities to be found and loaded automatically on
 - The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
 - Already-loaded identities are refreshed with new keys and DPNS names.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
+- While a wallet is locked, the Identities hub says so in a short hint and offers to unlock it; the hint disappears once no wallet it covers is locked.
 
 ### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
 **Persona:** Alex, Priya

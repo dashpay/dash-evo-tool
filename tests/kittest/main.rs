@@ -12,6 +12,7 @@ mod identity_hub_activity;
 mod identity_hub_contact_detail;
 mod identity_hub_contacts;
 mod identity_hub_layout;
+mod identity_hub_locked_wallet_hint;
 mod identity_hub_onboarding;
 mod identity_hub_settings;
 mod identity_hub_switcher;

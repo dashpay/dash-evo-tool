@@ -114,40 +114,79 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let fee_result =
-            FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
         let alias = (!alias.is_empty()).then_some(alias);
-
         ensure_private_document_entries_fit(&data_contract, None)?;
         let identity_nonce = sdk
             .get_identity_nonce(data_contract.owner_id(), true, None)
             .await?;
-        let (transition, contract_id) = contract_create_transition(
+        self.register_signed_contract(
             data_contract,
             identity_nonce,
             signing_key,
             &identity,
             sdk.version(),
+            alias.as_deref(),
+            kind,
+            |transition| async move {
+                transition
+                    .broadcast_and_wait::<DataContract>(sdk, None)
+                    .await
+            },
+            |contract_id, submitted_at| {
+                self.find_unconfirmed_registration(sdk, contract_id, submitted_at, &sender)
+            },
+        )
+        .await
+    }
+
+    /// [`Self::register_data_contract`] once the identity nonce is known, with
+    /// the network steps passed in: `submit` sends the signed transition and
+    /// waits for its result; `find` looks a registration whose result could
+    /// not be read up under its Platform-assigned ID.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the transition's inputs plus the two network steps"
+    )]
+    async fn register_signed_contract<S, Submitted, Found>(
+        &self,
+        data_contract: DataContract,
+        identity_nonce: IdentityNonce,
+        signing_key: IdentityPublicKey,
+        signer: &S,
+        platform_version: &PlatformVersion,
+        alias: Option<&str>,
+        kind: RegistrationKind,
+        submit: impl FnOnce(StateTransition) -> Submitted,
+        find: impl FnOnce(Identifier, Instant) -> Found,
+    ) -> Result<BackendTaskSuccessResult, TaskError>
+    where
+        S: Signer<IdentityPublicKey>,
+        Submitted: Future<Output = Result<DataContract, SdkError>>,
+        Found: Future<Output = Result<Option<DataContract>, TaskError>>,
+    {
+        let fee_result =
+            FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
+        let (transition, contract_id) = contract_create_transition(
+            data_contract,
+            identity_nonce,
+            signing_key,
+            signer,
+            platform_version,
         )
         .await?;
 
         let submitted_at = Instant::now();
-        match transition
-            .broadcast_and_wait::<DataContract>(sdk, None)
-            .await
-        {
+        match submit(transition).await {
             Ok(contract) => Ok(self
-                .finish_confirmed_registration(&contract, alias.as_deref(), fee_result, kind)
+                .finish_confirmed_registration(&contract, alias, fee_result, kind)
                 .await),
             Err(error) if may_have_registered(&error) => {
-                let found = self
-                    .find_unconfirmed_registration(sdk, contract_id, submitted_at, &sender)
-                    .await?;
+                let found = find(contract_id, submitted_at).await?;
                 self.settle_unconfirmed_registration(
                     found,
                     contract_id,
                     error,
-                    alias.as_deref(),
+                    alias,
                     fee_result,
                     kind,
                 )
@@ -431,6 +470,124 @@ mod tests {
         .await
         .expect("transition");
         assert_ne!(next_id, contract_id);
+    }
+
+    /// Drives [`AppContext::register_signed_contract`] for the DPNS contract at
+    /// identity nonce 5, with `submitted` as the network's answer; returns the
+    /// outcome and the ID the lookup was asked for, if any.
+    async fn register_with(
+        ctx: &AppContext,
+        submitted: Result<DataContract, SdkError>,
+        found: Option<DataContract>,
+    ) -> (
+        Result<BackendTaskSuccessResult, TaskError>,
+        Option<Identifier>,
+    ) {
+        let contract = ctx.dpns_contract().as_ref().clone();
+        let asked = std::cell::Cell::new(None);
+        let outcome = ctx
+            .register_signed_contract(
+                contract,
+                5,
+                signing_key(),
+                &FixedSigner,
+                ctx.platform_version(),
+                None,
+                RegistrationKind::Contract,
+                |_transition| std::future::ready(submitted),
+                |contract_id, _submitted_at| {
+                    asked.set(Some(contract_id));
+                    std::future::ready(Ok(found))
+                },
+            )
+            .await;
+        (outcome, asked.get())
+    }
+
+    /// A registration whose result could not be read is looked up under the
+    /// ID Platform assigns, never the contract's placeholder, and found there
+    /// it completes as registered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unread_registration_is_looked_up_under_its_assigned_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let placeholder = ctx.dpns_contract().id();
+        let assigned =
+            DataContract::generate_data_contract_id_v0(ctx.dpns_contract().owner_id(), 5);
+        let registered = ctx.dpns_contract().as_ref().clone();
+
+        let (outcome, asked) = register_with(
+            &ctx,
+            Err(SdkError::StateTransitionResultUnconfirmed(Box::new(
+                proof_error(),
+            ))),
+            Some(registered),
+        )
+        .await;
+
+        assert_eq!(asked, Some(assigned));
+        assert_ne!(asked, Some(placeholder));
+        assert!(
+            matches!(
+                outcome,
+                Ok(BackendTaskSuccessResult::RegisteredContract {
+                    save_warning: None,
+                    ..
+                })
+            ),
+            "{outcome:?}"
+        );
+    }
+
+    /// Not found under its assigned ID, an unread registration ends as not
+    /// confirmed, naming that ID.
+    #[tokio::test]
+    async fn an_unread_registration_not_found_names_its_assigned_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let assigned =
+            DataContract::generate_data_contract_id_v0(ctx.dpns_contract().owner_id(), 5);
+
+        let (outcome, asked) = register_with(&ctx, Err(proof_error()), None).await;
+
+        assert_eq!(asked, Some(assigned));
+        assert!(
+            matches!(
+                &outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { contract_id, .. })
+                    if *contract_id == assigned
+            ),
+            "{outcome:?}"
+        );
+    }
+
+    /// A refusal before execution and a confirmed result need no lookup.
+    #[tokio::test]
+    async fn only_an_unread_registration_is_looked_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+
+        let (outcome, asked) =
+            register_with(&ctx, Err(SdkError::Generic("refused".to_string())), None).await;
+        assert_eq!(asked, None);
+        assert!(
+            !matches!(
+                outcome,
+                Ok(_) | Err(TaskError::ContractRegistrationUnconfirmed { .. })
+            ),
+            "{outcome:?}"
+        );
+
+        let confirmed = ctx.dpns_contract().as_ref().clone();
+        let (outcome, asked) = register_with(&ctx, Ok(confirmed), None).await;
+        assert_eq!(asked, None);
+        assert!(
+            matches!(
+                outcome,
+                Ok(BackendTaskSuccessResult::RegisteredContract { .. })
+            ),
+            "{outcome:?}"
+        );
     }
 
     /// A proof error, or a result that could not be read (also when retries

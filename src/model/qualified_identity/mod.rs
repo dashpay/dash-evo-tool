@@ -1633,7 +1633,7 @@ mod key_placement_tests {
         );
     }
 
-    /// `disabled_at` is the one field Platform lets move after a key is added.
+    /// `disabled_at` is the one field Platform lets move on a V0 key.
     /// The stored copy is a snapshot from when the private half was saved, so a
     /// key disabled on chain since then must still match — disabling a key does
     /// not remove its private half from this device.
@@ -1901,7 +1901,7 @@ mod key_placement_tests {
 
     /// A key disabled on chain since its private half was saved is still the
     /// same key, so its placement is still answerable — `disabled_at` is the
-    /// one field Platform lets move.
+    /// one field Platform lets move on a V0 key.
     #[test]
     fn a_key_disabled_since_it_was_saved_still_has_a_placement() {
         let saved = key(2, Purpose::AUTHENTICATION, 0xAA);

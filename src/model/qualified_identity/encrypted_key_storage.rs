@@ -23,27 +23,26 @@ use zeroize::Zeroizing;
 pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 
 /// Whether a `stored` public half is the same key as the `live` one, ignoring
-/// only `disabled_at`.
+/// only the key's state: `disabled_at`, and a V1 key's `total_budget` and
+/// `expires_at`.
 ///
-/// Every field of an `IdentityPublicKey` is immutable once the key is added, with
-/// that single exception: disabling a key rewrites it. The stored copy is a
-/// snapshot taken when the private half was saved, so plain `==` stops matching
-/// as soon as a key is disabled or rotated, and a key this device demonstrably
-/// holds gets reported as missing.
+/// Every other field of an `IdentityPublicKey` is immutable once the key is
+/// added. Disabling a key rewrites `disabled_at`, and `IdentityKeyLimitsUpdate`
+/// raises a V1 key's limits. The stored copy is a snapshot taken when the
+/// private half was saved, so plain `==` stops matching as soon as either
+/// happens, and a key this device demonstrably holds gets reported as missing.
 ///
 /// Comparing only the id and the key material would fix that and open a worse
 /// hole the other way. A main identity's voting key and a linked voter identity's
 /// key can carry identical `data` under the same `id`, leaving `purpose` as the
 /// only thing telling them apart — and a lookup that conflates them can hand out,
-/// or delete, material the requested key does not own. So this excludes the one
-/// field that legitimately moves and nothing else.
+/// or delete, material the requested key does not own. So this excludes the
+/// fields that legitimately move and nothing else.
 ///
-/// V1 keys (budget/expiry limits) exist only from protocol 14; DET runs protocol
-/// 13, so they are compared strictly apart from `disabled_at`. Upstream writes a
-/// key without limits as V0, so a V1 key is never the same key as a V0 one.
-// TODO(pv14): `IdentityKeyLimitsUpdate` raises `total_budget` and moves
-// `expires_at`; decide whether those amounts identify a key once DET supports
-// protocol 14.
+/// Upstream writes a key without limits as V0, and a limits update only raises
+/// limits a key already has, so a V1 key is never the same key as a V0 one.
+// TODO(dashpay/platform#6294): use rs-dpp's `IdentityPublicKey::is_same_key`
+// once it exists.
 pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
@@ -88,8 +87,9 @@ pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> 
                 data,
                 // Moves when the key is disabled, as for V0.
                 disabled_at: _,
-                total_budget,
-                expires_at,
+                // Raised by `IdentityKeyLimitsUpdate`.
+                total_budget: _,
+                expires_at: _,
             } = stored;
 
             *id == live.id
@@ -99,8 +99,6 @@ pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> 
                 && *key_type == live.key_type
                 && *read_only == live.read_only
                 && *data == live.data
-                && *total_budget == live.total_budget
-                && *expires_at == live.expires_at
         }
         (IdentityPublicKey::V0(_), IdentityPublicKey::V1(_))
         | (IdentityPublicKey::V1(_), IdentityPublicKey::V0(_)) => false,
@@ -716,8 +714,8 @@ impl KeyStorage {
     ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
     ///   never replaced by a derivation path: no protection downgrade, and the
     ///   vault secret stays referenced. Its public key is still refreshed from
-    ///   the rebuild, so an on-chain `disabled_at` is not pinned stale, and a
-    ///   missing wallet path is taken from the rebuild.
+    ///   the rebuild, so an on-chain disable or raised limit is not pinned
+    ///   stale, and a missing wallet path is taken from the rebuild.
     ///
     /// A held stored entry whose public key differs from the rebuild's
     /// (on-chain) key at the same id is a stale local entry, such as a
@@ -762,7 +760,7 @@ impl KeyStorage {
                     continue;
                 }
                 // Same key: keep the held private half, but take the
-                // rebuild's public key (only `disabled_at` can differ) and the
+                // rebuild's public key (only the key's state can differ) and the
                 // wallet path it found for a key imported before the wallet.
                 entry.0.identity_public_key = on_chain.identity_public_key.clone();
                 if entry.0.in_wallet_at_derivation_path.is_none() {
@@ -1346,9 +1344,9 @@ mod tests {
 
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
-    /// `disabled_at` is the one field Platform lets move after a key is added,
-    /// so a key disabled on chain since its private half was saved must still
-    /// match the stored snapshot — otherwise a key the device demonstrably
+    /// `disabled_at` is the one field Platform lets move on a V0 key, so a key
+    /// disabled on chain since its private half was saved must still match the
+    /// stored snapshot — otherwise a key the device demonstrably
     /// holds is reported missing the moment it is retired.
     #[test]
     fn same_key_ignores_a_key_being_disabled() {

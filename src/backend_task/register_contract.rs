@@ -1166,6 +1166,109 @@ mod tests {
         ));
     }
 
+    /// A token contract as the token creator builds it, with a capitalised
+    /// keyword, a searchable name and a description, sent in a create
+    /// transition, read the way Drive executes it (fully validated, with the
+    /// creation fields set) and fetched back, is the contract that was sent.
+    #[tokio::test]
+    async fn a_token_contract_as_drive_stores_it_is_the_submitted_contract() {
+        use crate::backend_task::tokens::TokenContractParams;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
+        use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
+        use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
+        use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+        use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
+        use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructureTrusted;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let platform_version = ctx.platform_version();
+        let rules = || ChangeControlRules::V0(ChangeControlRulesV0::default());
+        let params = TokenContractParams {
+            token_names: vec![(
+                "MyToken".to_string(),
+                "MyTokens".to_string(),
+                "en".to_string(),
+            )],
+            // The searchable name, as the token creator adds it, and a
+            // capitalised keyword.
+            contract_keywords: vec!["MyToken".to_string(), "Payments".to_string()],
+            token_description: Some("A token for paying in the shop.".to_string()),
+            should_capitalize: true,
+            decimals: 8,
+            base_supply: 1_000_000,
+            max_supply: None,
+            start_paused: false,
+            allow_transfers_to_frozen_identities: false,
+            keeps_history: TokenKeepsHistoryRules::V0(TokenKeepsHistoryRulesV0::default()),
+            main_control_group: None,
+            manual_minting_rules: rules(),
+            manual_burning_rules: rules(),
+            freeze_rules: rules(),
+            unfreeze_rules: rules(),
+            destroy_frozen_funds_rules: rules(),
+            emergency_action_rules: rules(),
+            max_supply_change_rules: rules(),
+            conventions_change_rules: rules(),
+            main_control_group_change_authorized: AuthorizedActionTakers::ContractOwner,
+            distribution_rules: TokenDistributionRules::V0(TokenDistributionRulesV0 {
+                perpetual_distribution: None,
+                perpetual_distribution_rules: rules(),
+                pre_programmed_distribution: None,
+                new_tokens_destination_identity: None,
+                new_tokens_destination_identity_rules: rules(),
+                minting_allow_choosing_destination: false,
+                minting_allow_choosing_destination_rules: rules(),
+                change_direct_purchase_pricing_rules: rules(),
+            }),
+            groups: BTreeMap::new(),
+            document_schemas: None,
+            marketplace_rules: rules(),
+            transferable: true,
+        };
+        let sent = ctx
+            .build_data_contract_v1_with_one_token(ctx.dpns_contract().owner_id(), params)
+            .expect("build the token contract");
+
+        let (transition, contract_id) = contract_create_transition(
+            sent.clone(),
+            5,
+            signing_key(),
+            &FixedSigner,
+            platform_version,
+        )
+        .await
+        .expect("build the create transition");
+        let StateTransition::DataContractCreate(create) = transition else {
+            panic!("expected a contract create transition");
+        };
+        let mut stored = DataContract::try_from_platform_versioned(
+            create.data_contract().clone(),
+            true,
+            &mut vec![],
+            platform_version,
+        )
+        .expect("Drive reads the sent contract");
+        stored.set_created_at(Some(1_700_000_000_000));
+        stored.set_created_at_epoch(Some(3));
+        stored.set_created_at_block_height(Some(1_000));
+        assert_eq!(stored.id(), contract_id);
+        let stored_bytes = stored
+            .serialize_to_bytes_with_platform_version(platform_version)
+            .expect("serialize the stored contract");
+        let fetched =
+            DataContract::versioned_deserialize_trusted(&stored_bytes, false, platform_version)
+                .expect("read the fetched contract");
+        assert_eq!(
+            fetched.keywords(),
+            &vec!["mytoken".to_string(), "payments".to_string()]
+        );
+
+        assert!(is_submitted_contract(&sent, &fetched, platform_version));
+    }
+
     /// A different schema, or different keywords, is a change.
     #[test]
     fn a_different_contract_is_not_the_submitted_one() {

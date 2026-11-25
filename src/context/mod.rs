@@ -410,6 +410,8 @@ pub struct AppContext {
     connection_rebuild: Mutex<()>,
     /// Each identity's contract registration sent but not settled, so a
     /// retry reuses its nonce. In memory only: a restart forgets it.
+    /// Identities with a contract registration being sent right now.
+    pub(crate) contract_registrations_in_flight: Mutex<HashSet<Identifier>>,
     pub(crate) pending_contract_registrations: Mutex<
         HashMap<Identifier, crate::backend_task::register_contract::PendingContractRegistration>,
     >,
@@ -666,6 +668,7 @@ impl AppContext {
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
             connection_rebuild: Mutex::new(()),
+            contract_registrations_in_flight: Mutex::new(HashSet::new()),
             pending_contract_registrations: Mutex::new(HashMap::new()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>

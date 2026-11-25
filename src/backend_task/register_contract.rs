@@ -21,7 +21,10 @@ use dash_sdk::{
     Error as SdkError, Sdk,
     dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters},
     dpp::data_contract::accessors::v1::DataContractV1Setters,
-    dpp::serialization::PlatformSerializableWithPlatformVersion,
+    dpp::serialization::{
+        PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted,
+        PlatformSerializableWithPlatformVersion,
+    },
     platform::{DataContract, Identifier, IdentityPublicKey},
 };
 
@@ -43,6 +46,23 @@ const LOCAL_SAVE_RETRY_DELAY: Duration = Duration::from_millis(200);
 pub(crate) struct PendingContractRegistration {
     pub(crate) identity_nonce: IdentityNonce,
     pub(crate) contract_id: Identifier,
+}
+
+/// Marks an owner's registration as being sent while alive; dropping it, on
+/// any outcome, cancellation included, lets the owner register again.
+struct RegistrationBeingSent<'a> {
+    context: &'a AppContext,
+    owner: Identifier,
+}
+
+impl Drop for RegistrationBeingSent<'_> {
+    fn drop(&mut self) {
+        self.context
+            .contract_registrations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.owner);
+    }
 }
 
 /// What the user registered. The registration is the same; its result and
@@ -175,8 +195,10 @@ impl AppContext {
         let fee_result =
             FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
         let owner_id = data_contract.owner_id();
+        let _sending = self.begin_contract_registration(owner_id)?;
         let submitted = data_contract.clone();
-        let identity_nonce = match self.pending_contract_registration(&owner_id) {
+        let reused = self.pending_contract_registration(&owner_id);
+        let identity_nonce = match reused {
             Some(pending) => {
                 tracing::info!(
                     %owner_id,
@@ -201,41 +223,50 @@ impl AppContext {
         };
         self.pending_registrations().insert(owner_id, pending);
 
-        match submit(transition).await {
+        let error = match submit(transition).await {
             Ok(contract) => {
                 self.settle_pending_contract_registration(owner_id, pending);
-                Ok(self
+                return Ok(self
                     .finish_confirmed_registration(&contract, alias, fee_result, kind, false)
-                    .await)
+                    .await);
             }
-            Err(error)
-                if may_have_registered(&error)
-                    || nonce_refusal(&error) == Some(NonceRefusal::AlreadyUsed) =>
-            {
-                // Not found, the registration stays pending and unresolved,
-                // never a failure inviting a second registration.
-                let Some(registered) = find(contract_id).await? else {
-                    return Err(kind.unconfirmed(contract_id, error));
-                };
+            Err(error) => error,
+        };
+        // A refused nonce hints at an earlier attempt only when this one reused
+        // it; a fresh nonce already used was spent elsewhere.
+        let refusal = nonce_refusal(&error);
+        let earlier_attempt_may_have_run = match refusal {
+            Some(_) => reused.is_some(),
+            None => may_have_registered(&error),
+        };
+        if earlier_attempt_may_have_run && let Some(registered) = find(contract_id).await? {
+            self.settle_pending_contract_registration(owner_id, pending);
+            let earlier_version = !is_submitted_contract(&submitted, &registered, platform_version);
+            return Ok(self
+                .finish_confirmed_registration(
+                    &registered,
+                    alias,
+                    fee_result,
+                    kind,
+                    earlier_version,
+                )
+                .await);
+        }
+        match refusal {
+            // Not found, the registration stays pending and unresolved, never
+            // a failure inviting a second registration.
+            Some(NonceRefusal::AlreadyUsed) if reused.is_some() => {
+                Err(kind.unconfirmed(contract_id, error))
+            }
+            None if earlier_attempt_may_have_run => Err(kind.unconfirmed(contract_id, error)),
+            // No attempt carrying this nonce has executed or ever will.
+            Some(_) => {
                 self.settle_pending_contract_registration(owner_id, pending);
-                let earlier_version =
-                    !is_submitted_contract(&submitted, &registered, platform_version);
-                Ok(self
-                    .finish_confirmed_registration(
-                        &registered,
-                        alias,
-                        fee_result,
-                        kind,
-                        earlier_version,
-                    )
-                    .await)
+                Err(TaskError::RegistrationNonceRefused {
+                    source_error: Box::new(error),
+                })
             }
-            Err(error) => {
-                if nonce_refusal(&error) == Some(NonceRefusal::Unusable) {
-                    self.settle_pending_contract_registration(owner_id, pending);
-                }
-                Err(TaskError::from(error))
-            }
+            None => Err(TaskError::from(error)),
         }
     }
 
@@ -273,6 +304,27 @@ impl AppContext {
         owner: &Identifier,
     ) -> Option<PendingContractRegistration> {
         self.pending_registrations().get(owner).copied()
+    }
+
+    /// Marks `owner`'s registration as being sent until the returned guard
+    /// drops; refuses a second one for the same owner meanwhile, so its
+    /// pending nonce is never read or replaced by a concurrent registration.
+    fn begin_contract_registration(
+        &self,
+        owner: Identifier,
+    ) -> Result<RegistrationBeingSent<'_>, TaskError> {
+        let newly_sending = self
+            .contract_registrations_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner);
+        if !newly_sending {
+            return Err(TaskError::ContractRegistrationInProgress);
+        }
+        Ok(RegistrationBeingSent {
+            context: self,
+            owner,
+        })
     }
 
     /// Forgets `owner`'s pending registration once it is settled, unless a
@@ -335,15 +387,20 @@ async fn contract_create_transition<S: Signer<IdentityPublicKey>>(
 }
 
 /// Whether `registered`, as Platform holds it, is the contract in `submitted`.
-/// The fields Platform sets (ID, owner, creation times) are left out; a pair
-/// that cannot be compared counts as the same.
+/// Both are compared as Platform reads them back (which, for one, lowercases
+/// keywords), without the fields Platform sets (ID, owner, creation times); a
+/// pair that cannot be compared counts as the same.
 fn is_submitted_contract(
     submitted: &DataContract,
     registered: &DataContract,
     platform_version: &PlatformVersion,
 ) -> bool {
     let comparable = |contract: &DataContract| {
-        let mut contract = contract.clone();
+        let bytes = contract
+            .serialize_to_bytes_with_platform_version(platform_version)
+            .ok()?;
+        let mut contract =
+            DataContract::versioned_deserialize_untrusted(&bytes, false, platform_version).ok()?;
         contract.set_id(registered.id());
         contract.set_owner_id(registered.owner_id());
         contract.set_created_at(None);

@@ -2359,10 +2359,10 @@ pub enum TaskError {
     },
 
     /// A contract registration whose result could not be read was not found
-    /// under its Platform-assigned ID. A retry reuses the same identity nonce,
-    /// so it cannot register a second contract.
+    /// under its Platform-assigned ID. A retry before the app closes reuses the
+    /// same identity nonce, so it cannot register a second contract.
     #[error(
-        "Your contract was sent, but the network has not confirmed it yet. It may still be registered: to check, open Contracts, choose Load Contracts and enter contract ID {contract_id}. Registering it again is safe, because it cannot create a second contract."
+        "Your contract was sent, but the network has not confirmed it yet. It may still be registered: to check, open Contracts, choose Load Contracts and enter contract ID {contract_id}. If you register it again before closing the app, it cannot create a second contract."
     )]
     ContractRegistrationUnconfirmed {
         contract_id: dash_sdk::platform::Identifier,
@@ -2372,7 +2372,7 @@ pub enum TaskError {
 
     /// [`Self::ContractRegistrationUnconfirmed`] for a token's contract.
     #[error(
-        "Your token was sent, but the network has not confirmed it yet. It may still be created: to check, open Tokens, choose Import Token and enter contract ID {contract_id}. Creating it again is safe, because it cannot create a second token."
+        "Your token was sent, but the network has not confirmed it yet. It may still be created: to check, open Tokens, choose Import Token and enter contract ID {contract_id}. If you create it again before closing the app, it cannot create a second token."
     )]
     TokenRegistrationUnconfirmed {
         contract_id: dash_sdk::platform::Identifier,

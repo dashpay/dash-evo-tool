@@ -2400,7 +2400,7 @@ pub(crate) mod test_staging {
 
     /// An offline context with its wallet backend wired — `det_kv()` is only
     /// reachable once it is.
-    async fn staged_context() -> (
+    pub(crate) async fn staged_context() -> (
         Arc<AppContext>,
         Arc<platform_wallet_storage::secrets::SecretStore>,
         tempfile::TempDir,

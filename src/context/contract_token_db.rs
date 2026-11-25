@@ -1474,13 +1474,13 @@ mod tests {
     }
 
     /// Contracts saved while DET built at protocol 12 still load, unchanged,
-    /// once DET builds at the network's 13 or 14.
+    /// once DET builds at the network's 14 or 15.
     #[test]
-    fn contracts_stored_at_protocol_12_decode_at_13_and_14() {
+    fn contracts_stored_at_protocol_12_decode_at_14_and_15() {
         let v12 = PlatformVersion::get(12).expect("v12");
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(tmp.path());
-        for version in [13, 14] {
+        for version in [14, 15] {
             crate::context::test_support::set_sdk_protocol_version(&ctx, version);
             for (original, stored) in stored_contracts_at(12) {
                 let bytes = stored.contract_bytes.clone();
@@ -1502,18 +1502,14 @@ mod tests {
         }
     }
 
-    /// A contract saved at protocol 14 and read back while DET still builds at
-    /// 13 (after a restart, before the first proven response) decodes without
-    /// error. Protocol 14 features (here `actionFees`) are not parsed at 13,
-    /// but the saved bytes are untouched and decode in full once DET builds at
-    /// 14 again.
+    /// Saved protocol-14 action fees survive startup and the next supported version.
     #[test]
-    fn contracts_stored_at_protocol_14_decode_at_13_and_recover_at_14() {
+    fn contracts_stored_at_protocol_14_keep_action_fees_after_upgrade() {
         use dash_sdk::dpp::platform_value::platform_value;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(tmp.path());
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
         for (original, stored) in stored_contracts_at(14) {
             let decoded = ctx
                 .decode_stored_contract(stored)
@@ -1529,44 +1525,12 @@ mod tests {
                 .expect("encode"),
             alias: None,
         };
-        let at_13 = ctx.decode_stored_contract(stored()).expect("decodes at 13");
-        assert_eq!(at_13.contract.id(), charging.id());
-
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
         let at_14 = ctx.decode_stored_contract(stored()).expect("decodes at 14");
         assert_eq!(at_14.contract, charging);
-    }
 
-    /// The proof verifier reads a saved user contract at the version it
-    /// verifies with, as it reads system contracts: a contract saved at
-    /// protocol 14 comes back in full when asked at 14 while the SDK still
-    /// sits at 13.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_proof_verifier_reads_a_saved_contract_at_the_version_it_asks_for() {
-        use dash_sdk::dpp::platform_value::platform_value;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::wired_test_app_context(tmp.path()).await;
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
-        let v14 = PlatformVersion::get(14).expect("v14");
-        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
-        let stored = StoredContract {
-            contract_bytes: charging
-                .serialize_to_bytes_with_platform_version(v14)
-                .expect("encode"),
-            alias: None,
-        };
-        ctx.wallet_backend()
-            .expect("wired backend")
-            .kv()
-            .put(DetScope::Global, &contract_key(&charging.id()), &stored)
-            .expect("store the contract");
-
-        let resolved = crate::context_provider::resolve_data_contract(&ctx, &charging.id(), v14)
-            .expect("resolves")
-            .expect("the saved contract");
-
-        assert_eq!(*resolved, charging);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
+        let at_15 = ctx.decode_stored_contract(stored()).expect("decodes at 15");
+        assert_eq!(at_15.contract, charging);
     }
 
     #[test]

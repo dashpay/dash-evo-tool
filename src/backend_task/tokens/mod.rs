@@ -289,38 +289,6 @@ impl AppContext {
         Ok(make_success(FeeResult::estimated_only(estimated_fee)))
     }
 
-    /// Version 1 distribution rules (a once-per-identity distribution) only
-    /// decode on networks that accept them; refuse them elsewhere before
-    /// anything is signed.
-    fn ensure_distribution_rules_supported(
-        &self,
-        rules: &TokenDistributionRules,
-    ) -> Result<(), TaskError> {
-        match rules {
-            TokenDistributionRules::V0(_) => Ok(()),
-            TokenDistributionRules::V1(_)
-                if crate::context::feature_gate::FeatureGate::TokenOncePerIdentityDistribution
-                    .is_available(self) =>
-            {
-                Ok(())
-            }
-            TokenDistributionRules::V1(_) => Err(TaskError::TokenOncePerIdentityNotSupported),
-        }
-    }
-
-    /// A token that cannot be transferred needs a version 1 token
-    /// configuration, which only decodes on networks that accept it; refuse it
-    /// elsewhere before anything is signed.
-    fn ensure_transferability_supported(&self, transferable: bool) -> Result<(), TaskError> {
-        if transferable
-            || crate::context::feature_gate::FeatureGate::NonTransferableTokens.is_available(self)
-        {
-            Ok(())
-        } else {
-            Err(TaskError::NonTransferableTokenNotSupported)
-        }
-    }
-
     pub async fn run_token_task(
         self: &Arc<Self>,
         task: TokenTask,
@@ -333,8 +301,6 @@ impl AppContext {
                 signing_key,
                 params,
             } => {
-                self.ensure_distribution_rules_supported(&params.distribution_rules)?;
-                self.ensure_transferability_supported(params.transferable)?;
                 params
                     .contract_keywords
                     .iter()
@@ -859,49 +825,6 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Once-per-identity rules are refused until the network accepts them;
-    /// version 0 rules always pass.
-    #[test]
-    fn once_per_identity_rules_need_a_network_that_accepts_them() {
-        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let TokenDistributionRules::V0(v0) =
-            TokenConfigurationV0::default_most_restrictive().distribution_rules
-        else {
-            panic!("the default rules are version 0");
-        };
-        let v1 =
-            crate::model::token::distribution_rules_with_once_per_identity(v0.clone(), Some(5));
-        let v0 = TokenDistributionRules::V0(v0);
-
-        crate::context::test_support::prove_protocol_version(&ctx, 13);
-        assert!(ctx.ensure_distribution_rules_supported(&v0).is_ok());
-        assert!(matches!(
-            ctx.ensure_distribution_rules_supported(&v1),
-            Err(TaskError::TokenOncePerIdentityNotSupported)
-        ));
-        crate::context::test_support::prove_protocol_version(&ctx, 14);
-        assert!(ctx.ensure_distribution_rules_supported(&v1).is_ok());
-    }
-
-    /// A token that cannot be transferred is refused until the network
-    /// accepts one; a transferable token always passes.
-    #[test]
-    fn non_transferable_tokens_need_a_network_that_accepts_them() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-
-        crate::context::test_support::prove_protocol_version(&ctx, 13);
-        assert!(ctx.ensure_transferability_supported(true).is_ok());
-        assert!(matches!(
-            ctx.ensure_transferability_supported(false),
-            Err(TaskError::NonTransferableTokenNotSupported)
-        ));
-        crate::context::test_support::prove_protocol_version(&ctx, 14);
-        assert!(ctx.ensure_transferability_supported(false).is_ok());
-    }
 
     #[tokio::test]
     async fn token_lookup_timeout_is_typed_and_actionable() {

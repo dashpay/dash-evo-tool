@@ -78,7 +78,11 @@ impl AppContext {
             BalanceProvenance::ObservedAt(fetched.height),
         )?;
 
-        Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+        // The save above already told the user about a warning.
+        Ok(BackendTaskSuccessResult::LoadedIdentity {
+            identity: qualified_identity,
+            warning: None,
+        })
     }
 }
 
@@ -139,7 +143,10 @@ mod tests {
             .await
             .expect("the identity loads");
 
-        let BackendTaskSuccessResult::LoadedIdentity(loaded) = loaded else {
+        let BackendTaskSuccessResult::LoadedIdentity {
+            identity: loaded, ..
+        } = loaded
+        else {
             panic!("expected a loaded identity, got {loaded:?}");
         };
         assert_eq!(loaded.identity.id(), target);

@@ -67,7 +67,8 @@ The fee strategy is not part of this panel. It lives in Summary › Fee options 
 
 - The checklist shows only addresses with a balance. Everything is unticked when first opened. The amount still comes from the single Amount field (D-11).
 - Max = everything in the ticked addresses minus the fee.
-- Platform: at most `MAX_PLATFORM_INPUTS` ticked. Further boxes are disabled with the tooltip "One payment can use at most {max} Platform addresses."
+- Platform: at most the active protocol version's input limit ticked (`max_platform_inputs`). Further boxes are disabled with the tooltip "One payment can use at most {max} Platform addresses."
+- Platform into a private balance is refused, because a shield's planner picks its own input addresses and ticks could not decide who pays. Send stays disabled and the form says: "A payment into your private balance can't use only the addresses you tick. Choose Auto or Platform under Pay from." The Shielded option under Receive into is disabled with the same text, and the panel's line about spreading the payment is hidden.
 - The panel replaces the Platform "Source breakdown" box. Without Advanced, the breakdown lives in Summary › Details.
 
 ### 3.4 Several recipients (Expert/Developer view)
@@ -160,7 +161,8 @@ Fee options: Deduct from first input ▸
 
 - **Shown when all three hold:** Expert/Developer view, Advanced source or several recipients is active, and Platform is involved (a Platform source or a Platform recipient; today's condition). Otherwise the row is absent: Everyday users never see it, and simple sends keep today's per-route fee behaviour.
 - It starts collapsed on every visit. The choice survives collapsing and section changes (SR-16), and resets with the form.
-- Choosing a "Reduce … output" strategy adds the "Recipient gets ≈" row and the confirmation sentence "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount." (today's copy).
+- Choosing a "Reduce … output" strategy adds the "Recipient gets ≈" row. On Core → Platform the confirmation says: "The Platform fee comes out of the amount you entered, so the recipient receives less than that amount. The Core fee is charged on top, from your Core balance."
+- A "Deduct from … input" strategy on Core → Platform confirms with: "Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee. The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance."
 - Each option has an `info_tooltip` in plain words, e.g. "Reduce first output: the first recipient receives the amount minus the fee."
 
 Route notes:
@@ -202,12 +204,14 @@ Rule: validate on blur or on a completed paste, never on every keystroke. Errors
 
 ```
 From     Main · Core
-To       yX12…ab            (or "bob (yX12…ab)" / "Savings · new Platform address")
+To       <the full recipient address>   (or "bob (<the full identity ID>)" / "your private balance in Main")
 Amount   0.5000 DASH
 Fee      ≈ 0.0001 DASH
 Total    ≈ 0.5001 DASH
 <route note, if any>
 ```
+
+The confirmation always shows the recipient address in full, never middle-ellipsised. With a shortened address, an attacker only has to match a few characters at each end. A lookalike address pasted from history (address poisoning) would then pass this last check before an irreversible payment. A username shows with its full identity ID, and the own private balance shows by name.
 
 Buttons: [Cancel] [Send] (Confirm on the right; Escape = Cancel). The action is built at the moment Send is pressed, so the dialog shows exactly what will be sent even if Auto would re-resolve later. Danger mode stays as it is today (irreversible send).
 
@@ -243,7 +247,7 @@ A fixed section shows its value as text with the label "Set by Shield". It has n
 | 420–639 pt | Labels above controls. Chip rows wrap (`horizontal_wrapped`). The Summary stays 2 columns |
 | < 420 pt | Chips drop the balance text (shown in their tooltip and the status line). The Summary becomes stacked label/value pairs. Recipient rows stack address over amount. Buttons go full-width, Send on top |
 
-The form scrolls in the existing `ScrollArea`. The status lines wrap and are never truncated. Addresses are middle-ellipsised (`yX12…9fab`) with the full value in a tooltip and copy-on-click.
+The form scrolls in the existing `ScrollArea`. The status lines wrap and are never truncated. In the form, addresses are middle-ellipsised (`yX12…9fab`), with the full value in a tooltip and copy-on-click. The confirmation shows them in full (§10).
 
 ## 14. Accessibility (WCAG 2.2 AA within egui's limits)
 
@@ -273,7 +277,7 @@ The form scrolls in the existing `ScrollArea`. The status lines wrap and are nev
 | Balance changes mid-form (incoming tx) | Auto re-resolves; Max (intent) follows the new maximum |
 | Identity dropdown: the app-selected identity is not in the From wallet | Default to the highest-balance identity of that wallet |
 | Top up: source wallet holds the target identity | The target is excluded from Pay from › Identity (today's rule) |
-| More than `MAX_PLATFORM_INPUTS` Platform addresses needed | Auto treats Platform's max as the top-N sum (today's rule). The Summary note reads "Limited to the {max} largest Platform addresses. Send the rest in another payment." |
+| More than the protocol's input limit (`max_platform_inputs`) of Platform addresses needed | Auto treats Platform's max as the top-N sum (today's rule). The Summary note reads "Limited to the {max} largest Platform addresses. Send the rest in another payment." |
 | Shielded To kind, shielded gate off | The typed shielded address is refused inline: "Private addresses aren't available in this view. Switch to Expert view to use them." |
 
 ## 16. Implementation notes (non-binding)

@@ -1,0 +1,272 @@
+name: Release GUI QA
+# TODO: validate hosted label and dispatch runs, typed-input assertion, turn usage, OAuth, sync and refund.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      baseline:
+        type: string
+        default: ""
+      binary_artifact:
+        type: string
+        default: ""
+      run_id:
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK:
+        required: true
+    outputs:
+      verdict:
+        value: ${{ jobs.report.outputs.verdict }}
+      artifact_url:
+        value: ${{ jobs.report.outputs.artifact_url }}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "NEW release tag (draft or published); this workflow never publishes"
+        type: string
+        required: true
+      baseline:
+        description: "Older published pre-release; empty selects the previous one"
+        type: string
+        default: ""
+      run_id:
+        description: "Build run ID; empty downloads the release asset"
+        type: string
+        default: ""
+
+permissions: {}
+concurrency:
+  group: release-qa-${{ github.event_name == 'pull_request' && (github.event.label.name == 'release-qa' && format('pr-{0}', github.event.pull_request.number) || format('ignored-{0}', github.run_id)) || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  QA_ROOT: ${{ github.workspace }}/../release-qa
+  QA_SOURCE: ${{ github.workspace }}
+
+jobs:
+  prepare_pr:
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+      github.event.label.name == 'release-qa' &&
+      github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name &&
+      github.event.sender.type == 'User' && github.event.sender.login != '' &&
+      (contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(',{0},', github.event.sender.login)) ||
+       contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(',{0} ', github.event.sender.login)) ||
+       contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(' {0},', github.event.sender.login)) ||
+       contains(format(',{0},', vars.RELEASE_QA_LABEL_ACTORS || 'lklimek'), format(' {0} ', github.event.sender.login)))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify zip and prepare changelog evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ""
+          QA_DOWNLOAD: ${{ runner.temp }}/qa-download
+          BASELINE: ""
+        run: python3 scripts/ci/release-qa/prepare.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-qa-input
+          overwrite: true
+          path: ${{ env.QA_ROOT }}
+          retention-days: 7
+
+  prepare:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/v1.0-dev'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # Draft-asset visibility only; no app or agent runs here.
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download same-run or selected-run release zip
+        if: inputs.binary_artifact != '' || inputs.run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.binary_artifact || 'dash-evo-tool-linux-x86_64.zip' }}
+          run-id: ${{ inputs.run_id || github.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/qa-download
+      - name: Verify zip and prepare changelog evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ inputs.tag }}
+          QA_DOWNLOAD: ${{ runner.temp }}/qa-download
+          BASELINE: ${{ inputs.baseline }}
+        run: python3 scripts/ci/release-qa/prepare.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-qa-input
+          overwrite: true
+          path: ${{ env.QA_ROOT }}
+          retention-days: 7
+
+  review:
+    needs: [prepare_pr, prepare]
+    if: >-
+      !cancelled() && (needs.prepare_pr.result == 'success' || needs.prepare.result == 'success')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 220
+    permissions:
+      contents: read
+    outputs:
+      finish_result: ${{ steps.finish.outcome }}
+      report_artifact_id: ${{ steps.upload.outcome == 'success' && steps.upload.outputs.artifact-id || '' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-qa-input
+          path: ${{ env.QA_ROOT }}
+      - name: Install display, driver and pinned Claude
+        timeout-minutes: 15
+        run: bash scripts/ci/release-qa/setup.sh
+      - name: Initialize isolated runtime
+        id: init
+        continue-on-error: true
+        run: python3 /opt/release-qa/run.py init
+      - name: Deterministic GUI smoke
+        id: smoke
+        if: steps.init.outcome == 'success'
+        timeout-minutes: 6
+        continue-on-error: true
+        run: python3 /opt/release-qa/run.py smoke
+      - name: Pause GUI for standalone wallet preparation
+        id: pause
+        if: steps.smoke.outcome == 'success'
+        continue-on-error: true
+        run: python3 /opt/release-qa/run.py stop
+      - name: Create the unfunded testnet wallet
+        id: wallet
+        if: steps.pause.outcome == 'success'
+        timeout-minutes: 12
+        continue-on-error: true
+        run: python3 /opt/release-qa/wallet.py pre
+      - name: Resume GUI even without a funded wallet
+        id: resume
+        if: steps.smoke.outcome == 'success' && steps.pause.outcome == 'success'
+        timeout-minutes: 5
+        continue-on-error: true
+        run: python3 /opt/release-qa/run.py resume
+      - name: Fund only after smoke passes
+        id: fund
+        if: steps.resume.outcome == 'success' && steps.wallet.outcome == 'success'
+        timeout-minutes: 15
+        continue-on-error: true
+        env:
+          QA_FAUCET_REFUND_ADDRESS: ${{ vars.QA_FAUCET_REFUND_ADDRESS }}
+        run: python3 /opt/release-qa/wallet.py fund
+      - name: GUI-only release review and visual diff
+        id: agent
+        if: steps.resume.outcome == 'success'
+        timeout-minutes: 132
+        continue-on-error: true
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
+        run: python3 /opt/release-qa/run.py agent
+      - name: Stop GUI before standalone refund
+        if: always() && steps.init.outcome == 'success'
+        continue-on-error: true
+        run: python3 /opt/release-qa/run.py stop
+      - name: Return remaining funds to the faucet
+        if: always() && steps.init.outcome == 'success'
+        timeout-minutes: 25
+        continue-on-error: true
+        run: python3 /opt/release-qa/wallet.py post
+      - name: Normalize verdict and select public artifacts
+        id: finish
+        if: always() && steps.init.outcome == 'success'
+        continue-on-error: true
+        run: python3 /opt/release-qa/run.py finish
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: upload
+        if: always() && (needs.prepare_pr.result != 'skipped' || needs.prepare.result != 'skipped')
+        continue-on-error: true
+        with:
+          name: release-qa-report
+          overwrite: true
+          path: ${{ env.QA_ROOT }}/export
+          if-no-files-found: warn
+          retention-days: 90
+
+  report:
+    needs: [prepare_pr, prepare, review]
+    if: always() && (needs.prepare_pr.result != 'skipped' || needs.prepare.result != 'skipped')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      verdict: ${{ steps.result.outputs.verdict }}
+      artifact_url: ${{ steps.result.outputs.artifact_url }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.review.outputs.report_artifact_id != ''
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.review.outputs.report_artifact_id }}
+          merge-multiple: true
+          path: report
+      - name: Publish fail-closed summary
+        id: result
+        env:
+          REPORT_ARTIFACT_ID: ${{ needs.review.outputs.report_artifact_id }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          FINISH_RESULT: ${{ needs.review.outputs.finish_result }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          verdict = 'INCOMPLETE'
+          warning = False
+          try:
+              result = json.loads(pathlib.Path('report/result.json').read_text())
+              value = result['verdict']
+              warning = isinstance(result.get('wallet'), dict) and bool(result['wallet'].get('warning'))
+              manifest = json.loads(pathlib.Path('report/export-manifest.json').read_text())
+              files = manifest['files']
+              required = {'result.json', 'report.json', 'report.md'}
+              if value in ('PASS', 'NOTE'):
+                  required |= {'verified-changelog.md', 'scenarios.md', 'story-checklist.md', 'meta.json', 'spec.json', 'index.html', 'visual-changelog.html'}
+              complete = manifest.get('complete') is True and isinstance(files, dict) and required <= files.keys()
+              for name, digest in files.items():
+                  path = pathlib.Path('report') / name
+                  if not path.resolve().is_relative_to(pathlib.Path('report').resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                      complete = False
+              if complete and os.environ.get('REPORT_ARTIFACT_ID') and os.environ.get('FINISH_RESULT') == 'success' and os.environ['REVIEW_RESULT'] == 'success' and value in ('PASS', 'NOTE', 'FAIL'):
+                  verdict = value
+          except (OSError, ValueError, KeyError, TypeError, AttributeError):
+              pass
+          url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'verdict={verdict}\nartifact_url={url}#artifacts\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write(f'### Release GUI QA: {verdict}\n\n[Report, gallery and logs]({url}#artifacts)\n')
+              if warning:
+                  output.write('\nWARNING: Refund skipped because no valid faucet depositAddress or QA_FAUCET_REFUND_ADDRESS was available. Funds remain in the disposable testnet wallet.\n')
+          PY

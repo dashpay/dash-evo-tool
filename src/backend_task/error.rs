@@ -2380,6 +2380,23 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// Another contract or token registration by the same identity is still
+    /// being sent; running both at once could lose track of either.
+    #[error(
+        "Another contract or token registration for this identity is still being sent. Wait for it to finish, then try again."
+    )]
+    ContractRegistrationInProgress,
+
+    /// Platform refused a registration's identity nonce, and no earlier
+    /// attempt of this registration is known to have executed with it.
+    #[error(
+        "The network refused this registration because this identity was used for other changes in the meantime. Nothing was registered. Try again."
+    )]
+    RegistrationNonceRefused {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The SDK refused the request before sending it, or no node can answer
     /// it as asked: for example a document query no index of the contract
     /// covers. Every node answers alike and waiting changes nothing; the

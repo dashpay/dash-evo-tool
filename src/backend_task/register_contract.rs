@@ -427,6 +427,7 @@ mod tests {
     use super::*;
     use crate::context::test_support::{test_app_context, wired_test_app_context};
     use dash_sdk::dpp::consensus::state::identity::invalid_identity_contract_nonce_error::InvalidIdentityNonceError;
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::state_transition::data_contract_create_transition::accessors::DataContractCreateTransitionAccessorsV0;
@@ -727,9 +728,10 @@ mod tests {
         );
     }
 
-    /// A nonce Platform can no longer accept means the earlier attempt can
-    /// never execute: it is no longer pending and the next attempt reads a
-    /// fresh nonce.
+    /// A retry refused because Platform can no longer accept its nonce looks
+    /// the earlier attempt up first: not found, that attempt can never
+    /// execute, so it is no longer pending, the refusal is reported as such,
+    /// and the next attempt reads a fresh nonce.
     #[tokio::test]
     async fn an_unusable_nonce_is_no_longer_pending() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -746,11 +748,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(retry.asked, None);
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
         assert!(
-            !matches!(
+            matches!(
                 retry.outcome,
-                Ok(_) | Err(TaskError::ContractRegistrationUnconfirmed { .. })
+                Err(TaskError::RegistrationNonceRefused { .. })
             ),
             "{:?}",
             retry.outcome
@@ -758,6 +760,219 @@ mod tests {
         assert_eq!(ctx.pending_contract_registration(&owner), None);
         let next = attempt(&ctx, RegistrationKind::Contract, 7, Err(unread()), None).await;
         assert_eq!(next.sent_nonce, Some(7));
+    }
+
+    /// An earlier attempt found under the shared ID after its nonce became
+    /// unusable is the registration: confirmed and no longer pending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unusable_nonce_whose_registration_is_found_is_confirmed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let owner = ctx.dpns_contract().owner_id();
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
+
+        let earlier = ctx.dpns_contract().as_ref().clone();
+        let retry = attempt(
+            &ctx,
+            RegistrationKind::Contract,
+            6,
+            Err(nonce_refused(MergeIdentityNonceResult::NonceTooFarInPast)),
+            Some(earlier),
+        )
+        .await;
+
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+        assert!(
+            matches!(
+                retry.outcome,
+                Ok(BackendTaskSuccessResult::RegisteredContract {
+                    earlier_version: false,
+                    ..
+                })
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), None);
+    }
+
+    /// A first attempt, with a fresh nonce, refused because that nonce or its
+    /// contract ID is already used was not this app's registration: nothing is
+    /// looked up or adopted, the refusal is reported, and nothing stays
+    /// pending.
+    #[tokio::test]
+    async fn a_first_attempt_refused_as_already_used_adopts_nothing() {
+        use dash_sdk::dpp::consensus::state::data_contract::data_contract_already_present_error::DataContractAlreadyPresentError;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let present = SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(
+            ConsensusError::StateError(StateError::DataContractAlreadyPresentError(
+                DataContractAlreadyPresentError::new(assigned_id(&ctx, 5)),
+            )),
+        )));
+
+        for refusal in [
+            nonce_refused(MergeIdentityNonceResult::NonceAlreadyPresentAtTip),
+            present,
+        ] {
+            let other = ctx.dashpay_contract().as_ref().clone();
+            let first = attempt(
+                &ctx,
+                RegistrationKind::Contract,
+                5,
+                Err(refusal),
+                Some(other),
+            )
+            .await;
+
+            assert!(first.fresh_nonce_read);
+            assert_eq!(first.asked, None);
+            assert!(
+                matches!(
+                    first.outcome,
+                    Err(TaskError::RegistrationNonceRefused { .. })
+                ),
+                "{:?}",
+                first.outcome
+            );
+            assert_eq!(ctx.pending_contract_registration(&owner), None);
+        }
+    }
+
+    /// While one registration by an identity is being sent, a second one by
+    /// the same identity is refused before it reads or reuses a nonce, so it
+    /// cannot replace or share the first one's pending nonce.
+    #[tokio::test]
+    async fn a_second_registration_while_one_is_being_sent_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let first = ctx.register_signed_contract(
+            ctx.dpns_contract().as_ref().clone(),
+            || std::future::ready(Ok(5)),
+            signing_key(),
+            &FixedSigner,
+            ctx.platform_version(),
+            None,
+            RegistrationKind::Contract,
+            move |_transition| async move {
+                let _ = reached_tx.send(());
+                let _ = release_rx.await;
+                Err(unread())
+            },
+            |_contract_id| std::future::ready(Ok(None)),
+        );
+        let second = async {
+            reached_rx.await.expect("the first registration is sent");
+            let second = attempt(&ctx, RegistrationKind::Token, 9, Err(unread()), None).await;
+            let _ = release_tx.send(());
+            second
+        };
+        let (first, second) = tokio::join!(first, second);
+
+        assert!(
+            matches!(
+                second.outcome,
+                Err(TaskError::ContractRegistrationInProgress)
+            ),
+            "{:?}",
+            second.outcome
+        );
+        assert!(!second.fresh_nonce_read);
+        assert_eq!(second.sent_nonce, None);
+        assert!(
+            matches!(
+                first,
+                Err(TaskError::ContractRegistrationUnconfirmed { .. })
+            ),
+            "{first:?}"
+        );
+        assert_eq!(
+            ctx.pending_contract_registration(&owner),
+            Some(PendingContractRegistration {
+                identity_nonce: 5,
+                contract_id: assigned_id(&ctx, 5),
+            })
+        );
+
+        let after = attempt(&ctx, RegistrationKind::Contract, 9, Err(unread()), None).await;
+        assert_eq!(after.sent_nonce, Some(5));
+    }
+
+    /// A system contract with `keywords`, as the token creator builds it.
+    fn contract_with_keywords(ctx: &AppContext, keywords: &[&str]) -> DataContract {
+        let mut contract = ctx.dpns_contract().as_ref().clone();
+        contract.set_keywords(keywords.iter().map(|k| k.to_string()).collect());
+        contract
+    }
+
+    /// Platform lowercases keywords when it reads a contract; the submitted
+    /// keywords keep the user's case, which is no change.
+    #[test]
+    fn keywords_differing_only_in_case_are_the_submitted_contract() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let submitted = contract_with_keywords(&ctx, &["MyToken", "Dash"]);
+        let registered = contract_with_keywords(&ctx, &["mytoken", "dash"]);
+        assert_eq!(
+            registered.keywords(),
+            &vec!["mytoken".to_string(), "dash".to_string()]
+        );
+
+        assert!(is_submitted_contract(
+            &submitted,
+            &registered,
+            ctx.platform_version()
+        ));
+    }
+
+    /// The ID, owner and creation times Platform sets are no change.
+    #[test]
+    fn fields_platform_sets_are_not_a_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let submitted = ctx.dpns_contract().as_ref().clone();
+        let mut registered = submitted.clone();
+        registered.set_id(Identifier::from([0x31; 32]));
+        registered.set_owner_id(Identifier::from([0x32; 32]));
+        registered.set_created_at(Some(1_700_000_000_000));
+        registered.set_updated_at(Some(1_700_000_000_000));
+        registered.set_created_at_block_height(Some(1_000));
+        registered.set_updated_at_block_height(Some(1_000));
+        registered.set_created_at_epoch(Some(3));
+        registered.set_updated_at_epoch(Some(3));
+
+        assert!(is_submitted_contract(
+            &submitted,
+            &registered,
+            ctx.platform_version()
+        ));
+    }
+
+    /// A different schema, or different keywords, is a change.
+    #[test]
+    fn a_different_contract_is_not_the_submitted_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let submitted = ctx.dpns_contract().as_ref().clone();
+        let other_schema = ctx.dashpay_contract().as_ref().clone();
+        assert!(!is_submitted_contract(
+            &submitted,
+            &other_schema,
+            ctx.platform_version()
+        ));
+
+        let other_keywords = contract_with_keywords(&ctx, &["other"]);
+        assert!(!is_submitted_contract(
+            &contract_with_keywords(&ctx, &["mine"]),
+            &other_keywords,
+            ctx.platform_version()
+        ));
     }
 
     /// A confirmed registration is no longer pending: the next one reads a
@@ -973,7 +1188,9 @@ mod tests {
     }
 
     /// A registration not found after an unread result stays unresolved: the
-    /// error names the assigned ID to check, and says trying again is safe.
+    /// error names the assigned ID to check, and promises no second
+    /// registration only for a retry before the app closes, since the pending
+    /// nonce lives in memory.
     #[tokio::test]
     async fn a_registration_not_found_after_an_unread_result_stays_unresolved() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -999,7 +1216,7 @@ mod tests {
             assert_eq!(named_id, assigned);
             let message = error.to_string();
             assert!(message.contains(&format!("{assigned}")), "{message}");
-            assert!(message.contains("safe"), "{message}");
+            assert!(message.contains("before closing the app"), "{message}");
             assert!(!message.contains("try again"), "{message}");
         }
     }

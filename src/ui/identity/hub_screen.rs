@@ -201,7 +201,14 @@ impl IdentityHubScreen {
 
     /// Hint for locked wallets, whose identities are looked for only once unlocked.
     fn locked_wallet_hint(&self) -> Option<LockedWalletHint> {
-        let locked_hashes = self.app_context.locked_wallet_hashes();
+        // Only wallets the hub lists count; filter before the roster read.
+        let wallet_filter = self.app_context.selected_wallet_hash();
+        let locked_hashes: Vec<_> = self
+            .app_context
+            .locked_wallet_hashes()
+            .into_iter()
+            .filter(|seed_hash| wallet_filter.is_none_or(|filter| filter == *seed_hash))
+            .collect();
         if locked_hashes.is_empty() {
             return None;
         }
@@ -219,7 +226,7 @@ impl IdentityHubScreen {
                 has_listed_identity: with_identities.contains(&seed_hash),
             })
             .collect();
-        locked_wallet_hint(&locked, self.app_context.selected_wallet_hash().as_ref())
+        locked_wallet_hint(&locked, wallet_filter.as_ref())
     }
 
     fn capture_contact_info_update(&mut self, action: &AppAction) {

@@ -1865,6 +1865,54 @@ mod tests {
         );
     }
 
+    /// Re-entering a key's private half after its limits were raised fills
+    /// the slot its earlier snapshot holds, with the raised public half.
+    #[test]
+    fn a_private_key_entered_after_a_limits_raise_fills_the_keys_own_slot() {
+        let base = IdentityPublicKey::random_key(3, Some(31), PlatformVersion::latest());
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let mut ks = filed_under(
+            &saved,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x01)),
+            )],
+        );
+        let secret = crate::test_support::keys::secret_bytes();
+
+        ks.insert_non_encrypted(
+            (MAIN, 3),
+            (QualifiedIdentityPublicKey::from(raised.clone()), secret),
+        )
+        .expect("a raised limit does not make the slot another key's");
+
+        let (public_key, data) = ks.entry_at(&(MAIN, 3)).expect("key filed");
+        assert!(matches!(data, PrivateKeyData::Clear(bytes) if *bytes == secret));
+        assert_eq!(public_key.identity_public_key, raised);
+    }
+
+    /// A wallet rescan finding a key whose limits were raised since its held
+    /// private half was saved leaves that entry as it is.
+    #[test]
+    fn a_wallet_derived_key_after_a_limits_raise_keeps_the_held_entry() {
+        let base = IdentityPublicKey::random_key(3, Some(31), PlatformVersion::latest());
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let mut ks = filed_under(&saved, &[(MAIN, PrivateKeyData::InVault)]);
+
+        ks.insert_wallet_derived(
+            (MAIN, 3),
+            QualifiedIdentityPublicKey::from(raised),
+            derivation_path(0x01),
+        )
+        .expect("a raised limit does not make the slot another key's");
+
+        let (public_key, data) = ks.entry_at(&(MAIN, 3)).expect("key kept");
+        assert!(matches!(data, PrivateKeyData::InVault));
+        assert_eq!(public_key.identity_public_key, saved);
+    }
+
     /// A held stored secret whose key's limits were raised since the save
     /// keeps its private half and takes the rebuild's raised limits.
     #[test]

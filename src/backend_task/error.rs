@@ -2394,7 +2394,7 @@ pub enum TaskError {
     /// cannot be told. Its ID comes from the identity and its nonce, so the
     /// registration can never run again; it is settled and not saved here.
     #[error(
-        "A contract with ID {contract_id} was created for this registration, but it has been changed since, so the app cannot confirm it is yours. To check it, open Contracts, choose Load Contracts and enter that contract ID. If it is not your contract, register yours again."
+        "This registration's contract ID {contract_id} is already used by a contract that has been changed since it was created, so the app cannot tell whether it is yours. To check it, open Contracts, choose Load Contracts and enter that contract ID. If it is not your contract, register yours again."
     )]
     ContractRegistrationModifiedSince {
         contract_id: dash_sdk::platform::Identifier,
@@ -2404,7 +2404,7 @@ pub enum TaskError {
 
     /// [`Self::ContractRegistrationModifiedSince`] for a token's contract.
     #[error(
-        "A token contract with ID {contract_id} was created for this request, but it has been changed since, so the app cannot confirm it is your token. To check it, open Tokens, choose Import Token and enter that contract ID. If it is not your token, create yours again."
+        "This token's contract ID {contract_id} is already used by a contract that has been changed since it was created, so the app cannot tell whether it is your token. To check it, open Tokens, choose Import Token and enter that contract ID. If it is not your token, create yours again."
     )]
     TokenRegistrationModifiedSince {
         contract_id: dash_sdk::platform::Identifier,

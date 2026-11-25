@@ -1352,9 +1352,10 @@ impl AppContext {
         let task_error =
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
-        if let Some(contract) = self
+        // A lookup that fails tells nothing, so the proof error stands.
+        if let Ok(Some(contract)) = self
             .refetch_contract_after_unread_result(sdk, contract_id, sender)
-            .await?
+            .await
         {
             persist(self, &contract);
             return Ok(crate::backend_task::BackendTaskSuccessResult::ContractSavedAfterProofError);
@@ -1364,8 +1365,9 @@ impl AppContext {
     }
 
     /// Notifies the UI that a contract transition's result is being checked,
-    /// waits for the block to propagate, then fetches the contract by id.
-    /// `None` when the contract is not found or the fetch fails.
+    /// waits for the block to propagate, then fetches the contract by id:
+    /// `None` when Platform has no such contract, an error when the fetch
+    /// fails.
     pub(crate) async fn refetch_contract_after_unread_result(
         &self,
         sdk: &Sdk,
@@ -1394,7 +1396,7 @@ impl AppContext {
         };
         tokio::time::sleep(delay).await;
 
-        Ok(DataContract::fetch(sdk, contract_id).await.ok().flatten())
+        Ok(DataContract::fetch(sdk, contract_id).await?)
     }
 
     /// Lazily build the wallet seam, idempotently.

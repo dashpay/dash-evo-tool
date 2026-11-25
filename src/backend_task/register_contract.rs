@@ -239,18 +239,33 @@ impl AppContext {
             Some(_) => reused.is_some(),
             None => may_have_registered(&error),
         };
-        if earlier_attempt_may_have_run && let Some(registered) = find(contract_id).await? {
-            self.settle_pending_contract_registration(owner_id, pending);
-            let earlier_version = !is_submitted_contract(&submitted, &registered, platform_version);
-            return Ok(self
-                .finish_confirmed_registration(
-                    &registered,
-                    alias,
-                    fee_result,
-                    kind,
-                    earlier_version,
-                )
-                .await);
+        if earlier_attempt_may_have_run {
+            match find(contract_id).await {
+                Ok(Some(registered)) => {
+                    self.settle_pending_contract_registration(owner_id, pending);
+                    let earlier_version =
+                        !is_submitted_contract(&submitted, &registered, platform_version);
+                    return Ok(self
+                        .finish_confirmed_registration(
+                            &registered,
+                            alias,
+                            fee_result,
+                            kind,
+                            earlier_version,
+                        )
+                        .await);
+                }
+                Ok(None) => {}
+                // A failed lookup tells nothing, so the registration stays pending.
+                Err(lookup_error) => {
+                    tracing::warn!(
+                        ?lookup_error,
+                        %contract_id,
+                        "Could not look up a contract registration with an unknown result"
+                    );
+                    return Err(kind.unconfirmed(contract_id, error));
+                }
+            }
         }
         match refusal {
             // Not found, the registration stays pending and unresolved, never

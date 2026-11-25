@@ -37,9 +37,9 @@ enum BroadcastStatus {
     Broadcasting,
     ProofError,
     BroadcastError(String),
-    /// The network has not confirmed a sent registration; the message says
-    /// how to check it.
-    NotConfirmed(String),
+    /// The registration was refused before it ran, or the network has not
+    /// confirmed it; the message says what to do.
+    NotRegistered(String),
     Done,
 }
 
@@ -188,7 +188,7 @@ impl RegisterDataContractScreen {
         match &self.broadcast_status {
             BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
             BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
-            BroadcastStatus::NotConfirmed(msg) => Some(msg.clone()),
+            BroadcastStatus::NotRegistered(msg) => Some(msg.clone()),
             _ => None,
         }
     }
@@ -227,7 +227,7 @@ impl RegisterDataContractScreen {
             }
             BroadcastStatus::ParsingError(_)
             | BroadcastStatus::BroadcastError(_)
-            | BroadcastStatus::NotConfirmed(_) => {
+            | BroadcastStatus::NotRegistered(_) => {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
@@ -363,11 +363,16 @@ impl ScreenLike for RegisterDataContractScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if !matches!(error, TaskError::ContractRegistrationUnconfirmed { .. }) {
+        if !matches!(
+            error,
+            TaskError::ContractRegistrationUnconfirmed { .. }
+                | TaskError::ContractRegistrationInProgress
+                | TaskError::RegistrationNonceRefused { .. }
+        ) {
             return false;
         }
         self.refresh_banner.take_and_clear();
-        self.broadcast_status = BroadcastStatus::NotConfirmed(error.to_string());
+        self.broadcast_status = BroadcastStatus::NotRegistered(error.to_string());
         true
     }
 

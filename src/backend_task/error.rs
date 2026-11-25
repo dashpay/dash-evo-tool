@@ -2402,6 +2402,25 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A contract registration's place was taken by an earlier registration
+    /// from this identity in this app, of a different contract or token; that
+    /// one was completed and kept under its own name. The next registration
+    /// gets a new place.
+    #[error(
+        "Your earlier contract or token registration from this identity was completed instead of this contract. It has contract ID {contract_id}. Register this contract again."
+    )]
+    ContractRegistrationReplacedByEarlier {
+        contract_id: dash_sdk::platform::Identifier,
+    },
+
+    /// [`Self::ContractRegistrationReplacedByEarlier`] for a token.
+    #[error(
+        "Your earlier contract or token registration from this identity was completed instead of this token. It has contract ID {contract_id}. Create this token again."
+    )]
+    TokenRegistrationReplacedByEarlier {
+        contract_id: dash_sdk::platform::Identifier,
+    },
+
     /// Another contract or token registration by the same identity is still
     /// being sent; running both at once could lose track of either.
     #[error(

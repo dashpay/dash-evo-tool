@@ -141,6 +141,31 @@ mod tests {
         assert!(texts[0].contains("earlier attempt"), "{texts:?}");
     }
 
+    /// A token in an earlier version that could not be saved here gets one
+    /// banner, saying how to import it.
+    #[test]
+    fn an_earlier_unsaved_token_version_gets_one_instruction() {
+        use crate::backend_task::error::{ContractSaveWarning, TaskError};
+
+        let ctx = egui::Context::default();
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: Some(ContractSaveWarning::Token {
+                    contract_id,
+                    source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
+                }),
+                earlier_version: true,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("earlier attempt"), "{texts:?}");
+        assert!(texts[0].contains("Import Token"), "{texts:?}");
+        assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
+    }
+
     #[test]
     fn a_refresh_already_running_is_reported_once() {
         let ctx = egui::Context::default();

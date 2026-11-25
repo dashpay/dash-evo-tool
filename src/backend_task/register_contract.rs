@@ -712,13 +712,14 @@ mod tests {
         lookup: Result<Option<DataContract>, TaskError>,
     ) -> Attempt {
         let contract = as_created(&ctx.dpns_contract());
-        attempt_registering(ctx, contract, kind, fresh_nonce, submitted, lookup).await
+        attempt_registering(ctx, contract, None, kind, fresh_nonce, submitted, lookup).await
     }
 
     /// [`attempt_with_lookup`] registering `contract`.
     async fn attempt_registering(
         ctx: &AppContext,
         contract: DataContract,
+        alias: Option<&str>,
         kind: RegistrationKind,
         fresh_nonce: IdentityNonce,
         submitted: Result<DataContract, SdkError>,
@@ -737,7 +738,7 @@ mod tests {
                 signing_key(),
                 &FixedSigner,
                 ctx.platform_version(),
-                None,
+                alias,
                 kind,
                 |transition| {
                     if let StateTransition::DataContractCreate(create) = &transition {
@@ -1090,6 +1091,196 @@ mod tests {
             ctx.pending_contract_registration(&owner)
                 .map(|p| p.identity_nonce),
             Some(5)
+        );
+    }
+
+    /// A token request that reused the nonce of an earlier, unresolved plain
+    /// contract registration and finds that plain contract under the shared
+    /// ID completes the plain registration under its own name, not as the
+    /// token: the token request is told so, nothing stays pending, and the
+    /// next attempt reads a fresh nonce.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_token_request_finding_an_earlier_contract_completes_that_contract() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let owner = ctx.dpns_contract().owner_id();
+        let plain = as_created(&ctx.dpns_contract());
+        let mut token_contract = as_created(&ctx.dashpay_contract());
+        token_contract.set_owner_id(owner);
+
+        attempt_registering(
+            &ctx,
+            plain.clone(),
+            Some("plain"),
+            RegistrationKind::Contract,
+            5,
+            Err(unread()),
+            Ok(None),
+        )
+        .await;
+        let token = attempt_registering(
+            &ctx,
+            token_contract,
+            Some("MyToken"),
+            RegistrationKind::Token,
+            6,
+            Err(unread()),
+            Ok(Some(plain.clone())),
+        )
+        .await;
+
+        assert_eq!(token.sent_nonce, Some(5));
+        assert!(
+            matches!(
+                &token.outcome,
+                Err(TaskError::TokenRegistrationReplacedByEarlier { contract_id })
+                    if *contract_id == assigned_id(&ctx, 5)
+            ),
+            "{:?}",
+            token.outcome
+        );
+        assert_eq!(ctx.pending_contract_registration(&owner), None);
+        let saved = ctx
+            .get_contract_by_id(&plain.id())
+            .expect("read saved contract")
+            .expect("the plain contract is saved");
+        assert_eq!(saved.alias.as_deref(), Some("plain"));
+
+        let next = attempt(&ctx, RegistrationKind::Token, 7, Err(unread()), None).await;
+        assert_eq!(next.sent_nonce, Some(7));
+    }
+
+    /// Platform refusing a reused nonce as ahead of the network says nothing
+    /// final: the node may lag, and the earlier attempt may still run. It is
+    /// looked up and, not found, stays unconfirmed and pending.
+    #[tokio::test]
+    async fn a_nonce_ahead_of_the_network_keeps_the_earlier_attempt_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
+
+        let retry = attempt(
+            &ctx,
+            RegistrationKind::Contract,
+            6,
+            Err(nonce_refused(MergeIdentityNonceResult::NonceTooFarInFuture)),
+            None,
+        )
+        .await;
+
+        assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+        assert!(
+            matches!(
+                &retry.outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { contract_id, .. })
+                    if *contract_id == assigned_id(&ctx, 5)
+            ),
+            "{:?}",
+            retry.outcome
+        );
+        assert_eq!(
+            ctx.pending_contract_registration(&owner)
+                .map(|p| p.identity_nonce),
+            Some(5)
+        );
+    }
+
+    /// A first attempt refused outright, or never sent, cannot run, and no
+    /// earlier attempt is unresolved: nothing stays pending, so the next
+    /// attempt reads a fresh nonce.
+    #[tokio::test]
+    async fn a_refused_or_unsent_first_attempt_leaves_nothing_pending() {
+        use dash_sdk::dapi_client::DapiClientError;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let refused_outright = || {
+            SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(
+                ConsensusError::DefaultError,
+            )))
+        };
+
+        for (nonce, error) in [
+            (
+                5,
+                nonce_refused(MergeIdentityNonceResult::NonceTooFarInFuture),
+            ),
+            (6, refused_outright()),
+            (
+                7,
+                SdkError::DapiClientError(DapiClientError::NoAvailableAddresses),
+            ),
+        ] {
+            let first = attempt(&ctx, RegistrationKind::Contract, nonce, Err(error), None).await;
+            assert!(first.fresh_nonce_read, "nonce {nonce}");
+            assert_eq!(first.asked, None, "nonce {nonce}");
+            assert!(
+                !matches!(
+                    first.outcome,
+                    Ok(_) | Err(TaskError::ContractRegistrationUnconfirmed { .. })
+                ),
+                "nonce {nonce}: {:?}",
+                first.outcome
+            );
+            assert_eq!(
+                ctx.pending_contract_registration(&owner),
+                None,
+                "nonce {nonce}"
+            );
+        }
+    }
+
+    /// A retry that was never sent does not count as sent: a contract later
+    /// found with its content was registered elsewhere, not by this app.
+    #[tokio::test]
+    async fn an_unsent_retry_is_not_counted_as_sent() {
+        use dash_sdk::dapi_client::DapiClientError;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let mut unsent = as_created(&ctx.dashpay_contract());
+        unsent.set_owner_id(owner);
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
+
+        let never_sent = attempt_registering(
+            &ctx,
+            unsent.clone(),
+            None,
+            RegistrationKind::Contract,
+            6,
+            Err(SdkError::DapiClientError(
+                DapiClientError::NoAvailableAddresses,
+            )),
+            Ok(None),
+        )
+        .await;
+        assert!(
+            matches!(
+                never_sent.outcome,
+                Err(TaskError::ContractRegistrationUnconfirmed { .. })
+            ),
+            "{:?}",
+            never_sent.outcome
+        );
+
+        let retry = attempt(
+            &ctx,
+            RegistrationKind::Contract,
+            7,
+            Err(unread()),
+            Some(unsent),
+        )
+        .await;
+        assert!(
+            matches!(
+                retry.outcome,
+                Err(TaskError::ContractRegistrationPreempted { .. })
+            ),
+            "{:?}",
+            retry.outcome
         );
     }
 
@@ -1599,7 +1790,16 @@ mod tests {
         earlier.set_owner_id(ctx.dpns_contract().owner_id());
 
         for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
-            attempt_registering(&ctx, earlier.clone(), kind, 5, Err(unread()), Ok(None)).await;
+            attempt_registering(
+                &ctx,
+                earlier.clone(),
+                None,
+                kind,
+                5,
+                Err(unread()),
+                Ok(None),
+            )
+            .await;
             let done = attempt(&ctx, kind, 6, Err(unread()), Some(earlier.clone())).await;
             assert!(
                 matches!(

@@ -60,6 +60,9 @@ pub struct RegisterDataContractScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
+    /// The contract last sent for registration, offered again after a
+    /// definite refusal.
+    sent_contract: Option<Box<DataContract>>,
 }
 
 impl RegisterDataContractScreen {
@@ -124,6 +127,7 @@ impl RegisterDataContractScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
             refresh_banner: None,
+            sent_contract: None,
         }
     }
 
@@ -180,6 +184,14 @@ impl RegisterDataContractScreen {
         );
         if response.changed() {
             self.parse_contract();
+        }
+    }
+
+    /// The contract the Register button would send now, if any.
+    fn registrable_contract(&self) -> Option<&DataContract> {
+        match &self.broadcast_status {
+            BroadcastStatus::ValidContract(contract) => Some(contract),
+            _ => None,
         }
     }
 
@@ -657,5 +669,45 @@ mod tests {
             assert!(screen.display_task_error(&error), "{error:?}");
             assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
         }
+    }
+
+    /// After a definite refusal the contract can be sent again with an
+    /// explicit click, next to the refusal; an unconfirmed registration keeps
+    /// only its guidance to check the contract ID.
+    #[test]
+    fn a_refused_registration_can_be_registered_again() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = RegisterDataContractScreen::new(&app_context);
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        let source = || Box::new(dash_sdk::Error::Generic("refused".to_string()));
+
+        for error in [
+            TaskError::RegistrationNonceRefused {
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationInProgress,
+            TaskError::ContractRegistrationPreempted {
+                contract_id,
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationReplacedByEarlier { contract_id },
+        ] {
+            screen.sent_contract = Some(Box::new(app_context.dpns_contract().as_ref().clone()));
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            assert!(screen.display_task_error(&error), "{error:?}");
+            assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
+            assert!(screen.registrable_contract().is_some(), "{error:?}");
+        }
+
+        screen.sent_contract = Some(Box::new(app_context.dpns_contract().as_ref().clone()));
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+        let unconfirmed = TaskError::ContractRegistrationUnconfirmed {
+            contract_id,
+            source_error: source(),
+        };
+        assert!(screen.display_task_error(&unconfirmed));
+        assert_eq!(screen.error_bubble_text(), Some(unconfirmed.to_string()));
+        assert!(screen.registrable_contract().is_none());
     }
 }

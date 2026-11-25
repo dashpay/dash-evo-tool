@@ -122,4 +122,31 @@ mod tests {
         assert!(texts[0].contains("earlier attempt"), "{texts:?}");
         assert!(texts[0].contains("Update Contract"), "{texts:?}");
     }
+
+    /// An earlier version that could not be saved here gets one banner with
+    /// the steps in order: load it by its ID, then update it.
+    #[test]
+    fn an_earlier_unsaved_version_gets_one_ordered_instruction() {
+        let ctx = egui::Context::default();
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredContract {
+                fee_result: FeeResult::estimated_only(1),
+                save_warning: Some(ContractSaveWarning::Contract {
+                    contract_id,
+                    source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
+                }),
+                earlier_version: true,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        let text = &texts[0];
+        assert!(text.contains("earlier attempt"), "{text}");
+        assert!(text.contains(&format!("{contract_id}")), "{text}");
+        let load = text.find("Load Contracts").expect("says to load it");
+        let update = text.find("Update Contract").expect("says to update it");
+        assert!(load < update, "{text}");
+    }
 }

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -40,6 +41,9 @@ enum BroadcastStatus {
     Broadcasting,
     ProofError,
     BroadcastError(String),
+    /// The network did not confirm a sent registration in time; the message
+    /// says how to check before registering again.
+    NotConfirmed(String),
     Done,
 }
 
@@ -183,15 +187,19 @@ impl RegisterDataContractScreen {
         }
     }
 
-    /// Renders an error message at the top of the screen with a styled bubble
-    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
-        let error_msg = match &self.broadcast_status {
+    /// The text of the error bubble for the current status, if any.
+    fn error_bubble_text(&self) -> Option<String> {
+        match &self.broadcast_status {
             BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
             BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
+            BroadcastStatus::NotConfirmed(msg) => Some(msg.clone()),
             _ => None,
-        };
+        }
+    }
 
-        if let Some(msg) = error_msg {
+    /// Renders an error message at the top of the screen with a styled bubble
+    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
+        if let Some(msg) = self.error_bubble_text() {
             let dark_mode = ui.style().visuals.dark_mode;
             let error_color = DashColors::error_color(dark_mode);
             Frame::new()
@@ -221,7 +229,9 @@ impl RegisterDataContractScreen {
             BroadcastStatus::Idle => {
                 ui.label("No contract parsed yet or empty input.");
             }
-            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError(_) => {
+            BroadcastStatus::ParsingError(_)
+            | BroadcastStatus::BroadcastError(_)
+            | BroadcastStatus::NotConfirmed(_) => {
                 // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
@@ -354,6 +364,15 @@ impl ScreenLike for RegisterDataContractScreen {
         if message_type == MessageType::Error {
             self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
         }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if !matches!(error, TaskError::ContractRegistrationUnconfirmed { .. }) {
+            return false;
+        }
+        self.refresh_banner.take_and_clear();
+        self.broadcast_status = BroadcastStatus::NotConfirmed(error.to_string());
+        true
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -591,5 +610,31 @@ impl ScreenLike for RegisterDataContractScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A registration the network did not confirm in time is shown by the
+    /// screen in its own words, not as a broadcast error, and needs no extra
+    /// banner; other errors keep the generic handling.
+    #[test]
+    fn an_unconfirmed_registration_is_not_shown_as_a_broadcast_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = RegisterDataContractScreen::new(&app_context);
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+
+        assert!(!screen.display_task_error(&TaskError::TaskManagerShuttingDown));
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
+
+        let error = TaskError::ContractRegistrationUnconfirmed {
+            contract_id: dash_sdk::platform::Identifier::from([0x42; 32]),
+            source_error: Box::new(dash_sdk::Error::Generic("wait failed".to_string())),
+        };
+        assert!(screen.display_task_error(&error));
+        assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
     }
 }

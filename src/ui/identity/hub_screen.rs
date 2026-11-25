@@ -25,7 +25,7 @@ use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
 use crate::ui::state::locked_wallet_hint::{
-    LockedWalletHint, UNLOCK_LINK_LABEL, locked_wallet_hint,
+    LockedWallet, LockedWalletHint, UNLOCK_LINK_LABEL, locked_wallet_hint,
 };
 use crate::ui::theme::Spacing;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -206,7 +206,20 @@ impl IdentityHubScreen {
             .app_context
             .locked_wallet_hashes()
             .into_iter()
-            .map(|seed_hash| (seed_hash, wallets.hd_alias(&seed_hash)))
+            .map(|seed_hash| LockedWallet {
+                seed_hash,
+                alias: wallets.hd_alias(&seed_hash),
+                // Same User-only set the hub lists; an unreadable list keeps the hint.
+                has_listed_identity: self
+                    .app_context
+                    .load_local_qualified_identities_for_wallet(&seed_hash)
+                    .is_ok_and(|identities| {
+                        identities.iter().any(|identity| {
+                            identity.identity_type
+                                == crate::model::qualified_identity::IdentityType::User
+                        })
+                    }),
+            })
             .collect();
         locked_wallet_hint(&locked, self.app_context.selected_wallet_hash().as_ref())
     }

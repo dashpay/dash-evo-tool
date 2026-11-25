@@ -2062,6 +2062,52 @@ mod key_resolution_tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_held_v1_key_resolves_after_refresh_raises_its_budget() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let secret = crate::test_support::keys::secret_bytes();
+        let private_key =
+            dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(&secret, Network::Testnet)
+                .expect("valid private key");
+        let saved = identity_public_key(
+            3,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            private_key.public_key().to_bytes(),
+        )
+        .with_limits(Some(1_000), None);
+        let mut stored = masternode_with(&saved, &[(MAIN, PrivateKeyData::Clear(secret))]);
+        let held = stored.private_keys.entry_at(&(MAIN, saved.id())).cloned();
+        let mut fetched = stored.identity.clone();
+        fetched.add_public_key(saved.clone().with_limits(Some(5_000), None));
+
+        // refresh_identity replaces only the published identity, retaining the private-key snapshot.
+        stored.identity = crate::wallet_backend::fold_fetched_identity(
+            &stored.identity,
+            &fetched,
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 10,
+                ..Default::default()
+            },
+        );
+
+        let refreshed = stored.identity.get_public_key_by_id(saved.id()).unwrap();
+        assert_eq!(refreshed.total_budget(), Some(5_000));
+        assert_eq!(
+            stored.private_keys.entry_at(&(MAIN, saved.id())),
+            held.as_ref()
+        );
+        let (snapshot, resolved) = stored
+            .resolve_private_key_bytes(refreshed)
+            .await
+            .expect("resolution succeeds after refresh")
+            .expect("the held private key is still found");
+        assert_eq!(snapshot.identity_public_key.total_budget(), Some(1_000));
+        assert_eq!(*resolved, secret);
+    }
+
     /// T5 — the fallthrough rule. A vault placeholder whose secret is gone can
     /// sit beside a live entry for the same key under another store. A resolver
     /// that stopped at the first *matching* placement would report the key

@@ -39,8 +39,8 @@ pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 /// or delete, material the requested key does not own. So this excludes the
 /// fields that legitimately move and nothing else.
 ///
-/// Upstream writes a key without limits as V0, and a limits update only raises
-/// limits a key already has, so a V1 key is never the same key as a V0 one.
+/// A limits update only raises limits a key already has and does not change
+/// its version, so a V1 key never matches a V0 snapshot, even without limits.
 // TODO(dashpay/platform#6294): use rs-dpp's `IdentityPublicKey::is_same_key`
 // once it exists.
 pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
@@ -1460,8 +1460,8 @@ mod tests {
         assert!(same_key(&expiring_later, &limited));
     }
 
-    /// Upstream writes a key without limits as V0, and a limits update only
-    /// raises limits a key already has, so a V1 key is never a V0 one.
+    /// A limits update only raises existing limits and preserves the key's
+    /// version, so a V1 key never matches a V0 snapshot.
     #[test]
     fn same_key_rejects_a_v1_key_against_a_v0_key() {
         let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
@@ -1487,6 +1487,42 @@ mod tests {
             !same_key(&limited, &IdentityPublicKey::V1(altered)),
             "a key differing outside its state is not this key"
         );
+    }
+
+    #[test]
+    fn same_key_rejects_a_v1_purpose_mismatch_despite_a_raised_budget() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        altered.purpose = if altered.purpose == Purpose::AUTHENTICATION {
+            Purpose::VOTING
+        } else {
+            Purpose::AUTHENTICATION
+        };
+        let altered = IdentityPublicKey::V1(altered);
+
+        assert!(!same_key(&limited, &altered));
+        assert!(!same_key(&altered, &limited));
+    }
+
+    #[test]
+    fn same_key_rejects_a_v1_data_mismatch_despite_a_raised_budget() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        let mut data = altered.data.to_vec();
+        data[0] ^= 1;
+        altered.data = data.into();
+        let altered = IdentityPublicKey::V1(altered);
+
+        assert!(!same_key(&limited, &altered));
+        assert!(!same_key(&altered, &limited));
     }
 
     /// A storage filing one key under several placements, each with the given

@@ -2362,7 +2362,8 @@ pub enum TaskError {
     /// under its Platform-assigned ID within the confirmation window, so the
     /// transition was most likely dropped.
     #[error(
-        "The network did not confirm your contract within five minutes, so it was most likely not registered. To check, open Contracts, choose Load Contracts and enter contract ID {contract_id}. If it is not found, you can register it again."
+        "The network did not confirm your contract within {minutes} minutes, so it was most likely not registered. To check, open Contracts, choose Load Contracts and enter contract ID {contract_id}. If it is not found, you can register it again.",
+        minutes = crate::backend_task::register_contract::registration_confirmation_window_minutes()
     )]
     ContractRegistrationUnconfirmed {
         contract_id: dash_sdk::platform::Identifier,
@@ -2372,7 +2373,8 @@ pub enum TaskError {
 
     /// [`Self::ContractRegistrationUnconfirmed`] for a token's contract.
     #[error(
-        "The network did not confirm your token within five minutes, so it was most likely not created. To check, open Tokens, choose Import Token and enter contract ID {contract_id}. If it is not found, you can create it again."
+        "The network did not confirm your token within {minutes} minutes, so it was most likely not created. To check, open Tokens, choose Import Token and enter contract ID {contract_id}. If it is not found, you can create it again.",
+        minutes = crate::backend_task::register_contract::registration_confirmation_window_minutes()
     )]
     TokenRegistrationUnconfirmed {
         contract_id: dash_sdk::platform::Identifier,

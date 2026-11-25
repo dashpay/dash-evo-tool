@@ -34,9 +34,14 @@ const LOCAL_SAVE_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// How long after submission an unconfirmed registration is looked for.
 /// Platform creates a block, empty if need be, about every three minutes, so a
-/// transition still unconfirmed five minutes after submission was dropped and
-/// will not execute; paying again is then safe.
+/// transition still unconfirmed five minutes after submission is most likely
+/// lost, and the user may pay again.
 const REGISTRATION_CONFIRMATION_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// [`REGISTRATION_CONFIRMATION_WINDOW`] in whole minutes, for user-facing text.
+pub(crate) const fn registration_confirmation_window_minutes() -> u64 {
+    REGISTRATION_CONFIRMATION_WINDOW.as_secs() / 60
+}
 
 /// Pause between lookups of an unconfirmed registration.
 const REGISTRATION_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
@@ -697,7 +702,8 @@ mod tests {
             assert_eq!(named_id, contract_id);
             let message = error.to_string();
             assert!(message.contains(&format!("{contract_id}")), "{message}");
-            assert!(message.contains("five minutes"), "{message}");
+            let window = format!("{} minutes", registration_confirmation_window_minutes());
+            assert!(message.contains(&window), "{message}");
             assert!(!message.contains("try again"), "{message}");
         }
     }

@@ -31,7 +31,13 @@ use std::sync::{Arc, RwLock};
 
 /// Progress text while a sent registration awaits the network's
 /// confirmation; the form stays without a Register button until it ends.
-const CONTRACT_AWAITING_CONFIRMATION: &str = "Your contract was sent, but the network has not confirmed it yet. The app keeps checking for up to five minutes. You do not need to do anything.";
+fn contract_awaiting_confirmation() -> String {
+    format!(
+        "Your contract was sent, but the network has not confirmed it yet. The app keeps checking for up to {minutes} minutes. You do not need to do anything.",
+        minutes =
+            crate::backend_task::register_contract::registration_confirmation_window_minutes()
+    )
+}
 
 #[derive(PartialEq)]
 enum BroadcastStatus {
@@ -390,7 +396,7 @@ impl ScreenLike for RegisterDataContractScreen {
             }
             BackendTaskSuccessResult::ContractRegistrationAwaitingConfirmation => {
                 if let Some(banner) = &self.refresh_banner {
-                    banner.set_message(CONTRACT_AWAITING_CONFIRMATION);
+                    banner.set_message(contract_awaiting_confirmation());
                 }
             }
             BackendTaskSuccessResult::ContractSavedAfterProofError => {

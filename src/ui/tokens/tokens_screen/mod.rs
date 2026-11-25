@@ -179,7 +179,13 @@ fn sanitize_u64(input: &mut String) {
 
 /// Progress text while a sent token registration awaits the network's
 /// confirmation; the creator stays blocked until it ends.
-const TOKEN_AWAITING_CONFIRMATION: &str = "Your token was sent, but the network has not confirmed it yet. The app keeps checking for up to five minutes. You do not need to do anything.";
+fn token_awaiting_confirmation() -> String {
+    format!(
+        "Your token was sent, but the network has not confirmed it yet. The app keeps checking for up to {minutes} minutes. You do not need to do anything.",
+        minutes =
+            crate::backend_task::register_contract::registration_confirmation_window_minutes()
+    )
+}
 
 /// Which token sub-screen is currently showing.
 #[derive(PartialEq)]
@@ -3331,7 +3337,7 @@ impl ScreenLike for TokensScreen {
                     && context.interim_request() == self.token_registration_context.as_ref() =>
             {
                 if let Some(banner) = &self.registration_banner {
-                    banner.set_message(TOKEN_AWAITING_CONFIRMATION);
+                    banner.set_message(token_awaiting_confirmation());
                 }
             }
             BackendTaskSuccessResult::RegisteredTokenContract { .. }
@@ -5452,7 +5458,7 @@ mod tests {
         );
         assert_ne!(
             banner_text(&screen).as_deref(),
-            Some(TOKEN_AWAITING_CONFIRMATION)
+            Some(token_awaiting_confirmation().as_str())
         );
 
         screen.display_backend_task_result(
@@ -5461,7 +5467,7 @@ mod tests {
         );
         assert_eq!(
             banner_text(&screen).as_deref(),
-            Some(TOKEN_AWAITING_CONFIRMATION)
+            Some(token_awaiting_confirmation().as_str())
         );
         assert_eq!(
             screen.token_creator_status,

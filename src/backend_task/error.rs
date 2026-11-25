@@ -2380,6 +2380,28 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A different contract by the same identity, registered elsewhere, took
+    /// the place this registration was sent for, so it can never run. A new
+    /// registration gets a new place.
+    #[error(
+        "Another contract registered by this identity, for example from another device, took the place of yours, so your contract was not registered. Register it again."
+    )]
+    ContractRegistrationPreempted {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationPreempted`] for a token's contract.
+    #[error(
+        "Another contract registered by this identity, for example from another device, took the place of your token, so your token was not created. Create it again."
+    )]
+    TokenRegistrationPreempted {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Another contract or token registration by the same identity is still
     /// being sent; running both at once could lose track of either.
     #[error(

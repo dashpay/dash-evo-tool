@@ -628,6 +628,18 @@ mod tests {
         lookup: Result<Option<DataContract>, TaskError>,
     ) -> Attempt {
         let contract = ctx.dpns_contract().as_ref().clone();
+        attempt_registering(ctx, contract, kind, fresh_nonce, submitted, lookup).await
+    }
+
+    /// [`attempt_with_lookup`] registering `contract`.
+    async fn attempt_registering(
+        ctx: &AppContext,
+        contract: DataContract,
+        kind: RegistrationKind,
+        fresh_nonce: IdentityNonce,
+        submitted: Result<DataContract, SdkError>,
+        lookup: Result<Option<DataContract>, TaskError>,
+    ) -> Attempt {
         let asked = std::cell::Cell::new(None);
         let sent_nonce = std::cell::Cell::new(None);
         let fresh_nonce_read = std::cell::Cell::new(false);
@@ -1296,10 +1308,12 @@ mod tests {
     async fn a_registration_found_in_an_earlier_version_says_so() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
-        let earlier = ctx.dashpay_contract().as_ref().clone();
+        let mut earlier = ctx.dashpay_contract().as_ref().clone();
+        earlier.set_owner_id(ctx.dpns_contract().owner_id());
 
         for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
-            let done = attempt(&ctx, kind, 5, Err(unread()), Some(earlier.clone())).await;
+            attempt_registering(&ctx, earlier.clone(), kind, 5, Err(unread()), Ok(None)).await;
+            let done = attempt(&ctx, kind, 6, Err(unread()), Some(earlier.clone())).await;
             assert!(
                 matches!(
                     done.outcome,
@@ -1320,6 +1334,64 @@ mod tests {
                 .expect("read saved contract")
                 .is_some()
         );
+    }
+
+    /// A contract found under the assigned ID that this app never sent there
+    /// was registered elsewhere by the same identity: the registration is not
+    /// done and no longer pending, so the next
+    /// attempt reads a fresh nonce and gets a new ID. For both kinds, on a
+    /// first attempt and on a retry.
+    #[tokio::test]
+    async fn a_different_contract_under_the_assigned_id_is_not_reported_as_done() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let owner = ctx.dpns_contract().owner_id();
+        let other = ctx.dashpay_contract().as_ref().clone();
+
+        for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
+            let first = attempt(&ctx, kind, 5, Err(unread()), Some(other.clone())).await;
+            let preempted_id = match (&first.outcome, kind) {
+                (
+                    Err(TaskError::ContractRegistrationPreempted { contract_id, .. }),
+                    RegistrationKind::Contract,
+                )
+                | (
+                    Err(TaskError::TokenRegistrationPreempted { contract_id, .. }),
+                    RegistrationKind::Token,
+                ) => *contract_id,
+                (outcome, _) => {
+                    panic!("{kind:?}: expected a preempted registration, got {outcome:?}")
+                }
+            };
+            assert_eq!(preempted_id, assigned_id(&ctx, 5));
+            assert_eq!(ctx.pending_contract_registration(&owner), None);
+
+            let next = attempt(&ctx, kind, 7, Err(unread()), None).await;
+            assert!(next.fresh_nonce_read);
+            assert_eq!(next.sent_nonce, Some(7));
+
+            let retry = attempt(
+                &ctx,
+                kind,
+                8,
+                Err(nonce_refused(
+                    MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+                )),
+                Some(other.clone()),
+            )
+            .await;
+            assert_eq!(retry.sent_nonce, Some(7));
+            assert!(
+                matches!(
+                    retry.outcome,
+                    Err(TaskError::ContractRegistrationPreempted { .. })
+                        | Err(TaskError::TokenRegistrationPreempted { .. })
+                ),
+                "{kind:?}: {:?}",
+                retry.outcome
+            );
+            assert_eq!(ctx.pending_contract_registration(&owner), None);
+        }
     }
 
     /// A registration not found after an unread result stays unresolved: the

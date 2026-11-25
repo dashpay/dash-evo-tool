@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dash_sdk::dash_platform_queries::transition::validation::ensure_valid_state_transition_structure;
+use dash_sdk::dpp::consensus::ConsensusError;
+use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::identity::PartialIdentity;
+use dash_sdk::dpp::identity::identity_nonce::MergeIdentityNonceResult;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::prelude::IdentityNonce;
@@ -138,7 +141,8 @@ impl AppContext {
     /// `fresh_nonce` reads and bumps the owner's identity nonce, `submit` sends
     /// the signed transition and waits for its result, and `find` looks a
     /// registration whose result could not be read up under its
-    /// Platform-assigned ID.
+    /// Platform-assigned ID. While the owner has a registration pending, its
+    /// nonce is reused instead of a fresh one, so at most one attempt executes.
     #[expect(
         clippy::too_many_arguments,
         reason = "the transition's inputs plus the two network steps"
@@ -163,7 +167,18 @@ impl AppContext {
     {
         let fee_result =
             FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
-        let identity_nonce = fresh_nonce().await?;
+        let owner_id = data_contract.owner_id();
+        let identity_nonce = match self.pending_contract_registration(&owner_id) {
+            Some(pending) => {
+                tracing::info!(
+                    %owner_id,
+                    identity_nonce = pending.identity_nonce,
+                    "Retrying a pending contract registration with its identity nonce"
+                );
+                pending.identity_nonce
+            }
+            None => fresh_nonce().await?,
+        };
         let (transition, contract_id) = contract_create_transition(
             data_contract,
             identity_nonce,
@@ -172,13 +187,27 @@ impl AppContext {
             platform_version,
         )
         .await?;
+        let pending = PendingContractRegistration {
+            identity_nonce,
+            contract_id,
+        };
+        self.pending_registrations().insert(owner_id, pending);
 
         match submit(transition).await {
-            Ok(contract) => Ok(self
-                .finish_confirmed_registration(&contract, alias, fee_result, kind)
-                .await),
-            Err(error) if may_have_registered(&error) => {
+            Ok(contract) => {
+                self.settle_pending_contract_registration(owner_id, pending);
+                Ok(self
+                    .finish_confirmed_registration(&contract, alias, fee_result, kind)
+                    .await)
+            }
+            Err(error)
+                if may_have_registered(&error)
+                    || nonce_refusal(&error) == Some(NonceRefusal::AlreadyUsed) =>
+            {
                 let found = find(contract_id).await?;
+                if found.is_some() {
+                    self.settle_pending_contract_registration(owner_id, pending);
+                }
                 self.settle_unconfirmed_registration(
                     found,
                     contract_id,
@@ -189,7 +218,12 @@ impl AppContext {
                 )
                 .await
             }
-            Err(error) => Err(TaskError::from(error)),
+            Err(error) => {
+                if nonce_refusal(&error) == Some(NonceRefusal::Unusable) {
+                    self.settle_pending_contract_registration(owner_id, pending);
+                }
+                Err(TaskError::from(error))
+            }
         }
     }
 
@@ -243,11 +277,29 @@ impl AppContext {
         &self,
         owner: &Identifier,
     ) -> Option<PendingContractRegistration> {
+        self.pending_registrations().get(owner).copied()
+    }
+
+    /// Forgets `owner`'s pending registration once it is settled, unless a
+    /// newer attempt has replaced it.
+    fn settle_pending_contract_registration(
+        &self,
+        owner: Identifier,
+        settled: PendingContractRegistration,
+    ) {
+        let mut registrations = self.pending_registrations();
+        if registrations.get(&owner) == Some(&settled) {
+            registrations.remove(&owner);
+        }
+    }
+
+    fn pending_registrations(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<Identifier, PendingContractRegistration>>
+    {
         self.pending_contract_registrations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(owner)
-            .copied()
     }
 }
 
@@ -293,6 +345,37 @@ fn may_have_registered(error: &SdkError) -> bool {
     matches!(error, SdkError::DriveProofError(..)) || error.is_state_transition_result_unconfirmed()
 }
 
+/// Why Platform refused a transition's identity nonce, where it matters to a
+/// pending registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonceRefusal {
+    /// The nonce, or the contract ID it gives, is already used: an earlier
+    /// attempt may have executed.
+    AlreadyUsed,
+    /// The nonce can no longer be accepted, so no attempt carrying it will
+    /// ever execute.
+    Unusable,
+}
+
+/// The nonce refusal behind `error`, read from its typed consensus cause.
+fn nonce_refusal(error: &SdkError) -> Option<NonceRefusal> {
+    match error.consensus_error()? {
+        ConsensusError::StateError(StateError::InvalidIdentityNonceError(refusal)) => {
+            Some(match refusal.error() {
+                MergeIdentityNonceResult::NonceAlreadyPresentAtTip
+                | MergeIdentityNonceResult::NonceAlreadyPresentInPast(_) => {
+                    NonceRefusal::AlreadyUsed
+                }
+                _ => NonceRefusal::Unusable,
+            })
+        }
+        ConsensusError::StateError(StateError::DataContractAlreadyPresentError(_)) => {
+            Some(NonceRefusal::AlreadyUsed)
+        }
+        _ => None,
+    }
+}
+
 /// Runs a local write up to [`LOCAL_SAVE_ATTEMPTS`] times, returning the last
 /// error if none succeeds.
 async fn retry_local_save(
@@ -320,11 +403,8 @@ async fn retry_local_save(
 mod tests {
     use super::*;
     use crate::context::test_support::{test_app_context, wired_test_app_context};
-    use dash_sdk::dpp::consensus::ConsensusError;
     use dash_sdk::dpp::consensus::state::identity::invalid_identity_contract_nonce_error::InvalidIdentityNonceError;
-    use dash_sdk::dpp::consensus::state::state_error::StateError;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_nonce::MergeIdentityNonceResult;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::state_transition::data_contract_create_transition::accessors::DataContractCreateTransitionAccessorsV0;
 

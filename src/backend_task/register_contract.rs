@@ -19,6 +19,7 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::put_contract::ensure_private_document_entries_fit;
 use dash_sdk::{
     Error as SdkError, Sdk,
+    dpp::data_contract::INITIAL_DATA_CONTRACT_VERSION,
     dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters},
     dpp::data_contract::accessors::v1::DataContractV1Setters,
     dpp::serialization::{
@@ -263,14 +264,25 @@ impl AppContext {
             Err(error) => error,
         };
         // A refused nonce hints at an earlier attempt only when this one reused
-        // it; a fresh nonce already used was spent elsewhere.
+        // it; a fresh nonce already used was spent elsewhere. Any other failure
+        // leaves an earlier unresolved attempt as unresolved as it was.
         let refusal = nonce_refusal(&error);
         let earlier_attempt_may_have_run = match refusal {
             Some(_) => reused.is_some(),
-            None => may_have_registered(&error),
+            None => reused.is_some() || may_have_registered(&error),
         };
         if earlier_attempt_may_have_run {
             match find(contract_id).await {
+                // Updated since it was created, so what it was created as is
+                // unknown: it may be this registration, changed later.
+                Ok(Some(registered)) if registered.version() != INITIAL_DATA_CONTRACT_VERSION => {
+                    tracing::warn!(
+                        %contract_id,
+                        version = registered.version(),
+                        "A contract updated since its creation was found under a registration's assigned ID"
+                    );
+                    return Err(kind.unconfirmed(contract_id, error));
+                }
                 Ok(Some(registered)) => {
                     let earlier_version =
                         !is_submitted_contract(&submitted, &registered, platform_version);
@@ -609,6 +621,13 @@ mod tests {
         identity.identity.public_keys()[&1].clone()
     }
 
+    /// `contract` as Platform creates it: at the initial version.
+    fn as_created(contract: &DataContract) -> DataContract {
+        let mut contract = contract.clone();
+        contract.set_version(INITIAL_DATA_CONTRACT_VERSION);
+        contract
+    }
+
     fn proof_error() -> SdkError {
         SdkError::DriveProofError(
             dash_sdk::drive::error::proof::ProofError::CorruptedProof("bad".to_string()),
@@ -624,7 +643,7 @@ mod tests {
     async fn the_registered_id_is_derived_from_the_owner_and_nonce() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
-        let contract = ctx.dpns_contract().as_ref().clone();
+        let contract = as_created(&ctx.dpns_contract());
         let (placeholder, owner) = (contract.id(), contract.owner_id());
 
         let (transition, contract_id) = contract_create_transition(
@@ -692,7 +711,7 @@ mod tests {
         submitted: Result<DataContract, SdkError>,
         lookup: Result<Option<DataContract>, TaskError>,
     ) -> Attempt {
-        let contract = ctx.dpns_contract().as_ref().clone();
+        let contract = as_created(&ctx.dpns_contract());
         attempt_registering(ctx, contract, kind, fresh_nonce, submitted, lookup).await
     }
 
@@ -810,7 +829,7 @@ mod tests {
             MergeIdentityNonceResult::NonceAlreadyPresentInPast(2),
         ] {
             attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
-            let earlier = ctx.dpns_contract().as_ref().clone();
+            let earlier = as_created(&ctx.dpns_contract());
             let retry = attempt(
                 &ctx,
                 RegistrationKind::Contract,
@@ -984,7 +1003,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
         let owner = ctx.dpns_contract().owner_id();
-        let mut updated = ctx.dashpay_contract().as_ref().clone();
+        let mut updated = as_created(&ctx.dashpay_contract());
         updated.set_version(2);
         let still_pending = Some(PendingContractRegistration {
             identity_nonce: 5,
@@ -1083,7 +1102,7 @@ mod tests {
         let owner = ctx.dpns_contract().owner_id();
         attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
 
-        let earlier = ctx.dpns_contract().as_ref().clone();
+        let earlier = as_created(&ctx.dpns_contract());
         let retry = attempt(
             &ctx,
             RegistrationKind::Contract,
@@ -1129,7 +1148,7 @@ mod tests {
             nonce_refused(MergeIdentityNonceResult::NonceAlreadyPresentAtTip),
             present,
         ] {
-            let other = ctx.dashpay_contract().as_ref().clone();
+            let other = as_created(&ctx.dashpay_contract());
             let first = attempt(
                 &ctx,
                 RegistrationKind::Contract,
@@ -1165,7 +1184,7 @@ mod tests {
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
 
         let first = ctx.register_signed_contract(
-            ctx.dpns_contract().as_ref().clone(),
+            as_created(&ctx.dpns_contract()),
             || std::future::ready(Ok(5)),
             signing_key(),
             &FixedSigner,
@@ -1218,7 +1237,7 @@ mod tests {
 
     /// A system contract with `keywords`, as the token creator builds it.
     fn contract_with_keywords(ctx: &AppContext, keywords: &[&str]) -> DataContract {
-        let mut contract = ctx.dpns_contract().as_ref().clone();
+        let mut contract = as_created(&ctx.dpns_contract());
         contract.set_keywords(keywords.iter().map(|k| k.to_string()).collect());
         contract
     }
@@ -1248,7 +1267,7 @@ mod tests {
     fn fields_platform_sets_are_not_a_change() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
-        let submitted = ctx.dpns_contract().as_ref().clone();
+        let submitted = as_created(&ctx.dpns_contract());
         let mut registered = submitted.clone();
         registered.set_id(Identifier::from([0x31; 32]));
         registered.set_owner_id(Identifier::from([0x32; 32]));
@@ -1374,8 +1393,8 @@ mod tests {
     fn a_different_contract_is_not_the_submitted_one() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
-        let submitted = ctx.dpns_contract().as_ref().clone();
-        let other_schema = ctx.dashpay_contract().as_ref().clone();
+        let submitted = as_created(&ctx.dpns_contract());
+        let other_schema = as_created(&ctx.dashpay_contract());
         assert!(!is_submitted_contract(
             &submitted,
             &other_schema,
@@ -1399,7 +1418,7 @@ mod tests {
         let owner = ctx.dpns_contract().owner_id();
         attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
 
-        let confirmed = ctx.dpns_contract().as_ref().clone();
+        let confirmed = as_created(&ctx.dpns_contract());
         attempt(&ctx, RegistrationKind::Contract, 6, Ok(confirmed), None).await;
         assert_eq!(ctx.pending_contract_registration(&owner), None);
 
@@ -1418,7 +1437,7 @@ mod tests {
         let placeholder = ctx.dpns_contract().id();
         let assigned =
             DataContract::generate_data_contract_id_v0(ctx.dpns_contract().owner_id(), 5);
-        let registered = ctx.dpns_contract().as_ref().clone();
+        let registered = as_created(&ctx.dpns_contract());
 
         let (outcome, asked) = register_with(
             &ctx,
@@ -1482,7 +1501,7 @@ mod tests {
             "{outcome:?}"
         );
 
-        let confirmed = ctx.dpns_contract().as_ref().clone();
+        let confirmed = as_created(&ctx.dpns_contract());
         let (outcome, asked) = register_with(&ctx, Ok(confirmed), None).await;
         assert_eq!(asked, None);
         assert!(
@@ -1520,7 +1539,7 @@ mod tests {
     async fn a_registration_found_after_an_unread_result_is_confirmed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
-        let registered = ctx.dpns_contract().as_ref().clone();
+        let registered = as_created(&ctx.dpns_contract());
 
         let contract = attempt(
             &ctx,
@@ -1576,7 +1595,7 @@ mod tests {
     async fn a_registration_found_in_an_earlier_version_says_so() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
-        let mut earlier = ctx.dashpay_contract().as_ref().clone();
+        let mut earlier = as_created(&ctx.dashpay_contract());
         earlier.set_owner_id(ctx.dpns_contract().owner_id());
 
         for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
@@ -1614,7 +1633,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(dir.path());
         let owner = ctx.dpns_contract().owner_id();
-        let other = ctx.dashpay_contract().as_ref().clone();
+        let other = as_created(&ctx.dashpay_contract());
 
         for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
             let first = attempt(&ctx, kind, 5, Err(unread()), Some(other.clone())).await;
@@ -1704,7 +1723,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         // No wallet backend is wired, so every local save fails.
         let ctx = test_app_context(dir.path());
-        let contract = ctx.dpns_contract().as_ref().clone();
+        let contract = as_created(&ctx.dpns_contract());
 
         let result = ctx
             .finish_confirmed_registration(
@@ -1751,7 +1770,7 @@ mod tests {
     async fn a_confirmed_registration_is_saved_locally() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = wired_test_app_context(dir.path()).await;
-        let contract = ctx.dpns_contract().as_ref().clone();
+        let contract = as_created(&ctx.dpns_contract());
 
         let result = ctx
             .finish_confirmed_registration(

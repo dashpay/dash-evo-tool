@@ -1,7 +1,8 @@
 //! The Identities hub's hint that locked wallets are not searched for identities.
 //!
 //! Automatic identity discovery skips password-protected wallets until they are
-//! unlocked, so their identities stay hidden until then.
+//! unlocked: identities already loaded stay listed, but new ones created with
+//! a locked wallet are not looked for until then.
 
 use crate::model::wallet::WalletSeedHash;
 

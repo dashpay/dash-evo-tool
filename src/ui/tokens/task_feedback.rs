@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(texts.len(), 1, "{texts:?}");
         assert!(texts[0].contains("was created on the network"), "{texts:?}");
         assert!(texts[0].contains("Import Token"), "{texts:?}");
-        assert!(texts[0].contains(&contract_id.to_string()), "{texts:?}");
+        assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
     }
 
     #[test]

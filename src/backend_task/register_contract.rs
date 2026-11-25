@@ -460,7 +460,7 @@ mod tests {
             };
             assert_eq!(named_id, contract_id);
             let message = error.to_string();
-            assert!(message.contains(&contract_id.to_string()), "{message}");
+            assert!(message.contains(&format!("{contract_id}")), "{message}");
             assert!(!message.contains("try again"), "{message}");
         }
     }

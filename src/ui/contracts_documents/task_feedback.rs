@@ -87,6 +87,6 @@ mod tests {
             "{texts:?}"
         );
         assert!(texts[0].contains("Load Contracts"), "{texts:?}");
-        assert!(texts[0].contains(&contract_id.to_string()), "{texts:?}");
+        assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
     }
 }

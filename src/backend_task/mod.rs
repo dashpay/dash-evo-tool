@@ -252,20 +252,22 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable or insecure data folder, or
-/// a compatibility upgrade that fails the same way on every attempt). These
+/// newer/incompatible app build, an unwritable data folder, or data only an
+/// earlier release can upgrade). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
 /// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    match error {
+    matches!(
+        error,
         TaskError::WalletDataTooNew { .. }
-        | TaskError::WalletDataIncompatible { .. }
-        | TaskError::WalletStorageAccessDenied { .. }
-        | TaskError::WalletDataFolderInsecure { .. } => true,
-        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
-        _ => false,
-    }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletStorageAccessDenied { .. }
+            | TaskError::WalletStorageLockAccessDenied { .. }
+            | TaskError::SecretStoreAccessDenied { .. }
+            | TaskError::WalletDataNeedsUpgradeRelease { .. }
+            | TaskError::AppDataNeedsUpgradeRelease { .. }
+    )
 }
 
 /// Information about fees for a platform state transition.
@@ -1339,7 +1341,11 @@ pub enum BackendTaskSuccessResult {
         cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
-    LoadedIdentity(QualifiedIdentity),
+    LoadedIdentity {
+        identity: QualifiedIdentity,
+        /// What the requester needs to know about a save that landed.
+        warning: Option<error::IdentitySaveWarning>,
+    },
     /// This identity's keys were sealed under a password (opt-in).
     /// The `count` keys newly sealed (0 when the task was an idempotent re-run
     /// over an already-protected identity).
@@ -1668,7 +1674,7 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build, or an insecure data folder) is terminal — retrying won't
+            // build, or an unwritable data folder) is terminal — retrying won't
             // help and the generic "deferred" banner is misleading. Surface
             // those variants so the user sees the actionable message; every
             // other init error is a transient deferral the cold-boot bridge
@@ -2940,13 +2946,13 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
-        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+        use crate::sdk_wrapper::MIN_PLATFORM_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         crate::context::test_support::prove_protocol_version(
             &ctx,
-            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+            MIN_PLATFORM_VERSION.protocol_version,
         );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -3676,7 +3682,7 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build, or an insecure data folder) are terminal; every other init
+    /// build, or an unwritable data folder) are terminal; every other init
     /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
@@ -3695,17 +3701,6 @@ mod tests {
             }
         ));
         assert!(is_terminal_storage_open_error(
-            &TaskError::WalletDataFolderInsecure {
-                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                    ancestor: std::path::PathBuf::from("/shared"),
-                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                        mode: 0o777,
-                    },
-                }
-                .into(),
-            }
-        ));
-        assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
                     std::io::ErrorKind::PermissionDenied,
@@ -3713,17 +3708,33 @@ mod tests {
                 .into(),
             }
         ));
-        use crate::wallet_backend::platform_compatibility::UpgradeError;
-        assert!(
-            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::Verification,
-            }),
-            "a deterministic upgrade failure must surface instead of re-running"
-        );
-        // A user-clearable upgrade failure keeps offering a retry.
-        assert!(!is_terminal_storage_open_error(
-            &TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
+        // A data folder the app may not open the wallet lock or the seed
+        // vault in fails the same way on every retry.
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageLockAccessDenied {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::SecretStoreAccessDenied {
+                source: Box::new(platform_wallet_storage::secrets::SecretStoreError::Io(
+                    platform_wallet_storage::secrets::IoError {
+                        path: None,
+                        source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    },
+                )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataNeedsUpgradeRelease {
+                networks: crate::backend_task::error::UpgradeReleaseNetworks(vec![
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                ]),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::AppDataNeedsUpgradeRelease {
+                database: std::path::PathBuf::from("det-app.sqlite"),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

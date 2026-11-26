@@ -337,6 +337,7 @@ As a user updating from any earlier version I still have installed, I want every
 - Identities loaded before the update are still present afterwards, keeping their alias, their keys, their wallet link and their registered DPNS name, without a manual reload or refresh.
 - The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
+- Exception: wallet data from the `v1.0.0-weekly.20260901` and `v1.0.0-weekly.20260908` test builds must first be opened with `v1.0.0-weekly.20261117`, on every network whose data needs it, until each finishes syncing. The app says so at startup, before changing any data, and names that release with its download address and each network to open.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
 
 ### WAL-034: Control how long upgrade backups are kept [Implemented]
@@ -431,7 +432,8 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- On a network confirmed to run a Platform protocol older than 14, shielding is refused before any funds are locked, with a message to wait for the upgrade or choose another network.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-008: Top up identity from Send screen [Implemented]
 **Persona:** Priya, Jordan
@@ -450,7 +452,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 - Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only your default private address counts as your own.
 - System auto-selects the highest-balance Platform address.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-010: Withdraw from shielded pool to Core address [Implemented]
 **Persona:** Jordan
@@ -458,7 +460,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
 - Select Shielded Balance as source and enter a Core address as destination.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
 **Persona:** Priya, Jordan
@@ -503,7 +505,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 - Select Shielded Balance as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-016: Send privately within the shielded pool [Implemented]
 **Persona:** Jordan
@@ -513,7 +515,7 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Select Shielded Balance as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-017: "Max" is verified against what the wallet can actually build [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -872,8 +874,8 @@ As a user, I want to register a username for one of my identities so that others
 
 - Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
 - When the identity cannot register from this device, the disabled button says why and what helps: add a key when the identity has no suitable key; restore keys in place when an earlier version of the app saved the key; use Restore from Previous Version in Settings when the app was updated but nothing is offered in place; otherwise enter the key under the identity's keys. When the key comes from a wallet that is not on this device, the button is disabled and says to import that wallet again; a wallet that is on this device but locked does not disable it.
-- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. From protocol 14 a vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
-- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.2 DASH before protocol 14; from 14, 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. A vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
+- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
 - The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. Where the DPNS contract picks the first request for a name, the balance must also hold the network's small name-admission reserve (0.001 DASH) on top of the fees; a balance without it is turned away before anything is paid. A low balance offers Top up and returns with the name kept. Availability and the community vote fee are re-checked on Pay; a fee that changed since it was approved is refused as changed terms.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
 - The registration fee shown is the balance the network needs for both registration steps, which is above what it then charges. An identity that holds less than the total cannot pay and is refused before anything is sent, so the first step is never paid for a registration the second step would turn down.
@@ -1344,7 +1346,7 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
 
-- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The token creator offers a once-per-identity distribution with the amount each identity can claim.
 - The fee estimate includes the network's extra fee for this distribution.
 - The Claim screen and My Tokens show the distribution.
 - After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
@@ -1355,9 +1357,8 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
+- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
-- A network that does not support it is refused before anything is paid.
 - For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
 
@@ -1484,7 +1485,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
-- When the network runs a newer protocol version than this build knows, the current-epoch report advises updating Dash Evo Tool; some features stay unavailable until then.
+- DET supports Platform protocol 14 or newer on every network. On connection or reconnection, a verified older version shows a persistent warning to wait for the network upgrade or choose another network in Settings. A failed version check is logged without blocking operations; incompatible operations use normal server-error handling.
+- When the network runs a newer version than this build knows, the current-epoch report advises updating the app.
 - The recent withdrawal history, when it lists a failed withdrawal, notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]

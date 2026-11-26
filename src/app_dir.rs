@@ -76,6 +76,12 @@ pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Err
     ensure_data_dir_exists(&app_data_dir)
 }
 
+/// Whether something other than a folder (a file or a link) is at `path`
+/// itself, which keeps a data folder from being created there.
+pub(crate) fn is_occupied_by_non_folder(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir())
+}
+
 /// Creates the given data directory if it does not exist and verifies it is a directory.
 pub fn ensure_data_dir_exists(data_dir: &Path) -> Result<(), std::io::Error> {
     #[cfg(unix)]

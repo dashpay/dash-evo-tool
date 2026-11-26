@@ -253,6 +253,27 @@ pub enum WalletTransactionHistoryError {
     RowsSkipped { skipped_rows: usize },
 }
 
+/// An identity save that landed, but that the wallet store could not confirm
+/// as belonging to no wallet. Reported to whoever asked for the save.
+#[derive(Debug, Clone, Error)]
+pub enum IdentitySaveWarning {
+    /// The record kept the wallet link it already had; the wallet store's
+    /// own error says why.
+    #[error("{source}")]
+    WalletLinkKept {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+    /// The record was already wallet-free and was rewritten as such.
+    #[error(
+        "An identity was saved, but this device's wallet data does not yet confirm that it belongs to no wallet. Restart the application to complete the update."
+    )]
+    WalletFreeUnconfirmed {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+}
+
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
 /// Shared, so one stopped task batch can report it for each of its tasks.
 #[derive(Clone)]
@@ -291,6 +312,25 @@ impl fmt::Display for BackendTaskJoinError {
 
 impl std::error::Error for BackendTaskJoinError {}
 
+/// Networks whose wallet data only v1.0.0-weekly.20261117 can still convert,
+/// displayed as the network chooser names them (e.g. `Testnet, Devnet`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeReleaseNetworks(pub Vec<Network>);
+
+impl fmt::Display for UpgradeReleaseNetworks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, network) in self.0.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(", ")?;
+            }
+            formatter.write_str(crate::ui::network_chooser_screen::chooser_network_label(
+                *network,
+            ))?;
+        }
+        Ok(())
+    }
+}
+
 /// Lets `?` on a joined task keep the panic message out of the error.
 impl From<tokio::task::JoinError> for TaskError {
     fn from(source: tokio::task::JoinError) -> Self {
@@ -316,6 +356,10 @@ pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
+    /// A verified network is older than DET's supported range.
+    #[error("This network is running an older version that this app no longer supports. Wait for the network to upgrade, or choose another network in Settings.")]
+    PlatformNetworkTooOld { verified_version: u32 },
+
     /// The wallet backend has not finished starting up yet. The lazy-init gate
     /// in [`AppContext::wallet_backend`](crate::context::AppContext::wallet_backend)
     /// returns this while the backend is still being built; every wallet and
@@ -807,12 +851,22 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
-    /// A pinned-PR wallet database could not be upgraded without losing data.
-    #[error(transparent)]
-    PlatformDatabaseUpgrade {
-        #[from]
-        source: crate::wallet_backend::platform_compatibility::UpgradeError,
-    },
+    /// Wallet stores of these networks were written by a test build pinned to
+    /// an unreleased storage layout. Only that release line's last build can
+    /// still convert them, one network at a time when it is opened; this build
+    /// never changes any store.
+    #[error(
+        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that version, open each of these networks and wait until each one finishes syncing: {networks}. Then return to this version."
+    )]
+    WalletDataNeedsUpgradeRelease { networks: UpgradeReleaseNetworks },
+
+    /// Only the app database (no network store) was written by a test build
+    /// pinned to an unreleased storage layout; that release line's last build
+    /// converts it on start. This build never changes the file.
+    #[error(
+        "Your app data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, start it once, and then return to this version."
+    )]
+    AppDataNeedsUpgradeRelease { database: std::path::PathBuf },
 
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.
@@ -868,23 +922,6 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
-    /// The wallet database refused to open because a folder on its path can be
-    /// modified by another account on this computer (group/other-writable
-    /// without the sticky bit, or owned by another user). Distinct from
-    /// [`Self::WalletStorage`] because disk space and restarting are irrelevant:
-    /// only tightening the folder's permissions or ownership fixes it.
-    ///
-    /// The offending folder and the exact reason travel in `source` (the
-    /// upstream message names the folder and the command to run) for the
-    /// details panel and logs; the user-facing copy stays jargon-free.
-    #[error(
-        "Your wallet data folder, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your wallet data. Make these folders writable only by your own account, then restart the application."
-    )]
-    WalletDataFolderInsecure {
-        #[source]
-        source: Box<platform_wallet_storage::WalletStorageError>,
-    },
-
     /// A vault passphrase or a Tier-2 object password was longer than the
     /// vault's upstream ceiling.
     ///
@@ -927,18 +964,6 @@ pub enum TaskError {
         "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then open the app again."
     )]
     SecretStore {
-        #[source]
-        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
-    },
-
-    /// The seed vault's folder, or a folder above it, is writable by other
-    /// accounts or owned by one, so the vault is refused. Only fixing those
-    /// folders' permissions or owner helps; the folder and reason travel in
-    /// `source`.
-    #[error(
-        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make sure these folders belong to your account and that only your account can change them, then restart the application."
-    )]
-    SecretStoreFolderInsecure {
         #[source]
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
@@ -1835,6 +1860,22 @@ pub enum TaskError {
     DatabaseAccessDenied {
         #[source]
         source: rusqlite::Error,
+    },
+
+    /// The seed vault in the data folder may not be opened or written: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    SecretStoreAccessDenied {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// The wallet storage lock in the data folder may not be opened: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    WalletStorageLockAccessDenied {
+        #[source]
+        source: std::io::Error,
     },
 
     /// A local filesystem operation failed (e.g. creating a data directory).
@@ -3168,13 +3209,6 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
-    /// A token with a once-per-identity distribution was requested on a
-    /// network that does not accept one yet.
-    #[error(
-        "The connected network does not accept once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
-    )]
-    TokenOncePerIdentityNotSupported,
-
     /// A once-per-identity token claim succeeded, but this device could not
     /// record that it was made. Without the record, the claim may be offered
     /// again, and Platform refuses (and charges for) a second claim.
@@ -3199,13 +3233,6 @@ pub enum TaskError {
         #[source]
         source_error: Box<SdkError>,
     },
-
-    /// The token creator asked for a token that cannot be transferred, on a
-    /// network that does not accept one yet.
-    #[error(
-        "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
-    )]
-    NonTransferableTokenNotSupported,
 
     /// A token operation failed for a reason the SDK error classification has
     /// no specific variant for. Built by [`TaskError::from_token_operation`],
@@ -3578,13 +3605,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A fund-moving shielded operation was requested on a network that does
-    /// not support shielded state transitions.
-    #[error(
-        "Shielded operations are not available on this network yet. Use a regular payment instead, or try again after a future network update."
-    )]
-    ShieldedOperationsNetworkUnavailable,
-
     /// A fund-moving shielded operation was requested from an interface mode
     /// that does not unlock experimental features.
     #[error(
@@ -4132,11 +4152,13 @@ impl TaskError {
         }
         match &source {
             Step::Locate { .. } => Self::DataFolderNotFound { source },
+            // Windows reports a file above the folder as `AlreadyExists` too,
+            // so the folder's own path is checked before it is named.
             Step::CreateDataFolder { path, source: io }
                 if matches!(
                     io.kind(),
-                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
-                ) =>
+                    ErrorKind::InvalidInput | ErrorKind::AlreadyExists
+                ) && crate::app_dir::is_occupied_by_non_folder(path) =>
             {
                 Self::DataFolderNotADirectory {
                     path: path.clone(),
@@ -4296,16 +4318,13 @@ impl TaskError {
     /// - A migration refused by file permissions or a read-only disk is
     ///   surfaced as [`Self::WalletStorageAccessDenied`] so the user fixes
     ///   the folder instead of setting the databases aside.
-    /// - A folder on the database path that other accounts can modify is
-    ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
-    ///   user to tighten folder permissions.
     /// - A migration that failed on a recoverable resource (disk full, OS I/O
     ///   failure, out of memory) and every other storage failure keep the
     ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`)
+    /// `WalletStorageError::Migration`)
     /// and the typed migration source chain, never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
@@ -4344,11 +4363,6 @@ impl TaskError {
                     source: other.into(),
                 }
             }
-            other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
-                Self::WalletDataFolderInsecure {
-                    source: other.into(),
-                }
-            }
             other => Self::WalletStorage {
                 source: other.into(),
             },
@@ -4372,9 +4386,7 @@ impl TaskError {
     }
 
     /// File permissions or a read-only disk blocked the migration. Uses the
-    /// shared [`StorageFailure`] policy, so it matches the staged-upgrade
-    /// `UpgradeError::AccessDenied` classification for SQLite codes and OS
-    /// error kinds alike.
+    /// shared [`StorageFailure`] policy for SQLite codes and OS error kinds alike.
     fn wallet_storage_error_is_access_denied(
         source: &platform_wallet_storage::WalletStorageError,
     ) -> bool {
@@ -4410,8 +4422,8 @@ impl TaskError {
 
 /// Wrap a vault failure in its caller's class variant, except the
 /// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
-/// and an insecure vault folder, which becomes
-/// [`TaskError::SecretStoreFolderInsecure`], whichever class hit it.
+/// and denied or read-only vault I/O, which becomes
+/// [`TaskError::SecretStoreAccessDenied`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4429,9 +4441,13 @@ pub(crate) fn vault_error(
             max,
             source: Box::new(source),
         },
-        SecretStoreError::InsecureParentDir { .. } => TaskError::SecretStoreFolderInsecure {
-            source: Box::new(source),
-        },
+        SecretStoreError::Io(ref io)
+            if StorageFailure::of_io(&io.source) == Some(StorageFailure::AccessDenied) =>
+        {
+            TaskError::SecretStoreAccessDenied {
+                source: Box::new(source),
+            }
+        }
         source => class(Box::new(source)),
     }
 }
@@ -5605,6 +5621,85 @@ mod tests {
         );
     }
 
+    /// A file above the data folder is not reported as a file at the
+    /// folder's own path, which does not exist.
+    #[test]
+    fn data_folder_under_a_file_is_not_called_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file"), "").expect("write file");
+        let path = dir.path().join("file").join("data");
+        let source = crate::app_dir::ensure_data_dir_exists(&path)
+            .expect_err("a file blocks the data folder's path");
+        let error = TaskError::from_prepare_environment_error(
+            crate::boot::PrepareEnvironmentError::CreateDataFolder { path, source },
+        );
+        assert!(
+            matches!(error, TaskError::DataFolderSetupFailed { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// Windows reports a file above the data folder as `AlreadyExists` from
+    /// that ancestor. The data folder's own path is free, so it is not named
+    /// as the file to move: the general setup advice keeps the cause. A file
+    /// at the path itself is still named, whichever of the two kinds hit it.
+    #[test]
+    fn already_exists_names_the_data_folder_only_when_it_is_occupied() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").expect("write file");
+        for kind in [ErrorKind::AlreadyExists, ErrorKind::InvalidInput] {
+            let below_a_file = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+                path: file.join("data"),
+                source: Error::from(kind),
+            });
+            assert!(
+                matches!(below_a_file, TaskError::DataFolderSetupFailed { .. }),
+                "{kind:?}: {below_a_file:?}"
+            );
+            let at_a_file = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+                path: file.clone(),
+                source: Error::from(kind),
+            });
+            assert!(
+                matches!(at_a_file, TaskError::DataFolderNotADirectory { .. }),
+                "{kind:?}: {at_a_file:?}"
+            );
+        }
+    }
+
+    /// A vault the app may not open or write gets the data-folder permission
+    /// advice; a held lock and a wrong passphrase keep their own handling.
+    #[test]
+    fn vault_access_failures_get_the_data_folder_advice() {
+        use platform_wallet_storage::secrets::{IoError, SecretStoreError};
+        use std::io::ErrorKind;
+        let io = |kind| {
+            SecretStoreError::Io(IoError {
+                path: None,
+                source: std::io::Error::from(kind),
+            })
+        };
+        let class = |source| TaskError::SecretStore { source };
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            let error = vault_error(io(kind), class);
+            assert!(
+                matches!(error, TaskError::SecretStoreAccessDenied { .. }),
+                "{error:?}"
+            );
+        }
+        for source in [
+            SecretStoreError::AlreadyLocked,
+            SecretStoreError::WrongPassphrase,
+            io(ErrorKind::WouldBlock),
+        ] {
+            let error = vault_error(source, class);
+            assert!(matches!(error, TaskError::SecretStore { .. }), "{error:?}");
+        }
+    }
+
     /// Each data folder step and failure kind gets advice that can fix it:
     /// no home folder, a file in the folder's place, a full disk.
     #[test]
@@ -5622,15 +5717,21 @@ mod tests {
         );
         assert!(locate.to_string().contains("home folder"), "{locate}");
 
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("det");
+        std::fs::write(&file, "").expect("write file");
         let occupied = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
-            path: PathBuf::from("/data/det"),
+            path: file.clone(),
             source: Error::from(ErrorKind::InvalidInput),
         });
         assert!(
             matches!(occupied, TaskError::DataFolderNotADirectory { .. }),
             "{occupied:?}"
         );
-        assert!(occupied.to_string().contains("/data/det"), "{occupied}");
+        assert!(
+            occupied.to_string().contains(&file.display().to_string()),
+            "{occupied}"
+        );
         assert!(
             occupied.to_string().contains("Move or rename"),
             "{occupied}"
@@ -9139,54 +9240,6 @@ mod tests {
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"
         );
-    }
-
-    /// A group-writable (or foreign-owned) ancestor of the wallet database maps
-    /// to `WalletDataFolderInsecure`, whose copy names the folder-permission
-    /// problem instead of the misleading disk-space advice. The path and mode
-    /// stay in the source chain, out of the user-facing message.
-    #[test]
-    fn insecure_parent_dir_maps_to_wallet_data_folder_insecure() {
-        let ancestor = std::path::PathBuf::from("/data/tmp/shared-scratch");
-        for reason in [
-            platform_wallet_storage::InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
-            platform_wallet_storage::InsecureAncestor::UntrustedOwner {
-                uid: 4242,
-                current_uid: 1000,
-            },
-        ] {
-            let upstream = platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                ancestor: ancestor.clone(),
-                reason,
-            };
-            let err = TaskError::from_wallet_storage_open_error(upstream);
-            assert!(
-                matches!(
-                    &err,
-                    TaskError::WalletDataFolderInsecure { source }
-                        if matches!(source.as_ref(), platform_wallet_storage::WalletStorageError::InsecureParentDir { ancestor: a, .. } if *a == ancestor)
-                ),
-                "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
-            );
-
-            let msg = err.to_string();
-            assert!(
-                msg.contains("folder") && msg.contains("other accounts"),
-                "Expected folder-permission guidance, got: {msg}"
-            );
-            assert!(
-                !msg.contains("disk space"),
-                "Folder-permission message must not mention disk space, got: {msg}"
-            );
-            assert!(
-                !msg.contains("shared-scratch") && !msg.contains("775") && !msg.contains("chmod"),
-                "Path, mode and commands must stay out of the user message, got: {msg}"
-            );
-            assert!(
-                std::error::Error::source(&err).is_some(),
-                "Expected source chain to be preserved"
-            );
-        }
     }
 
     /// Builds a genuine divergent-version [`refinery::Error`] by applying a

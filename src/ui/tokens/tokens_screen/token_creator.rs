@@ -16,10 +16,8 @@ use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::backend_task::tokens::TokenTask;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::identity_key_usability::KeyRequirements;
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
@@ -35,22 +33,25 @@ use crate::ui::components::MessageBanner;
 use crate::ui::MessageType;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use crate::ui::tokens::tokens_screen::{
     TokenPresetSelection, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
-    TokenNameLanguage, TokensScreen,
+    TokenNameLanguage, TokensScreen, offered_by_token_creator,
 };
 
 impl TokensScreen {
-    /// The creator waits for its registration, under a progress banner.
-    pub(super) fn mark_token_registration_started(&mut self) {
+    /// The creator waits for the registration sent under `context`, under a
+    /// progress banner.
+    pub(super) fn mark_token_registration_started(&mut self, context: BackendTaskContext) {
         self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        self.token_registration_context = Some(context);
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             "Creating token...",
             MessageType::Info,
         );
         handle.with_elapsed();
-        self.operation_banner = Some(handle);
+        self.registration_banner = Some(handle);
     }
 
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
@@ -103,7 +104,7 @@ impl TokensScreen {
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
-                            Ok(identities) => identities,
+                            Ok(identities) => identities.into_iter().filter(offered_by_token_creator).collect::<Vec<_>>(),
                             Err(error) => {
                                 tracing::error!(?error, "Token-creator identity loading failed");
                                 ui.colored_label(
@@ -192,12 +193,15 @@ impl TokensScreen {
                             // Auto-select the first eligible key when:
                             // 1. Identity changed, OR
                             // 2. Identity is selected but no key is selected yet (first load)
+                            // 3. The selected key belongs to another identity
+                            let key_of_another_identity = !self.selected_key_held_by_selected_identity();
                             let should_auto_select_key = response.changed()
+                                || key_of_another_identity
                                 || (self.selected_identity.is_some() && self.selected_key.is_none());
 
                             if should_auto_select_key {
-                                if response.changed() {
-                                    self.selected_key = None; // Clear previous key only on identity change
+                                if response.changed() || key_of_another_identity {
+                                    self.selected_key = None; // The key belongs to another identity
                                 }
                                 if let Some(ref identity) = self.selected_identity {
                                     let first_eligible_key = identity
@@ -262,6 +266,10 @@ impl TokensScreen {
                                 .as_ref()
                                 .map(|qi| qi.identity.id());
                             if before_id != after_id {
+                                // Simple mode's selector shows this string; keep it on the same identity.
+                                self.identity_id_string = after_id
+                                    .map(|id| id.to_string(Encoding::Base58))
+                                    .unwrap_or_default();
                                 self.app_context
                                     .set_selected_identity(after_id);
                             }
@@ -931,6 +939,19 @@ impl TokensScreen {
         );
     }
 
+    /// Whether the selected identity holds the selected key; no key counts as held.
+    fn selected_key_held_by_selected_identity(&self) -> bool {
+        let (Some(identity), Some(selected)) = (&self.selected_identity, &self.selected_key) else {
+            return true;
+        };
+        identity
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .map(|key_ref| &key_ref.1.identity_public_key)
+            .any(|key| key.id() == selected.id() && key.data() == selected.data())
+    }
+
     fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {
         if let Some(wallet) = &self.selected_wallet {
             use crate::ui::components::wallet_unlock_popup::{
@@ -1141,69 +1162,29 @@ impl TokensScreen {
             document_schemas: self.parsed_document_schemas.clone(),
             marketplace_rules,
             change_direct_purchase_pricing_rules,
-            transferable: self.parse_transferable()?,
+            transferable: self.transferable_input,
         })
     }
 
-    /// The once-per-identity amount, when that distribution is enabled. It
-    /// needs protocol version 14, so a network that does not accept it yet is
-    /// refused here rather than by Platform after the fee is paid.
+    /// Validate the once-per-identity amount when that distribution is enabled.
     fn parse_once_per_identity_amount(&self) -> Result<Option<TokenAmount>, String> {
         if !self.enable_once_per_identity_distribution {
             return Ok(None);
-        }
-        if !FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context) {
-            return Err(TaskError::TokenOncePerIdentityNotSupported.to_string());
         }
         parse_once_per_identity_amount(&self.once_per_identity_amount_input)
             .map(Some)
             .map_err(|error| error.to_string())
     }
 
-    /// Whether holders may transfer the token. A token that cannot be
-    /// transferred needs protocol version 14, so a network that does not
-    /// accept it yet is refused here rather than by Platform after the fee is
-    /// paid.
-    fn parse_transferable(&self) -> Result<bool, String> {
-        if !self.transferable_input
-            && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
-        {
-            return Err(TRANSFERS_OFF_HINT.to_owned());
-        }
-        Ok(self.transferable_input)
-    }
-
-    /// The "holders can send this token" option, offered only in Advanced
-    /// mode's Advanced section. Turning transfers off needs a network that
-    /// accepts such tokens; a choice already made is kept (never silently
-    /// flipped back), but creating is blocked until the network supports it or
-    /// transfers are allowed again. Both create buttons show that reason, so it
-    /// stays visible while this row is hidden.
+    /// Configure transferability in the Advanced section on every supported network.
     pub(super) fn transferable_row(&mut self, ui: &mut egui::Ui) {
-        let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
-        // Allowing transfers again always works; only turning them off needs support.
-        let editable = available || !self.transferable_input;
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(editable, |ui| {
-                StyledCheckbox::new(
-                    &mut self.transferable_input,
-                    "Holders can send this token to other identities",
-                )
-                .show(ui)
-                .disabled_tooltip(TaskError::NonTransferableTokenNotSupported.to_string());
-            });
+            StyledCheckbox::new(
+                &mut self.transferable_input,
+                "Holders can send this token to other identities",
+            ).show(ui);
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });
-        if let Some(reason) = self.creation_blocked_reason() {
-            Self::render_blocked_hint(ui, &reason);
-        }
-    }
-
-    /// Why the token cannot be created as configured, if a setting the
-    /// connected network does not accept was chosen. The backend refuses it too
-    /// (`TaskError::NonTransferableTokenNotSupported`).
-    pub(super) fn creation_blocked_reason(&self) -> Option<String> {
-        self.parse_transferable().err()
     }
 
     /// The confirmation's sentence about whether holders can send the token.
@@ -1487,27 +1468,30 @@ impl TokensScreen {
     }
 
     /// Why Simple mode's "Create Token" is blocked, shown next to the button:
-    /// missing inputs first, then the preset, then a setting the network does
-    /// not accept.
+    /// a registration in flight first, then missing inputs, then the preset.
     pub(super) fn simple_mode_blocked_reason(&self) -> Option<String> {
-        if self.token_names_input[0].0.trim().is_empty() {
+        if self.awaits_token_registration() {
+            Some(REGISTRATION_IN_FLIGHT_HINT.to_owned())
+        } else if self.token_names_input[0].0.trim().is_empty() {
             Some("Enter a token name to continue.".to_owned())
         } else if self.base_supply_amount.is_none() {
             Some("Enter an initial supply to continue.".to_owned())
         } else if !self.preset_chosen() {
             Some(SIMPLE_PRESET_HINT.to_owned())
         } else {
-            self.creation_blocked_reason()
+            None
         }
     }
 
     /// Why Advanced mode's "Register Token Contract" is blocked, shown next to
-    /// the button: the preset first, then a setting the network does not accept.
+    /// the button: a registration in flight first, then the preset.
     pub(super) fn advanced_mode_blocked_reason(&self) -> Option<String> {
-        if !self.preset_chosen() {
+        if self.awaits_token_registration() {
+            Some(REGISTRATION_IN_FLIGHT_HINT.to_owned())
+        } else if !self.preset_chosen() {
             Some(ADVANCED_PRESET_HINT.to_owned())
         } else {
-            self.creation_blocked_reason()
+            None
         }
     }
 
@@ -1560,7 +1544,7 @@ impl TokensScreen {
     }
 
     /// Shows a popup "Are you sure?" for creating the token contract
-    fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+    pub(super) fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         let base_supply_display = self
@@ -1616,6 +1600,7 @@ impl TokensScreen {
                     .confirm_text(Some("Confirm"))
                     .cancel_text(Some("Cancel"))
                     .danger_mode(is_danger_mode)
+                    .blocks_input(true)
             });
 
         // Show the dialog and handle the response
@@ -1654,18 +1639,26 @@ impl TokensScreen {
                             }
                         };
 
-                    // Now create your tasks
-                    let tasks = vec![
+                    let network = self.app_context.network;
+                    let register =
                         BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
                             identity,
                             signing_key: Box::new(signing_key),
                             params: Box::new(args.into_contract_params()),
-                        })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                        }));
+                    let register_context = BackendTaskContext::for_dispatch_on(&register, network);
+                    let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+                    let refresh_context = BackendTaskContext::for_dispatch_on(&refresh, network);
+                    let tasks = vec![
+                        (register, register_context.clone()),
+                        (refresh, refresh_context),
                     ];
 
-                    action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    self.mark_token_registration_started();
+                    action = AppAction::BackendTasksWithContexts(
+                        tasks,
+                        BackendTasksExecutionMode::Sequential,
+                    );
+                    self.mark_token_registration_started(register_context);
                     self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {
@@ -1813,10 +1806,10 @@ impl TokensScreen {
     }
 }
 
-/// Why creating is blocked while transfers are off on a network that does not
-/// accept such tokens. Names where the option is, since it is offered only under
-/// Advanced and may be hidden.
-const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
+/// Why creating is blocked while a registration is in flight: a second one
+/// would pay a second fee.
+const REGISTRATION_IN_FLIGHT_HINT: &str =
+    "Your token is being created. Wait for the result before creating another token.";
 
 /// Why Simple mode's "Create Token" is blocked until a preset is chosen.
 const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";

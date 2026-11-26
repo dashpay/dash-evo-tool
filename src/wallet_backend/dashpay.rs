@@ -969,20 +969,12 @@ impl WalletBackend {
                 .ok_or(DashPayError::ProfileWalletRequired)?;
             ensure_profile_signing_key(&managed.identity, identity)?;
         }
-        let identity_wallet = wallet.identity();
-        let dashpay = identity_wallet.dashpay();
-        let result = if create {
-            dashpay
-                .create_profile_with_external_signer(&owner, input, identity)
-                .await
-        } else {
-            dashpay
-                .update_profile_with_external_signer(&owner, input, identity)
-                .await
-        };
-        result.map_err(|source| DashPayError::ProfileWriteFailed {
-            source: Arc::new(source),
-        })?;
+        wallet
+            .write_dashpay_profile(&owner, input, identity, create)
+            .await
+            .map_err(|source| DashPayError::ProfileWriteFailed {
+                source: Arc::new(source),
+            })?;
 
         let now = chrono::Utc::now().timestamp_millis().max(0);
         let created_at = self
@@ -1784,6 +1776,7 @@ mod tests {
             avatar_hash: Some([7u8; 32]),
             avatar_fingerprint: Some([3u8; 8]),
             public_message: Some("Public!".into()),
+            ..Default::default()
         };
 
         let det = profile_to_det(&owner, &profile, 11, 22);

@@ -31,6 +31,7 @@ mod migration_gate;
 mod network_chooser;
 mod platform_info_screen;
 mod progress_overlay;
+mod protocol_compatibility;
 mod register_dpns_name_screen;
 mod request_routing;
 mod restore_single_key;

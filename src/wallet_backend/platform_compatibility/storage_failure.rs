@@ -1,5 +1,5 @@
 //! The one policy for which storage failures are environmental (and which of
-//! those retrying can fix), shared by the upgrade engine and `TaskError`.
+//! those retrying can fix), used by `TaskError`.
 
 use std::error::Error;
 

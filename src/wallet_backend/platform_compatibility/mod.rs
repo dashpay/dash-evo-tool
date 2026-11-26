@@ -153,8 +153,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn storage_open_reports_denied_lock_and_real_contention() {
+    fn storage_open_reports_a_denied_lock() {
         use std::os::unix::fs::PermissionsExt;
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let database = dir.path().join("wallet.sqlite");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
@@ -172,6 +176,14 @@ mod tests {
             denied.to_string().contains("permission to change"),
             "{denied}"
         );
+    }
+
+    /// A lock another open holds is contention, not a permission problem.
+    #[cfg(unix)]
+    #[test]
+    fn storage_open_reports_real_contention_as_not_ready() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let database = dir.path().join("wallet.sqlite");
         let _guard = engine::backup_lock(&database).expect("hold lock");
         let held = open(SqlitePersisterConfig::new(&database))
             .err()

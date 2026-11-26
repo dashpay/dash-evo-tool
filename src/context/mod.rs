@@ -2012,6 +2012,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vault_access_denied_keeps_permission_advice_for_both_open_modes() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
         use platform_wallet_storage::secrets::{SecretStoreError, SecretString};
         use std::os::unix::fs::PermissionsExt;
 
@@ -2045,6 +2049,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vault_open_reports_denied_data_folder_before_vault_preparation() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
         use platform_wallet_storage::secrets::SecretString;
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");

@@ -28,6 +28,20 @@ pub(crate) fn harness_builder_with_app_fonts<State>() -> egui_kittest::HarnessBu
 #[cfg(test)]
 const CHILD_MARKER: &str = "DET_ISOLATED_TEST_CHILD";
 
+/// Whether file modes keep this process out. Not for one that bypasses them
+/// (root, or `CAP_DAC_OVERRIDE` in a container): a test that denies access
+/// through a mode cannot fail the way it means to there, so it returns early.
+#[cfg(all(test, unix))]
+pub(crate) fn file_modes_deny_access() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+        .expect("deny writes");
+    let denied = std::fs::write(dir.path().join("probe"), b"").is_err();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("restore");
+    denied
+}
+
 /// Whether this process is a child started by [`run_test_in_child`].
 #[cfg(test)]
 pub(crate) fn is_test_child() -> bool {

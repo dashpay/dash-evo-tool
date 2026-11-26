@@ -281,6 +281,10 @@ async fn standalone_protected_vault_keeps_desktop_unlock_advice() {
 #[cfg(all(feature = "cli", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_denied_vault_gets_permission_advice() {
+    if !crate::test_support::file_modes_deny_access() {
+        eprintln!("skipped: file modes do not deny this process access");
+        return;
+    }
     let Some(error) = lazy_startup_error(
         "mcp::tests::standalone_denied_vault_gets_permission_advice",
         |dir| {

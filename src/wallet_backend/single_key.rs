@@ -1050,6 +1050,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn open_secret_store_keeps_denied_parent_io_error() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = dir.path().join("parent");

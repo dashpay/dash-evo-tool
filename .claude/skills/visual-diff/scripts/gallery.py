@@ -18,9 +18,11 @@ note saying why. Text is HTML-escaped.
 """
 
 import argparse
+import base64
 import html
 import json
 import os
+from pathlib import Path
 
 e = html.escape
 CSS = """:root{--bg:#fff;--fg:#1c1e21;--mut:#666;--line:#d0d4da}
@@ -37,11 +39,29 @@ def label(n, i):
     return f"{e(n[:3].rstrip('-'))} &middot; {e(i['title'])}"
 
 
+def embed_images(page, root):
+    """Embed controller-generated gallery PNG links for an offline presentation."""
+    root = Path(root)
+    for path in (root / "annotated").rglob("*.png"):
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError("Unsafe gallery image")
+        page = page.replace(
+            f'"{e(str(path.relative_to(root)))}"',
+            '"data:image/png;base64,'
+            + base64.b64encode(path.read_bytes()).decode()
+            + '"',
+        )
+    return page
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--root", required=True)
     p.add_argument("--meta", required=True)
     p.add_argument("--title", default="Visual diff")
+    p.add_argument(
+        "--embed", action="store_true", help="Embed PNGs for offline viewing"
+    )
     a = p.parse_args()
     m = json.load(open(a.meta))
     known = {i["name"] for i in m.get("images", [])}
@@ -71,7 +91,8 @@ def main():
         o.append(f'<h2 id="{e(n)}">{label(n, i)}{badge}</h2>')
         o.append(f'<img src="annotated/{e(n)}.png" alt="{e(i["title"])}">')
         o.append(
-            f'<p><a href="annotated/clean/{e(n)}.png">Version without labels</a></p>'
+            "<details><summary>Version without labels</summary>"
+            f'<img src="annotated/clean/{e(n)}.png" alt="{e(i["title"])}"></details>'
         )
     issues = [
         f'<li><a href="#{e(i["name"])}">{label(i["name"], i)}</a>: '
@@ -103,7 +124,10 @@ def main():
                 + "</ul>"
             )
     o.append("</body></html>")
-    open(os.path.join(a.root, "index.html"), "w").write("\n".join(o))
+    page = "\n".join(o)
+    if a.embed:
+        page = embed_images(page, a.root)
+    open(os.path.join(a.root, "index.html"), "w").write(page)
     print("wrote", os.path.join(a.root, "index.html"))
 
 

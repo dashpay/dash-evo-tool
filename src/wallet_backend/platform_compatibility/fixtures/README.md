@@ -46,13 +46,13 @@ Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
 `6323a430c731a14bbec1d7a18466ca28bb083316` leave the migrations untouched.
 
 
-The current Platform pin is `2651f7e2e11b491b4b2818aeb93d07f846856d78`
-on `v5.2-dev`. Since Platform #5948 that line carries V021
-`core_transaction_accounting`, including a Rust backfill that indexes historical
-inputs and repairs wallet-level transaction amounts while preserving original
-records. V001–V020 are unchanged. Keep the intermediate guard at V020 so V021
-runs **after** copying the historical rows; an empty V021 schema would skip the
-backfill. The bridge publishes the resulting tables, indexes, history and data
+The current Platform pin is `d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3`
+on `v5.2-dev`. That line carries V021 `profile_address_encoding`, V022
+`core_transaction_accounting` (Platform #5948), including a Rust backfill that
+indexes historical inputs and repairs wallet-level transaction amounts while
+preserving original records, and V023 `core_locked_outpoints`. V001–V020 are
+unchanged. Keep the intermediate guard at V020 so V021–V023 run **after**
+copying the historical rows; an empty V022 schema would skip the backfill. The bridge publishes the resulting tables, indexes, history and data
 atomically. Unlike the earlier accounting branch, this migration does not reset
 Core synchronization or discard spend state.
 
@@ -68,7 +68,7 @@ the source fixture's separate empty B2 wallet has no account registration.
 The rows include a public account key, an identity, contact, transaction,
 UTXO and sync state. No seeds, private keys or real profiles are included.
 
-The public fixture's transaction uses a placeholder TXID that V021 now rejects.
+The public fixture's transaction uses a placeholder TXID that V022 now rejects.
 Tests of successful public-runner upgrades materialize a matching transaction
 body, TXID and UTXO outpoint at runtime. A separate refusal test keeps the
 original bytes and verifies that a failed backfill leaves the source unchanged.

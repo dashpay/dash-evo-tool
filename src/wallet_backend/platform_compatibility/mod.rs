@@ -368,6 +368,91 @@ mod tests {
         );
     }
 
+    /// A database written by a development build whose history records
+    /// version 21 as `core_transaction_accounting` (now V022, with V021
+    /// `profile_address_encoding` in its place) is refused as incompatible
+    /// wallet data, and its history, wallet rows and file bytes are untouched.
+    #[test]
+    fn platform_compatibility_refuses_development_v021_accounting_history_unchanged() {
+        type History = Vec<(i64, String, String, String)>;
+        fn history(conn: &rusqlite::Connection) -> History {
+            conn.prepare(
+                "SELECT version, name, applied_on, checksum FROM refinery_schema_history ORDER BY version",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        }
+        fn wallets(conn: &rusqlite::Connection) -> Vec<(Vec<u8>, String, i64)> {
+            conn.prepare("SELECT wallet_id, network, birth_height FROM wallets ORDER BY wallet_id")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let accounting_checksum: String = conn
+                .query_row(
+                    "SELECT checksum FROM refinery_schema_history WHERE version = 22 AND name = 'core_transaction_accounting'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO wallets (wallet_id, network, birth_height) VALUES (?1, 'testnet', 1000)",
+                [crate::test_support::keys::secret_bytes().to_vec()],
+            )
+            .unwrap();
+            conn.execute_batch("DELETE FROM refinery_schema_history WHERE version > 21")
+                .unwrap();
+            conn.execute(
+                "UPDATE refinery_schema_history SET name = 'core_transaction_accounting', checksum = ?1 WHERE version = 21",
+                [accounting_checksum],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
+        }
+        let (history_before, wallets_before) = {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            (history(&conn), wallets(&conn))
+        };
+        assert_eq!(history_before.len(), 21);
+        assert_eq!(wallets_before.len(), 1);
+        let bytes_before = std::fs::read(&path).unwrap();
+
+        let error = match open(SqlitePersisterConfig::new(&path)) {
+            Ok(_) => panic!("a divergent version 21 must not open"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                &error,
+                TaskError::WalletDataIncompatible { source }
+                    if matches!(
+                        source.as_ref(),
+                        WalletStorageError::Migration(migration)
+                            if matches!(migration.kind(), refinery::error::Kind::DivergentVersion(..))
+                    )
+            ),
+            "{error:?}"
+        );
+
+        assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(history(&conn), history_before);
+        assert_eq!(wallets(&conn), wallets_before);
+    }
+
     #[test]
     fn platform_compatibility_runs_accounting_migration_on_copied_history() {
         use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf, Transaction, TxIn, TxOut};

@@ -41,7 +41,9 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 | Variable | Required | Description |
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
-| `E2E_NETWORK` | No | `testnet` (default) or `devnet`. Devnet needs `E2E_ENV_FILE` with `DEVNET_dapi_addresses`, `DEVNET_core_host` (SPV peer, Core P2P port 20001) and `DEVNET_devnet_name`; run `devnet_setup::fund_framework_platform_address` once to fund the framework wallet's platform address. |
+| `E2E_NETWORK` | No | `testnet` (default) or `devnet`. Devnet needs `E2E_ENV_FILE` with `DEVNET_dapi_addresses`, `DEVNET_core_host` (SPV peer, Core P2P port 20001) and `DEVNET_devnet_name`; see [Running against a devnet](#running-against-a-devnet). |
+| `E2E_DEVNET_BOOTSTRAP` | No | `1` lets `devnet_setup::fund_framework_platform_address` move funds; it does nothing unless this is set and `E2E_NETWORK=devnet`. |
+| `E2E_PLATFORM_FUND_DUFFS` | No | Amount that bootstrap moves from Core to the platform address, in duffs (default 2500000000 = 25 DASH). A value that is not a whole number fails the bootstrap before anything is sent. |
 | `E2E_ENV_FILE` | No | `.env` copied into each fresh workdir instead of the bundled `.env.example`. |
 
 ### Running against a devnet
@@ -53,8 +55,12 @@ Testnet is the default. To run against a devnet:
    `DEVNET_devnet_name`, and point `E2E_ENV_FILE` at it.
 2. Set `E2E_NETWORK=devnet` and fund the framework wallet from the devnet
    (the init failure prints its address).
-3. Run `devnet_setup::fund_framework_platform_address` once, so the DPNS tests
-   that fund identities from platform addresses find credits.
+3. Run `devnet_setup::fund_framework_platform_address` once with
+   `E2E_DEVNET_BOOTSTRAP=1`, so the DPNS tests that fund identities from
+   platform addresses find credits. It moves `E2E_PLATFORM_FUND_DUFFS`
+   (25 DASH by default) out of the framework wallet's Core balance, so fund
+   that wallet with this amount plus the usual 10 DASH. Leave the variable
+   unset afterwards: later runs, and every testnet run, skip the transfer.
 
 The workdir is `<tmp>/dash-evo-e2e-devnet`, separate from the testnet one.
 Devnet SPV sync also needs the app to send the devnet name and user agent to

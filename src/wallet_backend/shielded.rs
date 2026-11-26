@@ -64,7 +64,20 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         seed: &[u8],
     ) -> Result<(), TaskError> {
+        let _shielded_lifecycle = self.shielded_operation_admission().await;
         let wallet = self.resolve_wallet(seed_hash).await?;
+        #[cfg(test)]
+        let barrier = self
+            .inner
+            .shielded_bind_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        #[cfg(test)]
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         if wallet.is_shielded_bound().await {
             return Ok(());
         }
@@ -157,6 +170,7 @@ impl WalletBackend {
         dummy_outputs: usize,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
+        let _shielded_lifecycle = self.shielded_operation_admission().await;
         let coordinator = self.shielded_coordinator_arc().await?;
         let _spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
@@ -211,6 +225,7 @@ impl WalletBackend {
         payment_account: u32,
         amount: u64,
     ) -> Result<(), TaskError> {
+        let _shielded_lifecycle = self.shielded_operation_admission().await;
         // No shield Max is quoted while this runs. `ShieldFromBalance` holds
         // its own guard on through the sync pass that reads the spend back.
         let _shielding = self.begin_platform_shield(seed_hash);
@@ -301,6 +316,7 @@ impl WalletBackend {
         amount: u64,
         memo: [u8; 36],
     ) -> Result<(), TaskError> {
+        let _shielded_lifecycle = self.shielded_operation_admission().await;
         // coordinator / wallet / prover need no seed, so resolve them before the
         // secret session to trim its front edge and fail fast (ShieldedNotConfigured
         // / WalletNotLoaded) without prompting for a passphrase.
@@ -346,6 +362,7 @@ impl WalletBackend {
         to_platform_addr_bech32m: &str,
         amount: u64,
     ) -> Result<(), TaskError> {
+        let _shielded_lifecycle = self.shielded_operation_admission().await;
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
@@ -387,6 +404,7 @@ impl WalletBackend {
         amount: u64,
         core_fee_per_byte: u32,
     ) -> Result<(), TaskError> {
+        let _shielded_lifecycle = self.shielded_operation_admission().await;
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();

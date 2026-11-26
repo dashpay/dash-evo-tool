@@ -2638,6 +2638,92 @@ async fn clear_network_database_deletes_nothing_while_a_shielded_operation_runs(
     );
 }
 
+/// A shielded bind that already holds its wallet handle and seed when Clear
+/// Database starts must make the clear refuse, deleting nothing: otherwise the
+/// bind resumes after the shielded reset and writes the wallet's shielded
+/// state back while its seed is being deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_refuses_while_a_shielded_bind_runs() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+    let barrier = backend.set_shielded_bind_test_barrier();
+    let bind = tokio::spawn({
+        let backend = backend.clone();
+        async move { backend.ensure_shielded_bound(&seed_hash, &seed).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), barrier.wait())
+        .await
+        .expect("the bind reaches its pause");
+
+    let result = ctx.clear_network_database().await;
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let meta_kept = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .is_some();
+    barrier.wait().await;
+    let bind = bind.await.expect("bind task");
+    backend.shutdown().await;
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearShieldedBusy { .. })),
+        "a running shielded bind must stop the clear: {result:?}"
+    );
+    assert!(
+        seed_kept,
+        "the seed must not be deleted while the bind runs"
+    );
+    assert!(
+        meta_kept,
+        "the wallet record must not be deleted while the bind runs"
+    );
+    assert!(bind.is_ok(), "the bind finishes once released: {bind:?}");
+}
+
+/// Clear Database reports success only once the upstream wallet is removed,
+/// while its shielded exclusion still holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_removes_the_upstream_wallet_before_returning() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+    assert!(!backend.upstream_wallet_ids().await.is_empty());
+
+    let result = ctx.clear_network_database().await;
+    let remaining = backend.upstream_wallet_ids().await;
+    backend.shutdown().await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(remaining.is_empty(), "upstream wallets left: {remaining:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
     let (ctx, sender, _tmp) = offline_testnet_context();

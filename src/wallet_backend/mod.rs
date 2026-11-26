@@ -395,6 +395,13 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
+    /// Held shared by every DET shielded bind and payment for its whole run,
+    /// and exclusively by Clear Database from before the shielded reset until
+    /// every key and wallet is deleted. Upstream's own admission covers only
+    /// the reset, so a bind waiting behind it would otherwise resume mid-wipe.
+    shielded_lifecycle: tokio::sync::RwLock<()>,
+    #[cfg(test)]
+    shielded_bind_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_attempts: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -719,6 +726,9 @@ impl WalletBackend {
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                shielded_lifecycle: tokio::sync::RwLock::new(()),
+                #[cfg(test)]
+                shielded_bind_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_attempts: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
@@ -1349,6 +1359,46 @@ impl WalletBackend {
         self.inner
             .registration_attempts
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Admission for a shielded bind or payment, held for its whole run. Waits
+    /// while Clear Database runs, so an operation that started behind it finds
+    /// the wallet already gone.
+    pub(crate) async fn shielded_operation_admission(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.inner.shielded_lifecycle.read().await
+    }
+
+    /// Exclude every DET shielded bind and payment until the guard drops, or
+    /// refuse at once while one runs. Clear Database holds it across the whole
+    /// wipe; it never waits, so no operation queues behind a waiting Clear.
+    pub(crate) fn try_exclude_shielded_operations(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, TaskError> {
+        self.inner
+            .shielded_lifecycle
+            .try_write()
+            .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })
+    }
+
+    /// Wallet ids the upstream manager holds.
+    #[cfg(test)]
+    pub(crate) async fn upstream_wallet_ids(&self) -> Vec<WalletId> {
+        self.inner.pwm.wallet_ids().await
+    }
+
+    /// Pause the next shielded bind twice on a two-party barrier, once it holds
+    /// its wallet handle: when it gets there, and before it binds.
+    #[cfg(test)]
+    pub(crate) fn set_shielded_bind_test_barrier(&self) -> Arc<tokio::sync::Barrier> {
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        *self
+            .inner
+            .shielded_bind_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&barrier));
+        barrier
     }
 
     #[cfg(test)]
@@ -3588,7 +3638,7 @@ fn shielded_clear_error(e: PlatformWalletError) -> TaskError {
     match e {
         PlatformWalletError::ShieldedOperationInProgress
         | PlatformWalletError::ShutdownIncomplete(_) => TaskError::WalletDataClearShieldedBusy {
-            source: Arc::new(e),
+            source: Some(Arc::new(e)),
         },
         e => TaskError::WalletBackend {
             source: Arc::new(e),

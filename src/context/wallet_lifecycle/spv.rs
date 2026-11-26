@@ -24,9 +24,15 @@ impl AppContext {
             .wallet_backend()
             .map_err(|_| TaskError::WalletDataClearUnavailable)?;
 
+        // Exclude every DET shielded bind and payment for the whole wipe, or
+        // refuse at once while one runs: upstream's admission covers only the
+        // shielded reset, and a bind queued behind it would write the wallet's
+        // shielded state back while its keys are deleted.
+        let _shielded_exclusion = backend.try_exclude_shielded_operations()?;
+
         // Reset the upstream shielded coordinator first (it quiesces its sync
-        // loop and empties the per-network store). Upstream refuses the reset,
-        // having changed nothing, while a shielded operation or a sync pass
+        // loop and empties the per-network store). Upstream refuses the reset
+        // before clearing anything while a shielded operation or a sync pass
         // still runs; stop then, before any key is deleted, so the data is
         // never half-wiped. Any other failure must not skip the steps below:
         // record it and keep going.
@@ -46,8 +52,8 @@ impl AppContext {
         // sidecars, shielded notes, session cache) BEFORE the in-memory maps
         // below, so a mid-failure crash cannot strand current state. The
         // pre-update database remains a read-only recovery artifact. The
-        // upstream (watch-only) persistor rows have no seed and are removed
-        // asynchronously off the main thread.
+        // upstream (watch-only) persistor rows have no seed; they are removed
+        // before the shielded exclusion ends, and a failure is reported.
         let ClearAllOutcome {
             upstream_ids,
             hd_seed_hashes,
@@ -58,14 +64,10 @@ impl AppContext {
             .chain(wallet_failures)
             .collect();
         for wallet_id in upstream_ids {
-            let backend = Arc::clone(&backend);
-            let _ = self
-                .subtasks
-                .spawn_sync("wallet_upstream_removal", async move {
-                    if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
-                        tracing::warn!(%error, "Upstream wallet removal failed during clear");
-                    }
-                });
+            if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                tracing::warn!(%error, "Upstream wallet removal failed during clear");
+                failures.push(error);
+            }
         }
 
         // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays

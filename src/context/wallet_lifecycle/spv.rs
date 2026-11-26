@@ -29,6 +29,8 @@ impl AppContext {
         // shielded reset, and a bind queued behind it would write the wallet's
         // shielded state back while its keys are deleted.
         let _shielded_exclusion = backend.try_exclude_shielded_operations()?;
+        #[cfg(test)]
+        backend.clear_test_pause_point().await;
 
         // Reset the upstream shielded coordinator first (it quiesces its sync
         // loop and empties the per-network store). Upstream refuses the reset

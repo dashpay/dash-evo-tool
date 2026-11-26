@@ -2748,42 +2748,91 @@ async fn clear_network_database_refuses_while_a_wallet_bootstrap_registers() {
     assert!(registered, "the bootstrap finishes its registration");
 }
 
-/// Work that read its seed before a Clear Database began is not admitted once
-/// the clear has finished, so it cannot write the cleared wallet back.
+/// A wallet bootstrap that starts while Clear Database runs must not register
+/// or bind the cleared wallet once the clear has finished, even though the
+/// seed was still saved when it started.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shielded_admission_refuses_work_queued_behind_a_clear() {
+async fn wallet_bootstrap_started_during_a_clear_does_not_restore_the_wallet() {
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    WalletSeedView::new(&ctx.secret_store())
+        .set_raw(&seed_hash, &seed)
+        .expect("save the seed");
+    WalletMetaView::new(&ctx.app_kv())
+        .set(
+            Network::Testnet,
+            &seed_hash,
+            &WalletMeta {
+                xpub_encoded: wallet
+                    .master_bip44_ecdsa_extended_public_key
+                    .encode()
+                    .to_vec(),
+                ..Default::default()
+            },
+        )
+        .expect("save the wallet record");
+    let wallet = Arc::new(std::sync::RwLock::new(wallet));
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::clone(&wallet));
 
-    let before_clear = backend.shielded_lifecycle_generation();
-    let exclusion = backend
-        .try_exclude_shielded_operations()
-        .expect("no shielded operation runs");
-    let queued = tokio::spawn({
-        let backend = backend.clone();
-        async move {
-            backend
-                .shielded_operation_admission_since(before_clear)
-                .await
-                .is_some()
-        }
+    let pause = backend.set_clear_test_pause();
+    let clear = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.clear_network_database().await }
     });
-    drop(exclusion);
-    let stale_admitted = queued.await.expect("queued task");
-    let fresh_admitted = backend
-        .shielded_operation_admission_since(backend.shielded_lifecycle_generation())
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
         .await
+        .expect("the clear reaches its pause");
+
+    let requests_before = backend.shielded_admission_requests();
+    let bootstrap = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.bootstrap_wallet_addresses_jit(&wallet).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while backend.shielded_admission_requests() == requests_before {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the bootstrap waits for admission");
+
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the clear resumes");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), clear)
+        .await
+        .expect("the clear finishes")
+        .expect("clear task");
+    tokio::time::timeout(std::time::Duration::from_secs(30), bootstrap)
+        .await
+        .expect("the bootstrap finishes")
+        .expect("bootstrap task");
+    let seed_left = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
         .is_some();
+    let registered = backend.is_wallet_registered(&seed_hash);
+    let upstream = backend.upstream_wallet_ids().await;
     backend.shutdown().await;
 
+    assert!(result.is_ok(), "{result:?}");
+    assert!(!seed_left, "the clear deletes the seed");
     assert!(
-        !stale_admitted,
-        "work queued behind a clear must be refused"
+        !registered,
+        "the bootstrap must not register the cleared wallet"
     );
-    assert!(fresh_admitted, "work started after the clear is admitted");
+    assert!(
+        upstream.is_empty(),
+        "upstream wallets restored: {upstream:?}"
+    );
 }
 
 /// Clear Database reports success only once the upstream wallet is removed,

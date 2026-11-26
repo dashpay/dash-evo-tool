@@ -395,15 +395,11 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
-    /// Held shared by every DET shielded bind and payment for its whole run
-    /// (a wallet bootstrap from its registration through its bind), and
-    /// exclusively by Clear Database from before the shielded reset until
+    /// Held shared by every DET shielded bind and payment, and every wallet
+    /// bootstrap, for its whole run, and exclusively by Clear Database from before the shielded reset until
     /// every key and wallet is deleted. Upstream's own admission covers only
     /// the reset, so a bind waiting behind it would otherwise resume mid-wipe.
     shielded_lifecycle: tokio::sync::RwLock<()>,
-    /// Bumped each time Clear Database takes [`Inner::shielded_lifecycle`], so
-    /// work that read the seed before a clear can tell it is stale.
-    shielded_lifecycle_generation: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     shielded_bind_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
@@ -412,6 +408,10 @@ struct Inner {
     registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_test_pause: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    clear_test_pause: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    shielded_admission_requests: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -733,7 +733,6 @@ impl WalletBackend {
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 shielded_lifecycle: tokio::sync::RwLock::new(()),
-                shielded_lifecycle_generation: std::sync::atomic::AtomicU64::new(0),
                 #[cfg(test)]
                 shielded_bind_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
@@ -742,6 +741,10 @@ impl WalletBackend {
                 registration_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_test_pause: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                clear_test_pause: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                shielded_admission_requests: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -1388,7 +1391,46 @@ impl WalletBackend {
     pub(crate) async fn shielded_operation_admission(
         &self,
     ) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        #[cfg(test)]
+        self.inner
+            .shielded_admission_requests
+            .fetch_add(1, Ordering::SeqCst);
         self.inner.shielded_lifecycle.read().await
+    }
+
+    /// How many shielded operation admissions were requested, granted or not.
+    #[cfg(test)]
+    pub(crate) fn shielded_admission_requests(&self) -> usize {
+        self.inner
+            .shielded_admission_requests
+            .load(Ordering::SeqCst)
+    }
+
+    /// Pause the next Clear Database twice on a two-party barrier, once it
+    /// excludes shielded operations and before it deletes anything.
+    #[cfg(test)]
+    pub(crate) fn set_clear_test_pause(&self) -> Arc<tokio::sync::Barrier> {
+        let pause = Arc::new(tokio::sync::Barrier::new(2));
+        *self
+            .inner
+            .clear_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&pause));
+        pause
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn clear_test_pause_point(&self) {
+        let pause = self
+            .inner
+            .clear_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(pause) = pause {
+            pause.wait().await;
+            pause.wait().await;
+        }
     }
 
     /// Exclude every DET shielded bind and payment until the guard drops, or
@@ -1397,34 +1439,10 @@ impl WalletBackend {
     pub(crate) fn try_exclude_shielded_operations(
         &self,
     ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, TaskError> {
-        let exclusion = self
-            .inner
+        self.inner
             .shielded_lifecycle
             .try_write()
-            .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })?;
-        self.inner
-            .shielded_lifecycle_generation
-            .fetch_add(1, Ordering::SeqCst);
-        Ok(exclusion)
-    }
-
-    /// The Clear Database count, to pass to
-    /// [`Self::shielded_operation_admission_since`] once the seed is held.
-    pub(crate) fn shielded_lifecycle_generation(&self) -> u64 {
-        self.inner
-            .shielded_lifecycle_generation
-            .load(Ordering::SeqCst)
-    }
-
-    /// [`Self::shielded_operation_admission`] for work that read its seed when
-    /// the count was `generation`: `None` when Clear Database has started
-    /// since, so the work stops instead of writing a cleared wallet back.
-    pub(crate) async fn shielded_operation_admission_since(
-        &self,
-        generation: u64,
-    ) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
-        let admission = self.shielded_operation_admission().await;
-        (self.shielded_lifecycle_generation() == generation).then_some(admission)
+            .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })
     }
 
     /// Wallet ids the upstream manager holds, including loaded wallets no DET
@@ -3677,21 +3695,10 @@ fn shield_capacity_exceeded_error(
     }
 }
 
-/// Map a [`PlatformWalletError`] from any shielded operation to the correct
-/// [`TaskError`] variant.
-///
-/// **Exhaustive — no `_` arm** on the outer match so a future upstream variant
-/// addition forces a review here instead of silently falling through to
-/// [`TaskError::WalletBackend`].
-///
-/// [`ShieldedSpendUnconfirmed`](platform_wallet::error::PlatformWalletError::ShieldedSpendUnconfirmed)
-/// is pre-flighted before the exhaustive match because `operation` is
-/// `&'static str` (not an enum): we copy it out without consuming `e`, then
-/// route to the correct per-op `*ConfirmationUnknown` variant.  Unknown
-/// `operation` values (future upstream ops) fall through to `WalletBackend`.
-/// Classify a failed shielded clear. Upstream refuses before changing anything
-/// while a shielded operation holds its admission or a sync pass does not
-/// drain; every other failure may come after part of the reset.
+/// Classify a failed shielded clear. Upstream refuses before clearing
+/// anything while a shielded operation holds its admission or a sync pass
+/// does not drain (that one after cancelling sync); every other failure may
+/// come after part of the reset.
 fn shielded_clear_error(e: PlatformWalletError) -> TaskError {
     match e {
         PlatformWalletError::ShieldedOperationInProgress
@@ -3704,6 +3711,18 @@ fn shielded_clear_error(e: PlatformWalletError) -> TaskError {
     }
 }
 
+/// Map a [`PlatformWalletError`] from any shielded operation to the correct
+/// [`TaskError`] variant.
+///
+/// **Exhaustive — no `_` arm** on the outer match so a future upstream variant
+/// addition forces a review here instead of silently falling through to
+/// [`TaskError::WalletBackend`].
+///
+/// [`ShieldedSpendUnconfirmed`](platform_wallet::error::PlatformWalletError::ShieldedSpendUnconfirmed)
+/// is pre-flighted before the exhaustive match because `operation` is
+/// `&'static str` (not an enum): we copy it out without consuming `e`, then
+/// route to the correct per-op `*ConfirmationUnknown` variant.  Unknown
+/// `operation` values (future upstream ops) fall through to `WalletBackend`.
 fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     use platform_wallet::error::PlatformWalletError as P;
 
@@ -4680,8 +4699,8 @@ mod tests {
         )
     }
 
-    /// Upstream's two refusals of a shielded clear change nothing, so they are
-    /// told apart from a reset that failed part-way.
+    /// Upstream's two refusals of a shielded clear come before it clears
+    /// anything, so they are told apart from a reset that failed part-way.
     #[test]
     fn shielded_clear_refusals_are_busy_and_other_failures_are_not() {
         for refusal in [

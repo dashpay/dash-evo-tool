@@ -11,16 +11,11 @@ use egui_kittest::kittest::Queryable;
 use std::cell::Cell;
 use std::rc::Rc;
 
-fn insecure_folder_error() -> TaskError {
-    TaskError::WalletDataFolderInsecure {
-        source: Box::new(
-            platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                ancestor: std::path::PathBuf::from("/shared"),
-                reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                    mode: 0o777,
-                },
-            },
-        ),
+fn access_denied_error() -> TaskError {
+    TaskError::WalletStorageAccessDenied {
+        source: Box::new(platform_wallet_storage::WalletStorageError::Io(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )),
     }
 }
 
@@ -169,7 +164,7 @@ fn early_failure_details_stay_out_of_primary_selection() {
 /// its own message with no dialog changes.
 #[test]
 fn startup_error_dialog_shows_typed_error_message_and_details() {
-    let error = insecure_folder_error();
+    let error = access_denied_error();
     let expected = error.to_string();
     let failure = StartupFailure::from_error(&error, None);
     assert_eq!(failure.report().message(), expected);
@@ -191,7 +186,7 @@ fn startup_error_dialog_shows_typed_error_message_and_details() {
     );
     assert!(
         harness
-            .query_by_label_contains("WalletDataFolderInsecure")
+            .query_by_label_contains("WalletStorageAccessDenied")
             .is_some(),
         "technical details must be shown"
     );
@@ -200,7 +195,7 @@ fn startup_error_dialog_shows_typed_error_message_and_details() {
 /// "Copy details" puts the technical details on the clipboard.
 #[test]
 fn copy_details_copies_technical_details() {
-    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let failure = StartupFailure::from_error(&access_denied_error(), None);
     let details = failure.report().details().to_owned();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(900.0, 700.0))
@@ -220,7 +215,7 @@ fn copy_details_copies_technical_details() {
 /// scrolling, and Copy details can be scrolled into view and clicked.
 #[test]
 fn small_window_keeps_both_actions_reachable() {
-    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let failure = StartupFailure::from_error(&access_denied_error(), None);
     let quit = Rc::new(Cell::new(false));
     let seen = Rc::clone(&quit);
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
@@ -260,7 +255,7 @@ fn small_window_keeps_both_actions_reachable() {
 /// "Quit" reports the request to the owner, which closes the app.
 #[test]
 fn quit_button_requests_quit() {
-    let failure = StartupFailure::from_error(&insecure_folder_error(), None);
+    let failure = StartupFailure::from_error(&access_denied_error(), None);
     let quit = Rc::new(Cell::new(false));
     let seen = Rc::clone(&quit);
     let mut harness = Harness::builder()

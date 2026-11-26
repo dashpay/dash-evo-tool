@@ -37,8 +37,8 @@ const VERSION_TABLES: [&str; 2] = ["refinery_schema_history", "meta_data_version
 /// database.
 const BACKUP_MARKER: &str = ".platform-67d4ef3-backup-";
 /// Rows the upgrade derives from the fixture wallet's history: Platform's
-/// V021 indexes the inputs of every stored transaction, and the captured
-/// faucet payment spends one. Its record needs no repair, so V021's table of
+/// V022 indexes the inputs of every stored transaction, and the captured
+/// faucet payment spends one. Its record needs no repair, so V022's table of
 /// original records stays empty.
 const NETWORK_DB_DERIVED_ROWS: [(&str, i64); 1] = [("core_transaction_inputs", 1)];
 

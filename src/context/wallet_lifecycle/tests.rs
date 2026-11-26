@@ -8116,6 +8116,7 @@ const IDENTITY_SEARCH_ROUTE: &str =
 /// A registered, locked password-protected wallet named "Savings" on a wired
 /// offline backend, with no session-cached seed.
 async fn context_with_locked_protected_wallet(
+    seed: [u8; 64],
     password: &str,
 ) -> (
     Arc<AppContext>,
@@ -8124,7 +8125,6 @@ async fn context_with_locked_protected_wallet(
     Arc<RwLock<Wallet>>,
 ) {
     let (ctx, sender, tmp) = offline_testnet_context();
-    let seed = crate::test_support::keys::seed();
     let wallet = Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -8210,14 +8210,10 @@ fn only_an_operation_scoped_unlock_before_readiness_gets_a_search_notice() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_operation_scoped_unlock_before_readiness_tells_the_user_at_once() {
     let password = "correct-wallet-password";
-    let (ctx, _tmp, _seed_hash, wallet) = context_with_locked_protected_wallet(password).await;
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_locked_protected_wallet(crate::test_support::keys::seed(), password).await;
     ctx.connection_status().set_spv_status(SpvStatus::Syncing);
-    let notices = || -> Vec<String> {
-        crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx())
-            .into_iter()
-            .filter(|text| text.contains("cannot be searched"))
-            .collect()
-    };
+    let notices = || search_notices(&ctx);
 
     for retention in [
         WalletUnlockRetention::UntilStorageUpdateComplete,
@@ -8256,10 +8252,122 @@ async fn an_operation_scoped_unlock_before_readiness_tells_the_user_at_once() {
     );
     assert!(shown[0].contains(IDENTITY_SEARCH_ROUTE), "{}", shown[0]);
 
+    ctx.clear_wallet_search_notices();
+    assert!(
+        notices().is_empty(),
+        "leaving the network removes its notices"
+    );
+    ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly)
+        .expect("the correct password must unlock the wallet");
+    assert_eq!(notices().len(), 1, "a new unlock raises the notice again");
+    ctx.remove_wallet(&seed_hash).expect("remove the wallet");
+    assert!(
+        notices().is_empty(),
+        "removing the wallet removes its notice"
+    );
+
     ctx.wallet_backend()
         .expect("backend wired")
         .shutdown()
         .await;
+}
+
+/// The "cannot be searched" notices currently shown.
+fn search_notices(ctx: &Arc<AppContext>) -> Vec<String> {
+    crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx())
+        .into_iter()
+        .filter(|text| text.contains("cannot be searched"))
+        .collect()
+}
+
+/// A mock SDK answering every lookup of a first discovery window over `wallet`
+/// with "no identity", so a full pass completes offline.
+async fn sdk_finding_no_wallet_identities(seed: &[u8; 64], wallet: &Wallet) -> dash_sdk::Sdk {
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
+
+    // The scan probes this many auth keys per identity index.
+    const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
+    let mut queries = Vec::new();
+    for identity_index in 0..crate::model::identity_discovery::IDENTITY_GAP_LIMIT {
+        for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
+            let key = wallet
+                .identity_authentication_ecdsa_public_key_from_seed(
+                    seed,
+                    Network::Testnet,
+                    identity_index,
+                    key_index,
+                )
+                .expect("derive an identity auth key");
+            queries.push(NonUniquePublicKeyHashQuery {
+                key_hash: key.pubkey_hash().into(),
+                after: None,
+            });
+        }
+    }
+    let mut sdk = dash_sdk::Sdk::new_mock();
+    for query in queries {
+        sdk.mock()
+            .expect_fetch(query, None::<Identity>)
+            .await
+            .expect("register the lookup");
+    }
+    sdk
+}
+
+/// The notice an unlock raised before sync must go once the wallet is in fact
+/// searched later, not linger next to the search's results.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_search_notice_goes_once_the_wallet_is_searched_after_sync() {
+    let password = "correct-wallet-password";
+    let seed = crate::test_support::keys::seed();
+    let (ctx, _tmp, seed_hash, wallet) = context_with_locked_protected_wallet(seed, password).await;
+    let snapshot = wallet.read_recover().clone();
+    ctx.sdk.store(Arc::new(
+        sdk_finding_no_wallet_identities(&seed, &snapshot).await,
+    ));
+    ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    wallet
+        .write_recover()
+        .wallet_seed
+        .open(password)
+        .expect("the correct password opens the wallet");
+    ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly)
+        .expect("the correct password must unlock the wallet");
+    assert_eq!(search_notices(&ctx).len(), 1, "precondition: notice shown");
+    // Let the unlock's own pass end, skipping the search, before sync is ready.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !backend.is_wallet_registered(&seed_hash) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unlock never registered the wallet"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        search_notices(&ctx).len(),
+        1,
+        "a skipped search leaves the notice up"
+    );
+
+    backend.mark_quorum_keys_ready_for_test();
+    ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::UntilAppClose)
+        .expect("the correct password must unlock the wallet");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !search_notices(&ctx).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a completed search must remove the notice: {:?}",
+            search_notices(&ctx)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    backend.shutdown().await;
 }
 
 /// An explicit search the network cannot verify yet is refused before it
@@ -8343,8 +8451,11 @@ async fn a_scan_whose_lookups_fail_does_not_report_a_clean_result() {
 async fn a_scan_that_skips_a_wallet_needing_unlock_says_so() {
     use crate::model::identity_discovery::DiscoveryIntent;
 
-    let (ctx, _tmp, _seed_hash, wallet) =
-        context_with_locked_protected_wallet("correct-wallet-password").await;
+    let (ctx, _tmp, _seed_hash, wallet) = context_with_locked_protected_wallet(
+        crate::test_support::keys::seed(),
+        "correct-wallet-password",
+    )
+    .await;
 
     let outcome = ctx
         .discover_identities_gap_limited(&wallet, 0, false, DiscoveryIntent::Automatic, None)

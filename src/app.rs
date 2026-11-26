@@ -1708,6 +1708,8 @@ impl AppState {
         if let Ok(backend) = self.current_app_context().wallet_backend() {
             backend.forget_all_secrets();
         }
+        // Its "cannot search yet" notices name wallets of the network being left.
+        self.current_app_context().clear_wallet_search_notices();
 
         self.chosen_network = network;
         self.network_selection_required = false;

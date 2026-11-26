@@ -2166,6 +2166,12 @@ impl WalletBackend {
         self.inner.coordinator_gate.masternodes_ready()
     }
 
+    /// Report the masternode list synced, as the SPV event bridge does.
+    #[cfg(test)]
+    pub(crate) fn mark_quorum_keys_ready_for_test(&self) {
+        self.inner.coordinator_gate.on_masternodes_ready();
+    }
+
     /// Schedule a metadata probe within the running, quorum-ready SPV session.
     pub(crate) fn queue_platform_protocol_refresh(&self) {
         self.inner.protocol_refresh.queue();

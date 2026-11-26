@@ -7,8 +7,8 @@ use crate::model::identity_discovery::DiscoveryReadiness;
 use crate::model::wallet::meta::wallet_label;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::message_banner::BannerHandle;
 use crate::wallet_backend::SecretLease;
+use std::sync::PoisonError;
 
 /// The notice an unlock shows when its identity search cannot run, if any.
 ///
@@ -138,17 +138,14 @@ impl AppContext {
                 .unwrap_or_default(),
             &seed_hash,
         );
-        let notice = unlock_discovery_notice(
+        if let Some(text) = unlock_discovery_notice(
             retention,
             self.wallet_identity_discovery_readiness(),
             &wallet_name,
-        )
-        .map(|text| {
-            let banner = MessageBanner::set_global(self.egui_ctx(), text, MessageType::Info);
-            banner.disable_auto_dismiss();
-            banner
-        });
-        self.drive_unlock_registration(wallet, lease, notice);
+        ) {
+            self.show_wallet_search_notice(seed_hash, text);
+        }
+        self.drive_unlock_registration(wallet, lease);
         Ok(())
     }
 
@@ -164,14 +161,10 @@ impl AppContext {
     /// `lease` keeps the promoted seed resolvable for this subtask's own work.
     /// It is only *a* holder of that lease, never the sole one: dropping it here
     /// forgets the seed only if no other consumer still holds a clone.
-    ///
-    /// `notice` is the unlock's "cannot search yet" banner; it is removed if
-    /// the network became ready during the bootstrap and the search ran.
     fn drive_unlock_registration(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         lease: Option<SecretLease>,
-        notice: Option<BannerHandle>,
     ) {
         let ctx = Arc::clone(self);
         let wallet = Arc::clone(wallet);
@@ -180,13 +173,47 @@ impl AppContext {
             .spawn_sync("wallet_unlock_registration", async move {
                 let lease = lease;
                 ctx.bootstrap_wallet_addresses_jit(&wallet).await;
-                if ctx.discover_unlocked_wallet_identities(&wallet).await
-                    && let Some(notice) = notice
-                {
-                    notice.clear();
-                }
+                ctx.discover_unlocked_wallet_identities(&wallet).await;
                 drop(lease);
             });
+    }
+
+    /// Show `text` as the wallet's "cannot search yet" notice until the wallet
+    /// is searched, replacing an earlier notice for it. The notice stays until
+    /// dismissed, holding nothing but the banner handle.
+    fn show_wallet_search_notice(&self, seed_hash: WalletSeedHash, text: String) {
+        self.clear_wallet_search_notice(&seed_hash);
+        let banner = MessageBanner::set_global(self.egui_ctx(), text, MessageType::Info);
+        banner.disable_auto_dismiss();
+        self.wallet_search_notices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(seed_hash, banner);
+    }
+
+    /// Remove the wallet's "cannot search yet" notice, if one is shown.
+    pub(crate) fn clear_wallet_search_notice(&self, seed_hash: &WalletSeedHash) {
+        let notice = self
+            .wallet_search_notices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(seed_hash);
+        if let Some(notice) = notice {
+            notice.clear();
+        }
+    }
+
+    /// Remove every "cannot search yet" notice of this network.
+    pub(crate) fn clear_wallet_search_notices(&self) {
+        let notices = std::mem::take(
+            &mut *self
+                .wallet_search_notices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for notice in notices.into_values() {
+            notice.clear();
+        }
     }
 
     /// Wipe the session-cached seed when a wallet is locked.

@@ -160,7 +160,7 @@ impl BannerState {
 /// BannerHandle is deliberately Send+Sync because egui::Context is
 /// Send+Sync with internal locking. This is acceptable for a single-threaded
 /// UI app; egui's own thread-safety guarantees apply.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BannerHandle {
     ctx: egui::Context,
     key: u64,

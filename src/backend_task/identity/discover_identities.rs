@@ -69,7 +69,8 @@ impl AppContext {
     ///
     /// A pass with failed lookups has not searched every index, so it returns
     /// the first such error once it has stored what it found. A lookup refused
-    /// because the network is still syncing ends the pass at once.
+    /// because the network is still syncing ends the pass at once. A complete
+    /// pass removes the wallet's "cannot search yet" notice.
     ///
     /// `intent` is a separate question from `allow_prompt` — whether the user
     /// asked for these identities, which decides whether a pass may store one
@@ -264,6 +265,7 @@ impl AppContext {
             stored = summary.stored,
             "Gap-limited identity discovery complete"
         );
+        self.clear_wallet_search_notice(&seed_hash);
 
         Ok(summary)
     }

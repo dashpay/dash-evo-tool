@@ -201,6 +201,11 @@ pub struct AppContext {
     /// so the sweep runs once; cleared in
     /// [`stop_spv`](Self::stop_spv) so a reconnect re-arms it.
     identity_autodiscovery_fired: AtomicBool,
+    /// Per wallet, the shown "identities cannot be searched yet" notice of an
+    /// unlock; removed once that wallet is searched, removed, or left behind by
+    /// a network switch.
+    wallet_search_notices:
+        Mutex<HashMap<WalletSeedHash, crate::ui::components::message_banner::BannerHandle>>,
     /// How far this session's most recent load of each identity got, stamped with
     /// the token of the load it belongs to. The single source of truth for whether
     /// a dispatched load is still outstanding and whether it actually succeeded —
@@ -602,6 +607,7 @@ impl AppContext {
             core_client: core_client.into(),
             has_wallet: false.into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
+            wallet_search_notices: Mutex::default(),
             identity_loads: Default::default(),
             wallet_context: Arc::new(WalletContext::default()),
             identity_record_locks: Mutex::new(HashMap::new()),

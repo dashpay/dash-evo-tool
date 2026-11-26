@@ -683,19 +683,17 @@ impl AppContext {
     }
 
     /// Discover identities after unlock while the wallet seed remains available.
-    /// Returns whether the search ran, which it does only once this network can
-    /// verify identity lookups.
     pub(super) async fn discover_unlocked_wallet_identities(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
-    ) -> bool {
+    ) {
         let readiness = self.wallet_identity_discovery_readiness();
         if readiness != DiscoveryReadiness::Ready {
             tracing::debug!(
                 ?readiness,
                 "Platform not ready yet; deferring unlocked-wallet identity discovery to the all-wallets sweep"
             );
-            return false;
+            return;
         }
 
         if let Err(error) = self
@@ -707,7 +705,6 @@ impl AppContext {
                 "Identity discovery failed for the just-unlocked wallet"
             );
         }
-        true
     }
 
     /// Wait until the masternode list is synced, so identity lookups can be

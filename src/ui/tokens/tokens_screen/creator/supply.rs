@@ -2,9 +2,8 @@ use super::*;
 use crate::model::token_creator::groups::GroupDraft;
 use crate::model::token_creator::rules::parse_identity;
 use crate::ui::state::token_creator::RuleFilter;
-use dash_sdk::dpp::version::PlatformVersion;
 
-pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &PlatformVersion) {
+pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
         heading(ui, "Supply & permissions", "policy", &mut state.help);
         ui.label("Enter amounts in tokens or base units. Changing precision preserves the displayed token amount.");
@@ -84,12 +83,6 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         ui.small("Transferability is permanent after creation. Other configured token actions remain separate.");
         if !state.draft.transferable {
             ui.label("Ordinary transfers cannot be enabled later. Other token actions retain their own rules.");
-            if version.protocol_version < 14 {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    "The selected network does not support this setting yet.",
-                );
-            }
         }
         checkbox(
             ui,

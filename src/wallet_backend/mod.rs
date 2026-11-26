@@ -51,6 +51,7 @@ mod payments;
 pub(crate) mod persist_fault_test_support;
 pub mod platform_compatibility;
 pub(crate) mod poison;
+mod protocol_refresh;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
@@ -64,6 +65,7 @@ pub mod single_key_entry;
 mod snapshot;
 mod spend_activity;
 mod token_balance;
+mod tokens;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_context;
@@ -96,9 +98,11 @@ pub use secret_prompt::{
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
 pub use secret_seam::SecretSeam;
+pub(crate) use tokens::{TokenActionCommon, TokenActor};
 
 use coordinator_gate::CoordinatorGate;
 use identity_ops::Funding;
+pub(crate) use identity_ops::fold_fetched_identity;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
@@ -174,7 +178,7 @@ async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
 where
     IsSyncing: FnMut() -> bool,
     SyncNow: FnOnce() -> SyncFuture,
-    SyncFuture: std::future::Future<Output = ()>,
+    SyncFuture: std::future::Future,
 {
     // TODO: Upstream `IdentitySyncManager::sync_now()` should return a performed/skipped
     // outcome or completion generation; before/after `is_syncing()` samples are racy.
@@ -195,9 +199,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dash_async::{ShutdownReport, WorkerStatus};
 use dash_sdk::Sdk;
-use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
+use dash_sdk::dash_spv::{ClientConfig, DevnetConfig};
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::{PlatformWalletManager, WalletWorker};
@@ -398,6 +402,8 @@ struct Inner {
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
+    bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
@@ -455,6 +461,9 @@ struct Inner {
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
+    /// Devnet name dash-spv requires at startup and puts in its user agent;
+    /// `None` off Devnet. Genesis and quorum settings do not depend on it.
+    devnet_name: Option<String>,
     network: Network,
     /// Disposable per-network chain cache: `<data_dir>/spv/<network>/`.
     spv_storage_dir: std::path::PathBuf,
@@ -503,6 +512,8 @@ struct Inner {
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
     coordinator_gate: Arc<CoordinatorGate>,
+    protocol_refresh: protocol_refresh::ProtocolRefresh,
+    app_context: std::sync::Weak<AppContext>,
     /// Frame-loop result channel, used by [`WalletBackend::start`] to nudge
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
@@ -569,6 +580,20 @@ pub(crate) fn all_networks() -> [Network; 4] {
 /// — that directory holds the disposable, resyncable chain cache, while this file
 /// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
 /// created and locked down at boot, so no directory work happens here.
+/// Test seam for pausing and observing a wallet backend build.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct BuildTestHooks {
+    /// When set, the build signals it once its upstream manager exists, then
+    /// waits for good, standing in for a slow initialization.
+    pub(crate) pause_initialization: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// Bounded teardowns that finished for backends built by this context.
+    pub(crate) bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Upper bound for [`WalletBackend::shutdown_bounded`].
+const BOUNDED_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
 }
@@ -587,11 +612,44 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
     spv_root_dir(data_dir).join(network_prefix(network))
 }
 
+/// The devnet name dash-spv needs, from the configured `devnet_name`: `None`
+/// off Devnet or when unset, and without Core's `devnet-` datadir prefix.
+fn spv_devnet_name_from(network: Network, configured: Option<&str>) -> Option<String> {
+    if network != Network::Devnet {
+        return None;
+    }
+    let name = configured?.trim();
+    let name = name.strip_prefix("devnet-").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Attach the `DevnetConfig` dash-spv requires before it connects, and the
+/// user agent with the `devnet.devnet-<name>` suffix Dash Core peers check
+/// during the handshake. The name selects no chain parameters: genesis comes
+/// from the network, and no quorum override is set. No change when
+/// `devnet_name` is `None`.
+fn with_devnet_identity(config: ClientConfig, devnet_name: Option<&str>) -> ClientConfig {
+    let Some(name) = devnet_name else {
+        return config;
+    };
+    let devnet = DevnetConfig::new(name.to_string());
+    let user_agent = devnet.user_agent(dash_sdk::dash_spv::VERSION);
+    config.with_devnet(devnet).with_user_agent(user_agent)
+}
+
 /// The upstream shielded coordinator's store,
 /// `<data_dir>/det-<network>-shielded.sqlite` — the sibling of
 /// [`wallet_database_path`] holding all Orchard state.
 pub(crate) fn shielded_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}-shielded.sqlite", network_prefix(network)))
+}
+
+fn protocol_refresh_action(context: std::sync::Weak<AppContext>) -> impl Fn() + Send + Sync {
+    move || {
+        if let Some(ctx) = context.upgrade() {
+            ctx.queue_platform_protocol_refresh();
+        }
+    }
 }
 
 impl WalletBackend {
@@ -659,22 +717,13 @@ impl WalletBackend {
             },
         ));
 
+        // From here on the manager runs its wallet-event adapter, so every
+        // failure below tears it down through `Self::shutdown_bounded`, never a
+        // plain drop.
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
-        // Wire the upstream shielded coordinator into the manager.
-        //
-        // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
-        // entirely by the upstream coordinator — the single source of truth for
-        // all Orchard state. The coordinator starts empty — no wallets are bound
-        // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
-        // calls with the same path are idempotent (upstream no-ops).
-        pwm.configure_shielded(shielded_database_path(ctx.data_dir(), network))
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })?;
-
         let peer = Self::spv_primary_peer_socket(ctx, network);
+        let devnet_name = Self::spv_devnet_name(ctx, network);
 
         let app_kv = ctx.app_kv();
 
@@ -704,6 +753,8 @@ impl WalletBackend {
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
+                bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
+                #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
@@ -728,6 +779,7 @@ impl WalletBackend {
                 profile_timestamps: dashpay::ProfileTimestamps::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
+                devnet_name,
                 network,
                 spv_storage_dir,
                 wallet_database_path,
@@ -739,24 +791,99 @@ impl WalletBackend {
                 secret_access,
                 start_latch: StartLatch::default(),
                 coordinator_gate,
+                protocol_refresh: protocol_refresh::ProtocolRefresh::default(),
+                app_context: Arc::downgrade(ctx),
                 task_result_sender,
                 spend_activity: Arc::default(),
                 platform_shield_activity: Arc::default(),
             }),
         };
 
-        // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
-        // seed-envelope sidecars before the loader runs. The legacy
-        // `db.get_wallets` row → `Wallet` mapping moved here once the
-        // sidecars became the authoritative source. `register_persisted_wallets`
-        // expects the wallet context's HD registry to be populated so it can re-provision
-        // identity funding accounts (a5538dc8) for every persisted
-        // identity, so hydration must precede registration.
-        backend.hydrate_context_wallets(ctx)?;
+        let initialize = async {
+            #[cfg(test)]
+            let pause = ctx
+                .test_wallet_backend_hooks
+                .pause_initialization
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            #[cfg(test)]
+            if let Some(reached) = pause {
+                reached.notify_one();
+                std::future::pending::<()>().await;
+            }
 
-        backend.register_persisted_wallets(ctx).await?;
+            // Wire the upstream shielded coordinator into the manager.
+            //
+            // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
+            // entirely by the upstream coordinator — the single source of truth for
+            // all Orchard state. The coordinator starts empty — no wallets are bound
+            // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
+            // calls with the same path are idempotent (upstream no-ops).
+            backend
+                .inner
+                .pwm
+                .configure_shielded(shielded_database_path(ctx.data_dir(), network))
+                .await
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+
+            // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
+            // seed-envelope sidecars before the loader runs. The legacy
+            // `db.get_wallets` row → `Wallet` mapping moved here once the
+            // sidecars became the authoritative source. `register_persisted_wallets`
+            // expects the wallet context's HD registry to be populated so it can re-provision
+            // identity funding accounts (a5538dc8) for every persisted
+            // identity, so hydration must precede registration.
+            backend.hydrate_context_wallets(ctx)?;
+
+            backend.register_persisted_wallets(ctx).await
+        };
+        // Closing the app stops the build at its next await. Stopping there
+        // is safe: no step here writes the wallet database itself. Opening
+        // the shielded store is synchronous, and the persisted-wallet load
+        // only reads.
+        // Whatever the load left half-done lives only in this manager, and
+        // the manager is torn down below.
+        let cancellation_token = ctx.subtasks.cancellation_token.clone();
+        let initialized = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => Err(TaskError::TaskManagerShuttingDown),
+            initialized = initialize => initialized,
+        };
+        if let Err(error) = initialized {
+            backend.shutdown_bounded().await;
+            return Err(error);
+        }
 
         Ok(backend)
+    }
+
+    /// Forget cached secrets and tear the backend down through the upstream
+    /// shutdown, bounded by [`BOUNDED_SHUTDOWN_TIMEOUT`].
+    ///
+    /// Use it instead of dropping the backend: the upstream manager's `Drop`
+    /// only cancels its wallet-event adapter and may lose buffered events.
+    /// [`Self::shutdown`] stops chain sync, drains the sync passes and joins
+    /// the adapter. A backend that never started has only the adapter to
+    /// drain. One that started and overruns the bound is reported. A later
+    /// shutdown, such as the app's exit drain for a registered context, joins
+    /// what is left.
+    pub(crate) async fn shutdown_bounded(&self) {
+        self.forget_all_secrets();
+        match tokio::time::timeout(BOUNDED_SHUTDOWN_TIMEOUT, self.shutdown()).await {
+            Ok(()) => {
+                #[cfg(test)]
+                self.inner
+                    .bounded_shutdowns
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(_) => tracing::warn!(
+                timeout_secs = BOUNDED_SHUTDOWN_TIMEOUT.as_secs(),
+                "Wallet backend teardown timed out; continuing"
+            ),
+        }
     }
 
     /// Refill the wallet context's HD and imported-key registries from the
@@ -1219,6 +1346,28 @@ impl WalletBackend {
         })
         .await
         .expect("track the funding transaction");
+    }
+
+    /// Give `address` on the registered wallet's Platform-payment account 0
+    /// a balance of `credits`, as if a sync pass had found it.
+    #[cfg(test)]
+    pub(crate) async fn set_platform_address_balance_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: dash_sdk::dpp::key_wallet::PlatformP2PKHAddress,
+        credits: u64,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        let wallet_id = wallet.wallet_id();
+        let mut manager = wallet.wallet_manager().write().await;
+        manager
+            .get_wallet_info_mut(&wallet_id)
+            .and_then(|info| {
+                info.core_wallet
+                    .first_platform_payment_managed_account_mut()
+            })
+            .expect("platform-payment account 0")
+            .set_address_credit_balance(address, credits, None);
     }
 
     #[cfg(test)]
@@ -1968,6 +2117,7 @@ impl WalletBackend {
         reason = "PlatformWalletError is an upstream type we cannot shrink"
     )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
+        self.inner.protocol_refresh.stop().await;
         let config = self.build_client_config();
 
         // New API: `start(config)` (async, initializes the SPV client) is called first,
@@ -1975,6 +2125,10 @@ impl WalletBackend {
         // The old `spawn_in_background(config)` combined both steps.
         let spv = self.inner.pwm.spv_arc();
         spv.start(config).await?;
+        self.inner.protocol_refresh.start(
+            self.inner.app_context.clone(),
+            Arc::clone(&self.inner.coordinator_gate),
+        );
         spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The
@@ -1996,11 +2150,12 @@ impl WalletBackend {
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
-        // is provably reachable. Cloning the sender avoids capturing any
-        // `Weak<AppContext>` in this run-loop closure.
+        // is provably reachable.
         let task_result_sender = self.inner.task_result_sender.clone();
         let network = self.inner.network;
+        let refresh_protocol = protocol_refresh_action(self.inner.app_context.clone());
         self.inner.coordinator_gate.arm(Box::new(move || {
+            refresh_protocol();
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
@@ -2036,6 +2191,16 @@ impl WalletBackend {
         Ok(())
     }
 
+    /// Whether this backend's SPV session has the masternode list needed for proofs.
+    pub(crate) fn quorum_keys_ready(&self) -> bool {
+        self.inner.coordinator_gate.masternodes_ready()
+    }
+
+    /// Schedule a metadata probe within the running, quorum-ready SPV session.
+    pub(crate) fn queue_platform_protocol_refresh(&self) {
+        self.inner.protocol_refresh.queue();
+    }
+
     /// Whether chain sync has been started on this backend.
     ///
     /// Reflects the latch set by [`Self::start`]; used by tests and by callers
@@ -2046,8 +2211,8 @@ impl WalletBackend {
 
     /// Stop all upstream background tasks. Idempotent.
     ///
-    /// Stops the SPV run-loop task **first**, then quiesces the sync-manager
-    /// coordinators.  Ordering matters for the platform-open registry:
+    /// Drains metadata probes, stops the SPV run-loop task, then quiesces the
+    /// sync-manager coordinators. Ordering matters for the platform-open registry:
     ///
     /// The spawned SPV background task holds `Arc<SpvRuntime>`, which
     /// transitively keeps `Arc<SqlitePersister>` alive via the chain
@@ -2071,6 +2236,8 @@ impl WalletBackend {
     /// *consumers* is safe — no new events can arrive, and any in-flight
     /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
+        let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
@@ -2099,7 +2266,8 @@ impl WalletBackend {
     /// Unlike [`Self::shutdown`], this deliberately does **not** call
     /// `pwm.shutdown()`: that cancels and joins the wallet-event adapter task,
     /// which has no re-create path, so a subsequent restart would lose event
-    /// processing. Instead it stops the restartable pieces only:
+    /// processing. Metadata probes are cancelled and drained before the SPV
+    /// session loses its quorum keys. The restartable pieces stop in order:
     ///
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
@@ -2127,6 +2295,7 @@ impl WalletBackend {
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
@@ -2394,15 +2563,18 @@ impl WalletBackend {
         IdentityMetaView::new(&self.inner.app_kv)
     }
 
-    /// Replace the JIT chokepoint's identity prompt-copy index from the loaded
-    /// identities (alias) and their persisted hints ([`Self::identity_meta`]).
-    /// Display-only: it never decides whether to prompt (the vault scheme
-    /// does). Best-effort — a missing hint degrades to "no hint", never an
-    /// error. Called whenever identities are (re)loaded so the sign-time prompt
-    /// for an opted-in identity shows its label and hint.
+    /// Refresh the JIT chokepoint's identity prompt-copy index with the loaded
+    /// identities (alias) and their persisted hints ([`Self::identity_meta`]),
+    /// keeping the entries of other identities still in `roster` and dropping
+    /// the rest. Display-only: it never decides whether to prompt (the vault
+    /// scheme does). Best-effort — a missing hint degrades to "no hint", never
+    /// an error. Called whenever identities are (re)loaded so the sign-time
+    /// prompt for an opted-in identity shows its label and hint.
+    /// `roster` must be sorted by identity ID.
     pub fn seed_identity_prompt_index(
         &self,
         identities: &[crate::model::qualified_identity::QualifiedIdentity],
+        roster: &[[u8; 32]],
     ) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
@@ -2427,7 +2599,9 @@ impl WalletBackend {
                 )
             })
             .collect();
-        self.inner.secret_access.set_identity_prompt_index(index);
+        self.inner
+            .secret_access
+            .merge_identity_prompt_index(roster, index);
     }
 
     /// View over the DET-owned identity-authentication public-key cache
@@ -3238,7 +3412,13 @@ impl WalletBackend {
         if let Some(peer) = self.inner.peer {
             config.add_peer(peer);
         }
-        config
+        with_devnet_identity(config, self.inner.devnet_name.as_deref())
+    }
+
+    /// The configured devnet name for SPV, `None` off Devnet.
+    fn spv_devnet_name(ctx: &Arc<AppContext>, network: Network) -> Option<String> {
+        let cfg = ctx.config.read().ok()?;
+        spv_devnet_name_from(network, cfg.devnet_name.as_deref())
     }
 
     /// Resolve an explicit SPV peer for local networks. Devnet/Regtest have
@@ -3278,7 +3458,7 @@ impl WalletBackend {
     }
 }
 
-/// Registers contact accounts and bumps each newly inserted account's monitor revision.
+/// Registers contact accounts and returns how many were newly inserted.
 fn register_contact_accounts_in_managed_wallet(
     info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     accounts: impl IntoIterator<
@@ -3288,17 +3468,10 @@ fn register_contact_accounts_in_managed_wallet(
         ),
     >,
 ) -> usize {
-    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-
     let mut newly_inserted = 0;
     for (account_type, account_xpub) in accounts {
         match add_contact_receiving_account(info, account_type, account_xpub) {
-            Ok(Some(key)) => {
-                newly_inserted += 1;
-                if let Some(account) = info.accounts.dashpay_receival_accounts.get_mut(&key) {
-                    account.bump_monitor_revision();
-                }
-            }
+            Ok(Some(_)) => newly_inserted += 1,
             Ok(None) => {}
             Err(error) => {
                 tracing::debug!(%error, "Skipping contact account: managed insert failed");
@@ -3646,7 +3819,30 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::PrivateContactRequestPending(_)
         | P::PrivateContactStoreNotRead(_)
         | P::PublicContactRequestUnconfirmed(_)
-        | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // pending outcome DET can watch, so they take the generic envelope too.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        ) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
     }
@@ -4026,7 +4222,30 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::PublicContactRequestUnconfirmed(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
-        | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // Platform rejection of this op or a pending outcome DET can watch.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        => IdentityOpErrorKind::Other,
     }
 }
 
@@ -4090,6 +4309,93 @@ fn redact_worker_status(status: &WorkerStatus) -> WorkerStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wallet backend still being built when the app closes stops instead
+    /// of finishing, and releases the wallet database it opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_by_exit_stops_and_releases_its_storage() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        ctx.subtasks.cancellation_token.cancel();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let error = ctx
+            .ensure_wallet_backend(sender)
+            .await
+            .expect_err("closing the app stops the build");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
+
+    /// The same holds when the app closes while the build is initializing:
+    /// it stops there, its manager goes through the upstream shutdown, and
+    /// the wallet database is released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_mid_initialization_stops_and_shuts_down() {
+        use crate::context::test_support::test_app_context;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        *ctx.test_wallet_backend_hooks
+            .pause_initialization
+            .lock()
+            .expect("hooks lock") = Some(Arc::clone(&reached));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let mut build = Box::pin(ctx.ensure_wallet_backend(sender));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                _ = build.as_mut() => panic!("the build finished instead of pausing"),
+                () = reached.notified() => {}
+            }
+        })
+        .await
+        .expect("the build reaches its initialization");
+
+        ctx.subtasks.cancellation_token.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(10), build)
+            .await
+            .expect("closing the app stops the paused build")
+            .expect_err("a stopped build reports the exit");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
 
     #[test]
     fn upstream_asset_lock_input_limit_preserves_counts_source_and_restart_guidance() {
@@ -4271,13 +4577,12 @@ mod tests {
         )
     }
 
-    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Covers the managed-state seam after contact xpub derivation, including generation gating.
     /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
     #[test]
-    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
+    fn contact_registration_counts_only_new_keys() {
         use dash_sdk::dpp::key_wallet::account::AccountType;
         use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -4316,16 +4621,15 @@ mod tests {
             user_identity_id: [1u8; 32],
             friend_identity_id: [3u8; 32],
         };
-        let max_monitor_revision = |info: &ManagedWalletInfo| {
-            info.accounts
-                .dashpay_receival_accounts
-                .values()
-                .map(ManagedAccountTrait::monitor_revision)
-                .max()
-                .unwrap_or_default()
-        };
         let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
         info.update_synced_height(500);
+        let contact_keys = |info: &ManagedWalletInfo| {
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+        };
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4333,11 +4637,7 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4345,34 +4645,14 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact, second_contact]),
             1
         );
         assert_eq!(info.account_generation(), 2);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&second_key].monitor_revision(),
-            1
-        );
-        let mut revisions = info
-            .accounts
-            .dashpay_receival_accounts
-            .values()
-            .map(ManagedAccountTrait::monitor_revision)
-            .collect::<Vec<_>>();
-        revisions.sort_unstable();
-        assert_eq!(revisions, [1, 1]);
+        assert_eq!(contact_keys(&info), [first_key, second_key]);
     }
 
     /// The durable wallet databases are siblings of `det-app.sqlite` in the
@@ -5539,6 +5819,7 @@ mod masternode_membership_tests {
         let summary = platform_wallet::masternode::MasternodeListSummary {
             pro_tx_hash: wire,
             service_address: None,
+            service_addresses: Vec::new(),
             platform_http_port: None,
             operator_public_key: [0; 48],
             voting_key_id: [0; 20],
@@ -5546,8 +5827,93 @@ mod masternode_membership_tests {
             is_valid: true,
             is_evonode: true,
             has_extended_net_info: false,
+            operator_key_is_legacy: false,
         };
         let membership = membership_from_summaries([summary]);
         assert_eq!(membership.get(&loaded), Some(&true));
+    }
+}
+
+#[cfg(test)]
+mod spv_devnet_identity_tests {
+    use super::*;
+
+    /// Only Devnet gets a name; Core's `devnet-` datadir prefix and blank
+    /// values are normalised away.
+    #[test]
+    fn the_devnet_name_is_taken_only_on_devnet_without_its_prefix() {
+        let named = |network, configured| spv_devnet_name_from(network, configured);
+        assert_eq!(
+            named(Network::Devnet, Some("humid")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(
+            named(Network::Devnet, Some(" devnet-humid ")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(named(Network::Devnet, Some("devnet-")), None);
+        assert_eq!(named(Network::Devnet, Some("  ")), None);
+        assert_eq!(named(Network::Devnet, None), None);
+        for network in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            assert_eq!(named(network, Some("humid")), None, "{network:?}");
+        }
+    }
+
+    /// A devnet client carries the `DevnetConfig` dash-spv requires and the
+    /// user agent whose `devnet.devnet-<name>` suffix devnet peers require.
+    #[test]
+    fn a_devnet_client_identifies_itself_with_its_devnet_name() {
+        let config = with_devnet_identity(ClientConfig::new(Network::Devnet), Some("humid"));
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// The name configured for the app reaches the SPV client the wallet
+    /// backend builds, with Core's `devnet-` prefix dropped. Nothing connects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_wallet_backend_gives_dash_spv_the_configured_devnet_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx =
+            crate::context::test_support::test_app_context_for_network(dir.path(), Network::Devnet);
+        ctx.config.write().expect("config").devnet_name = Some("devnet-humid".to_string());
+        let (tx, _events) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+
+        let config = ctx
+            .wallet_backend()
+            .expect("wallet backend")
+            .build_client_config();
+
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// Without a devnet name the client config is left as it was.
+    #[test]
+    fn a_client_without_a_devnet_name_is_unchanged() {
+        let plain = ClientConfig::new(Network::Testnet);
+        let user_agent = plain.user_agent.clone();
+        let config = with_devnet_identity(plain, None);
+        assert!(config.devnet.is_none());
+        assert_eq!(config.user_agent, user_agent);
     }
 }

@@ -429,6 +429,6 @@ mod tests {
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| show(ui.ctx(), &mut state));
         harness.run();
-        harness.get_by_label("Transferability cannot change after creation. Non-transferable tokens require protocol 14 or later.");
+        harness.get_by_label("Transferability cannot change after creation.");
     }
 }

@@ -476,6 +476,29 @@ mod tests {
             owner_balance: 2,
         }
     }
+    /// A prepared review was built for its owner. When a reload deselects that
+    /// identity, the review goes, so it cannot be submitted under whichever
+    /// identity is chosen next.
+    #[test]
+    fn deselecting_the_owner_drops_its_prepared_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen =
+            TokensScreen::new(&context, super::super::super::TokensSubscreen::TokenCreator);
+        screen.selected_identity = Some(crate::context::test_support::bare_user_identity(
+            dash_sdk::platform::Identifier::from([17; 32]),
+            context.network,
+        ));
+        screen.creator_workspace.prepared = Some(prepared(&context));
+        screen.creator_workspace.acknowledged = true;
+
+        // The identity is no longer stored.
+        screen.refresh_token_creator_identity();
+
+        assert!(screen.selected_identity.is_none());
+        assert!(screen.creator_workspace.prepared.is_none());
+        assert!(!screen.creator_workspace.acknowledged);
+    }
     #[test]
     fn token_registration_preparation_result_never_approves_a_draft_edited_while_waiting() {
         let dir = tempfile::tempdir().unwrap();

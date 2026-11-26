@@ -1,10 +1,12 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::parse_identity_id;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -22,6 +24,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Result
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -47,6 +50,34 @@ pub enum TransferTokensStatus {
     Complete,
 }
 
+/// The holder verb for moving tokens, matching Home's Send and the hub.
+pub const SEND_LABEL: &str = "Send";
+/// Title of the confirmation before tokens are sent.
+pub const CONFIRM_SEND_TITLE: &str = "Send tokens?";
+/// Why Send is off: the token cannot move between identities.
+pub const DISABLED_NOT_TRANSFERABLE: &str = "This token cannot be sent to other identities.";
+/// Why Send is off: the app has no balance for this token and identity.
+pub const DISABLED_BALANCE_UNKNOWN: &str =
+    "No balance is available for this token yet. Use Check or Refresh to load it.";
+/// Why Send is off: the balance the app has shows no tokens.
+pub const DISABLED_NOTHING_TO_SEND: &str =
+    "The current balance shows no tokens to send. Use Refresh if you expect some.";
+
+/// "Send {amount} to {recipient}?"
+pub fn send_question(amount: &Amount, recipient: &str) -> String {
+    format!("Send {amount} to {recipient}?")
+}
+
+/// "Sending {amount}…"
+pub fn sending_text(amount: &Amount) -> String {
+    format!("Sending {amount}…")
+}
+
+/// "Sent {amount} to {recipient}."
+pub fn sent_text(amount: &Amount, recipient: &str) -> String {
+    format!("Sent {amount} to {recipient}.")
+}
+
 pub struct TransferTokensScreen {
     identity: Option<QualifiedIdentity>,
     pub identity_token_balance: IdentityTokenBalance,
@@ -60,7 +91,9 @@ pub struct TransferTokensScreen {
     transfer_tokens_status: TransferTokensStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
-    confirmation_dialog: Option<ConfirmationDialog>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
+    /// The open send confirmation and the send it was opened for.
+    confirmation_dialog: Option<PendingSend>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -68,6 +101,21 @@ pub struct TransferTokensScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
+    /// The amount and recipient of the send in flight, as confirmed; the form
+    /// stays editable, so the success line must not read it.
+    sent: Option<(Amount, String)>,
+    /// The transfer in flight; only its own result or error ends the wait.
+    transfer_request: PendingRequest,
+}
+
+/// An open send confirmation and the send it names: the amount and recipient
+/// are read and checked when the dialog opens, and that send is dispatched on
+/// confirm.
+struct PendingSend {
+    dialog: ConfirmationDialog,
+    amount: Amount,
+    recipient_id: Identifier,
+    recipient: String,
 }
 
 impl TransferTokensScreen {
@@ -87,7 +135,7 @@ impl TransferTokensScreen {
             .or_else(|| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    "Identity not found in local store — cannot open Transfer screen",
+                    "This identity is not on this device, so tokens cannot be sent from it. Load the identity and try again.",
                     MessageType::Error,
                 );
                 None
@@ -112,6 +160,8 @@ impl TransferTokensScreen {
 
         let amount = Some(Amount::from(&identity_token_balance).with_value(0));
 
+        let token_action_availability =
+            super::load_token_action_availability(app_context, &identity_token_balance.identity_id);
         Self {
             identity,
             identity_token_balance,
@@ -124,6 +174,7 @@ impl TransferTokensScreen {
             amount_input: None,
             transfer_tokens_status: TransferTokensStatus::NotStarted,
             max_amount,
+            token_action_availability,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -131,6 +182,8 @@ impl TransferTokensScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
+            sent: None,
+            transfer_request: PendingRequest::default(),
         }
     }
 
@@ -193,25 +246,53 @@ impl TransferTokensScreen {
         );
     }
 
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let msg = format!(
-            "Are you sure you want to transfer {} tokens to {}?",
-            self.amount.clone().unwrap_or(Amount::new(0, 0)),
-            self.receiver_identity_id
-        );
+    /// The entered amount, or zero before one is entered.
+    fn amount_or_zero(&self) -> Amount {
+        self.amount.clone().unwrap_or(Amount::new(0, 0))
+    }
 
-        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new("Confirm Transfer", msg)
-                .confirm_text(Some("Transfer"))
+    /// Ask the user to confirm the send in the form. The amount and recipient
+    /// are captured now and the dialog blocks the form behind it, so what the
+    /// user confirms is what is sent.
+    fn open_send_confirmation(&mut self) {
+        let Some(amount) = self.amount.clone().filter(|amount| amount.value() > 0) else {
+            self.transfer_tokens_status = TransferTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Enter an amount greater than zero that does not exceed your balance.",
+                MessageType::Error,
+            );
+            return;
+        };
+        let Some(recipient_id) = parse_identity_id(&self.receiver_identity_id) else {
+            self.transfer_tokens_status = TransferTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "This recipient ID is not valid. Check it and try again.",
+                MessageType::Error,
+            );
+            return;
+        };
+        let recipient = self.receiver_identity_id.clone();
+        let dialog =
+            ConfirmationDialog::new(CONFIRM_SEND_TITLE, send_question(&amount, &recipient))
+                .confirm_text(Some(SEND_LABEL))
                 .cancel_text(Some("Cancel"))
+                .blocks_input(true);
+        self.confirmation_dialog = Some(PendingSend {
+            dialog,
+            amount,
+            recipient_id,
+            recipient,
         });
+    }
 
-        let response = confirmation_dialog.show(ui);
-        match response.inner.dialog_response {
-            Some(ConfirmationStatus::Confirmed) => {
-                self.confirmation_dialog = None;
-                self.confirmation_ok()
-            }
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(pending) = self.confirmation_dialog.as_mut() else {
+            return AppAction::None;
+        };
+        match pending.dialog.show(ui).inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
             Some(ConfirmationStatus::Canceled) => {
                 self.confirmation_dialog = None;
                 AppAction::None
@@ -220,33 +301,14 @@ impl TransferTokensScreen {
         }
     }
 
+    /// The user confirmed: send what the confirmation was opened for.
     fn confirmation_ok(&mut self) -> AppAction {
-        if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
-            self.transfer_tokens_status = TransferTokensStatus::Error;
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Invalid amount",
-                MessageType::Error,
-            );
-            return AppAction::None;
-        }
-
-        let Ok(receiver_id) = Identifier::from_string_try_encodings(
-            &self.receiver_identity_id,
-            &[
-                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
-            ],
-        ) else {
-            self.transfer_tokens_status = TransferTokensStatus::Error;
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Invalid receiver",
-                MessageType::Error,
-            );
+        let Some(pending) = self.confirmation_dialog.take() else {
             return AppAction::None;
         };
-
+        if self.transfer_request.is_pending() {
+            return AppAction::None;
+        }
         // Validate signing key before transitioning to waiting state
         let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
         else {
@@ -271,40 +333,53 @@ impl TransferTokensScreen {
         let Some(identity) = self.identity.clone() else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                "No identity loaded — cannot transfer tokens",
+                "No identity is loaded. Load the identity and try again.",
                 MessageType::Error,
             );
             return AppAction::None;
         };
 
         self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
+        self.sent = Some((pending.amount.clone(), pending.recipient));
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
-            "Transferring tokens...",
+            sending_text(&pending.amount),
             MessageType::Info,
         );
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
 
-        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-            TokenTask::TransferTokens {
-                sending_identity: identity,
-                recipient_id: receiver_id,
-                amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
-                data_contract,
-                token_position: self.identity_token_balance.token_position,
-                signing_key,
-                public_note: self.public_note.clone(),
-            },
-        )))
+        let task = BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
+            sending_identity: identity,
+            recipient_id: pending.recipient_id,
+            amount: pending.amount.value(),
+            data_contract,
+            token_position: self.identity_token_balance.token_position,
+            signing_key,
+            public_note: self.public_note.clone(),
+        }));
+        self.transfer_request
+            .dispatch_on(task, self.app_context.network)
     }
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let (amount, recipient) = self
+            .sent
+            .clone()
+            .unwrap_or_else(|| (self.amount_or_zero(), self.receiver_identity_id.clone()));
         crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Transfer Successful!".to_string(),
+            sent_text(&amount, &recipient),
             vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
             None,
         )
+    }
+}
+
+/// A send keeps running when its form is closed, but its result no longer
+/// reaches the form, so the progress banner goes with the form.
+impl Drop for TransferTokensScreen {
+    fn drop(&mut self) {
+        self.refresh_banner.take_and_clear();
     }
 }
 
@@ -320,9 +395,19 @@ impl ScreenLike for TransferTokensScreen {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.transfer_request.settle(context).is_some() {
+            self.refresh_banner.take_and_clear();
+        }
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the transfer's own outcome, a later error changes nothing.
+        if !self.transfer_request.is_pending()
+            && self.transfer_tokens_status != TransferTokensStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.transfer_tokens_status = TransferTokensStatus::Error;
         }
@@ -331,6 +416,7 @@ impl ScreenLike for TransferTokensScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
         {
+            self.transfer_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
@@ -338,6 +424,10 @@ impl ScreenLike for TransferTokensScreen {
     }
 
     fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_balance.identity_id,
+        );
         // Refresh the identity because there might be new keys
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
             let all_ids = self
@@ -399,7 +489,7 @@ impl ScreenLike for TransferTokensScreen {
                     &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
-                ("Transfer", AppAction::None),
+                (SEND_LABEL, AppAction::None),
             ],
             vec![],
         );
@@ -434,15 +524,21 @@ impl ScreenLike for TransferTokensScreen {
 
             // The page heading shares its row with the Advanced Options toggle.
             ui.horizontal(|ui| {
-                ui.heading(format!(
-                    "Transfer {}",
-                    self.identity_token_balance.token_alias
-                ));
+                ui.heading(format!("Send {}", self.identity_token_balance.token_alias));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
                 });
             });
             ui.add_space(10.0);
+
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_balance.identity_id,
+                &mut self.token_action_availability,
+            );
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return AppAction::None;
+            }
 
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
@@ -536,9 +632,8 @@ impl ScreenLike for TransferTokensScreen {
                     ui.add_space(10.0);
                 }
 
-                // Input the amount to transfer
                 let step_num = if self.show_advanced_options { "2" } else { "1" };
-                ui.heading(format!("{}. Input the amount to transfer", step_num));
+                ui.heading(format!("{}. Input the amount to send", step_num));
                 ui.add_space(5.0);
 
                 self.render_amount_input(ui);
@@ -547,9 +642,8 @@ impl ScreenLike for TransferTokensScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Input the ID of the identity to transfer to
                 let step_num = if self.show_advanced_options { "3" } else { "2" };
-                ui.heading(format!("{}. ID of the identity to transfer to", step_num));
+                ui.heading(format!("{}. ID of the identity to send to", step_num));
                 ui.add_space(5.0);
                 self.render_to_identity_input(ui);
 
@@ -562,12 +656,16 @@ impl ScreenLike for TransferTokensScreen {
                 ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.label("Public note (optional):").info_tooltip(
+                    let note_label = ui.label("Public note (optional):").info_tooltip(
                         "A note about the transaction that can be seen by the public.",
                     );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .labelled_by(note_label.id)
+                        .changed()
+                    {
                         self.public_note = Some(txt);
                     }
                 });
@@ -575,7 +673,7 @@ impl ScreenLike for TransferTokensScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token transfers are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
@@ -598,15 +696,17 @@ impl ScreenLike for TransferTokensScreen {
 
                 ui.add_space(10.0);
 
-                // Transfer button
-
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
+                let in_flight = self.transfer_request.is_pending();
                 let ready = self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
-                    && has_enough_balance;
-                let hover_text = if !has_enough_balance {
+                    && has_enough_balance
+                    && !in_flight;
+                let hover_text = if in_flight {
+                    "Wait for the current transfer to finish.".to_string()
+                } else if !has_enough_balance {
                     format!(
                         "Insufficient identity balance for fee (need at least {})",
                         format_credits_as_dash(estimated_fee)
@@ -615,7 +715,7 @@ impl ScreenLike for TransferTokensScreen {
                     "Please ensure all fields are filled correctly".to_string()
                 };
 
-                if ComponentStyles::add_primary_button_enabled(ui, ready, "Transfer")
+                if ComponentStyles::add_primary_button_enabled(ui, ready, SEND_LABEL)
                     .disabled_tooltip(&hover_text)
                     .clicked()
                 {
@@ -635,16 +735,7 @@ impl ScreenLike for TransferTokensScreen {
                             MessageType::Error,
                         );
                     } else {
-                        let msg = format!(
-                            "Are you sure you want to transfer {} tokens to {}?",
-                            self.amount.clone().unwrap_or(Amount::new(0, 0)),
-                            self.receiver_identity_id
-                        );
-                        self.confirmation_dialog = Some(
-                            ConfirmationDialog::new("Confirm Transfer", msg)
-                                .confirm_text(Some("Transfer"))
-                                .cancel_text(Some("Cancel")),
-                        );
+                        self.open_send_confirmation();
                     }
                 }
 
@@ -687,5 +778,167 @@ impl ScreenLike for TransferTokensScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_contract::InsertTokensToo;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    /// A screen whose Send can be confirmed: a stored contract, a loaded
+    /// identity with a signing key, an amount and a recipient.
+    fn screen_ready_to_send(context: &Arc<AppContext>) -> TransferTokensScreen {
+        let contract = context.dpns_contract();
+        context
+            .insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
+            .unwrap();
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: contract.id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, context);
+        screen.identity = Some(identity);
+        screen.selected_key = Some(
+            IdentityPublicKeyV0 {
+                id: 0,
+                key_type: KeyType::ECDSA_HASH160,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::CRITICAL,
+                read_only: false,
+                data: BinaryData::new(vec![1; 20]),
+                disabled_at: None,
+                contract_bounds: None,
+            }
+            .into(),
+        );
+        screen.amount = Some(Amount::new(5, 0));
+        screen.receiver_identity_id = Identifier::from([5; 32]).to_string(Encoding::Base58);
+        screen
+    }
+
+    /// A transfer is irreversible, so a second confirmation while the first
+    /// is in flight must not send it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_transfer_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = screen_ready_to_send(&context);
+
+        use crate::ui::tokens::mint_tokens_screen::tests::{
+            report_error, sent_request, unrelated_request,
+        };
+        // The user confirms the send in the dialog the Send button opens.
+        let confirm = |screen: &mut TransferTokensScreen| {
+            screen.open_send_confirmation();
+            screen.confirmation_ok()
+        };
+        let request = sent_request(&confirm(&mut screen)).expect("the transfer is sent");
+        assert!(
+            sent_request(&confirm(&mut screen)).is_none(),
+            "a second confirmation while waiting must not send it again"
+        );
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(
+            sent_request(&confirm(&mut screen)).is_none(),
+            "another task's error does not end the wait"
+        );
+        report_error(&mut screen, &request.expect("the transfer's own context"));
+        assert!(
+            sent_request(&confirm(&mut screen)).is_some(),
+            "a failed transfer can be sent again"
+        );
+    }
+
+    /// An error that arrives after the transfer went through, such as a
+    /// background task's, must not replace the success screen.
+    #[test]
+    fn a_completed_transfer_stays_complete_when_another_task_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: Identifier::from([3; 32]),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: Identifier::from([6; 32]),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &context);
+        screen.display_task_result(BackendTaskSuccessResult::TransferredTokens(FeeResult {
+            estimated_fee: 1,
+            actual_fee: Some(1),
+        }));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.transfer_tokens_status == TransferTokensStatus::Complete);
+    }
+
+    fn sending_banners(context: &AppContext) -> Vec<String> {
+        crate::ui::components::message_banner::global_banner_texts(context.egui_ctx())
+            .into_iter()
+            .filter(|text| text.starts_with("Sending "))
+            .collect()
+    }
+
+    /// The progress banner belongs to the form: sends whose forms were closed
+    /// before they finished leave no "Sending" banner to crowd out others.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_the_form_clears_its_sending_banner() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        for value in 1..=3 {
+            let mut screen = screen_ready_to_send(&context);
+            screen.amount = Some(Amount::new(value, 0));
+            screen.open_send_confirmation();
+            screen.confirmation_ok();
+            assert_eq!(
+                sending_banners(&context).len(),
+                1,
+                "the send shows progress"
+            );
+            drop(screen);
+            assert!(
+                sending_banners(&context).is_empty(),
+                "a closed form leaves no progress banner"
+            );
+        }
+    }
+
+    /// The send's own error ends its progress banner even when the screen
+    /// gets no error message, e.g. after a network switch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_sends_own_error_clears_its_sending_banner() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = screen_ready_to_send(&context);
+        screen.open_send_confirmation();
+        let request =
+            crate::ui::tokens::mint_tokens_screen::tests::sent_request(&screen.confirmation_ok())
+                .flatten()
+                .expect("the send's context");
+        screen.display_backend_task_error(&request, &TaskError::NetworkSwitchedBeforeResult);
+        assert!(sending_banners(&context).is_empty());
     }
 }

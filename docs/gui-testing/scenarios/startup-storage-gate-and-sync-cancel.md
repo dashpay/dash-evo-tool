@@ -23,11 +23,8 @@ first-run branches also depend on on-disk state a real launch creates.
     pass. Not needed for the first-run pass.
 - A legacy `data.db` is needed only for the migration variant (step 5). If none is
   available, record that variant as NOT COVERED rather than fabricating one.
-- The data directory's **entire ancestor chain** must be free of group/other-write
-  permission. The secret store refuses to open otherwise and the app exits during
-  startup with `AppCreation(SecretStore { source: InsecureParentDir { mode: … } })`.
-  A `mktemp -d` under a world-writable `/tmp` or a `~/.config` at mode `0775` both
-  trip this. See "Known gotchas".
+- Keep every ancestor of the data directory owner-only (see "Known gotchas"): the
+  wallet storage logs a warning for a folder other accounts could replace.
 
 ## Setup
 
@@ -176,14 +173,11 @@ the scenario regardless of what the screen showed.
 
 ## Known gotchas
 
-- **The secret store validates the data directory's whole ancestor chain.** A single
-  group-writable ancestor aborts startup with
-  `AppCreation(SecretStore { source: InsecureParentDir { mode: 509 } })` (509 is
-  decimal for `0775`). This bites the two most natural choices: a plain `mktemp -d`
-  under a world-writable `/tmp`, and the default `~/.config/dash-evo-tool` on a system
-  where `~/.config` is `0775`. The failure is written only to the log — the launching
-  terminal shows a short "failed to start" message with no permission detail — so read
-  `det.log` before assuming the binary is broken.
+- **The wallet storage only warns about an unsafe ancestor folder.** An ancestor of the
+  data directory that is group- or other-writable without the sticky bit, or owned by
+  an account other than you or root, is reported in `det.log` as a warning naming the
+  folder; startup continues. A root-owned sticky directory such as `/tmp` (mode `1777`)
+  is not reported.
 - **A fresh data directory does not start on testnet.** Read the network selector
   before concluding a fixture is dead; a zero balance or a "masternode not found" on a
   fresh install is far more often the wrong network than a broken fixture.

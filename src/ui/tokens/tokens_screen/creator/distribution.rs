@@ -192,12 +192,6 @@ pub(super) fn show(
         );
         ui.label("Each eligible identity can claim once. One person can control multiple identities. Available supply can limit claims; tokens do not transfer automatically.");
         if state.draft.once_enabled {
-            if version.protocol_version < 14 {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    "The selected network does not support this allocation yet.",
-                );
-            }
             amount(
                 ui,
                 "Amount per identity",

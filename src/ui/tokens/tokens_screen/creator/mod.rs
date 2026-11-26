@@ -129,11 +129,7 @@ impl TokensScreen {
                         .max_height(body_height)
                         .show(ui, |ui| match self.creator_workspace.section {
                             Section::Basics => basics::show(ui, &mut self.creator_workspace),
-                            Section::Supply => supply::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.platform_version(),
-                            ),
+                            Section::Supply => supply::show(ui, &mut self.creator_workspace),
                             Section::Distribution => distribution::show(
                                 ui,
                                 &mut self.creator_workspace,
@@ -501,7 +497,7 @@ mod tests {
     }
 
     fn supply_section(ui: &mut Ui, state: &mut CreatorWorkspace) {
-        supply::show(ui, state, dash_sdk::dpp::version::PlatformVersion::latest());
+        supply::show(ui, state);
     }
 
     /// Allowances bind only an administrator, so a rule with neither performer

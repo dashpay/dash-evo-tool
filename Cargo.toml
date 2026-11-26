@@ -19,13 +19,7 @@ qrcode = "0.14.1"
 nix = { version = "0.32.0", features = ["signal"] }
 eframe = { version = "0.37.0", features = ["persistence", "wgpu"] }
 base64 = "0.23.1"
-# TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
-# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml: serde_with = "2.1.0"). Re-check
-# when these pins move. Verified 2026-09-16: rpc-json/src/lib.rs only uses serde_with's `Bytes`
-# and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
-# dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
-# `not_used` was attempted but requires manual GitHub action — see coordinator note).
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -35,21 +29,21 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3", features = [
     "serde",
     "shielded",
 ] }
 # `serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
 # visitor copies a borrowed `&str` straight into guarded memory instead of
 # routing through a transient `String`. Secret schemas are included by `secrets`.
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3", features = [
     "shielded",
     "serde",
 ] }
 # Names `ShutdownReport`/`WorkerStatus` (returned by `platform-wallet`) so
 # their panic text can be redacted before logging.
-dash-async = { git = "https://github.com/dashpay/platform", rev = "2651f7e2e11b491b4b2818aeb93d07f846856d78" }
+dash-async = { git = "https://github.com/dashpay/platform", rev = "d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3" }
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.12.0"
 thiserror = "2.0.21"

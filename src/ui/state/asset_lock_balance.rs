@@ -250,16 +250,16 @@ impl AssetLockBalanceCache {
 
     /// Record why one in-flight wallet query returned no maximum: another
     /// transaction in progress offers none until the key moves, anything
-    /// else is retryable.
+    /// else is retryable. False when the query is not the awaited one.
     pub fn mark_request_error(
         &mut self,
         seed_hash: &WalletSeedHash,
         snapshot_generation: u64,
         request_id: u64,
         error: &TaskError,
-    ) {
+    ) -> bool {
         let busy = matches!(error, TaskError::SpendInProgress);
-        self.settle_failed(seed_hash, snapshot_generation, request_id, busy);
+        self.settle_failed(seed_hash, snapshot_generation, request_id, busy)
     }
 
     /// Mark one in-flight wallet query retryable after a backend failure.
@@ -278,9 +278,9 @@ impl AssetLockBalanceCache {
         snapshot_generation: u64,
         request_id: u64,
         busy: bool,
-    ) {
+    ) -> bool {
         let Some(state) = self.states.get_mut(seed_hash) else {
-            return;
+            return false;
         };
         if let Some(in_flight) = state.in_flight.as_ref()
             && (in_flight.request_id, in_flight.key.generation) == (request_id, snapshot_generation)
@@ -302,8 +302,10 @@ impl AssetLockBalanceCache {
                     // shown as the available amount.
                     state.loaded = None;
                 }
+                return true;
             }
         }
+        false
     }
 
     /// Return the most recent builder maximum, including during revalidation.

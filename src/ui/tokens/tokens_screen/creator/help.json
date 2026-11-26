@@ -83,7 +83,7 @@
     "title": "Transfers between holders",
     "body": "Allow holders to send tokens to other identities. This choice is separate from a temporary pause and from permissions for minting, burning or other actions.",
     "example": "A transferable reward can be sent to another member.",
-    "consequence": "Transferability cannot change after creation. Non-transferable tokens require protocol 14 or later.",
+    "consequence": "Transferability cannot change after creation.",
     "scene": "14"
   },
   "paused": {
@@ -319,7 +319,7 @@
   },
   "once": {
     "title": "Once per identity",
-    "body": "Each eligible identity can claim the configured amount once. One person can control several identities, and available supply can limit claims. This feature requires protocol 14 or later.",
+    "body": "Each eligible identity can claim the configured amount once. One person can control several identities, and available supply can limit claims.",
     "example": "Offer a 1-token allocation per eligible identity, not per person.",
     "scene": "46"
   },

@@ -337,6 +337,7 @@ As a user updating from any earlier version I still have installed, I want every
 - Identities loaded before the update are still present afterwards, keeping their alias, their keys, their wallet link and their registered DPNS name, without a manual reload or refresh.
 - The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
 - Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
+- Exception: wallet data from the `v1.0.0-weekly.20260901` and `v1.0.0-weekly.20260908` test builds must first be opened with `v1.0.0-weekly.20261117`, on every network whose data needs it, until each finishes syncing. The app says so at startup, before changing any data, and names that release with its download address and each network to open.
 - Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
 
 ### WAL-034: Control how long upgrade backups are kept [Implemented]
@@ -427,11 +428,12 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Select Core Wallet source and enter a shielded address as destination. Core funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
+- Pay from Core and choose My wallets › Shielded, or open Shield from the Shielded tab. The funds go to the same wallet's private balance; someone else's private address can be paid only from a private balance (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- On a network confirmed to run a Platform protocol older than 14, shielding is refused before any funds are locked, with a message to wait for the upgrade or choose another network.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-008: Top up identity from Send screen [Implemented]
 **Persona:** Priya, Jordan
@@ -450,7 +452,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 - Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only your default private address counts as your own.
 - System auto-selects the highest-balance Platform address.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-010: Withdraw from shielded pool to Core address [Implemented]
 **Persona:** Jordan
@@ -458,7 +460,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
 - Select Shielded Balance as source and enter a Core address as destination.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
 **Persona:** Priya, Jordan
@@ -503,7 +505,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 - Select Shielded Balance as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-016: Send privately within the shielded pool [Implemented]
 **Persona:** Jordan
@@ -513,7 +515,7 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Select Shielded Balance as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
-- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+- Available when Expert view or Developer view is selected (DET requires Platform protocol 14 or newer).
 
 ### SND-017: "Max" is verified against what the wallet can actually build [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -538,7 +540,7 @@ As a user, I want a payment whose confirmation could not be verified to tell me 
 - Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
 - While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
 
-### SND-019: Let the app choose which balance pays [Gap]
+### SND-019: Let the app choose which balance pays [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want the Send screen to pick which of my balances pays for a payment, and tell me what it picked, so that I can pay someone without knowing the difference between Core and Platform.
@@ -550,7 +552,7 @@ As a user, I want the Send screen to pick which of my balances pays for a paymen
 - Changing Pay from never clears the recipient. A choice that cannot reach the recipient is disabled or explained inline, never refused after pressing Send.
 - Design: `docs/ai-design/2026-10-23-send-screen-redesign/`.
 
-### SND-020: Move funds between my own wallets and balances [Gap]
+### SND-020: Move funds between my own wallets and balances [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to send to one of my own wallets, balances or identities by picking it, so that I never have to copy my own address.
@@ -561,7 +563,7 @@ As a user, I want to send to one of my own wallets, balances or identities by pi
 - Auto can be on only one side. Choosing it on one side fixes the other side to what its Auto had chosen, and says so.
 - The balance being paid from cannot also be chosen as the destination.
 
-### SND-021: One Summary of what a send costs [Gap]
+### SND-021: One Summary of what a send costs [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want a single summary of the route, fee and total before I press Send, so that I do not have to piece it together from several hints.
@@ -572,15 +574,16 @@ As a user, I want a single summary of the route, fee and total before I press Se
 - "Max" means "everything available" and stays that way until the amount is edited. With Auto, Max uses the balance that can send the most.
 - A locked wallet does not hide the form; Send asks for the password, then shows the confirmation.
 
-### SND-022: Choose exactly which addresses pay, or pay several recipients [Gap]
+### SND-022: Choose exactly which addresses pay, or pay several recipients [Implemented]
 **Persona:** Priya, Jordan
 
 As a power user, I want to pick the addresses a payment spends from, or pay several recipients at once, from the same Send form, so that I do not have to switch to a separate advanced screen.
 
-- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. The amount still comes from the single Amount field.
+- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. Each ticked address can take its own amount; with none entered, the payment is spread over the ticked addresses.
+- Ticked Platform addresses cannot pay into a private balance. The form says why and points to Auto or Platform, which can.
 - When Platform is involved, a collapsed "Fee options" row in the Summary offers the same four fee strategies as today (deduct from first/last input, reduce first/last output), with the same default.
 - "+ Add another recipient" under the recipient field turns it into address-and-amount rows. All recipients in one payment are the same kind.
-- Replaces the separate "Advanced Options" form and its per-address amounts.
+- Replaces the separate "Advanced Options" form; everything it could do stays available.
 
 ---
 
@@ -860,8 +863,8 @@ As a user, I want to register a username for one of my identities so that others
 
 - Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
 - When the identity cannot register from this device, the disabled button says why and what helps: add a key when the identity has no suitable key; restore keys in place when an earlier version of the app saved the key; use Restore from Previous Version in Settings when the app was updated but nothing is offered in place; otherwise enter the key under the identity's keys. When the key comes from a wallet that is not on this device, the button is disabled and says to import that wallet again; a wallet that is on this device but locked does not disable it.
-- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. From protocol 14 a vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
-- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.2 DASH before protocol 14; from 14, 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. A vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
+- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
 - The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. Where the DPNS contract picks the first request for a name, the balance must also hold the network's small name-admission reserve (0.001 DASH) on top of the fees; a balance without it is turned away before anything is paid. A low balance offers Top up and returns with the name kept. Availability and the community vote fee are re-checked on Pay; a fee that changed since it was approved is refused as changed terms.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
 - The registration fee shown is the balance the network needs for both registration steps, which is above what it then charges. An identity that holds less than the total cannot pay and is refused before anything is sent, so the first step is never paid for a registration the second step would turn down.
@@ -1200,10 +1203,10 @@ As a power user, I want to add a token by entering its contract ID or token ID d
 
 - Enter ID manually and add to token list.
 
-### TOK-004: Transfer tokens [Implemented]
+### TOK-004: Send tokens [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to transfer tokens to another identity so that I can send tokens I own.
+As a user, I want to send tokens to another identity so that someone else can hold tokens I own.
 
 - Select token, enter recipient and amount.
 - Confirmation before broadcast.
@@ -1230,6 +1233,7 @@ As a token issuer, I want to mint additional tokens so that I can increase the c
 
 - Requires authorized identity.
 - Specify amount to mint.
+- A recipient can be chosen only when the token allows it; otherwise the screen and the confirmation name the token's destination identity.
 
 ### TOK-007: Burn tokens [Implemented]
 **Persona:** Jordan
@@ -1270,6 +1274,7 @@ As a user, I want to claim tokens distributed to me so that they appear in my ba
 
 - View available claims.
 - Claim action transfers tokens to identity.
+- Identities that belong to no wallet in this app, such as evonode identities, can claim too.
 
 ### TOK-012: Set token pricing and purchase tokens [Implemented]
 **Persona:** Jordan
@@ -1336,7 +1341,7 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
 
-- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The token creator offers a once-per-identity distribution with the amount each identity can claim.
 - The prepared registration charge includes the network's extra fee for this distribution.
 - The Claim screen and My Tokens show the distribution.
 - After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
@@ -1347,11 +1352,19 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- Supply & permissions offers "Allow ordinary transfers between holders", on by default. Unsupported networks refuse creation before payment while retaining the draft choice.
+- Supply & permissions offers "Allow ordinary transfers between holders", on by default.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
-- A network that does not support it is refused before anything is paid.
-- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
+
+### TOK-021: Token transactions go through the identity's wallet when it has one [Implemented]
+**Persona:** Alex, Jordan, Priya
+
+As a user, I want token transactions to use the wallet that holds my identity, and to be told up front when that wallet is not ready, so that I do not fill in a form the network step will refuse.
+
+- Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) of an identity that a wallet in this app holds are sent through that wallet.
+- An identity that no wallet in this app holds (masternode, evonode and key-only identities) sends them signed with its own keys; it needs no wallet.
+- When the identity's wallet is known but not loaded yet, My Tokens marks the identity "View only" with its transaction buttons disabled, and token action screens show the reason (unlock the wallet or wait for it to load) instead of the form.
 
 ## Contracts and Documents (DOC)
 
@@ -1467,7 +1480,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
-- When the network runs a newer protocol version than this build knows, the current-epoch report advises updating Dash Evo Tool; some features stay unavailable until then.
+- DET supports Platform protocol 14 or newer on every network. On connection or reconnection, a verified older version shows a persistent warning to wait for the network upgrade or choose another network in Settings. A failed version check is logged without blocking operations; incompatible operations use normal server-error handling.
+- When the network runs a newer version than this build knows, the current-epoch report advises updating the app.
 - The recent withdrawal history, when it lists a failed withdrawal, notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]
@@ -1797,6 +1811,17 @@ As a user with more than one wallet, I want every wallet picker to show each wal
 - If the balances of the wallet's identities cannot be read, the load-existing-identity screen says so, leaves them out of the totals instead of showing them as zero, and stays usable.
 - The top-bar wallet pill keeps its own format.
 
+### UX-007: See why the app could not start [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose app fails to start, I want a window that explains what happened so that I can fix it myself or ask for help with the right information.
+
+- When startup fails after the app window can open, the app shows a window instead of closing silently; the app itself does not open behind it.
+- The window says in plain language what happened and what to try. A known cause (for example, a data folder other accounts can change) gets its own message; any other cause gets a general one.
+- It suggests reporting the problem on the project's issue page if the user cannot solve it, shows that address so it can be copied, and can open it in the browser.
+- It shows the technical details, selectable and with a Copy details button, and where the log file is.
+- Quit closes the app.
+
 ## Identities Hub (IDH)
 
 ### IDH-001: First-time identity setup [Implemented]
@@ -1950,6 +1975,7 @@ As a masternode operator, I want to open the key screen for a node, so that I ca
 As an evonode operator, I want to jump to token-reward claiming from the node's detail view, so that I can collect rewards my evonode earned.
 
 - An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
+- The claim is signed with the evonode identity's own keys; no wallet is needed.
 - The action is hidden entirely on a plain Masternode's detail view.
 
 ### MN-010: Keep the Masternodes tab consistent across a network switch [Implemented]

@@ -76,6 +76,12 @@ pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Err
     ensure_data_dir_exists(&app_data_dir)
 }
 
+/// Whether something other than a folder (a file or a link) is at `path`
+/// itself, which keeps a data folder from being created there.
+pub(crate) fn is_occupied_by_non_folder(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir())
+}
+
 /// Creates the given data directory if it does not exist and verifies it is a directory.
 pub fn ensure_data_dir_exists(data_dir: &Path) -> Result<(), std::io::Error> {
     #[cfg(unix)]
@@ -146,10 +152,8 @@ pub fn data_file_path(data_dir: &Path, filename: &str) -> Result<PathBuf, std::i
 
 /// If .env file does not exist in the application data directory,
 /// copy the bundled `.env.example` file to that directory.
-pub fn copy_env_file_if_not_exists() {
-    let app_data_dir =
-        app_user_data_dir_path().expect("Failed to determine application data directory");
-    ensure_env_file(&app_data_dir);
+pub fn copy_env_file_if_not_exists() -> io::Result<()> {
+    ensure_env_file(&app_user_data_dir_path()?)
 }
 
 /// File name of the environment config in the data directory.
@@ -157,11 +161,10 @@ pub const ENV_FILE: &str = ".env";
 
 /// If .env file does not exist in the given data directory,
 /// copy the bundled `.env.example` file there.
-pub fn ensure_env_file(data_dir: &Path) {
-    let env_file_in_app_dir = data_dir.join(ENV_FILE);
+pub fn ensure_env_file(data_dir: &Path) -> io::Result<()> {
     BundledResource::DotEnvExample
-        .write_to_file(&env_file_in_app_dir, false)
-        .expect("Failed to write bundled .env.example file");
+        .write_to_file(&data_dir.join(ENV_FILE), false)
+        .map(drop)
 }
 
 /// For a given network, create dash core config file in the given data directory if it does not exist.

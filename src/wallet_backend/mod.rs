@@ -461,7 +461,8 @@ struct Inner {
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
-    /// Devnet name for the SPV user agent and chain params; `None` off Devnet.
+    /// Devnet name dash-spv requires at startup and puts in its user agent;
+    /// `None` off Devnet. Genesis and quorum settings do not depend on it.
     devnet_name: Option<String>,
     network: Network,
     /// Disposable per-network chain cache: `<data_dir>/spv/<network>/`.
@@ -622,10 +623,10 @@ fn spv_devnet_name_from(network: Network, configured: Option<&str>) -> Option<St
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Give a devnet SPV client its chain parameters and the user agent devnet
-/// peers require. Without the `DevnetConfig`, dash-spv refuses the devnet
-/// configuration before connecting; without the `devnet.devnet-<name>`
-/// user-agent suffix, devnet Core peers drop the handshake. No change when
+/// Attach the `DevnetConfig` dash-spv requires before it connects, and the
+/// user agent with the `devnet.devnet-<name>` suffix Dash Core peers check
+/// during the handshake. The name selects no chain parameters: genesis comes
+/// from the network, and no quorum override is set. No change when
 /// `devnet_name` is `None`.
 fn with_devnet_identity(config: ClientConfig, devnet_name: Option<&str>) -> ClientConfig {
     let Some(name) = devnet_name else {
@@ -5838,8 +5839,8 @@ mod spv_devnet_identity_tests {
         }
     }
 
-    /// A devnet client carries the chain parameters and the user agent whose
-    /// `devnet.devnet-<name>` suffix devnet peers require.
+    /// A devnet client carries the `DevnetConfig` dash-spv requires and the
+    /// user agent whose `devnet.devnet-<name>` suffix devnet peers require.
     #[test]
     fn a_devnet_client_identifies_itself_with_its_devnet_name() {
         let config = with_devnet_identity(ClientConfig::new(Network::Devnet), Some("humid"));

@@ -223,35 +223,28 @@ impl BannerHandle {
     /// Update the display text of this banner.
     /// Returns `None` if the banner no longer exists.
     pub fn set_message(&self, text: impl fmt::Display) -> Option<&Self> {
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.text = text.to_string();
-        set_banners(&self.ctx, banners);
-        Some(self)
+        let text = text.to_string();
+        self.update(|b| b.text = text)
     }
 
     /// Override the auto-dismiss duration for this banner.
     /// Resets the countdown timer.
     /// Returns `None` if the banner no longer exists.
     pub fn with_auto_dismiss(&self, duration: Duration) -> Option<&Self> {
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.auto_dismiss_after = Some(duration);
-        b.created_at = Instant::now();
-        set_banners(&self.ctx, banners);
-        Some(self)
+        self.update(|b| {
+            b.auto_dismiss_after = Some(duration);
+            b.created_at = Instant::now();
+        })
     }
 
     /// Enable elapsed-time display on this banner. Disables auto-dismiss
     /// and shows how long the banner has been visible (e.g. for long-running operations).
     /// Returns `None` if the banner no longer exists.
     pub fn with_elapsed(&self) -> Option<&Self> {
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.show_elapsed = true;
-        b.auto_dismiss_after = None;
-        set_banners(&self.ctx, banners);
-        Some(self)
+        self.update(|b| {
+            b.show_elapsed = true;
+            b.auto_dismiss_after = None;
+        })
     }
 
     /// Attach optional technical details to this banner.
@@ -272,20 +265,19 @@ impl BannerHandle {
         if details.is_empty() {
             return Some(self);
         }
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        // Skip if details would just repeat the primary text (exact match or
-        // Debug-quoted match, e.g. `"same text"` vs `same text`).
-        let is_redundant = details == b.text
-            || details.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(b.text.as_str());
+        self.update(|b| {
+            // Skip if details would just repeat the primary text (exact match or
+            // Debug-quoted match, e.g. `"same text"` vs `same text`).
+            let is_redundant = details == b.text
+                || details.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                    == Some(b.text.as_str());
 
-        if is_redundant {
-            b.details = None;
-        } else {
-            b.details = Some(details);
-        }
-        set_banners(&self.ctx, banners);
-        Some(self)
+            if is_redundant {
+                b.details = None;
+            } else {
+                b.details = Some(details);
+            }
+        })
     }
 
     /// Attach a primary action button (label + opaque `action_id`) to
@@ -306,15 +298,13 @@ impl BannerHandle {
     ) -> Option<&Self> {
         let label = label.to_string();
         let action_id = action_id.to_string();
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.action = if label.is_empty() {
-            None
-        } else {
-            Some((label, action_id))
-        };
-        set_banners(&self.ctx, banners);
-        Some(self)
+        self.update(|b| {
+            b.action = if label.is_empty() {
+                None
+            } else {
+                Some((label, action_id))
+            };
+        })
     }
 
     /// Attach an optional recovery suggestion to this banner.
@@ -325,11 +315,7 @@ impl BannerHandle {
         if suggestion.is_empty() {
             return Some(self);
         }
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.suggestion = Some(suggestion);
-        set_banners(&self.ctx, banners);
-        Some(self)
+        self.update(|b| b.suggestion = Some(suggestion))
     }
 
     /// Disable auto-dismiss for this banner so it stays visible until
@@ -340,18 +326,21 @@ impl BannerHandle {
     /// per-instance API.
     /// Returns `None` if the banner no longer exists.
     pub fn disable_auto_dismiss(&self) -> Option<&Self> {
-        let mut banners = get_banners(&self.ctx);
-        let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.auto_dismiss_after = None;
-        set_banners(&self.ctx, banners);
-        Some(self)
+        self.update(|b| b.auto_dismiss_after = None)
     }
 
     /// Remove this banner immediately.
     pub fn clear(self) {
-        let mut banners = get_banners(&self.ctx);
-        banners.retain(|b| b.key != self.key);
-        set_banners(&self.ctx, banners);
+        update_banners(&self.ctx, |banners| banners.retain(|b| b.key != self.key));
+    }
+
+    /// Applies `change` to this banner in one step on the global list.
+    /// Returns `None` if the banner no longer exists.
+    fn update(&self, change: impl FnOnce(&mut BannerState)) -> Option<&Self> {
+        update_banners(&self.ctx, |banners| {
+            banners.iter_mut().find(|b| b.key == self.key).map(change)
+        })?;
+        Some(self)
     }
 }
 
@@ -457,49 +446,28 @@ impl MessageBanner {
         message_type: MessageType,
     ) -> BannerHandle {
         let text = text.to_string();
-        let mut banners = get_banners(ctx);
-        if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
-            // Same text already displayed: update message_type if it changed,
-            // but preserve timestamps and auto-dismiss timer (idempotent for text).
-            if existing.message_type != message_type {
+        let (key, evicted) = update_banners(ctx, |banners| {
+            if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
+                // Same text already displayed: update message_type if it changed,
+                // but preserve timestamps and auto-dismiss timer (idempotent for text).
                 existing.message_type = message_type;
-                let key = existing.key;
-                let evicted = existing.evicted.clone();
-                set_banners(ctx, banners);
-                return BannerHandle {
-                    ctx: ctx.clone(),
-                    key,
-                    evicted,
-                };
+                return (existing.key, existing.evicted.clone());
             }
-            return BannerHandle {
-                ctx: ctx.clone(),
-                key: existing.key,
-                evicted: existing.evicted.clone(),
-            };
-        }
-        let key = next_banner_key();
-        // An empty text raises nothing, so the handle names no banner and can
-        // never be evicted; its own cell stays false.
-        let mut lifecycle = Arc::new(AtomicBool::new(false));
-        if !text.is_empty() {
-            let raised = BannerState::new(key, text, message_type);
-            lifecycle = raised.evicted.clone();
-            banners.push(raised);
-            if banners.len() > MAX_BANNERS {
-                let evicted = banners.remove(0);
-                warn!(
-                    "Banner evicted (capacity {}): {:?}",
-                    MAX_BANNERS, evicted.message_type,
-                );
-                evicted.evicted.store(true, Ordering::Relaxed);
+            let key = next_banner_key();
+            // An empty text raises nothing, so the handle names no banner and can
+            // never be evicted; its own cell stays false.
+            if text.is_empty() {
+                return (key, Arc::new(AtomicBool::new(false)));
             }
-            set_banners(ctx, banners);
-        }
+            (
+                key,
+                push_banner(banners, BannerState::new(key, text, message_type)),
+            )
+        });
         BannerHandle {
             ctx: ctx.clone(),
             key,
-            evicted: lifecycle,
+            evicted,
         }
     }
 
@@ -547,46 +515,33 @@ impl MessageBanner {
                 evicted: Arc::new(AtomicBool::new(false)),
             };
         }
-        let mut banners = get_banners(ctx);
-        let key;
-        let lifecycle;
-        if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
-            key = b.key;
-            lifecycle = b.evicted.clone();
-            b.reset_to(new_text, message_type);
-        } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
-            // Idempotent: if new_text already displayed, return handle without
-            // resetting (consistent with set_global behavior).
-            key = existing.key;
-            lifecycle = existing.evicted.clone();
-        } else {
-            key = next_banner_key();
-            let raised = BannerState::new(key, new_text, message_type);
-            lifecycle = raised.evicted.clone();
-            banners.push(raised);
-            if banners.len() > MAX_BANNERS {
-                let evicted = banners.remove(0);
-                warn!(
-                    "Banner evicted (capacity {}): {:?}",
-                    MAX_BANNERS, evicted.message_type,
-                );
-                evicted.evicted.store(true, Ordering::Relaxed);
+        let (key, evicted) = update_banners(ctx, |banners| {
+            if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
+                b.reset_to(new_text, message_type);
+                (b.key, b.evicted.clone())
+            } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
+                // Idempotent: if new_text already displayed, return handle without
+                // resetting (consistent with set_global behavior).
+                (existing.key, existing.evicted.clone())
+            } else {
+                let key = next_banner_key();
+                (
+                    key,
+                    push_banner(banners, BannerState::new(key, new_text, message_type)),
+                )
             }
-        }
-        set_banners(ctx, banners);
+        });
         BannerHandle {
             ctx: ctx.clone(),
             key,
-            evicted: lifecycle,
+            evicted,
         }
     }
 
     /// Clears the specific global banner message matching `text`.
     pub fn clear_global_message(ctx: &egui::Context, text: impl fmt::Display) {
         let text = text.to_string();
-        let mut banners = get_banners(ctx);
-        banners.retain(|b| b.text != text);
-        set_banners(ctx, banners);
+        update_banners(ctx, |banners| banners.retain(|b| b.text != text));
     }
 
     /// Clears all global banner messages.
@@ -594,7 +549,7 @@ impl MessageBanner {
     /// Use when the context changes significantly (e.g., network switch) and
     /// stale messages from the previous context should not persist.
     pub fn clear_all_global(ctx: &egui::Context) {
-        set_banners(ctx, vec![]);
+        update_banners(ctx, Vec::clear);
     }
 
     /// Returns whether any global banner messages exist.
@@ -611,26 +566,47 @@ impl MessageBanner {
     /// dispatches a matching backend task. Banners themselves never
     /// touch backend code — the action id is the seam.
     pub fn take_action(ctx: &egui::Context) -> Option<String> {
-        let mut queue = get_actions(ctx);
-        if queue.is_empty() {
-            return None;
-        }
-        let id = queue.remove(0);
-        set_actions(ctx, queue);
-        Some(id)
+        update_actions(ctx, |queue| (!queue.is_empty()).then(|| queue.remove(0)))
     }
 
     /// Renders all global banners from egui context data.
     /// Call inside `island_central_panel` before content.
     pub fn show_global(ui: &mut egui::Ui) {
-        let mut banners = get_banners(ui.ctx());
-        if banners.is_empty() {
+        // Rendering needs the context, so it works on a copy and merges the
+        // outcome back by key: banners raised or changed meanwhile survive.
+        let mut shown = get_banners(ui.ctx());
+        if shown.is_empty() {
             return;
         }
-        // Always write back: process_banner() mutates state (auto-dismiss timers,
-        // expanded flags) even when no banners are removed.
-        banners.retain_mut(|b| process_banner(ui, b) == BannerStatus::Visible);
-        set_banners(ui.ctx(), banners);
+        let statuses: Vec<_> = shown.iter_mut().map(|b| process_banner(ui, b)).collect();
+        update_banners(ui.ctx(), |banners| {
+            for (rendered, status) in shown.into_iter().zip(statuses) {
+                let Some(index) = banners.iter().position(|b| b.key == rendered.key) else {
+                    continue;
+                };
+                let current = &mut banners[index];
+                match status {
+                    // A banner reset meanwhile keeps its fresh state.
+                    BannerStatus::Visible => {
+                        if current.text == rendered.text {
+                            current.details_expanded = rendered.details_expanded;
+                            current.logged |= rendered.logged;
+                        }
+                    }
+                    BannerStatus::Dismissed => {
+                        banners.remove(index);
+                    }
+                    // A banner whose timer was reset meanwhile stays.
+                    BannerStatus::TimedOut => {
+                        if current.auto_dismiss_after == rendered.auto_dismiss_after
+                            && current.created_at == rendered.created_at
+                        {
+                            banners.remove(index);
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -895,37 +871,55 @@ pub(crate) fn global_banner_texts(ctx: &egui::Context) -> Vec<String> {
     get_banners(ctx).into_iter().map(|b| b.text).collect()
 }
 
-/// Writes the global banner list to egui context data.
-/// Removes the entry entirely when the list is empty.
-fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
-    if banners.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<BannerState>>(egui::Id::unique(BANNER_STATE_ID)));
-    } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(BANNER_STATE_ID), banners));
-    }
+/// Reads, changes and writes the global banner list under one context lock,
+/// so a banner raised or cleared on another thread is never lost. Removes the
+/// entry entirely when the list ends up empty. `change` must not use `ctx`.
+fn update_banners<R>(ctx: &egui::Context, change: impl FnOnce(&mut Vec<BannerState>) -> R) -> R {
+    update_list(ctx, BANNER_STATE_ID, change)
 }
 
-/// Reads the pending banner-action queue (FIFO) from egui context data.
-fn get_actions(ctx: &egui::Context) -> Vec<String> {
-    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::unique(BANNER_ACTIONS_ID)))
-        .unwrap_or_default()
+/// Appends `raised` to `banners`, evicting the oldest past [`MAX_BANNERS`].
+/// Returns the eviction cell of the raised banner.
+fn push_banner(banners: &mut Vec<BannerState>, raised: BannerState) -> Arc<AtomicBool> {
+    let lifecycle = raised.evicted.clone();
+    banners.push(raised);
+    if banners.len() > MAX_BANNERS {
+        let evicted = banners.remove(0);
+        warn!(
+            "Banner evicted (capacity {}): {:?}",
+            MAX_BANNERS, evicted.message_type,
+        );
+        evicted.evicted.store(true, Ordering::Relaxed);
+    }
+    lifecycle
 }
 
-/// Writes the pending banner-action queue. Removes the slot when empty.
-fn set_actions(ctx: &egui::Context, actions: Vec<String>) {
-    if actions.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::unique(BANNER_ACTIONS_ID)));
-    } else {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::unique(BANNER_ACTIONS_ID), actions));
-    }
+/// Changes the pending banner-action queue (FIFO) under one context lock.
+fn update_actions<R>(ctx: &egui::Context, change: impl FnOnce(&mut Vec<String>) -> R) -> R {
+    update_list(ctx, BANNER_ACTIONS_ID, change)
+}
+
+/// Changes the list stored under `slot` in one `data_mut` call, removing the
+/// slot when the list ends up empty.
+fn update_list<T, R>(ctx: &egui::Context, slot: &str, change: impl FnOnce(&mut Vec<T>) -> R) -> R
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let id = egui::Id::unique(slot);
+    ctx.data_mut(|d| {
+        let list = d.get_temp_mut_or_default::<Vec<T>>(id);
+        let result = change(list);
+        if list.is_empty() {
+            d.remove::<Vec<T>>(id);
+        }
+        result
+    })
 }
 
 /// Appends an action id to the queue. Called from the renderer when
 /// the user clicks an [`BannerHandle::with_action`] button.
 fn push_action(ctx: &egui::Context, action_id: &str) {
-    let mut queue = get_actions(ctx);
-    queue.push(action_id.to_string());
-    set_actions(ctx, queue);
+    update_actions(ctx, |queue| queue.push(action_id.to_string()));
 }
 
 /// The leading icon for a message of `message_type`, shared with `InlineNotice`.
@@ -1224,5 +1218,55 @@ mod tests {
         assert_eq!(MessageBanner::take_action(&ctx).as_deref(), Some("first"));
         assert_eq!(MessageBanner::take_action(&ctx).as_deref(), Some("second"));
         assert!(MessageBanner::take_action(&ctx).is_none());
+    }
+
+    /// Raises a banner on one thread while `churn` runs on another, many times
+    /// over, and counts how often the raised banner is gone at once.
+    fn banners_lost_while(churn: impl Fn(&egui::Context) + Send + 'static) -> usize {
+        let ctx = egui::Context::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let churner = {
+            let (ctx, stop) = (ctx.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    churn(&ctx);
+                }
+            })
+        };
+        let mut lost = 0;
+        for n in 0..5_000 {
+            let raised = MessageBanner::set_global(&ctx, format!("kept {n}"), MessageType::Error);
+            raised.disable_auto_dismiss();
+            if !raised.is_live() {
+                lost += 1;
+            }
+            raised.clear();
+        }
+        stop.store(true, Ordering::Relaxed);
+        churner.join().expect("churn thread");
+        lost
+    }
+
+    /// A banner cleared on another thread never takes a banner raised
+    /// meanwhile with it: the clear reads and writes the list in one step.
+    #[test]
+    fn clearing_a_banner_keeps_one_raised_meanwhile() {
+        let lost = banners_lost_while(|ctx| {
+            MessageBanner::set_global(ctx, "churn", MessageType::Info).clear();
+        });
+        assert_eq!(
+            lost, 0,
+            "banners raised during a concurrent clear were lost"
+        );
+    }
+
+    /// Rendering the banners keeps one raised while the frame was drawn.
+    #[test]
+    fn rendering_keeps_a_banner_raised_during_the_frame() {
+        let lost = banners_lost_while(|ctx| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), MessageBanner::show_global);
+            output.textures_delta.clear();
+        });
+        assert_eq!(lost, 0, "banners raised during a frame were lost");
     }
 }

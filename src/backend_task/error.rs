@@ -1830,6 +1830,22 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
+    /// The seed vault in the data folder may not be opened or written: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    SecretStoreAccessDenied {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// The wallet storage lock in the data folder may not be opened: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    WalletStorageLockAccessDenied {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
         "Could not access local files. Check available disk space and restart the application."
@@ -3992,11 +4008,13 @@ impl TaskError {
         }
         match &source {
             Step::Locate { .. } => Self::DataFolderNotFound { source },
+            // Windows reports a file above the folder as `AlreadyExists` too,
+            // so the folder's own path is checked before it is named.
             Step::CreateDataFolder { path, source: io }
                 if matches!(
                     io.kind(),
-                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
-                ) =>
+                    ErrorKind::InvalidInput | ErrorKind::AlreadyExists
+                ) && crate::app_dir::is_occupied_by_non_folder(path) =>
             {
                 Self::DataFolderNotADirectory {
                     path: path.clone(),
@@ -4262,7 +4280,8 @@ impl TaskError {
 
 /// Wrap a vault failure in its caller's class variant, except the
 /// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
-/// whichever class hit it.
+/// and denied or read-only vault I/O, which becomes
+/// [`TaskError::SecretStoreAccessDenied`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4280,6 +4299,13 @@ pub(crate) fn vault_error(
             max,
             source: Box::new(source),
         },
+        SecretStoreError::Io(ref io)
+            if StorageFailure::of_io(&io.source) == Some(StorageFailure::AccessDenied) =>
+        {
+            TaskError::SecretStoreAccessDenied {
+                source: Box::new(source),
+            }
+        }
         source => class(Box::new(source)),
     }
 }
@@ -5384,6 +5410,85 @@ mod tests {
         );
     }
 
+    /// A file above the data folder is not reported as a file at the
+    /// folder's own path, which does not exist.
+    #[test]
+    fn data_folder_under_a_file_is_not_called_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file"), "").expect("write file");
+        let path = dir.path().join("file").join("data");
+        let source = crate::app_dir::ensure_data_dir_exists(&path)
+            .expect_err("a file blocks the data folder's path");
+        let error = TaskError::from_prepare_environment_error(
+            crate::boot::PrepareEnvironmentError::CreateDataFolder { path, source },
+        );
+        assert!(
+            matches!(error, TaskError::DataFolderSetupFailed { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// Windows reports a file above the data folder as `AlreadyExists` from
+    /// that ancestor. The data folder's own path is free, so it is not named
+    /// as the file to move: the general setup advice keeps the cause. A file
+    /// at the path itself is still named, whichever of the two kinds hit it.
+    #[test]
+    fn already_exists_names_the_data_folder_only_when_it_is_occupied() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").expect("write file");
+        for kind in [ErrorKind::AlreadyExists, ErrorKind::InvalidInput] {
+            let below_a_file = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+                path: file.join("data"),
+                source: Error::from(kind),
+            });
+            assert!(
+                matches!(below_a_file, TaskError::DataFolderSetupFailed { .. }),
+                "{kind:?}: {below_a_file:?}"
+            );
+            let at_a_file = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+                path: file.clone(),
+                source: Error::from(kind),
+            });
+            assert!(
+                matches!(at_a_file, TaskError::DataFolderNotADirectory { .. }),
+                "{kind:?}: {at_a_file:?}"
+            );
+        }
+    }
+
+    /// A vault the app may not open or write gets the data-folder permission
+    /// advice; a held lock and a wrong passphrase keep their own handling.
+    #[test]
+    fn vault_access_failures_get_the_data_folder_advice() {
+        use platform_wallet_storage::secrets::{IoError, SecretStoreError};
+        use std::io::ErrorKind;
+        let io = |kind| {
+            SecretStoreError::Io(IoError {
+                path: None,
+                source: std::io::Error::from(kind),
+            })
+        };
+        let class = |source| TaskError::SecretStore { source };
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            let error = vault_error(io(kind), class);
+            assert!(
+                matches!(error, TaskError::SecretStoreAccessDenied { .. }),
+                "{error:?}"
+            );
+        }
+        for source in [
+            SecretStoreError::AlreadyLocked,
+            SecretStoreError::WrongPassphrase,
+            io(ErrorKind::WouldBlock),
+        ] {
+            let error = vault_error(source, class);
+            assert!(matches!(error, TaskError::SecretStore { .. }), "{error:?}");
+        }
+    }
+
     /// Each data folder step and failure kind gets advice that can fix it:
     /// no home folder, a file in the folder's place, a full disk.
     #[test]
@@ -5401,15 +5506,21 @@ mod tests {
         );
         assert!(locate.to_string().contains("home folder"), "{locate}");
 
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("det");
+        std::fs::write(&file, "").expect("write file");
         let occupied = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
-            path: PathBuf::from("/data/det"),
+            path: file.clone(),
             source: Error::from(ErrorKind::InvalidInput),
         });
         assert!(
             matches!(occupied, TaskError::DataFolderNotADirectory { .. }),
             "{occupied:?}"
         );
-        assert!(occupied.to_string().contains("/data/det"), "{occupied}");
+        assert!(
+            occupied.to_string().contains(&file.display().to_string()),
+            "{occupied}"
+        );
         assert!(
             occupied.to_string().contains("Move or rename"),
             "{occupied}"

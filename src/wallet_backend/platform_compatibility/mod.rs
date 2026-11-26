@@ -230,6 +230,8 @@ fn open_with_housekeeping(
 fn lock_error(source: std::io::Error) -> TaskError {
     if source.kind() == std::io::ErrorKind::WouldBlock {
         TaskError::WalletStorageNotReady
+    } else if StorageFailure::of_io(&source) == Some(StorageFailure::AccessDenied) {
+        TaskError::WalletStorageLockAccessDenied { source }
     } else {
         TaskError::FileSystem { source }
     }
@@ -240,6 +242,68 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
     use platform_wallet::changeset::PlatformWalletPersistence;
+
+    /// A storage lock the app may not open gets the data-folder permission
+    /// advice; a held lock stays "not ready".
+    #[test]
+    fn lock_error_gives_access_failures_the_data_folder_advice() {
+        use std::io::{Error, ErrorKind};
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            let error = lock_error(Error::from(kind));
+            assert!(
+                matches!(error, TaskError::WalletStorageLockAccessDenied { .. }),
+                "{error:?}"
+            );
+        }
+        let held = lock_error(Error::from(ErrorKind::WouldBlock));
+        assert!(matches!(held, TaskError::WalletStorageNotReady), "{held:?}");
+        let other = lock_error(Error::from(ErrorKind::NotFound));
+        assert!(matches!(other, TaskError::FileSystem { .. }), "{other:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_open_reports_a_denied_lock() {
+        use std::os::unix::fs::PermissionsExt;
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let database = dir.path().join("wallet.sqlite");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("deny writes");
+        let denied = open(SqlitePersisterConfig::new(&database)).err();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore");
+        let denied = denied.expect("cannot create lock");
+        assert!(
+            matches!(&denied, TaskError::WalletStorageLockAccessDenied { source }
+            if source.kind() == std::io::ErrorKind::PermissionDenied),
+            "{denied:?}"
+        );
+        assert!(
+            denied.to_string().contains("permission to change"),
+            "{denied}"
+        );
+    }
+
+    /// A lock another open holds is contention, not a permission problem.
+    #[cfg(unix)]
+    #[test]
+    fn storage_open_reports_real_contention_as_not_ready() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let database = dir.path().join("wallet.sqlite");
+        let _guard = engine::backup_lock(&database).expect("hold lock");
+        let held = open(SqlitePersisterConfig::new(&database))
+            .err()
+            .expect("held lock");
+        assert!(matches!(held, TaskError::WalletStorageNotReady), "{held:?}");
+        assert_eq!(
+            held.to_string(),
+            "The storage update is still running. Please wait a moment and try again."
+        );
+    }
 
     /// Every failed open of an unsupported database makes upstream write another
     /// `pre-migration-*` copy of the unchanged database; the open's own tidying

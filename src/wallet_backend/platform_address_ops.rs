@@ -100,9 +100,17 @@ impl WalletBackend {
                 .core_wallet
                 .platform_payment_managed_account_at_index_mut(account_index)
                 .ok_or(TaskError::WalletStateInconsistent)?;
+            // Generate every address up to and including `highest`.
+            let next = account
+                .addresses
+                .highest_generated()
+                .map_or(0, |generated| generated + 1);
             account
                 .addresses
-                .generate_up_to(highest, &KeySource::Public(xpub))
+                .generate_addresses(
+                    highest.saturating_add(1).saturating_sub(next),
+                    &KeySource::Public(xpub),
+                )
                 .map_err(|source| TaskError::PlatformAddressPoolPreparationFailed { source })?;
         }
         for (expected, account_index, index) in required {

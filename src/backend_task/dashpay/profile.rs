@@ -10,7 +10,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
-use platform_wallet::ProfileUpdate;
+use platform_wallet::{ProfilePaymentAddressKind, ProfileUpdate};
 use std::sync::Arc;
 
 pub async fn load_profile(
@@ -56,6 +56,12 @@ pub async fn load_profile(
             .and_then(|v| v.as_text())
             .unwrap_or_default();
 
+        let payment_address = |kind: ProfilePaymentAddressKind| {
+            doc.get(kind.property_name())
+                .and_then(|value| value.as_bytes_slice().ok())
+                .map(<[u8]>::to_vec)
+        };
+
         // A completed save invalidates older profile reads.
         if app_context.record_identity_profile_name(identity_id, name_revision, Some(display_name))
         {
@@ -74,6 +80,9 @@ pub async fn load_profile(
                         .get("avatarFingerprint")
                         .and_then(|value| value.as_bytes_slice().ok())
                         .and_then(|bytes| bytes.try_into().ok()),
+                    core_payment_address: payment_address(ProfilePaymentAddressKind::Core),
+                    platform_payment_address: payment_address(ProfilePaymentAddressKind::Platform),
+                    shielded_address: payment_address(ProfilePaymentAddressKind::Shielded),
                 }),
             )
             .await;
@@ -112,6 +121,9 @@ struct BackendProfileFields {
     avatar_url: Option<String>,
     avatar_hash: Option<[u8; 32]>,
     avatar_fingerprint: Option<[u8; 8]>,
+    core_payment_address: Option<Vec<u8>>,
+    platform_payment_address: Option<Vec<u8>>,
+    shielded_address: Option<Vec<u8>>,
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -138,6 +150,7 @@ async fn mirror_profile_to_backend(
     };
 
     let has_profile = fields.is_some();
+    // Upstream decides which payment-address bytes are valid addresses.
     let profile = fields.map(|f| DashPayProfile {
         display_name: f.display_name,
         public_message: f.bio.clone(),
@@ -145,6 +158,16 @@ async fn mirror_profile_to_backend(
         avatar_url: f.avatar_url,
         avatar_hash: f.avatar_hash,
         avatar_fingerprint: f.avatar_fingerprint,
+        core_payment_address: f
+            .core_payment_address
+            .filter(|address| platform_wallet::valid_transparent_payment_address(address)),
+        platform_payment_address: f
+            .platform_payment_address
+            .filter(|address| platform_wallet::valid_transparent_payment_address(address)),
+        shielded_address: f
+            .shielded_address
+            .and_then(|address| platform_wallet::validated_shielded_address(&address))
+            .map(|address| address.to_vec()),
     });
 
     if let Err(e) = backend.dashpay_set_profile(owner, profile).await {
@@ -249,6 +272,7 @@ fn profile_update_input(
         public_message: non_empty(bio.trim()),
         avatar_url: non_empty(avatar_url.trim()),
         avatar_bytes: None,
+        ..ProfileUpdate::default()
     })
 }
 

@@ -285,7 +285,10 @@ pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
 
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
-    let sdk = Sdk::new_mock();
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(crate::sdk_wrapper::MIN_PLATFORM_VERSION)
+        .build()
+        .expect("mock sdk");
     let provider = ctx
         .spv_context_provider
         .read()

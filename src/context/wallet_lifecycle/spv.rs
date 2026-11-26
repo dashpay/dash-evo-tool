@@ -113,6 +113,11 @@ impl AppContext {
             failures.push(error);
         }
 
+        // Known limitation (Clear Database is a devnet-only developer tool):
+        // while a shielded operation runs, upstream refuses this reset with
+        // `ShieldedOperationInProgress`. The keys above are already deleted, so
+        // the wipe is reported as incomplete; run Clear Database again once the
+        // shielded operation has finished.
         if let Err(error) = backend.clear_shielded().await {
             tracing::warn!(%error, "Shielded coordinator reset failed during clear");
             failures.push(error);

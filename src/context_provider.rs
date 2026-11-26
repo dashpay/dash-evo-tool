@@ -153,22 +153,6 @@ impl ContextProvider for SpvProvider {
         // thread).
         let app_ctx = self.app_context()?;
 
-        // Before the SPV masternode list has synced, quorum keys are not yet
-        // resolvable, so answer with a typed "not ready" diagnostic that DET
-        // maps to `TaskError::MasternodeListNotReady`. The SDK returns a
-        // provider `Config` failure as a configuration error of its own: it
-        // does not retry the request and bans no node for it (pinned by
-        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_is_a_readiness_wait_and_bans_no_node`).
-        // The read still fails, so callers hold proof-verifying reads until
-        // `masternodes_ready()`; this branch names the failure for one that
-        // gets through.
-        if !app_ctx.connection_status().masternodes_ready() {
-            // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
-            return Err(ContextProviderError::Config(
-                MASTERNODE_LIST_NOT_READY_DETAIL.to_string(),
-            ));
-        }
-
         // The wallet-backend gate ("not yet wired") is a startup-window
         // configuration state — `Config`, not `Generic`. Do NOT broadcast
         // the typed error's user-facing Display ("temporarily unavailable")
@@ -176,6 +160,23 @@ impl ContextProvider for SpvProvider {
         let backend = app_ctx.wallet_backend().map_err(|_| {
             ContextProviderError::Config("chain backend not initialized (pre-unlock)".to_string())
         })?;
+
+        // Before the SPV masternode list has synced, quorum keys are not yet
+        // resolvable, so answer with a typed "not ready" diagnostic that DET
+        // maps to `TaskError::MasternodeListNotReady`. The SDK returns a
+        // provider `Config` failure as a configuration error of its own: it
+        // does not retry the request and bans no node for it (pinned by
+        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_is_a_readiness_wait_and_bans_no_node`).
+        // The read still fails, so callers hold proof-verifying reads until
+        // this backend's `quorum_keys_ready()`; this branch names the failure
+        // for one that gets through.
+        if !backend.quorum_keys_ready() {
+            // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
+            return Err(ContextProviderError::Config(
+                MASTERNODE_LIST_NOT_READY_DETAIL.to_string(),
+            ));
+        }
+
         // `try_current` instead of `current`: the trait method is sync and may
         // be invoked outside a tokio runtime (e.g. a non-async test harness).
         // Return a typed Config error rather than panicking.
@@ -263,10 +264,17 @@ mod data_contract_tests {
     fn system_contracts_resolve_at_the_requested_platform_version() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        for protocol_version in [13, 14] {
+        let v14 = PlatformVersion::get(14).expect("PV14");
+        let v15 = PlatformVersion::get(15).expect("PV15");
+        assert_ne!(
+            load_system_data_contract(SystemDataContract::DPNS, v14).unwrap(),
+            load_system_data_contract(SystemDataContract::DPNS, v15).unwrap(),
+            "the lookup fixtures must distinguish the proof versions",
+        );
+        for protocol_version in [14, 15] {
             let platform_version = PlatformVersion::get(protocol_version).expect("known version");
             let expected =
-                load_system_data_contract(SystemDataContract::Dashpay, platform_version).unwrap();
+                load_system_data_contract(SystemDataContract::DPNS, platform_version).unwrap();
             let resolved = resolve_data_contract(&ctx, &expected.id(), platform_version)
                 .expect("lookup")
                 .expect("a cached system contract");

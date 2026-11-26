@@ -9245,6 +9245,28 @@ mod tests {
         assert!(shielded_chip(&mut screen).is_enabled());
         screen.form.reset();
         screen.sync_route();
+        // A private payment's Max is the wallet's quote, so Auto waits for it.
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let source = SourceSelection::Shielded(seed_hash, 100_000_000 * CREDITS_PER_DUFF);
+        let destination_kind = screen.destination_kind();
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit_for(&source, destination_kind)
+        else {
+            panic!("a verified private balance is asked for its quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: 99_000_000 * CREDITS_PER_DUFF,
+                core_fee: None,
+            })
+        );
+        screen.sync_route();
         assert!(pays_from_shielded(&screen), "Auto pays once verified");
     }
 

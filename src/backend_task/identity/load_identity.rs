@@ -1005,7 +1005,8 @@ impl AppContext {
                     KeyDerivationType::ECDSA,
                     identity_index,
                     index,
-                );
+                )
+                .ok()?;
 
                 let wallet_derivation_path = WalletDerivationPath {
                     wallet_seed_hash,

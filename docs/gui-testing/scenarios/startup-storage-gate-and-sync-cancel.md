@@ -23,14 +23,8 @@ first-run branches also depend on on-disk state a real launch creates.
     pass. Not needed for the first-run pass.
 - A legacy `data.db` is needed only for the migration variant (step 5). If none is
   available, record that variant as NOT COVERED rather than fabricating one.
-- Every ancestor of the data directory must pass the secret store's check: it
-  refuses a folder that is group- or other-writable without the sticky bit, or one
-  owned by an account other than you or root. Startup then stops at the
-  "Dash Evo Tool could not start" window with the folder-permission message
-  (`SecretStoreFolderInsecure`; the technical details name the offending folder).
-  A root-owned sticky `/tmp` (mode `1777`) passes, so a `mktemp -d` under it is
-  fine; a `~/.config` or home folder at mode `0775` trips the check. See
-  "Known gotchas".
+- Keep every ancestor of the data directory owner-only (see "Known gotchas"): the
+  wallet storage logs a warning for a folder other accounts could replace.
 
 ## Setup
 
@@ -179,15 +173,11 @@ the scenario regardless of what the screen showed.
 
 ## Known gotchas
 
-- **The secret store validates the data directory's whole ancestor chain.** A single
-  ancestor that is group- or other-writable without the sticky bit, or owned by an
-  account other than you or root, stops startup at the
-  "Dash Evo Tool could not start" window with the folder-permission message
-  (`SecretStoreFolderInsecure`); its technical details name the folder and the reason.
-  A root-owned sticky directory such as `/tmp` (mode `1777`) does not trip it. The
-  common trap is the default `~/.config/dash-evo-tool` on a system where `~/.config`
-  (or the home folder) is `0775`. The window, `det.log` and the terminal notice all
-  carry the cause, so check them before assuming the binary is broken.
+- **The wallet storage only warns about an unsafe ancestor folder.** An ancestor of the
+  data directory that is group- or other-writable without the sticky bit, or owned by
+  an account other than you or root, is reported in `det.log` as a warning naming the
+  folder; startup continues. A root-owned sticky directory such as `/tmp` (mode `1777`)
+  is not reported.
 - **A fresh data directory does not start on testnet.** Read the network selector
   before concluding a fixture is dead; a zero balance or a "masternode not found" on a
   fresh install is far more often the wrong network than a broken fixture.

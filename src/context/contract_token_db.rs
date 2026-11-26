@@ -1389,12 +1389,15 @@ mod tests {
     /// document types)` as the provenance build wrote them (see the fixtures'
     /// README). This build makes a newer revision for that protocol, so these
     /// are checked against the record, not against [`stored_contracts_at`].
-    const PINNED_EARLIER_REVISIONS: [(u32, &str, u32, &[&str]); 1] = [(
-        15,
-        "dashpay",
-        2,
-        &["contactInfo", "contactRequest", "profile"],
-    )];
+    const PINNED_EARLIER_REVISIONS: [(u32, &str, u32, &[&str]); 2] = [
+        (
+            15,
+            "dashpay",
+            2,
+            &["contactInfo", "contactRequest", "profile"],
+        ),
+        (15, "dpns", 3, &["domain", "preorder"]),
+    ];
 
     fn pinned_contract_path(protocol_version: u32, label: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

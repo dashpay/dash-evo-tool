@@ -265,7 +265,7 @@ impl AddNewIdentityScreen {
             self.queue_warm_identity_keys(seed_hash, identity_index);
             return;
         };
-        let master = IdentityKeyEntry::from_cached_public_key(
+        let Ok(master) = IdentityKeyEntry::from_cached_public_key(
             master_pk,
             network,
             identity_index,
@@ -274,7 +274,9 @@ impl AddNewIdentityScreen {
             Purpose::AUTHENTICATION,
             SecurityLevel::MASTER,
             None,
-        );
+        ) else {
+            return;
+        };
 
         let mut others = Vec::with_capacity(default_keys.len());
         for (i, (key_type, purpose, security_level, contract_bounds)) in
@@ -285,7 +287,7 @@ impl AddNewIdentityScreen {
                 self.queue_warm_identity_keys(seed_hash, identity_index);
                 return;
             };
-            others.push(IdentityKeyEntry::from_cached_public_key(
+            let Ok(entry) = IdentityKeyEntry::from_cached_public_key(
                 pk,
                 network,
                 identity_index,
@@ -294,7 +296,10 @@ impl AddNewIdentityScreen {
                 purpose,
                 security_level,
                 contract_bounds,
-            ));
+            ) else {
+                return;
+            };
+            others.push(entry);
         }
 
         self.identity_keys = IdentityKeySpecs::new(Some(master), others);
@@ -1332,18 +1337,18 @@ impl AddNewIdentityScreen {
         let cache = backend.auth_pubkey_cache().get(network, &seed_hash);
         match cache.get(network, identity_index, new_key_index) {
             Some(public_key) => {
-                self.identity_keys
-                    .others
-                    .push(IdentityKeyEntry::from_cached_public_key(
-                        public_key,
-                        network,
-                        identity_index,
-                        new_key_index,
-                        key_type,
-                        purpose,
-                        security_level,
-                        None,
-                    ));
+                if let Ok(entry) = IdentityKeyEntry::from_cached_public_key(
+                    public_key,
+                    network,
+                    identity_index,
+                    new_key_index,
+                    key_type,
+                    purpose,
+                    security_level,
+                    None,
+                ) {
+                    self.identity_keys.others.push(entry);
+                }
             }
             None => {
                 // Warm enough keys to cover the new index; the chooser rebuilds

@@ -178,7 +178,7 @@ async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
 where
     IsSyncing: FnMut() -> bool,
     SyncNow: FnOnce() -> SyncFuture,
-    SyncFuture: std::future::Future<Output = ()>,
+    SyncFuture: std::future::Future,
 {
     // TODO: Upstream `IdentitySyncManager::sync_now()` should return a performed/skipped
     // outcome or completion generation; before/after `is_syncing()` samples are racy.
@@ -3417,7 +3417,7 @@ impl WalletBackend {
     }
 }
 
-/// Registers contact accounts and bumps each newly inserted account's monitor revision.
+/// Registers contact accounts and returns how many were newly inserted.
 fn register_contact_accounts_in_managed_wallet(
     info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     accounts: impl IntoIterator<
@@ -3427,17 +3427,10 @@ fn register_contact_accounts_in_managed_wallet(
         ),
     >,
 ) -> usize {
-    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-
     let mut newly_inserted = 0;
     for (account_type, account_xpub) in accounts {
         match add_contact_receiving_account(info, account_type, account_xpub) {
-            Ok(Some(key)) => {
-                newly_inserted += 1;
-                if let Some(account) = info.accounts.dashpay_receival_accounts.get_mut(&key) {
-                    account.bump_monitor_revision();
-                }
-            }
+            Ok(Some(_)) => newly_inserted += 1,
             Ok(None) => {}
             Err(error) => {
                 tracing::debug!(%error, "Skipping contact account: managed insert failed");
@@ -3785,7 +3778,30 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::PrivateContactRequestPending(_)
         | P::PrivateContactStoreNotRead(_)
         | P::PublicContactRequestUnconfirmed(_)
-        | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // pending outcome DET can watch, so they take the generic envelope too.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        ) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
     }
@@ -4165,7 +4181,30 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::PublicContactRequestUnconfirmed(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
-        | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // Platform rejection of this op or a pending outcome DET can watch.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        => IdentityOpErrorKind::Other,
     }
 }
 
@@ -4497,13 +4536,12 @@ mod tests {
         )
     }
 
-    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Covers the managed-state seam after contact xpub derivation, including generation gating.
     /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
     #[test]
-    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
+    fn contact_registration_counts_only_new_keys() {
         use dash_sdk::dpp::key_wallet::account::AccountType;
         use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -4542,16 +4580,15 @@ mod tests {
             user_identity_id: [1u8; 32],
             friend_identity_id: [3u8; 32],
         };
-        let max_monitor_revision = |info: &ManagedWalletInfo| {
-            info.accounts
-                .dashpay_receival_accounts
-                .values()
-                .map(ManagedAccountTrait::monitor_revision)
-                .max()
-                .unwrap_or_default()
-        };
         let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
         info.update_synced_height(500);
+        let contact_keys = |info: &ManagedWalletInfo| {
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+        };
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4559,11 +4596,7 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4571,34 +4604,14 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact, second_contact]),
             1
         );
         assert_eq!(info.account_generation(), 2);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&second_key].monitor_revision(),
-            1
-        );
-        let mut revisions = info
-            .accounts
-            .dashpay_receival_accounts
-            .values()
-            .map(ManagedAccountTrait::monitor_revision)
-            .collect::<Vec<_>>();
-        revisions.sort_unstable();
-        assert_eq!(revisions, [1, 1]);
+        assert_eq!(contact_keys(&info), [first_key, second_key]);
     }
 
     /// The durable wallet databases are siblings of `det-app.sqlite` in the
@@ -5765,6 +5778,7 @@ mod masternode_membership_tests {
         let summary = platform_wallet::masternode::MasternodeListSummary {
             pro_tx_hash: wire,
             service_address: None,
+            service_addresses: Vec::new(),
             platform_http_port: None,
             operator_public_key: [0; 48],
             voting_key_id: [0; 20],
@@ -5772,6 +5786,7 @@ mod masternode_membership_tests {
             is_valid: true,
             is_evonode: true,
             has_extended_net_info: false,
+            operator_key_is_legacy: false,
         };
         let membership = membership_from_summaries([summary]);
         assert_eq!(membership.get(&loaded), Some(&true));

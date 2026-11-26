@@ -40,7 +40,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, Error as Bip32Error, KeyDerivationType};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -132,21 +132,21 @@ impl IdentityKeyEntry {
         purpose: Purpose,
         security_level: SecurityLevel,
         contract_bounds: Option<ContractBounds>,
-    ) -> Self {
+    ) -> Result<Self, Bip32Error> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
             KeyDerivationType::ECDSA,
             identity_index,
             key_index,
-        );
-        Self {
+        )?;
+        Ok(Self {
             public_key,
             derivation_path,
             key_type,
             purpose,
             security_level,
             contract_bounds,
-        }
+        })
     }
 
     /// Build an entry by deriving the public key from a borrowed HD seed.
@@ -176,7 +176,7 @@ impl IdentityKeyEntry {
                 key_index,
             )
             .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
-        Ok(Self::from_cached_public_key(
+        Self::from_cached_public_key(
             public_key,
             network,
             identity_index,
@@ -185,7 +185,8 @@ impl IdentityKeyEntry {
             purpose,
             security_level,
             contract_bounds,
-        ))
+        )
+        .map_err(|e| TaskError::from(crate::database::WalletError::from(e)))
     }
 }
 
@@ -1574,7 +1575,8 @@ mod tests {
                         Purpose::AUTHENTICATION,
                         SecurityLevel::HIGH,
                         None,
-                    );
+                    )
+                    .unwrap();
 
                     // The private key the chokepoint derives at the entry's
                     // path at signing time.

@@ -588,7 +588,8 @@ impl BackendTestContext {
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
-            Some("E2E Test Wallet".to_string()),
+            // Wallet aliases are unique per app; a fixed one fails the second call.
+            Some(format!("E2E Test Wallet {:08x}", rand::random::<u32>())),
             None,
         )
         .expect("Failed to create test wallet");

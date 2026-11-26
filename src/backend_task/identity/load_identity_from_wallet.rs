@@ -32,6 +32,8 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
+        self.ensure_wallet_identity_discovery_ready()?;
+
         let mut fetched_identity: Option<(Identity, u64)> = None;
         let mut queried_public_key = None;
         let mut queried_wallet_key_index = None;
@@ -225,6 +227,8 @@ impl AppContext {
         seed_identity_index: IdentityIndex,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.ensure_wallet_identity_discovery_ready()?;
+
         // The interactive search seeds the rolling window from the user-supplied
         // index and may prompt for the passphrase on a cold cache.
         let summary = self

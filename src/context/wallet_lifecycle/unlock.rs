@@ -3,7 +3,37 @@
 
 use super::*;
 
+use crate::model::identity_discovery::DiscoveryReadiness;
+use crate::model::wallet::meta::wallet_label;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::message_banner::BannerHandle;
 use crate::wallet_backend::SecretLease;
+
+/// The notice an unlock shows when its identity search cannot run, if any.
+///
+/// Only an operation-scoped unlock needs one: its seed is forgotten once the
+/// unlock's own work ends, so the later all-wallets sweep cannot search the
+/// wallet. A session-long unlock leaves the seed to that sweep, and a storage
+/// update unlock is not a request to search.
+pub(super) fn unlock_discovery_notice(
+    retention: WalletUnlockRetention,
+    readiness: DiscoveryReadiness,
+    wallet_name: &str,
+) -> Option<String> {
+    if retention != WalletUnlockRetention::OperationOnly {
+        return None;
+    }
+    match readiness {
+        DiscoveryReadiness::Ready => None,
+        DiscoveryReadiness::Syncing => Some(format!(
+            "Identities in wallet “{wallet_name}” cannot be searched while the network is syncing. Once sync has finished, search again: Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
+        )),
+        DiscoveryReadiness::SyncStopped => Some(format!(
+            "Identities in wallet “{wallet_name}” cannot be searched while network sync is stopped. Connect to the network, then search again: Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
+        )),
+    }
+}
 
 impl AppContext {
     /// Verify and open a password-protected wallet through the secret chokepoint.
@@ -101,7 +131,24 @@ impl AppContext {
         // already-registered wallet is a no-op) and resolved prompt-free from the
         // session cache. The in-memory wallet is flipped `Open` only after the
         // chokepoint succeeds above, so the JIT `is_open()` gate passes.
-        self.drive_unlock_registration(wallet, lease);
+        let wallet_name = wallet_label(
+            &self
+                .wallet_context()
+                .hd_alias(&seed_hash)
+                .unwrap_or_default(),
+            &seed_hash,
+        );
+        let notice = unlock_discovery_notice(
+            retention,
+            self.wallet_identity_discovery_readiness(),
+            &wallet_name,
+        )
+        .map(|text| {
+            let banner = MessageBanner::set_global(self.egui_ctx(), text, MessageType::Info);
+            banner.disable_auto_dismiss();
+            banner
+        });
+        self.drive_unlock_registration(wallet, lease, notice);
         Ok(())
     }
 
@@ -117,10 +164,14 @@ impl AppContext {
     /// `lease` keeps the promoted seed resolvable for this subtask's own work.
     /// It is only *a* holder of that lease, never the sole one: dropping it here
     /// forgets the seed only if no other consumer still holds a clone.
+    ///
+    /// `notice` is the unlock's "cannot search yet" banner; it is removed if
+    /// the network became ready during the bootstrap and the search ran.
     fn drive_unlock_registration(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         lease: Option<SecretLease>,
+        notice: Option<BannerHandle>,
     ) {
         let ctx = Arc::clone(self);
         let wallet = Arc::clone(wallet);
@@ -129,7 +180,11 @@ impl AppContext {
             .spawn_sync("wallet_unlock_registration", async move {
                 let lease = lease;
                 ctx.bootstrap_wallet_addresses_jit(&wallet).await;
-                ctx.discover_unlocked_wallet_identities(&wallet).await;
+                if ctx.discover_unlocked_wallet_identities(&wallet).await
+                    && let Some(notice) = notice
+                {
+                    notice.clear();
+                }
                 drop(lease);
             });
     }

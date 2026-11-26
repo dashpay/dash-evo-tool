@@ -5,8 +5,8 @@ use crate::context::AppContext;
 use crate::model::derived_identity_key::recovery_scan_bound;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_discovery::{
-    DiscoveryIntent, DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP,
-    should_continue_scan,
+    DiscoveryIntent, DiscoveryReadiness, DiscoverySummary, IDENTITY_GAP_LIMIT,
+    IDENTITY_SCAN_HARD_CAP, should_continue_scan,
 };
 use crate::model::wallet::Wallet;
 use crate::utils::egui_mpsc::SenderAsync;
@@ -33,6 +33,24 @@ struct ScanSettings<'a> {
 }
 
 impl AppContext {
+    /// Whether this network's wallet identity lookups can be proof-verified now.
+    ///
+    /// Reads this network's backend quorum gate, the exact condition the SDK
+    /// context provider refuses proof reads on, rather than the connection
+    /// status flag, which is shared between network contexts.
+    pub(crate) fn wallet_identity_discovery_readiness(&self) -> DiscoveryReadiness {
+        let proofs_ready = self
+            .wallet_backend()
+            .is_ok_and(|backend| backend.quorum_keys_ready());
+        DiscoveryReadiness::assess(proofs_ready, self.connection_status.spv_status())
+    }
+
+    /// Refuse an explicit wallet identity search the network cannot answer yet,
+    /// before it prompts for a password or sends a lookup.
+    pub(super) fn ensure_wallet_identity_discovery_ready(&self) -> Result<(), TaskError> {
+        discovery_admission(self.wallet_identity_discovery_readiness())
+    }
+
     /// Discover and load identities derived from a wallet by checking the
     /// network, with a rolling gap-limited lookahead.
     ///
@@ -46,8 +64,12 @@ impl AppContext {
     ///
     /// `allow_prompt` controls the secret path: with `true` (the interactive
     /// search) a cold auth-key cache miss prompts for the passphrase; with
-    /// `false` (the background sweep) a locked, protected wallet is skipped
-    /// instead of prompting.
+    /// `false` (the background sweep) a locked, protected wallet ends the pass
+    /// with [`TaskError::AuthKeyUnlockRequired`] instead of prompting.
+    ///
+    /// A pass with failed lookups has not searched every index, so it returns
+    /// the first such error once it has stored what it found. A lookup refused
+    /// because the network is still syncing ends the pass at once.
     ///
     /// `intent` is a separate question from `allow_prompt` — whether the user
     /// asked for these identities, which decides whether a pass may store one
@@ -100,6 +122,7 @@ impl AppContext {
         let mut summary = DiscoverySummary::default();
         let mut highest_found = seed_window;
         let mut current_index = 0u32;
+        let mut lookup_error: Option<TaskError> = None;
 
         while should_continue_scan(current_index, highest_found) {
             if let Some(sender) = progress {
@@ -142,7 +165,7 @@ impl AppContext {
                             seed = %hex::encode(seed_hash),
                             "Skipping locked wallet during background identity discovery"
                         );
-                        return Ok(summary);
+                        return Err(TaskError::AuthKeyUnlockRequired);
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -151,6 +174,7 @@ impl AppContext {
                             key_index,
                             "Could not derive auth key during discovery"
                         );
+                        lookup_error.get_or_insert(e);
                         continue;
                     }
                 };
@@ -175,6 +199,12 @@ impl AppContext {
                             key_index,
                             "Error querying identity during discovery"
                         );
+                        let error = TaskError::from(e);
+                        // Every later lookup fails the same way until sync ends.
+                        if matches!(error, TaskError::MasternodeListNotReady { .. }) {
+                            return Err(error);
+                        }
+                        lookup_error.get_or_insert(error);
                         continue;
                     }
                 }
@@ -215,6 +245,17 @@ impl AppContext {
             }
 
             current_index = current_index.saturating_add(1);
+        }
+
+        if let Some(error) = lookup_error {
+            tracing::warn!(
+                seed = %hex::encode(seed_hash),
+                found = summary.found,
+                stored = summary.stored,
+                %error,
+                "Gap-limited identity discovery incomplete: some lookups failed"
+            );
+            return Err(error);
         }
 
         tracing::info!(
@@ -480,6 +521,15 @@ fn adopt_discovered_identity(
     }
 }
 
+/// The error an explicit wallet identity search returns at `readiness`, if any.
+fn discovery_admission(readiness: DiscoveryReadiness) -> Result<(), TaskError> {
+    match readiness {
+        DiscoveryReadiness::Ready => Ok(()),
+        DiscoveryReadiness::Syncing => Err(TaskError::WalletIdentityDiscoveryNotReady),
+        DiscoveryReadiness::SyncStopped => Err(TaskError::WalletIdentityDiscoverySyncStopped),
+    }
+}
+
 /// Exclusive key-index bound of the discovery scan: the shared seed-recovery
 /// window plus one index of extra margin (the historical discovery bound).
 pub(super) fn discovered_key_scan_bound(highest_key_id: u32) -> u32 {
@@ -493,6 +543,21 @@ mod tests {
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
+
+    /// Only a network that verifies proofs admits an explicit search; otherwise
+    /// the refusal says whether waiting or connecting is the way forward.
+    #[test]
+    fn explicit_search_admission_names_the_way_forward() {
+        assert!(discovery_admission(DiscoveryReadiness::Ready).is_ok());
+        assert!(matches!(
+            discovery_admission(DiscoveryReadiness::Syncing),
+            Err(TaskError::WalletIdentityDiscoveryNotReady)
+        ));
+        assert!(matches!(
+            discovery_admission(DiscoveryReadiness::SyncStopped),
+            Err(TaskError::WalletIdentityDiscoverySyncStopped)
+        ));
+    }
 
     fn identity(byte: u8) -> Identity {
         Identity::create_basic_identity(Identifier::from([byte; 32]), PlatformVersion::latest())

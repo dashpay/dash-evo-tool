@@ -3375,10 +3375,21 @@ pub enum TaskError {
 
     /// An identity-authentication key could not be derived without unlocking the
     /// wallet, and the caller asked not to prompt. The background identity sweep
-    /// uses this to skip a locked wallet's index instead of popping a passphrase
-    /// modal; the interactive search prompts instead, so users never see this.
+    /// uses this to end its pass over a locked wallet, without a result, instead
+    /// of popping a passphrase modal; the interactive search prompts instead.
     #[error("Unlock this wallet to search it for identities, then try again.")]
     AuthKeyUnlockRequired,
+
+    /// A wallet identity search was started before the network could verify
+    /// identity lookups.
+    #[error(
+        "Identities in this wallet cannot be searched while the network is syncing. Wait for sync to finish, then search again."
+    )]
+    WalletIdentityDiscoveryNotReady,
+
+    /// A wallet identity search was started while network sync is stopped.
+    #[error("Network sync is stopped. Connect to the network, then search again.")]
+    WalletIdentityDiscoverySyncStopped,
 
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors

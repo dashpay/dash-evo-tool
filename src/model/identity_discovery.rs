@@ -12,6 +12,8 @@
 //! in `backend_task/identity` (DET Module Placement Policy: pure decision logic
 //! in `model/`, async business logic in `backend_task/`).
 
+use crate::model::spv_status::SpvStatus;
+
 /// Number of consecutive empty trailing indices the scan keeps probing past the
 /// highest index that produced an identity. A higher value finds identities
 /// registered after larger gaps at the cost of more network round-trips.
@@ -102,7 +104,7 @@ impl DiscoveryIntent {
 ///
 /// `found` is the number of indices that resolved to an on-chain identity;
 /// `stored` is how many of those were newly inserted or refreshed in the local
-/// database. A wallet skipped because it was locked reports zero of each.
+/// database. Only a pass that searched every index it meant to reports one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DiscoverySummary {
     /// Indices that resolved to an on-chain identity during this pass.
@@ -111,9 +113,66 @@ pub struct DiscoverySummary {
     pub stored: u32,
 }
 
+/// Whether wallet identity discovery can run its proof-verified lookups now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryReadiness {
+    /// Identity lookups can be proof-verified.
+    Ready,
+    /// Chain sync is running but cannot verify identity lookups yet.
+    Syncing,
+    /// Chain sync is not running, so readiness will not arrive on its own.
+    SyncStopped,
+}
+
+impl DiscoveryReadiness {
+    /// Classify readiness from whether this network verifies proofs and from
+    /// the chain-sync status.
+    pub fn assess(proofs_ready: bool, spv_status: SpvStatus) -> Self {
+        if proofs_ready {
+            Self::Ready
+        } else if spv_status.is_active() {
+            Self::Syncing
+        } else {
+            Self::SyncStopped
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_follows_proofs_then_sync_state() {
+        for status in [
+            SpvStatus::Idle,
+            SpvStatus::Starting,
+            SpvStatus::Syncing,
+            SpvStatus::Running,
+            SpvStatus::Stopped,
+            SpvStatus::Error,
+        ] {
+            assert_eq!(
+                DiscoveryReadiness::assess(true, status),
+                DiscoveryReadiness::Ready,
+                "verifiable proofs make discovery ready whatever the sync state ({status:?})",
+            );
+        }
+        for status in [SpvStatus::Starting, SpvStatus::Syncing, SpvStatus::Running] {
+            assert_eq!(
+                DiscoveryReadiness::assess(false, status),
+                DiscoveryReadiness::Syncing,
+                "running sync without proofs is still syncing ({status:?})",
+            );
+        }
+        for status in [SpvStatus::Idle, SpvStatus::Stopped, SpvStatus::Error] {
+            assert_eq!(
+                DiscoveryReadiness::assess(false, status),
+                DiscoveryReadiness::SyncStopped,
+                "sync that is not running will not become ready by waiting ({status:?})",
+            );
+        }
+    }
 
     /// Collect every index a scan would probe, given the indices at which an
     /// identity is "found". Mirrors the real loop: start at 0, advance by 1,

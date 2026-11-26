@@ -2,7 +2,7 @@
 //! managed identities, warming auth-key caches, and queuing identity discovery.
 
 use super::*;
-use crate::model::identity_discovery::DiscoveryIntent;
+use crate::model::identity_discovery::{DiscoveryIntent, DiscoveryReadiness};
 
 /// How often a queued wallet identity discovery re-checks whether the
 /// masternode list has synced.
@@ -642,10 +642,16 @@ impl AppContext {
                         )
                         .await
                     {
-                        tracing::warn!(
-                            %error,
-                            "Automatic identity discovery failed for a wallet"
-                        );
+                        if matches!(error, TaskError::AuthKeyUnlockRequired) {
+                            tracing::info!(
+                                "Automatic identity discovery skipped a wallet that must be unlocked first"
+                            );
+                        } else {
+                            tracing::warn!(
+                                %error,
+                                "Automatic identity discovery failed for a wallet"
+                            );
+                        }
                     }
                 });
         }
@@ -677,15 +683,19 @@ impl AppContext {
     }
 
     /// Discover identities after unlock while the wallet seed remains available.
+    /// Returns whether the search ran, which it does only once this network can
+    /// verify identity lookups.
     pub(super) async fn discover_unlocked_wallet_identities(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
-    ) {
-        if !self.connection_status.masternodes_ready() {
+    ) -> bool {
+        let readiness = self.wallet_identity_discovery_readiness();
+        if readiness != DiscoveryReadiness::Ready {
             tracing::debug!(
+                ?readiness,
                 "Platform not ready yet; deferring unlocked-wallet identity discovery to the all-wallets sweep"
             );
-            return;
+            return false;
         }
 
         if let Err(error) = self
@@ -697,6 +707,7 @@ impl AppContext {
                 "Identity discovery failed for the just-unlocked wallet"
             );
         }
+        true
     }
 
     /// Wait until the masternode list is synced, so identity lookups can be

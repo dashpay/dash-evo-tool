@@ -352,6 +352,18 @@ pub enum TaskError {
     )]
     WalletDataClearUnavailable,
 
+    /// Clearing saved wallet data was refused before anything was deleted:
+    /// a shielded operation or its sync was still running, and the
+    /// shielded data cannot be cleared under it. Nothing changed; clearing
+    /// again once it has finished deletes everything.
+    #[error(
+        "A shielded transaction or shielded balance update is still running, so nothing was cleared. Wait for it to finish, then clear your data again."
+    )]
+    WalletDataClearShieldedBusy {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Clearing saved wallet data ran to completion, but at least one
     /// secret-bearing delete failed, so some data may still be on disk.
     #[error(

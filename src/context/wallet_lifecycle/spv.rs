@@ -24,6 +24,21 @@ impl AppContext {
             .wallet_backend()
             .map_err(|_| TaskError::WalletDataClearUnavailable)?;
 
+        // Reset the upstream shielded coordinator first (it quiesces its sync
+        // loop and empties the per-network store). Upstream refuses the reset,
+        // having changed nothing, while a shielded operation or a sync pass
+        // still runs; stop then, before any key is deleted, so the data is
+        // never half-wiped. Any other failure must not skip the steps below:
+        // record it and keep going.
+        let shielded_failure = match backend.clear_shielded().await {
+            Ok(()) => None,
+            Err(error @ TaskError::WalletDataClearShieldedBusy { .. }) => return Err(error),
+            Err(error) => {
+                tracing::warn!(%error, "Shielded coordinator reset failed during clear");
+                Some(error)
+            }
+        };
+
         // F60: permanently delete every wallet's secret-bearing state so the
         // "delete all local data" promise holds — wallets must NOT rehydrate
         // on next launch and encrypted seeds must NOT persist. Clear the
@@ -36,8 +51,12 @@ impl AppContext {
         let ClearAllOutcome {
             upstream_ids,
             hd_seed_hashes,
-            mut failures,
+            failures: wallet_failures,
         } = backend.forget_all_wallets_local();
+        let mut failures: Vec<TaskError> = shielded_failure
+            .into_iter()
+            .chain(wallet_failures)
+            .collect();
         for wallet_id in upstream_ids {
             let backend = Arc::clone(&backend);
             let _ = self
@@ -102,24 +121,12 @@ impl AppContext {
             }
         }
 
-        // Reset the upstream shielded coordinator (quiesces its sync loop and
-        // empties the per-network store) and unlink DET's two retired legacy
-        // shielded files. The legacy-file unlinks are synchronous and scoped
-        // strictly to THIS network's spv directory.
+        // Unlink DET's two retired legacy shielded files. The unlinks are
+        // synchronous and scoped strictly to THIS network's spv directory.
         // A failure here must not skip the steps below: upgrade backups hold the
         // wallet data being cleared, so record it and keep going.
         if let Err(error) = cleanup_legacy_shielded_files(&self.data_dir, self.network) {
             tracing::warn!(?error, "Legacy shielded file removal failed during clear");
-            failures.push(error);
-        }
-
-        // Known limitation (Clear Database is a devnet-only developer tool):
-        // while a shielded operation runs, upstream refuses this reset with
-        // `ShieldedOperationInProgress`. The keys above are already deleted, so
-        // the wipe is reported as incomplete; run Clear Database again once the
-        // shielded operation has finished.
-        if let Err(error) = backend.clear_shielded().await {
-            tracing::warn!(%error, "Shielded coordinator reset failed during clear");
             failures.push(error);
         }
 

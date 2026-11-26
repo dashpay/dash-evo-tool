@@ -2589,6 +2589,55 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     }
 }
 
+/// While a shielded operation runs, upstream refuses the shielded reset. Clear
+/// Database must then delete nothing — no seed, no wallet record — and say
+/// to clear again once the operation has finished, instead of deleting the
+/// keys and leaving the shielded data behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_while_a_shielded_operation_runs() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend.set_clear_shielded_test_refusal(true);
+
+    let result = ctx.clear_network_database().await;
+
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let meta_kept = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .is_some();
+    let wallet_loaded = ctx.wallet_context().has_hd_wallets();
+    backend.shutdown().await;
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearShieldedBusy { .. })),
+        "a refused shielded reset must stop the clear: {result:?}"
+    );
+    assert!(
+        seed_kept,
+        "the seed must not be deleted when nothing can be cleared"
+    );
+    assert!(
+        meta_kept,
+        "the wallet record must not be deleted when nothing can be cleared"
+    );
+    assert!(
+        wallet_loaded,
+        "the wallet must stay loaded when nothing was cleared"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
     let (ctx, sender, _tmp) = offline_testnet_context();

@@ -406,6 +406,8 @@ struct Inner {
     #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
+    clear_shielded_test_refusal: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
     /// Runs once at the end of [`WalletBackend::forget_all_wallets_local`],
     /// standing in for a writer that lands while the wallets are still loaded.
@@ -727,6 +729,8 @@ impl WalletBackend {
                 bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
                 #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                clear_shielded_test_refusal: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -1392,6 +1396,15 @@ impl WalletBackend {
             .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Make the shielded clear return upstream's refusal for an operation in
+    /// flight, as `clear_shielded` gets it while a shielded payment runs.
+    #[cfg(test)]
+    pub(crate) fn set_clear_shielded_test_refusal(&self, refuse: bool) {
+        self.inner
+            .clear_shielded_test_refusal
+            .store(refuse, std::sync::atomic::Ordering::Relaxed);
+    }
+
     #[cfg(test)]
     pub(crate) fn set_after_forget_all_test_hook(&self, hook: impl FnOnce() + Send + 'static) {
         *self
@@ -1863,14 +1876,22 @@ impl WalletBackend {
         {
             return Err(TaskError::WalletDataClearUnavailable);
         }
+        #[cfg(test)]
+        if self
+            .inner
+            .clear_shielded_test_refusal
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(shielded_clear_error(
+                PlatformWalletError::ShieldedOperationInProgress,
+            ));
+        }
 
         self.inner
             .pwm
             .clear_shielded()
             .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })
+            .map_err(shielded_clear_error)
     }
 
     /// Remove a wallet from the upstream `det-<network>.sqlite` persistor
@@ -3560,6 +3581,21 @@ fn shield_capacity_exceeded_error(
 /// `&'static str` (not an enum): we copy it out without consuming `e`, then
 /// route to the correct per-op `*ConfirmationUnknown` variant.  Unknown
 /// `operation` values (future upstream ops) fall through to `WalletBackend`.
+/// Classify a failed shielded clear. Upstream refuses before changing anything
+/// while a shielded operation holds its admission or a sync pass does not
+/// drain; every other failure may come after part of the reset.
+fn shielded_clear_error(e: PlatformWalletError) -> TaskError {
+    match e {
+        PlatformWalletError::ShieldedOperationInProgress
+        | PlatformWalletError::ShutdownIncomplete(_) => TaskError::WalletDataClearShieldedBusy {
+            source: Arc::new(e),
+        },
+        e => TaskError::WalletBackend {
+            source: Arc::new(e),
+        },
+    }
+}
+
 fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     use platform_wallet::error::PlatformWalletError as P;
 
@@ -4534,6 +4570,27 @@ mod tests {
         platform_wallet::error::PlatformWalletError::Sdk(
             dash_sdk::Error::StateTransitionBroadcastError(broadcast_error),
         )
+    }
+
+    /// Upstream's two refusals of a shielded clear change nothing, so they are
+    /// told apart from a reset that failed part-way.
+    #[test]
+    fn shielded_clear_refusals_are_busy_and_other_failures_are_not() {
+        for refusal in [
+            PlatformWalletError::ShieldedOperationInProgress,
+            PlatformWalletError::ShutdownIncomplete("shielded sync pass did not drain".into()),
+        ] {
+            assert!(matches!(
+                shielded_clear_error(refusal),
+                TaskError::WalletDataClearShieldedBusy { .. }
+            ));
+        }
+        assert!(matches!(
+            shielded_clear_error(PlatformWalletError::ShieldedStoreError(
+                "reset_commitment_tree failed".into()
+            )),
+            TaskError::WalletBackend { .. }
+        ));
     }
 
     /// Covers the managed-state seam after contact xpub derivation, including generation gating.

@@ -531,6 +531,12 @@ impl AppContext {
         user_role: UserRoleCell,
     ) -> Result<Arc<Self>, NetworkContextError> {
         let config = Config::load_from(&data_dir)?;
+        if let Some(source) = config.network_settings_error(network) {
+            return Err(NetworkContextError::InvalidSettings {
+                network,
+                source: source.clone(),
+            });
+        }
 
         let network_config = config
             .config_for_network(network)
@@ -777,6 +783,9 @@ impl AppContext {
         use platform_wallet_storage::SqlitePersisterConfig;
         crate::app_dir::ensure_data_dir_exists(data_dir)
             .map_err(|source| TaskError::FileSystem { source })?;
+        crate::wallet_backend::platform_compatibility::refuse_stores_needing_upgrade_release(
+            data_dir,
+        )?;
         let path = crate::wallet_backend::app_database_path(data_dir);
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(crate::wallet_backend::platform_compatibility::open(config)?);
@@ -791,8 +800,14 @@ impl AppContext {
     /// of the same vault would fail with `AlreadyLocked`. The vault is
     /// cross-network: seeds and imported keys are scoped by hash, not chain.
     pub fn open_secret_store(data_dir: &std::path::Path) -> Result<Arc<SecretStore>, TaskError> {
-        crate::app_dir::ensure_data_dir_exists(data_dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        crate::app_dir::ensure_data_dir_exists(data_dir).map_err(|source| {
+            TaskError::from_prepare_environment_error(
+                crate::boot::PrepareEnvironmentError::CreateDataFolder {
+                    path: data_dir.to_path_buf(),
+                    source,
+                },
+            )
+        })?;
         crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
             .map_err(|source| {
@@ -814,8 +829,14 @@ impl AppContext {
         data_dir: &std::path::Path,
         passphrase: platform_wallet_storage::secrets::SecretString,
     ) -> Result<Arc<SecretStore>, TaskError> {
-        crate::app_dir::ensure_data_dir_exists(data_dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        crate::app_dir::ensure_data_dir_exists(data_dir).map_err(|source| {
+            TaskError::from_prepare_environment_error(
+                crate::boot::PrepareEnvironmentError::CreateDataFolder {
+                    path: data_dir.to_path_buf(),
+                    source,
+                },
+            )
+        })?;
         crate::wallet_backend::single_key::open_secret_store_with_passphrase(
             &Self::secret_store_path(data_dir),
             passphrase,
@@ -1991,54 +2012,131 @@ impl AppContext {
 mod tests {
     use super::*;
 
-    /// A network whose saved node addresses cannot be parsed reports that
-    /// reason instead of an unexplained failure.
+    #[cfg(unix)]
     #[test]
-    fn app_context_reports_invalid_node_addresses() {
-        use crate::database::test_helpers::create_database_at_path;
-
-        // Loading the .env sets process variables, so run in a child process
-        // that inherits no network settings.
-        const CHILD_MARKER: &str = "DET_INVALID_NODE_ADDRESSES_TEST_CHILD";
-        if std::env::var_os(CHILD_MARKER).is_none() {
-            let mut command =
-                std::process::Command::new(std::env::current_exe().expect("test executable"));
-            command
-                .args([
-                    "context::tests::app_context_reports_invalid_node_addresses",
-                    "--exact",
-                ])
-                .env(CHILD_MARKER, "1");
-            for (key, _) in std::env::vars_os() {
-                let key = key.to_string_lossy();
-                if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
-                    .iter()
-                    .any(|prefix| key.starts_with(prefix))
-                {
-                    command.env_remove(key.as_ref());
-                }
-            }
-            let output = command.output().expect("run isolated test");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(output.status.success(), "isolated test failed: {stdout}");
-            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+    fn vault_access_denied_keeps_permission_advice_for_both_open_modes() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
             return;
         }
+        use platform_wallet_storage::secrets::{SecretStoreError, SecretString};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        drop(AppContext::open_secret_store(dir.path()).expect("create vault"));
+        let path = AppContext::secret_store_path(dir.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("deny read");
+        let keyless = AppContext::open_secret_store(dir.path()).err();
+        let keyed = AppContext::open_secret_store_with_passphrase(
+            dir.path(),
+            SecretString::new(hex::encode(crate::test_support::keys::secret_bytes())),
+        )
+        .err();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("restore");
+        for error in [keyless, keyed] {
+            let error = error.expect("opening a denied vault must fail");
+            assert!(
+                matches!(&error, TaskError::SecretStoreAccessDenied { source }
+                if matches!(source.as_ref(), SecretStoreError::Io(io)
+                    if io.source.kind() == std::io::ErrorKind::PermissionDenied)),
+                "{error:?}"
+            );
+            assert!(
+                error.to_string().contains("permission to change"),
+                "{error}"
+            );
+            assert!(!error.to_string().contains("other copy"), "{error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_open_reports_denied_data_folder_before_vault_preparation() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+        use platform_wallet_storage::secrets::SecretString;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000))
+            .expect("deny traversal");
+        let data_dir = parent.join("data");
+        let keyless = AppContext::open_secret_store(&data_dir).err();
+        let keyed = AppContext::open_secret_store_with_passphrase(
+            &data_dir,
+            SecretString::new(hex::encode(crate::test_support::keys::secret_bytes())),
+        )
+        .err();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).expect("restore");
+        for error in [keyless, keyed] {
+            let error = error.expect("denied data folder");
+            assert!(
+                matches!(error, TaskError::DataFolderAccessDenied { .. }),
+                "{error:?}"
+            );
+            assert!(
+                error.to_string().contains("permission to change"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_contention_and_wrong_passphrase_keep_their_handling() {
+        use platform_wallet_storage::secrets::{SecretStoreError, SecretString};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let passphrase = hex::encode(crate::test_support::keys::secret_bytes());
+        let store = AppContext::open_secret_store_with_passphrase(
+            dir.path(),
+            SecretString::new(passphrase),
+        )
+        .expect("create protected vault");
+        let held = AppContext::open_secret_store(dir.path()).expect_err("held vault");
+        assert!(
+            matches!(&held, TaskError::SecretStore { source }
+            if matches!(source.as_ref(), SecretStoreError::AlreadyLocked)),
+            "{held:?}"
+        );
+        assert!(held.to_string().contains("no other copy"), "{held}");
+        drop(store);
+        let wrong = AppContext::open_secret_store(dir.path()).expect_err("protected vault");
+        assert!(wrong.is_secret_store_wrong_passphrase(), "{wrong:?}");
+        assert!(wrong.is_recoverable_secret_store_passphrase_error());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_under_a_sticky_shared_parent_can_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure ancestor");
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).expect("shared parent");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).expect("sticky");
+        AppContext::open_secret_store(&shared.join("data")).expect("sticky parent is allowed");
+    }
+
+    /// `AppContext::new`'s error for `network` over a data folder whose
+    /// `.env` holds `env`.
+    fn app_context_error(env: &str, network: Network) -> NetworkContextError {
+        use crate::database::test_helpers::create_database_at_path;
+
+        assert!(crate::test_support::is_test_child(), "isolate .env loading");
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        std::fs::write(
-            data_dir.join(".env"),
-            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
-        )
-        .expect("write .env");
+        std::fs::write(data_dir.join(".env"), env).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
 
         let result = AppContext::new(
             data_dir,
-            Network::Testnet,
+            network,
             db,
             Arc::new(TaskManager::new()),
             Arc::new(ConnectionStatus::new()),
@@ -2048,15 +2146,99 @@ mod tests {
             crate::model::user_role::UserRoleCell::default(),
         );
         let Err(error) = result else {
-            panic!("invalid node addresses must fail");
+            panic!("the settings must be refused");
         };
+        error
+    }
 
+    /// A network whose saved node addresses cannot be parsed reports that
+    /// reason instead of an unexplained failure.
+    #[test]
+    fn app_context_reports_invalid_node_addresses() {
+        // Loading the .env sets process variables, so run in a child process.
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_node_addresses",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error(
+            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
+            Network::Testnet,
+        );
         assert!(
             matches!(
                 error,
                 NetworkContextError::InvalidDapiAddresses {
                     network: Network::Testnet,
                     ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A network whose saved setting has an unusable value is reported as
+    /// invalid, not as missing.
+    #[test]
+    fn app_context_reports_invalid_network_settings() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_network_settings",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error(
+            "MAINNET_core_host=127.0.0.1\nTESTNET_core_rpc_port=invalid\n",
+            Network::Testnet,
+        );
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidSettings {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn app_context_reports_invalid_settings_when_no_network_is_valid() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_settings_when_no_network_is_valid",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error("TESTNET_core_rpc_port=invalid\n", Network::Testnet);
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidSettings {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn app_context_keeps_missing_settings_distinct() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_keeps_missing_settings_distinct",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error("MAINNET_core_host=127.0.0.1\n", Network::Testnet);
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::NotConfigured {
+                    network: Network::Testnet
                 }
             ),
             "{error:?}"
@@ -2164,39 +2346,6 @@ mod tests {
             .collect();
         assert_eq!(uris.len(), 1);
         assert!(uris[0].contains("10.0.0.9"), "{uris:?}");
-    }
-
-    #[test]
-    fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {
-        use crate::wallet_backend::DetScope;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("det-app.sqlite");
-        let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute_batch(include_str!(
-            "../wallet_backend/platform_compatibility/fixtures/67d4ef3.sql"
-        ))
-        .unwrap();
-        let preference = "saved preference".to_owned();
-        let mut encoded = vec![1];
-        encoded.extend(
-            bincode::serde::encode_to_vec(&preference, bincode::config::standard()).unwrap(),
-        );
-        db.execute(
-            "INSERT INTO meta_global (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["det:test:preference", encoded],
-        )
-        .unwrap();
-        drop(db);
-
-        for _ in 0..2 {
-            let kv = AppContext::open_app_kv(dir.path()).unwrap();
-            assert_eq!(
-                kv.get::<String>(DetScope::Global, "det:test:preference")
-                    .unwrap(),
-                Some(preference.clone())
-            );
-        }
     }
 
     /// Every network starts at DET's minimum, without claiming it was verified.

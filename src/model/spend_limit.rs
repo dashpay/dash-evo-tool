@@ -31,7 +31,6 @@ impl CoreDestinationScript {
     /// kind: upstream's dust rule, which a Core payment amount and its Max
     /// are both held to.
     pub fn dust_threshold_duffs(self) -> u64 {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::dashcore::{PubkeyHash, ScriptBuf, ScriptHash};
         // Only the script's length sets the threshold, not its hash.
         let script = match self {

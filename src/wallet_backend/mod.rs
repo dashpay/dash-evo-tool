@@ -51,6 +51,7 @@ mod payments;
 pub(crate) mod persist_fault_test_support;
 pub mod platform_compatibility;
 pub(crate) mod poison;
+mod protocol_refresh;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
@@ -64,6 +65,7 @@ pub mod single_key_entry;
 mod snapshot;
 mod spend_activity;
 mod token_balance;
+mod tokens;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_context;
@@ -96,9 +98,11 @@ pub use secret_prompt::{
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
 pub use secret_seam::SecretSeam;
+pub(crate) use tokens::{TokenActionCommon, TokenActor};
 
 use coordinator_gate::CoordinatorGate;
 use identity_ops::Funding;
+pub(crate) use identity_ops::fold_fetched_identity;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
@@ -174,7 +178,7 @@ async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
 where
     IsSyncing: FnMut() -> bool,
     SyncNow: FnOnce() -> SyncFuture,
-    SyncFuture: std::future::Future<Output = ()>,
+    SyncFuture: std::future::Future,
 {
     // TODO: Upstream `IdentitySyncManager::sync_now()` should return a performed/skipped
     // outcome or completion generation; before/after `is_syncing()` samples are racy.
@@ -193,13 +197,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use dash_async::{ShutdownReport, WorkerStatus};
 use dash_sdk::Sdk;
-use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
+use dash_sdk::dash_spv::{ClientConfig, DevnetConfig};
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
-use platform_wallet::manager::PlatformWalletManager;
+use platform_wallet::manager::{PlatformWalletManager, WalletWorker};
 use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
@@ -397,6 +402,8 @@ struct Inner {
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
+    bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
@@ -454,6 +461,9 @@ struct Inner {
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
+    /// Devnet name dash-spv requires at startup and puts in its user agent;
+    /// `None` off Devnet. Genesis and quorum settings do not depend on it.
+    devnet_name: Option<String>,
     network: Network,
     /// Disposable per-network chain cache: `<data_dir>/spv/<network>/`.
     spv_storage_dir: std::path::PathBuf,
@@ -502,6 +512,8 @@ struct Inner {
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
     coordinator_gate: Arc<CoordinatorGate>,
+    protocol_refresh: protocol_refresh::ProtocolRefresh,
+    app_context: std::sync::Weak<AppContext>,
     /// Frame-loop result channel, used by [`WalletBackend::start`] to nudge
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
@@ -571,6 +583,20 @@ pub(crate) fn all_networks() -> [Network; 4] {
 /// — that directory holds the disposable, resyncable chain cache, while this file
 /// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
 /// created and locked down at boot, so no directory work happens here.
+/// Test seam for pausing and observing a wallet backend build.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct BuildTestHooks {
+    /// When set, the build signals it once its upstream manager exists, then
+    /// waits for good, standing in for a slow initialization.
+    pub(crate) pause_initialization: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// Bounded teardowns that finished for backends built by this context.
+    pub(crate) bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Upper bound for [`WalletBackend::shutdown_bounded`].
+const BOUNDED_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
 }
@@ -589,11 +615,44 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
     spv_root_dir(data_dir).join(network_prefix(network))
 }
 
+/// The devnet name dash-spv needs, from the configured `devnet_name`: `None`
+/// off Devnet or when unset, and without Core's `devnet-` datadir prefix.
+fn spv_devnet_name_from(network: Network, configured: Option<&str>) -> Option<String> {
+    if network != Network::Devnet {
+        return None;
+    }
+    let name = configured?.trim();
+    let name = name.strip_prefix("devnet-").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Attach the `DevnetConfig` dash-spv requires before it connects, and the
+/// user agent with the `devnet.devnet-<name>` suffix Dash Core peers check
+/// during the handshake. The name selects no chain parameters: genesis comes
+/// from the network, and no quorum override is set. No change when
+/// `devnet_name` is `None`.
+fn with_devnet_identity(config: ClientConfig, devnet_name: Option<&str>) -> ClientConfig {
+    let Some(name) = devnet_name else {
+        return config;
+    };
+    let devnet = DevnetConfig::new(name.to_string());
+    let user_agent = devnet.user_agent(dash_sdk::dash_spv::VERSION);
+    config.with_devnet(devnet).with_user_agent(user_agent)
+}
+
 /// The upstream shielded coordinator's store,
 /// `<data_dir>/det-<network>-shielded.sqlite` — the sibling of
 /// [`wallet_database_path`] holding all Orchard state.
 pub(crate) fn shielded_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}-shielded.sqlite", network_prefix(network)))
+}
+
+fn protocol_refresh_action(context: std::sync::Weak<AppContext>) -> impl Fn() + Send + Sync {
+    move || {
+        if let Some(ctx) = context.upgrade() {
+            ctx.queue_platform_protocol_refresh();
+        }
+    }
 }
 
 impl WalletBackend {
@@ -661,22 +720,13 @@ impl WalletBackend {
             },
         ));
 
+        // From here on the manager runs its wallet-event adapter, so every
+        // failure below tears it down through `Self::shutdown_bounded`, never a
+        // plain drop.
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
-        // Wire the upstream shielded coordinator into the manager.
-        //
-        // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
-        // entirely by the upstream coordinator — the single source of truth for
-        // all Orchard state. The coordinator starts empty — no wallets are bound
-        // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
-        // calls with the same path are idempotent (upstream no-ops).
-        pwm.configure_shielded(shielded_database_path(ctx.data_dir(), network))
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })?;
-
         let peer = Self::spv_primary_peer_socket(ctx, network);
+        let devnet_name = Self::spv_devnet_name(ctx, network);
 
         let app_kv = ctx.app_kv();
 
@@ -706,6 +756,8 @@ impl WalletBackend {
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
+                bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
+                #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
@@ -730,6 +782,7 @@ impl WalletBackend {
                 profile_timestamps: dashpay::ProfileTimestamps::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
+                devnet_name,
                 network,
                 spv_storage_dir,
                 wallet_database_path,
@@ -741,6 +794,8 @@ impl WalletBackend {
                 secret_access,
                 start_latch: StartLatch::default(),
                 coordinator_gate,
+                protocol_refresh: protocol_refresh::ProtocolRefresh::default(),
+                app_context: Arc::downgrade(ctx),
                 task_result_sender,
                 spend_activity: Arc::default(),
                 platform_shield_activity: Arc::default(),
@@ -748,18 +803,91 @@ impl WalletBackend {
             }),
         };
 
-        // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
-        // seed-envelope sidecars before the loader runs. The legacy
-        // `db.get_wallets` row → `Wallet` mapping moved here once the
-        // sidecars became the authoritative source. `register_persisted_wallets`
-        // expects the wallet context's HD registry to be populated so it can re-provision
-        // identity funding accounts (a5538dc8) for every persisted
-        // identity, so hydration must precede registration.
-        backend.hydrate_context_wallets(ctx)?;
+        let initialize = async {
+            #[cfg(test)]
+            let pause = ctx
+                .test_wallet_backend_hooks
+                .pause_initialization
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            #[cfg(test)]
+            if let Some(reached) = pause {
+                reached.notify_one();
+                std::future::pending::<()>().await;
+            }
 
-        backend.register_persisted_wallets(ctx).await?;
+            // Wire the upstream shielded coordinator into the manager.
+            //
+            // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
+            // entirely by the upstream coordinator — the single source of truth for
+            // all Orchard state. The coordinator starts empty — no wallets are bound
+            // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
+            // calls with the same path are idempotent (upstream no-ops).
+            backend
+                .inner
+                .pwm
+                .configure_shielded(shielded_database_path(ctx.data_dir(), network))
+                .await
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+
+            // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
+            // seed-envelope sidecars before the loader runs. The legacy
+            // `db.get_wallets` row → `Wallet` mapping moved here once the
+            // sidecars became the authoritative source. `register_persisted_wallets`
+            // expects the wallet context's HD registry to be populated so it can re-provision
+            // identity funding accounts (a5538dc8) for every persisted
+            // identity, so hydration must precede registration.
+            backend.hydrate_context_wallets(ctx)?;
+
+            backend.register_persisted_wallets(ctx).await
+        };
+        // Closing the app stops the build at its next await. Stopping there
+        // is safe: no step here writes the wallet database itself. Opening
+        // the shielded store is synchronous, and the persisted-wallet load
+        // only reads.
+        // Whatever the load left half-done lives only in this manager, and
+        // the manager is torn down below.
+        let cancellation_token = ctx.subtasks.cancellation_token.clone();
+        let initialized = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => Err(TaskError::TaskManagerShuttingDown),
+            initialized = initialize => initialized,
+        };
+        if let Err(error) = initialized {
+            backend.shutdown_bounded().await;
+            return Err(error);
+        }
 
         Ok(backend)
+    }
+
+    /// Forget cached secrets and tear the backend down through the upstream
+    /// shutdown, bounded by [`BOUNDED_SHUTDOWN_TIMEOUT`].
+    ///
+    /// Use it instead of dropping the backend: the upstream manager's `Drop`
+    /// only cancels its wallet-event adapter and may lose buffered events.
+    /// [`Self::shutdown`] stops chain sync, drains the sync passes and joins
+    /// the adapter. A backend that never started has only the adapter to
+    /// drain. One that started and overruns the bound is reported. A later
+    /// shutdown, such as the app's exit drain for a registered context, joins
+    /// what is left.
+    pub(crate) async fn shutdown_bounded(&self) {
+        self.forget_all_secrets();
+        match tokio::time::timeout(BOUNDED_SHUTDOWN_TIMEOUT, self.shutdown()).await {
+            Ok(()) => {
+                #[cfg(test)]
+                self.inner
+                    .bounded_shutdowns
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(_) => tracing::warn!(
+                timeout_secs = BOUNDED_SHUTDOWN_TIMEOUT.as_secs(),
+                "Wallet backend teardown timed out; continuing"
+            ),
+        }
     }
 
     /// Refill the wallet context's HD and imported-key registries from the
@@ -1224,6 +1352,28 @@ impl WalletBackend {
         .expect("track the funding transaction");
     }
 
+    /// Give `address` on the registered wallet's Platform-payment account 0
+    /// a balance of `credits`, as if a sync pass had found it.
+    #[cfg(test)]
+    pub(crate) async fn set_platform_address_balance_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: dash_sdk::dpp::key_wallet::PlatformP2PKHAddress,
+        credits: u64,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        let wallet_id = wallet.wallet_id();
+        let mut manager = wallet.wallet_manager().write().await;
+        manager
+            .get_wallet_info_mut(&wallet_id)
+            .and_then(|info| {
+                info.core_wallet
+                    .first_platform_payment_managed_account_mut()
+            })
+            .expect("platform-payment account 0")
+            .set_address_credit_balance(address, credits, None);
+    }
+
     #[cfg(test)]
     pub(crate) fn registration_attempt_count(&self) -> usize {
         self.inner
@@ -1496,7 +1646,6 @@ impl WalletBackend {
         wallet_id: &WalletId,
     ) -> Result<PersistedTransactionHydration, TaskError> {
         use crate::backend_task::error::WalletTransactionHistoryError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use platform_wallet::changeset::PlatformWalletPersistence;
         use platform_wallet_storage::WalletStorageError;
 
@@ -1785,7 +1934,9 @@ impl WalletBackend {
             .delete_wallet_skip_backup(*wallet_id)
         {
             Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
-            Err(source) => Err(TaskError::WalletStorage { source }),
+            Err(source) => Err(TaskError::WalletStorage {
+                source: source.into(),
+            }),
         }
     }
 
@@ -1944,7 +2095,9 @@ impl WalletBackend {
                         Ok(()) => Ok(()),
                         Err(source) => {
                             self.inner.start_latch.reset_if_current(&flight);
-                            Err(StartFlightError::Failed(Arc::new(source)))
+                            Err(StartFlightError::Failed(Arc::new(redact_wallet_error(
+                                source,
+                            ))))
                         }
                     }
                 })
@@ -1968,6 +2121,7 @@ impl WalletBackend {
         reason = "PlatformWalletError is an upstream type we cannot shrink"
     )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
+        self.inner.protocol_refresh.stop().await;
         let config = self.build_client_config();
 
         // New API: `start(config)` (async, initializes the SPV client) is called first,
@@ -1975,6 +2129,10 @@ impl WalletBackend {
         // The old `spawn_in_background(config)` combined both steps.
         let spv = self.inner.pwm.spv_arc();
         spv.start(config).await?;
+        self.inner.protocol_refresh.start(
+            self.inner.app_context.clone(),
+            Arc::clone(&self.inner.coordinator_gate),
+        );
         spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The
@@ -1996,11 +2154,12 @@ impl WalletBackend {
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
-        // is provably reachable. Cloning the sender avoids capturing any
-        // `Weak<AppContext>` in this run-loop closure.
+        // is provably reachable.
         let task_result_sender = self.inner.task_result_sender.clone();
         let network = self.inner.network;
+        let refresh_protocol = protocol_refresh_action(self.inner.app_context.clone());
         self.inner.coordinator_gate.arm(Box::new(move || {
+            refresh_protocol();
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
@@ -2036,6 +2195,16 @@ impl WalletBackend {
         Ok(())
     }
 
+    /// Whether this backend's SPV session has the masternode list needed for proofs.
+    pub(crate) fn quorum_keys_ready(&self) -> bool {
+        self.inner.coordinator_gate.masternodes_ready()
+    }
+
+    /// Schedule a metadata probe within the running, quorum-ready SPV session.
+    pub(crate) fn queue_platform_protocol_refresh(&self) {
+        self.inner.protocol_refresh.queue();
+    }
+
     /// Whether chain sync has been started on this backend.
     ///
     /// Reflects the latch set by [`Self::start`]; used by tests and by callers
@@ -2046,8 +2215,8 @@ impl WalletBackend {
 
     /// Stop all upstream background tasks. Idempotent.
     ///
-    /// Stops the SPV run-loop task **first**, then quiesces the sync-manager
-    /// coordinators.  Ordering matters for the platform-open registry:
+    /// Drains metadata probes, stops the SPV run-loop task, then quiesces the
+    /// sync-manager coordinators. Ordering matters for the platform-open registry:
     ///
     /// The spawned SPV background task holds `Arc<SpvRuntime>`, which
     /// transitively keeps `Arc<SqlitePersister>` alive via the chain
@@ -2071,13 +2240,15 @@ impl WalletBackend {
     /// *consumers* is safe — no new events can arrive, and any in-flight
     /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
+        let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
         // teardown must proceed regardless.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
@@ -2086,13 +2257,7 @@ impl WalletBackend {
         // the wallet-event adapter task. Best-effort: a non-clean report flags a
         // still-live worker or orphan, which teardown proceeds past regardless —
         // log it rather than surface it.
-        let report = self.inner.pwm.shutdown().await;
-        if !report.all_clean() {
-            tracing::warn!(
-                ?report,
-                "Wallet manager shutdown did not complete cleanly; continuing teardown"
-            );
-        }
+        warn_if_shutdown_unclean(&self.inner.pwm.shutdown().await);
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -2105,7 +2270,8 @@ impl WalletBackend {
     /// Unlike [`Self::shutdown`], this deliberately does **not** call
     /// `pwm.shutdown()`: that cancels and joins the wallet-event adapter task,
     /// which has no re-create path, so a subsequent restart would lose event
-    /// processing. Instead it stops the restartable pieces only:
+    /// processing. Metadata probes are cancelled and drained before the SPV
+    /// session loses its quorum keys. The restartable pieces stop in order:
     ///
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
@@ -2133,10 +2299,11 @@ impl WalletBackend {
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during stop_in_place; continuing"
             );
         }
@@ -2400,15 +2567,18 @@ impl WalletBackend {
         IdentityMetaView::new(&self.inner.app_kv)
     }
 
-    /// Replace the JIT chokepoint's identity prompt-copy index from the loaded
-    /// identities (alias) and their persisted hints ([`Self::identity_meta`]).
-    /// Display-only: it never decides whether to prompt (the vault scheme
-    /// does). Best-effort — a missing hint degrades to "no hint", never an
-    /// error. Called whenever identities are (re)loaded so the sign-time prompt
-    /// for an opted-in identity shows its label and hint.
+    /// Refresh the JIT chokepoint's identity prompt-copy index with the loaded
+    /// identities (alias) and their persisted hints ([`Self::identity_meta`]),
+    /// keeping the entries of other identities still in `roster` and dropping
+    /// the rest. Display-only: it never decides whether to prompt (the vault
+    /// scheme does). Best-effort — a missing hint degrades to "no hint", never
+    /// an error. Called whenever identities are (re)loaded so the sign-time
+    /// prompt for an opted-in identity shows its label and hint.
+    /// `roster` must be sorted by identity ID.
     pub fn seed_identity_prompt_index(
         &self,
         identities: &[crate::model::qualified_identity::QualifiedIdentity],
+        roster: &[[u8; 32]],
     ) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
@@ -2433,7 +2603,9 @@ impl WalletBackend {
                 )
             })
             .collect();
-        self.inner.secret_access.set_identity_prompt_index(index);
+        self.inner
+            .secret_access
+            .merge_identity_prompt_index(roster, index);
     }
 
     /// View over the DET-owned identity-authentication public-key cache
@@ -3267,7 +3439,13 @@ impl WalletBackend {
         if let Some(peer) = self.inner.peer {
             config.add_peer(peer);
         }
-        config
+        with_devnet_identity(config, self.inner.devnet_name.as_deref())
+    }
+
+    /// The configured devnet name for SPV, `None` off Devnet.
+    fn spv_devnet_name(ctx: &Arc<AppContext>, network: Network) -> Option<String> {
+        let cfg = ctx.config.read().ok()?;
+        spv_devnet_name_from(network, cfg.devnet_name.as_deref())
     }
 
     /// Resolve an explicit SPV peer for local networks. Devnet/Regtest have
@@ -3307,7 +3485,7 @@ impl WalletBackend {
     }
 }
 
-/// Registers contact accounts and bumps each newly inserted account's monitor revision.
+/// Registers contact accounts and returns how many were newly inserted.
 fn register_contact_accounts_in_managed_wallet(
     info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     accounts: impl IntoIterator<
@@ -3317,17 +3495,10 @@ fn register_contact_accounts_in_managed_wallet(
         ),
     >,
 ) -> usize {
-    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-
     let mut newly_inserted = 0;
     for (account_type, account_xpub) in accounts {
         match add_contact_receiving_account(info, account_type, account_xpub) {
-            Ok(Some(key)) => {
-                newly_inserted += 1;
-                if let Some(account) = info.accounts.dashpay_receival_accounts.get_mut(&key) {
-                    account.bump_monitor_revision();
-                }
-            }
+            Ok(Some(_)) => newly_inserted += 1,
             Ok(None) => {}
             Err(error) => {
                 tracing::debug!(%error, "Skipping contact account: managed insert failed");
@@ -3408,19 +3579,32 @@ fn bip44_account0_xpub<'a>(
 /// with the fee reserve still in it, or the whole account balance when no
 /// address can keep the reserve back. Without a plan there is no trustworthy
 /// maximum, so the refusal keeps the generic envelope; with a plan that can
-/// shield nothing, there is no Max to point to. Pure — unit-testable.
+/// shield nothing, there is no Max to point to. A later plan whose maximum
+/// covers `amount` does not show which check refused it: a selected input may
+/// have held less than its cached balance, or a sync may have raised the
+/// cached maximum between the refusal and this plan. Either way no maximum is
+/// stated. Pure — unit-testable.
 fn shield_capacity_exceeded_error(
     source: platform_wallet::error::PlatformWalletError,
     preflight: Result<
         platform_wallet::ShieldedShieldPreflight,
         platform_wallet::error::PlatformWalletError,
     >,
+    amount: u64,
 ) -> TaskError {
     match preflight {
         Ok(preflight) if preflight.can_shield && preflight.max_shieldable_credits > 0 => {
-            TaskError::ShieldFromPlatformCapacityExceeded {
-                max_shieldable: preflight.max_shieldable_credits,
-                source: Box::new(source),
+            if amount > preflight.max_shieldable_credits {
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable: preflight.max_shieldable_credits,
+                    source: Box::new(source),
+                }
+            } else {
+                // The later plan covers the amount, so the refusal came from a
+                // live input shortfall or an earlier, smaller snapshot.
+                TaskError::ShieldFromPlatformBalanceChanged {
+                    source: Box::new(source),
+                }
             }
         }
         Ok(_) => TaskError::ShieldFromPlatformNothingShieldable {
@@ -3478,6 +3662,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     // Exhaustive match — no `_` arm.
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
+
+        other @ (P::AssetLockTooManyInputs { .. } | P::AssetLockFundsAwaitingFinality { .. }) => {
+            payments::map_asset_lock_refusal_or(other, |other| TaskError::WalletBackend {
+                source: Arc::new(other),
+            })
+        }
 
         // Only shielding from Platform raises this, and
         // `WalletBackend::shield_from_balance` intercepts it first through
@@ -3541,11 +3731,27 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // A shielded funding was resumed to another recipient than the one its
+        // asset lock recorded. Upstream pays nobody, and the same request is
+        // refused every time, so the generic envelope's retry advice is wrong.
+        other @ P::AssetLockRecipientMismatch { .. } => {
+            TaskError::ShieldedFundingRecipientMismatch {
+                source: Box::new(other),
+            }
+        }
+
         // A token operation keeps its SDK cause, so it is classified like any
         // SDK error; an unclassified one still names the operation.
         P::TokenOperationFailed { operation, source } => {
             TaskError::from_token_operation_failure(operation, source)
         }
+
+        // An SDK error reaches the user the same way whichever layer returned
+        // it. Shielding from Core broadcasts through the SDK, so a result that
+        // could not be read comes back here as an SDK error; under the generic
+        // envelope it would advise a retry, and a retried shield builds a new
+        // lock and can shield the amount, and pay the fee, a second time.
+        P::Sdk(sdk_error) => map_shielded_sdk_error(sdk_error),
 
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
@@ -3578,7 +3784,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::CoreInsufficientFunds { .. }
         | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
-        | P::Sdk(_)
         | P::AddressSync(_)
         | P::AddressOperation(_)
         | P::OnlyOutputAddressesFunded { .. }
@@ -3622,12 +3827,70 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
         | P::InvitationNetworkMismatch { .. }
-        | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
-        | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
+        // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
+        // an operation this map serves as a Platform rejection or a pending
+        // outcome DET can watch, so they take the generic envelope like their
+        // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
+        // `ShieldedBroadcastUnconfirmed`).
+        | P::AccountNotFound(_)
+        | P::WalletRemovedBeforeSend(_)
+        | P::ShieldedBroadcastMaybeDelivered(_)
+        | P::DocumentEraseBusy
+        | P::DecisionProposalNotFound { .. }
+        | P::PreparedPaymentAddressTaken(_)
+        | P::PrivateContactPaymentsNotRestored
+        | P::PrivateContactRecoveryUnsupported
+        | P::PrivateContactRequestNeedsPrivateReply(_)
+        | P::PrivateContactRequestPending(_)
+        | P::PrivateContactStoreNotRead(_)
+        | P::PublicContactRequestUnconfirmed(_)
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // pending outcome DET can watch, so they take the generic envelope too.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        ) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
+    }
+}
+
+/// Classify the SDK error a shielded operation failed with through
+/// [`TaskError::from`], as the funding mappers do, so an outcome the classifier
+/// knows (a result that could not be confirmed, servers that are not ready, a
+/// consumed funding lock) reads the same here as when the SDK returns it
+/// directly. An error the classifier has no dedicated answer for keeps the
+/// generic wallet envelope it had before.
+fn map_shielded_sdk_error(sdk_error: dash_sdk::Error) -> TaskError {
+    match TaskError::from(sdk_error) {
+        TaskError::PlatformRejected { source_error } | TaskError::SdkError { source_error } => {
+            TaskError::WalletBackend {
+                source: Arc::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    *source_error,
+                )),
+            }
+        }
+        classified => classified,
     }
 }
 
@@ -3655,8 +3918,8 @@ fn classify_sdk_error_or(
 /// Classify a `PlatformWalletError` returned from
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
-/// finality failures become `AssetLockFinalityTimeout`; everything else
-/// falls through to the generic `WalletBackend` wrapper. SDK errors use the
+/// finality failures become `AssetLockFinalityTimeout`; input-limit refusals
+/// retain their counts and source; remaining failures use `WalletBackend`. SDK errors use the
 /// richer `TaskError` classifier before this coarse mapping, falling back to
 /// `IdentityCreateRejected` for an unclassified rejection (see
 /// [`classify_sdk_error_or`]) so generic broadcast failures still carry
@@ -3671,7 +3934,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
         },
@@ -3689,7 +3952,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Same as [`map_identity_register_error`] but for the top-up façade —
@@ -3712,7 +3975,7 @@ fn map_identity_top_up_error(
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
             source: Box::new(e),
@@ -3733,7 +3996,7 @@ fn map_identity_top_up_error(
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Classify an SDK error from a directly-submitted identity top-up — the path a
@@ -3775,8 +4038,8 @@ fn platform_warm_start_seed(
 /// Map an orchestrated platform-address funding error to a typed `TaskError`.
 /// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
-/// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
-/// through to the generic [`TaskError::WalletBackend`] envelope. SDK errors use
+/// in [`TaskError::PlatformAddressFundRejected`], and input-limit refusals retain
+/// their counts and source. Remaining failures use [`TaskError::WalletBackend`]. SDK errors use
 /// the richer `TaskError` classifier before this coarse mapping, falling back
 /// to `PlatformAddressFundRejected` (see [`classify_sdk_error_or`]) for an
 /// unclassified rejection so the existing-lock recovery instructions survive.
@@ -3789,7 +4052,7 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         }
         other => other,
     };
-    match identity_op_error_kind(&e) {
+    payments::map_asset_lock_refusal_or(e, |e| match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
@@ -3808,7 +4071,7 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Arc::new(e),
         },
-    }
+    })
 }
 
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
@@ -3862,7 +4125,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         P::TransactionBroadcastUnconfirmed(_) => IdentityOpErrorKind::ConfirmationUnknown,
 
         // Everything else — preconditions, wallet state, builder errors.
-        P::WalletCreation(_)
+        // Asset-lock refusals never get here: callers classify them first via
+        // `payments::map_asset_lock_refusal_or`.
+        P::AssetLockTooManyInputs { .. }
+        | P::AssetLockFundsAwaitingFinality { .. }
+        | P::WalletCreation(_)
         | P::StaleReservation
         | P::InputMidBroadcast { .. }
         | P::AssetLockInputConflict { .. }
@@ -3958,12 +4225,111 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
         | P::InvitationNetworkMismatch { .. }
-        | P::AssetLockTooManyInputs { .. }
         | P::QuorumNotVerified { .. }
         | P::SpvProcessRestartRequired(_)
+        // Variants introduced by the move to Platform `v5.2-dev`. None is raised by
+        // an operation this map serves as a Platform rejection or a pending
+        // outcome DET can watch, so they take the generic envelope like their
+        // siblings above (`AssetLockInsufficientFunds`, `WalletNotFound`,
+        // `ShieldedBroadcastUnconfirmed`).
+        | P::AccountNotFound(_)
+        | P::WalletRemovedBeforeSend(_)
+        // Raised only when a shielded funding is resumed; no identity or
+        // address-funding flow resumes one.
+        | P::AssetLockRecipientMismatch { .. }
+        | P::ShieldedBroadcastMaybeDelivered(_)
+        | P::DocumentEraseBusy
+        | P::DecisionProposalNotFound { .. }
+        | P::PreparedPaymentAddressTaken(_)
+        | P::PrivateContactPaymentsNotRestored
+        | P::PrivateContactRecoveryUnsupported
+        | P::PrivateContactRequestNeedsPrivateReply(_)
+        | P::PrivateContactRequestPending(_)
+        | P::PrivateContactStoreNotRead(_)
+        | P::PublicContactRequestUnconfirmed(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
-        | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // Platform rejection of this op or a pending outcome DET can watch.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        => IdentityOpErrorKind::Other,
+    }
+}
+
+/// Withholds the text of `SpvProcessRestartRequired` before the error is
+/// logged or kept for banner details.
+///
+/// Upstream builds that text from a joined SPV task's result (`{result:?}`),
+/// so a panic there puts the runtime-formatted panic message in it. Only its
+/// length is kept, as the panic hook does; every other variant is unchanged.
+fn redact_wallet_error(error: PlatformWalletError) -> PlatformWalletError {
+    match error {
+        PlatformWalletError::SpvProcessRestartRequired(text) => {
+            PlatformWalletError::SpvProcessRestartRequired(format!(
+                "<redacted: SPV task failure, may hold a panic message, {} bytes>",
+                text.len()
+            ))
+        }
+        other => other,
+    }
+}
+
+/// Logs a non-clean `pwm.shutdown()` report with every worker's text withheld.
+///
+/// Upstream fills `Panicked` with the worker's panic message and the SPV
+/// entry's `Error` with the `SpvProcessRestartRequired` text, so only the
+/// worker, its status and the text length are logged.
+fn warn_if_shutdown_unclean(report: &ShutdownReport<WalletWorker>) {
+    if !report.all_clean() {
+        let report = ShutdownReport {
+            per_worker: report
+                .per_worker
+                .iter()
+                .map(|(worker, status)| (*worker, redact_worker_status(status)))
+                .collect(),
+            detached: report.detached,
+            orphan_status: redact_worker_status(&report.orphan_status),
+        };
+        tracing::warn!(
+            ?report,
+            "Wallet manager shutdown did not complete cleanly; continuing teardown"
+        );
+    }
+}
+
+/// A worker status with its text replaced by the text's length. Exhaustive,
+/// so a new upstream variant must be classified here before it is logged.
+fn redact_worker_status(status: &WorkerStatus) -> WorkerStatus {
+    let withheld = |text: &str| format!("<redacted: {} bytes>", text.len());
+    match status {
+        WorkerStatus::Panicked(text) => WorkerStatus::Panicked(withheld(text)),
+        WorkerStatus::Error(text) => WorkerStatus::Error(withheld(text)),
+        WorkerStatus::Stopped(Some(text)) => WorkerStatus::Stopped(Some(withheld(text))),
+        WorkerStatus::Ok
+        | WorkerStatus::Stopped(None)
+        | WorkerStatus::Timeout
+        | WorkerStatus::Detached
+        | WorkerStatus::NotRunning => status.clone(),
     }
 }
 
@@ -3971,9 +4337,238 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 mod tests {
     use super::*;
 
+    /// A wallet backend still being built when the app closes stops instead
+    /// of finishing, and releases the wallet database it opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_by_exit_stops_and_releases_its_storage() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        ctx.subtasks.cancellation_token.cancel();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let error = ctx
+            .ensure_wallet_backend(sender)
+            .await
+            .expect_err("closing the app stops the build");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
+
+    /// The same holds when the app closes while the build is initializing:
+    /// it stops there, its manager goes through the upstream shutdown, and
+    /// the wallet database is released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_mid_initialization_stops_and_shuts_down() {
+        use crate::context::test_support::test_app_context;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        *ctx.test_wallet_backend_hooks
+            .pause_initialization
+            .lock()
+            .expect("hooks lock") = Some(Arc::clone(&reached));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let mut build = Box::pin(ctx.ensure_wallet_backend(sender));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                _ = build.as_mut() => panic!("the build finished instead of pausing"),
+                () = reached.notified() => {}
+            }
+        })
+        .await
+        .expect("the build reaches its initialization");
+
+        ctx.subtasks.cancellation_token.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(10), build)
+            .await
+            .expect("closing the app stops the paused build")
+            .expect_err("a stopped build reports the exit");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
+
+    #[test]
+    fn upstream_asset_lock_input_limit_preserves_counts_source_and_restart_guidance() {
+        use platform_wallet::error::PlatformWalletError as P;
+        use std::error::Error;
+
+        let identity_id = dash_sdk::platform::Identifier::from([1; 32]);
+        let error = || P::AssetLockTooManyInputs {
+            count: 101,
+            max: 100,
+        };
+        for mapped in [
+            payments::map_asset_lock_error(error()),
+            payments::map_core_broadcast_error(None, error()),
+            map_identity_register_error(error()),
+            map_identity_top_up_error(identity_id, error()),
+            map_platform_address_fund_error(error()),
+            map_shielded_op_error(error()),
+        ] {
+            assert!(matches!(
+                &mapped,
+                TaskError::AssetLockTransferTooManyInputs {
+                    count: 101,
+                    max: 100,
+                    ..
+                }
+            ));
+            let message = mapped.to_string();
+            assert!(
+                message.contains("101") && message.contains("100"),
+                "{message}"
+            );
+            assert!(
+                message.contains("could not be sent or resumed"),
+                "{message}"
+            );
+            assert!(message.contains("start a new transfer"), "{message}");
+            assert!(
+                message.contains("check whether the transfer completed"),
+                "{message}"
+            );
+            assert!(!message.contains("Try again"), "{message}");
+            assert!(matches!(
+                mapped
+                    .source()
+                    .and_then(|source| source.downcast_ref::<Box<P>>())
+                    .map(Box::as_ref),
+                Some(P::AssetLockTooManyInputs {
+                    count: 101,
+                    max: 100
+                })
+            ));
+        }
+    }
+
+    /// Upstream refuses a lock only coins awaiting finality could fund.
+    /// Every operation that builds a lock says how much is waiting and to
+    /// wait for it, not the generic envelope's "retry in a moment".
+    #[test]
+    fn upstream_funds_awaiting_finality_says_to_wait_for_confirmation() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let identity_id = dash_sdk::platform::Identifier::from([1; 32]);
+        let error = || P::AssetLockFundsAwaitingFinality { waiting: 250_000 };
+        for mapped in [
+            payments::map_asset_lock_error(error()),
+            map_identity_register_error(error()),
+            map_identity_top_up_error(identity_id, error()),
+            map_platform_address_fund_error(error()),
+            map_shielded_op_error(error()),
+        ] {
+            let TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting: 250_000,
+                source: Some(source),
+            } = &mapped
+            else {
+                panic!("expected AssetLockFundsAwaitingConfirmation with its source: {mapped:?}");
+            };
+            assert!(
+                matches!(
+                    source.as_ref(),
+                    P::AssetLockFundsAwaitingFinality { waiting: 250_000 }
+                ),
+                "the wallet's refusal stays in the error chain: {source:?}"
+            );
+            assert_eq!(
+                mapped.to_string(),
+                "This amount would use 0.0025 DASH of your funds that are still waiting to be confirmed. Wait a few minutes for the confirmation, then try again."
+            );
+        }
+    }
+
+    #[test]
+    fn unclean_shutdown_report_is_logged_without_worker_text() {
+        let planted_marker = "planted-marker-7f3a9c0e";
+        let report = ShutdownReport {
+            per_worker: [
+                (
+                    WalletWorker::Spv,
+                    WorkerStatus::Error(format!("restart required: {planted_marker}")),
+                ),
+                (
+                    WalletWorker::IdentitySync,
+                    WorkerStatus::Panicked(format!("seed {planted_marker}")),
+                ),
+                (WalletWorker::ShieldedSync, WorkerStatus::Timeout),
+            ]
+            .into_iter()
+            .collect(),
+            detached: 1,
+            orphan_status: WorkerStatus::Stopped(Some(planted_marker.to_owned())),
+        };
+        let log = crate::test_support::CapturedLog::start();
+        warn_if_shutdown_unclean(&report);
+        let text = log.text();
+
+        assert!(!text.contains(planted_marker), "{text}");
+        for kept in ["Spv", "IdentitySync", "Panicked", "Timeout", "detached: 1"] {
+            assert!(text.contains(kept), "the report must keep {kept}:\n{text}");
+        }
+        let panicked_field = format!("<redacted: {} bytes>", "seed ".len() + planted_marker.len());
+        assert!(text.contains(&panicked_field), "{text}");
+    }
+
+    #[test]
+    fn redact_wallet_error_withholds_a_joined_spv_task_panic_message() {
+        let planted_marker = "planted-marker-7f3a9c0e";
+        let text = format!(
+            "SPV teardown task failed: Err(JoinError::Panic(Id(7), \"seed {planted_marker}\", ..))"
+        );
+        let redacted =
+            redact_wallet_error(PlatformWalletError::SpvProcessRestartRequired(text.clone()));
+        let shown = format!("{redacted:?} {redacted}");
+        assert!(!shown.contains(planted_marker), "{shown}");
+        assert!(
+            matches!(redacted, PlatformWalletError::SpvProcessRestartRequired(_)),
+            "the variant must survive: {shown}"
+        );
+        assert!(shown.contains(&format!("{} bytes", text.len())), "{shown}");
+
+        let other = redact_wallet_error(PlatformWalletError::SpvError("peer lost".to_owned()));
+        assert!(format!("{other:?}").contains("peer lost"));
+    }
+
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let consensus = dash_sdk::dpp::consensus::ConsensusError::from(
             IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
                 dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
@@ -4009,13 +4604,12 @@ mod tests {
         )
     }
 
-    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Covers the managed-state seam after contact xpub derivation, including generation gating.
     /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
     #[test]
-    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
+    fn contact_registration_counts_only_new_keys() {
         use dash_sdk::dpp::key_wallet::account::AccountType;
         use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -4054,16 +4648,15 @@ mod tests {
             user_identity_id: [1u8; 32],
             friend_identity_id: [3u8; 32],
         };
-        let max_monitor_revision = |info: &ManagedWalletInfo| {
-            info.accounts
-                .dashpay_receival_accounts
-                .values()
-                .map(ManagedAccountTrait::monitor_revision)
-                .max()
-                .unwrap_or_default()
-        };
         let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
         info.update_synced_height(500);
+        let contact_keys = |info: &ManagedWalletInfo| {
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+        };
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4071,11 +4664,7 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4083,34 +4672,14 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact, second_contact]),
             1
         );
         assert_eq!(info.account_generation(), 2);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&second_key].monitor_revision(),
-            1
-        );
-        let mut revisions = info
-            .accounts
-            .dashpay_receival_accounts
-            .values()
-            .map(ManagedAccountTrait::monitor_revision)
-            .collect::<Vec<_>>();
-        revisions.sort_unstable();
-        assert_eq!(revisions, [1, 1]);
+        assert_eq!(contact_keys(&info), [first_key, second_key]);
     }
 
     /// The durable wallet databases are siblings of `det-app.sqlite` in the
@@ -4317,7 +4886,6 @@ mod tests {
     /// sub-variant fired upstream.
     #[test]
     fn map_identity_register_error_classifies_finality_timeout() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
             dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
             0,
@@ -4572,7 +5140,6 @@ mod tests {
     /// funding reuses the shared `AssetLockFinalityTimeout` envelope.
     #[test]
     fn map_platform_address_fund_error_classifies_finality_timeout() {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
             dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
             0,
@@ -4844,6 +5411,7 @@ mod tests {
                 required: USABLE + RESERVE,
             },
             Ok(shield_preflight(USABLE, RESERVE)),
+            USABLE,
         );
 
         assert!(
@@ -4871,6 +5439,39 @@ mod tests {
         );
     }
 
+    /// A selected input can hold less than the cached balance the planner
+    /// read, so upstream refuses an amount within the planner's maximum. That
+    /// maximum would say the amount fits, so the message states none.
+    #[test]
+    fn a_live_shortfall_within_the_planner_maximum_states_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const USABLE: u64 = 300_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+        const MAX: u64 = USABLE - RESERVE;
+
+        for amount in [MAX, MAX - 1] {
+            let mapped = shield_capacity_exceeded_error(
+                P::PlatformShieldCapacityExceeded {
+                    available: 50_000_000_000,
+                    required: amount + RESERVE,
+                },
+                Ok(shield_preflight(USABLE, RESERVE)),
+                amount,
+            );
+
+            assert!(
+                matches!(mapped, TaskError::ShieldFromPlatformBalanceChanged { .. }),
+                "{mapped:?}"
+            );
+            let message = mapped.to_string();
+            assert!(
+                !message.contains(&crate::model::fee_estimation::format_credits_as_dash(MAX)),
+                "{message}"
+            );
+            assert!(message.contains("try again"), "{message}");
+        }
+    }
+
     /// When no address can keep the fee reserve back, upstream reports the
     /// whole account balance, but nothing at all can be shielded — so the
     /// message says so instead of pointing at a Max of zero.
@@ -4888,6 +5489,7 @@ mod tests {
                 required: 1 + RESERVE,
             },
             Ok(preflight),
+            1,
         );
 
         assert!(
@@ -4914,6 +5516,7 @@ mod tests {
                 required: 9,
             },
             Err(P::ShieldedNotBound),
+            9,
         );
 
         assert!(
@@ -5015,6 +5618,32 @@ mod tests {
         }
     }
 
+    /// A resume to another shielded recipient than the recorded one is refused
+    /// the same way every time, so it must not take the generic envelope,
+    /// whose message tells the user to retry.
+    #[test]
+    fn map_shielded_op_error_routes_recipient_mismatch_away_from_retry_advice() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let mapped = map_shielded_op_error(P::AssetLockRecipientMismatch {
+            out_point: dash_sdk::dpp::dashcore::OutPoint::null(),
+            recorded: [0x11; 43],
+            requested: [0x22; 43],
+        });
+        assert!(
+            matches!(mapped, TaskError::ShieldedFundingRecipientMismatch { .. }),
+            "Expected ShieldedFundingRecipientMismatch, got: {mapped:?}"
+        );
+        let generic = TaskError::WalletBackend {
+            source: Arc::new(P::ShieldedNotBound),
+        };
+        assert_ne!(
+            mapped.to_string(),
+            generic.to_string(),
+            "a refused resume must not reuse the retry advice"
+        );
+    }
+
     /// No identity register / top-up / address-funding flow runs a shielded
     /// op, so these outcomes land in the generic `Other` bucket there.
     #[test]
@@ -5086,12 +5715,83 @@ mod tests {
             map_shielded_op_error(broadcast_unconfirmed()),
             // The payment and asset-lock-creation façades share this one.
             super::payments::map_core_broadcast_error(None, broadcast_unconfirmed()),
+            // Resuming a tracked lock: its transaction may already be out.
+            super::payments::map_asset_lock_error(broadcast_unconfirmed()),
         ];
         for error in mapped {
             assert!(
                 matches!(error, TaskError::TransactionConfirmationUnknown { .. }),
                 "Expected TransactionConfirmationUnknown, got: {error:?}"
             );
+        }
+    }
+
+    /// The two shapes the SDK reports a broadcast in whose result could not be
+    /// read: directly, and wrapped once every server has been tried.
+    fn unconfirmed_platform_results() -> [platform_wallet::error::PlatformWalletError; 2] {
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dapi_client::transport::TransportError;
+        let unreachable = || {
+            dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::unavailable("connection refused"),
+            )))
+        };
+        [
+            dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(
+                dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(unreachable())),
+            )),
+        ]
+        .map(platform_wallet::error::PlatformWalletError::Sdk)
+    }
+
+    /// A request that went out and whose result could not be read may have
+    /// completed. Whichever wallet operation it comes back through, the user is
+    /// told to check before trying again: shielding from Core, registering,
+    /// topping up and funding an address each build a new funding lock on a
+    /// retry, so "please retry" can move the amount and pay the fee twice.
+    #[test]
+    fn an_unconfirmed_platform_result_never_maps_to_retry_advice() {
+        type Mapper = fn(platform_wallet::error::PlatformWalletError) -> TaskError;
+        let mappers: [(&str, Mapper); 4] = [
+            ("shield", map_shielded_op_error),
+            ("register", map_identity_register_error),
+            ("top up", |e| {
+                map_identity_top_up_error(dash_sdk::platform::Identifier::random(), e)
+            }),
+            ("fund address", map_platform_address_fund_error),
+        ];
+        for (operation, mapper) in mappers {
+            for wallet_error in unconfirmed_platform_results() {
+                let error = mapper(wallet_error);
+                let TaskError::PlatformResultUnconfirmed { source_error } = &error else {
+                    panic!("{operation}: expected PlatformResultUnconfirmed, got {error:?}");
+                };
+                assert!(source_error.is_state_transition_result_unconfirmed());
+                assert_eq!(
+                    error.to_string(),
+                    "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again.",
+                    "{operation}"
+                );
+            }
+        }
+    }
+
+    /// An SDK error the classifier has no dedicated answer for keeps the
+    /// generic wallet envelope and its SDK cause, as before; only outcomes the
+    /// classifier knows leave it.
+    #[test]
+    fn map_shielded_op_error_keeps_the_envelope_for_an_unclassified_sdk_error() {
+        use platform_wallet::error::PlatformWalletError as P;
+        for wallet_error in [
+            P::Sdk(dash_sdk::Error::Generic("boom".to_string())),
+            unmapped_broadcast_rejection_wallet_error(),
+        ] {
+            let mapped = map_shielded_op_error(wallet_error);
+            let TaskError::WalletBackend { source } = &mapped else {
+                panic!("expected WalletBackend, got {mapped:?}");
+            };
+            assert!(matches!(source.as_ref(), P::Sdk(_)), "{source:?}");
         }
     }
 
@@ -5129,7 +5829,6 @@ fn membership_from_summaries(
 mod masternode_membership_tests {
     use super::*;
     use dash_sdk::dpp::dashcore::ProTxHash;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use std::str::FromStr;
 
     const DISPLAY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -5147,6 +5846,7 @@ mod masternode_membership_tests {
         let summary = platform_wallet::masternode::MasternodeListSummary {
             pro_tx_hash: wire,
             service_address: None,
+            service_addresses: Vec::new(),
             platform_http_port: None,
             operator_public_key: [0; 48],
             voting_key_id: [0; 20],
@@ -5154,8 +5854,93 @@ mod masternode_membership_tests {
             is_valid: true,
             is_evonode: true,
             has_extended_net_info: false,
+            operator_key_is_legacy: false,
         };
         let membership = membership_from_summaries([summary]);
         assert_eq!(membership.get(&loaded), Some(&true));
+    }
+}
+
+#[cfg(test)]
+mod spv_devnet_identity_tests {
+    use super::*;
+
+    /// Only Devnet gets a name; Core's `devnet-` datadir prefix and blank
+    /// values are normalised away.
+    #[test]
+    fn the_devnet_name_is_taken_only_on_devnet_without_its_prefix() {
+        let named = |network, configured| spv_devnet_name_from(network, configured);
+        assert_eq!(
+            named(Network::Devnet, Some("humid")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(
+            named(Network::Devnet, Some(" devnet-humid ")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(named(Network::Devnet, Some("devnet-")), None);
+        assert_eq!(named(Network::Devnet, Some("  ")), None);
+        assert_eq!(named(Network::Devnet, None), None);
+        for network in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            assert_eq!(named(network, Some("humid")), None, "{network:?}");
+        }
+    }
+
+    /// A devnet client carries the `DevnetConfig` dash-spv requires and the
+    /// user agent whose `devnet.devnet-<name>` suffix devnet peers require.
+    #[test]
+    fn a_devnet_client_identifies_itself_with_its_devnet_name() {
+        let config = with_devnet_identity(ClientConfig::new(Network::Devnet), Some("humid"));
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// The name configured for the app reaches the SPV client the wallet
+    /// backend builds, with Core's `devnet-` prefix dropped. Nothing connects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_wallet_backend_gives_dash_spv_the_configured_devnet_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx =
+            crate::context::test_support::test_app_context_for_network(dir.path(), Network::Devnet);
+        ctx.config.write().expect("config").devnet_name = Some("devnet-humid".to_string());
+        let (tx, _events) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+
+        let config = ctx
+            .wallet_backend()
+            .expect("wallet backend")
+            .build_client_config();
+
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// Without a devnet name the client config is left as it was.
+    #[test]
+    fn a_client_without_a_devnet_name_is_unchanged() {
+        let plain = ClientConfig::new(Network::Testnet);
+        let user_agent = plain.user_agent.clone();
+        let config = with_devnet_identity(plain, None);
+        assert!(config.devnet.is_none());
+        assert_eq!(config.user_agent, user_agent);
     }
 }

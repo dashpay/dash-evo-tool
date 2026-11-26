@@ -8,8 +8,10 @@ mod dpns_vote_operations;
 mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
+mod network_context_error;
 pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
+pub use network_context_error::NetworkContextError;
 pub mod feature_gate;
 mod identity_db;
 mod identity_names;
@@ -54,6 +56,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -71,14 +74,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use system_contracts::{SystemContracts, SystemContractsCache};
 
 use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
-pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
+/// Stack budget for SDK proof verification on worker and blocking threads.
+pub const SDK_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
 type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
@@ -281,6 +285,9 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: pause and observe the wallet backend build of this context.
+    #[cfg(test)]
+    pub(crate) test_wallet_backend_hooks: crate::wallet_backend::BuildTestHooks,
     /// Test seam: a paid task's background balance read waits here before
     /// it starts, so a test can hold it and observe the task finishing first.
     #[cfg(test)]
@@ -323,9 +330,10 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
-    /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
-    /// Updated when epoch info is fetched from Platform
-    fee_multiplier_permille: AtomicU64,
+    /// Cached fee multiplier permille (1000 = 1x, 2000 = 2x) with the index of
+    /// the proved epoch it came from (`None` until one arrives); kept together
+    /// so an older epoch never replaces a newer one's multiplier.
+    fee_multiplier: Mutex<(Option<EpochIndex>, u64)>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -521,16 +529,13 @@ impl AppContext {
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
         user_role: UserRoleCell,
-    ) -> Option<Arc<Self>> {
-        let config = match Config::load_from(&data_dir) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::error!("Failed to load config: {e}");
-                return None;
-            }
-        };
+    ) -> Result<Arc<Self>, NetworkContextError> {
+        let config = Config::load_from(&data_dir)?;
 
-        let network_config = config.config_for_network(network).clone()?;
+        let network_config = config
+            .config_for_network(network)
+            .clone()
+            .ok_or(NetworkContextError::NotConfigured { network })?;
         let config_lock = Arc::new(RwLock::new(network_config.clone()));
 
         // Create the SDK context provider; bind to app context later
@@ -539,59 +544,34 @@ impl AppContext {
 
         // Parse configured DAPI addresses directly (no auto-discovery at startup)
         let address_list = match &network_config.dapi_addresses {
-            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
-                Ok(list) => list,
-                Err(e) => {
-                    tracing::error!(
-                        ?network,
-                        error = %e,
-                        "Failed to parse configured DAPI addresses"
-                    );
-                    return None;
-                }
-            },
-            _ => {
-                tracing::error!(
-                    ?network,
-                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
-                );
-                return None;
-            }
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(|source| NetworkContextError::InvalidDapiAddresses { network, source })?,
+            _ => return Err(NetworkContextError::NoDapiAddresses { network }),
         };
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
-            Ok(sdk) => sdk,
-            Err(e) => {
-                tracing::error!("Failed to initialize SDK: {e}");
-                return None;
-            }
-        };
-        let system_contracts = match SystemContracts::load(sdk.version()) {
-            Ok(contracts) => SystemContractsCache::new(contracts),
-            Err(e) => {
-                tracing::error!(?network, "Failed to load the system contracts: {e}");
-                return None;
-            }
-        };
+        let sdk = initialize_sdk(address_list, network, spv_provider.clone())
+            .map_err(|source| NetworkContextError::Sdk { network, source })?;
+        let system_contracts = SystemContractsCache::new(
+            SystemContracts::load(sdk.version())
+                .map_err(|source| NetworkContextError::SystemContracts { source })?,
+        );
 
         let addr = format!(
             "http://{}:{}",
             network_config.rpc_host(),
             network_config.rpc_port(network)
         );
-        let core_client = match Self::create_core_rpc_client(
+        let core_client = Self::create_core_rpc_client(
             &addr,
             network,
             &network_config.devnet_name,
             &network_config,
-        ) {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::error!(?network, "Failed to create CoreClient: {e}");
-                return None;
-            }
-        };
+        )
+        .map_err(|source| NetworkContextError::CoreClient {
+            network,
+            source: Box::new(source),
+        })?;
 
         // T-W-01 / T-W-01b: both HD and single-key wallets are now
         // rehydrated from the upstream `SecretStore` + DET k/v sidecars
@@ -650,6 +630,8 @@ impl AppContext {
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
+            test_wallet_backend_hooks: Default::default(),
+            #[cfg(test)]
             test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             contact_info_writes: Default::default(),
@@ -667,9 +649,10 @@ impl AppContext {
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
-            fee_multiplier_permille: AtomicU64::new(
+            fee_multiplier: Mutex::new((
+                None,
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
-            ),
+            )),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -689,15 +672,13 @@ impl AppContext {
         // Bind the SDK context provider. Chain sync is SPV-only (owned by
         // upstream platform-wallet); the SPV provider is the sole SDK
         // quorum/context provider.
-        match app_context.spv_context_provider.read() {
-            Ok(provider) => provider.bind_app_context(app_context.clone()),
-            Err(e) => {
-                tracing::error!("Failed to bind SPV provider: {}", e);
-                return None;
-            }
-        }
+        app_context
+            .spv_context_provider
+            .read()
+            .map_err(|_| NetworkContextError::ContextProviderUnavailable { network })?
+            .bind_app_context(app_context.clone());
 
-        Some(app_context)
+        Ok(app_context)
     }
 
     /// Force UI animations off for this context, whatever the role — the switch
@@ -814,8 +795,10 @@ impl AppContext {
             .map_err(|source| TaskError::FileSystem { source })?;
         crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
+            .map_err(|source| {
+                crate::backend_task::error::vault_error(source, |source| TaskError::SecretStore {
+                    source,
+                })
             })
     }
 
@@ -867,13 +850,38 @@ impl AppContext {
 
     /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
     pub fn fee_multiplier_permille(&self) -> u64 {
-        self.fee_multiplier_permille.load(Ordering::Relaxed)
+        self.fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
     }
 
-    /// Update the cached fee multiplier from epoch info
-    pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
-        self.fee_multiplier_permille
-            .store(multiplier, Ordering::Relaxed);
+    /// Set the cached fee multiplier without an epoch; the next proved epoch replaces it.
+    #[cfg(test)]
+    pub(crate) fn set_fee_multiplier_permille(&self, multiplier: u64) {
+        *self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (None, multiplier);
+    }
+
+    /// Cache the fee multiplier of proved epoch `epoch_index` unless a newer
+    /// epoch's multiplier is already cached.
+    pub(crate) fn set_epoch_fee_multiplier_permille(
+        &self,
+        epoch_index: EpochIndex,
+        multiplier: u64,
+    ) {
+        let mut cached = self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .0
+            .is_none_or(|cached_index| epoch_index >= cached_index)
+        {
+            *cached = (Some(epoch_index), multiplier);
+        }
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
@@ -1102,8 +1110,8 @@ impl AppContext {
         }
     }
 
-    /// The platform version the SDK builds, validates and signs with: the
-    /// network's minimum until a proven response ratchets it to the version
+    /// The platform version the SDK builds, validates and signs with:
+    /// DET's minimum until a proven response ratchets it to the version
     /// the network runs.
     pub fn platform_version(&self) -> &'static PlatformVersion {
         self.sdk.load().version()
@@ -1187,22 +1195,10 @@ impl AppContext {
         }
     }
 
-    /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
-    /// the new connection's epoch. The new SDK has proven no protocol version,
-    /// so protocol capabilities stay closed until a proved response carries
-    /// one; the epoch read is that response, and it refreshes the fee
-    /// multiplier too. A failed read only leaves the version unproven until
-    /// the next proved response; it does not fail the rebuild.
+    /// Rebuild the clients immediately and queue a quorum-ready metadata probe.
     pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
         Arc::clone(self).reinit_core_client_and_sdk()?;
-        let sdk = self.sdk.load_full();
-        if let Err(error) = self.refresh_current_epoch(&sdk).await {
-            tracing::warn!(
-                %error,
-                "Could not read the current epoch after rebuilding the connection; \
-                 protocol features stay closed until the next read"
-            );
-        }
+        self.queue_platform_protocol_refresh();
         Ok(())
     }
 
@@ -1266,11 +1262,11 @@ impl AppContext {
         // while the list still holds them; it shares the list, so it follows
         // the move below.
         let provider = self.spv_context_provider.read()?.clone();
-        // Like a cold start: the network minimum, raised by the new
+        // Like a cold start: DET's minimum (`MIN_PLATFORM_VERSION`), raised by the new
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
         let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
-            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+            .map_err(|source| TaskError::SdkInitializationFailed { source })?;
         let mut client_lock = self.core_client.write()?;
 
         // 4. Nothing below can fail: move the list, swap in the new client
@@ -1280,10 +1276,9 @@ impl AppContext {
         drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK. The
+        // Rebind the provider to hold the new AppContext reference. The
         // clone shares the provider's state, so binding it binds the one the
-        // context holds.
+        // context and the new SDK hold.
         provider.bind_app_context(self.clone());
 
         Ok(())
@@ -1327,27 +1322,7 @@ impl AppContext {
         e: dash_sdk::Error,
         request_type: RequestType,
     ) -> TaskError {
-        match e {
-            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                tracing::error!(
-                    target: "proof_log",
-                    request_type = ?request_type,
-                    height = block_info.height,
-                    time_ms = block_info.time_ms,
-                    proof_bytes_len = proof_bytes.len(),
-                    %proof_error,
-                    "drive proof verification failed",
-                );
-                TaskError::ProofError {
-                    source_error: Box::new(dash_sdk::Error::DriveProofError(
-                        proof_error,
-                        proof_bytes,
-                        block_info,
-                    )),
-                }
-            }
-            e => TaskError::from(e),
-        }
+        TaskError::from_broadcast_sdk_error(e, request_type)
     }
 
     /// Recovers from a Drive proof error on a contract put/update.
@@ -1425,7 +1400,8 @@ impl AppContext {
             self,
             sdk,
             Arc::clone(&self.connection_status),
-            task_result_sender,
+            // The backend reports for the life of the context, whoever wired it.
+            task_result_sender.unfiltered(),
             self.secret_prompt(),
         )
         .await?;
@@ -1542,7 +1518,7 @@ impl AppContext {
     /// install replaces the sender for later callers only; the wallet backend
     /// keeps the one it was built with.
     pub fn install_frame_loop(&self, sender: SenderAsync<TaskResult>) {
-        self.frame_loop.store(Some(Arc::new(sender)));
+        self.frame_loop.store(Some(Arc::new(sender.unfiltered())));
     }
 
     /// The sender to this context's frame loop. Headless callers (MCP, CLI)
@@ -2023,6 +1999,78 @@ impl AppContext {
 mod tests {
     use super::*;
 
+    /// A network whose saved node addresses cannot be parsed reports that
+    /// reason instead of an unexplained failure.
+    #[test]
+    fn app_context_reports_invalid_node_addresses() {
+        use crate::database::test_helpers::create_database_at_path;
+
+        // Loading the .env sets process variables, so run in a child process
+        // that inherits no network settings.
+        const CHILD_MARKER: &str = "DET_INVALID_NODE_ADDRESSES_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args([
+                    "context::tests::app_context_reports_invalid_node_addresses",
+                    "--exact",
+                ])
+                .env(CHILD_MARKER, "1");
+            for (key, _) in std::env::vars_os() {
+                let key = key.to_string_lossy();
+                if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
+                {
+                    command.env_remove(key.as_ref());
+                }
+            }
+            let output = command.output().expect("run isolated test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "isolated test failed: {stdout}");
+            assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+            return;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        std::fs::write(
+            data_dir.join(".env"),
+            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
+        )
+        .expect("write .env");
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+
+        let result = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        );
+        let Err(error) = result else {
+            panic!("invalid node addresses must fail");
+        };
+
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidDapiAddresses {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
     /// Regression: a connection rebuild gave the app a new SDK while the
     /// wallet backend kept the one it was built with, so wallet operations
     /// kept sending to the old DAPI addresses. The new SDK is built over the
@@ -2159,15 +2207,10 @@ mod tests {
         }
     }
 
-    /// Before any proven response, a context builds, validates and signs at
-    /// the lowest protocol version its network still runs (upstream's
-    /// per-network minimum): 13 on mainnet, not an older table.
+    /// Every network starts at DET's minimum, without claiming it was verified.
     #[test]
-    fn platform_version_starts_at_the_network_minimum() {
+    fn minimum_protocol_14_seeds_every_network() {
         use crate::context::test_support::test_app_context_for_network;
-        use dash_sdk::sdk::min_protocol_version;
-
-        assert_eq!(min_protocol_version(Network::Mainnet), 13);
         for network in [
             Network::Mainnet,
             Network::Testnet,
@@ -2176,16 +2219,13 @@ mod tests {
         ] {
             let tmp = tempfile::tempdir().expect("tempdir");
             let ctx = test_app_context_for_network(tmp.path(), network);
-            assert_eq!(
-                ctx.platform_version().protocol_version,
-                min_protocol_version(network),
-                "{network:?}"
-            );
+            assert_eq!(ctx.platform_version().protocol_version, 14, "{network:?}");
+            assert_eq!(ctx.protocol_version_info().verified_version, None);
         }
     }
 
-    /// Once the SDK runs at protocol 14, the context builds with 14 and serves
-    /// the system contracts protocol 14 defines — not the ones loaded at boot.
+    /// Once the SDK runs at protocol 15, the context builds with 15 and serves
+    /// the system contracts protocol 15 defines — not the ones loaded at boot.
     #[test]
     fn platform_version_and_system_contracts_follow_the_sdk() {
         use crate::context::test_support::test_app_context_for_network;
@@ -2193,17 +2233,21 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
-        let v14 = PlatformVersion::get(14).expect("protocol 14");
+        let v15 = PlatformVersion::get(15).expect("protocol 15");
         let boot_dashpay = ctx.dashpay_contract();
-        assert_ne!(
+        assert_eq!(
             *boot_dashpay,
-            load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap(),
-            "precondition: protocol 14 redefines the DashPay contract"
+            load_system_data_contract(
+                SystemDataContract::Dashpay,
+                crate::sdk_wrapper::MIN_PLATFORM_VERSION
+            )
+            .unwrap(),
+            "boot uses DET minimum"
         );
 
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
 
-        assert_eq!(ctx.platform_version().protocol_version, 14);
+        assert_eq!(ctx.platform_version().protocol_version, 15);
         for (served, contract) in [
             (ctx.dashpay_contract(), SystemDataContract::Dashpay),
             (ctx.withdraws_contract(), SystemDataContract::Withdrawals),
@@ -2217,7 +2261,7 @@ mod tests {
                 SystemDataContract::KeywordSearch,
             ),
         ] {
-            assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
+            assert_eq!(*served, load_system_data_contract(contract, v15).unwrap());
         }
         assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
     }
@@ -2232,9 +2276,9 @@ mod tests {
         let ctx = test_app_context(temp_dir.path());
         assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
-        prove_protocol_version(&ctx, 13);
+        prove_protocol_version(&ctx, 14);
         let info = ctx.protocol_version_info();
-        assert_eq!(info.verified_version, Some(13));
+        assert_eq!(info.verified_version, Some(14));
         assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
@@ -2262,18 +2306,18 @@ mod tests {
         assert!(info.newer_protocol_available);
     }
 
-    /// Contest windows stay consistent as the SDK ratchets upward from each
-    /// network minimum to a newer supported protocol.
+    /// Contest windows stay consistent as the SDK ratchets upward from DET's
+    /// minimum (`MIN_PLATFORM_VERSION`) to a newer supported protocol.
     #[test]
-    fn contest_durations_match_the_network_minimum_for_every_supported_version() {
+    fn contest_durations_match_the_minimum_for_every_supported_version() {
         use crate::model::dpns::contest_durations;
 
         let newest = PlatformVersion::latest().protocol_version;
         for network in [Network::Mainnet, Network::Testnet] {
-            let minimum = dash_sdk::sdk::min_protocol_version(network);
+            let minimum = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version;
             let pinned = contest_durations(
                 network,
-                PlatformVersion::get(minimum).expect("network minimum"),
+                PlatformVersion::get(minimum).expect("minimum supported version"),
             );
             for protocol_version in minimum..=newest {
                 let live = PlatformVersion::get(protocol_version).expect("known version");
@@ -2332,7 +2376,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2417,7 +2461,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2489,7 +2533,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2579,7 +2623,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");

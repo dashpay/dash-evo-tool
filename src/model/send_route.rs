@@ -9,7 +9,7 @@
 //! non-private recipient, and never splits one payment across two balances.
 
 use crate::model::address::{AddressKind, recipient_row_address};
-use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::dashcore::Network;
 
 /// A concrete balance a send can pay from.
@@ -367,6 +367,9 @@ pub fn ticked_source_refusal(
 pub enum RecipientRowsRefusal {
     /// A row lacks its address or a positive amount.
     Incomplete,
+    /// A Core row's amount is not a whole number of duffs, the unit a Core
+    /// output carries (at most 8 decimal places of DASH).
+    CoreAmountTooPrecise,
     /// A row's address is not a Core or Platform address of the network.
     InvalidAddress,
     /// The source cannot carry several outputs to these addresses.
@@ -395,6 +398,13 @@ pub fn recipient_rows_refusal(
 ) -> Option<RecipientRowsRefusal> {
     if !recipient_rows_complete(rows.iter().copied()) {
         return Some(RecipientRowsRefusal::Incomplete);
+    }
+    let not_whole_duffs = |(address, amount): &(&str, Option<Credits>)| {
+        AddressKind::detect(address) == Some(AddressKind::Core)
+            && amount.is_some_and(|credits| credits % CREDITS_PER_DUFF != 0)
+    };
+    if rows.iter().any(not_whole_duffs) {
+        return Some(RecipientRowsRefusal::CoreAmountTooPrecise);
     }
     if rows
         .iter()
@@ -915,7 +925,10 @@ mod tests {
     fn recipient_rows_refusal_checks_rows_then_addresses_then_route() {
         use RecipientRowsRefusal::{Incomplete, InvalidAddress, Route};
         let (first, second) = (testnet_address(21), testnet_address(22));
-        let rows = [(first.as_str(), Some(1)), (second.as_str(), Some(2))];
+        let rows = [
+            (first.as_str(), Some(CREDITS_PER_DUFF)),
+            (second.as_str(), Some(2 * CREDITS_PER_DUFF)),
+        ];
         let refusal = |rows: &[(&str, Option<Credits>)], source, destination| {
             recipient_rows_refusal(rows, Network::Testnet, source, destination)
         };
@@ -931,7 +944,10 @@ mod tests {
         assert_eq!(refusal(&rows, Some(Shielded), core), Some(Route));
         assert_eq!(refusal(&rows, Some(Core), None), Some(Route));
 
-        let invalid = [(first.as_str(), Some(1)), ("not an address", Some(2))];
+        let invalid = [
+            (first.as_str(), Some(CREDITS_PER_DUFF)),
+            ("not an address", Some(2)),
+        ];
         assert_eq!(refusal(&invalid, Some(Core), None), Some(InvalidAddress));
         let mainnet = dash_sdk::dpp::dashcore::Address::new(
             Network::Mainnet,
@@ -940,7 +956,10 @@ mod tests {
             ),
         )
         .to_string();
-        let other_network = [(first.as_str(), Some(1)), (mainnet.as_str(), Some(2))];
+        let other_network = [
+            (first.as_str(), Some(CREDITS_PER_DUFF)),
+            (mainnet.as_str(), Some(CREDITS_PER_DUFF)),
+        ];
         assert_eq!(
             refusal(&other_network, Some(Core), core),
             Some(InvalidAddress)
@@ -948,5 +967,32 @@ mod tests {
 
         let incomplete = [("not an address", Some(1)), (second.as_str(), Some(0))];
         assert_eq!(refusal(&incomplete, Some(Core), core), Some(Incomplete));
+    }
+
+    /// A Core output carries whole duffs, so a Core row with a fraction of a
+    /// duff would be cut or dropped: it is refused for its precision.
+    #[test]
+    fn recipient_rows_refusal_refuses_a_core_row_that_is_not_whole_duffs() {
+        let (first, second) = (testnet_address(21), testnet_address(22));
+        let core = Some(AddressKind::Core);
+        for fraction in [CREDITS_PER_DUFF - 1, 3 * CREDITS_PER_DUFF + 1] {
+            let rows = [
+                (first.as_str(), Some(CREDITS_PER_DUFF)),
+                (second.as_str(), Some(fraction)),
+            ];
+            assert_eq!(
+                recipient_rows_refusal(&rows, Network::Testnet, Some(Core), core),
+                Some(RecipientRowsRefusal::CoreAmountTooPrecise),
+                "{fraction} credits is not a whole number of duffs"
+            );
+        }
+        let one_duff = [
+            (first.as_str(), Some(CREDITS_PER_DUFF)),
+            (second.as_str(), Some(CREDITS_PER_DUFF)),
+        ];
+        assert_eq!(
+            recipient_rows_refusal(&one_duff, Network::Testnet, Some(Core), core),
+            None
+        );
     }
 }

@@ -548,8 +548,6 @@ impl WalletsBalancesScreen {
     #[cfg(feature = "testing")]
     #[doc(hidden)]
     pub fn open_fund_platform_dialog_for_test(&mut self, platform_addresses: Vec<(String, u64)>) {
-        use dash_sdk::dpp::dashcore::hashes::Hash;
-
         self.fund_platform_dialog = FundPlatformAddressDialogState {
             is_open: true,
             selected_asset_lock_out_point: Some(dash_sdk::dpp::dashcore::OutPoint::new(
@@ -584,7 +582,7 @@ impl WalletsBalancesScreen {
                 ui.set_min_width(400.0);
 
                 ui.vertical(|ui| {
-                    ui.label(
+                    let address_label = ui.label(
                         RichText::new("Select a Platform address to fund:")
                             .color(DashColors::text_primary(dark_mode)),
                     );
@@ -641,7 +639,9 @@ impl WalletsBalancesScreen {
                                             Some(addr.clone());
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .labelled_by(address_label.id);
                     }
 
                     ui.add_space(15.0);

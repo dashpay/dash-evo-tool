@@ -52,7 +52,7 @@ fn offline_testnet_context_with_db(
     db: Arc<crate::database::Database>,
 ) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
     let data_dir = data_dir.to_path_buf();
-    ensure_env_file(&data_dir);
+    ensure_env_file(&data_dir).expect("write .env");
 
     let subtasks = Arc::new(TaskManager::new());
     let connection_status = Arc::new(ConnectionStatus::new());
@@ -4811,7 +4811,6 @@ async fn cold_boot_fails_closed_on_a_corrupt_fvk_row() {
 /// local-data load error during seedless cold boot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_boot_surfaces_typed_error_when_persisted_transaction_txid_is_corrupt() {
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
@@ -5983,6 +5982,69 @@ async fn a_mirror_read_failure_keeps_the_wallet_link_of_a_wallet_owned_row() {
         "a wallet link may only be given up against a mirror that was verified; \
          a failed wallet-store read verifies nothing"
     );
+
+    backend.shutdown().await;
+}
+
+/// A save no requester reports for tells the GUI user that the record kept
+/// its wallet link, in the wallet store's own words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_wallet_link_warns_the_user() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
+    let owned = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+
+    backend.set_unowned_read_test_failure(true);
+    ctx.insert_local_qualified_identity(&owned, &None)
+        .expect("re-insert with no wallet info");
+    backend.set_unowned_read_test_failure(false);
+
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    assert_eq!(
+        banner_texts,
+        vec![TaskError::WalletStorageNotReady.to_string()],
+        "the banner says why, in the wallet store's own words"
+    );
+
+    backend.shutdown().await;
+}
+
+/// A kept link is reported only once the record is written: a save that then
+/// fails keeps no link worth reporting, so the user sees only its error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_wallet_link_whose_write_fails_raises_no_warning() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
+    let owned = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+    // Fail the record write, which runs after the mirror check.
+    let store = ctx.det_kv().expect("kv handle").failing_store();
+    store.fail_next_puts_containing("det:identity:v1", 1);
+    ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store));
+
+    backend.set_unowned_read_test_failure(true);
+    let outcome = ctx.insert_local_qualified_identity(&owned, &None);
+    backend.set_unowned_read_test_failure(false);
+
+    assert!(
+        outcome.is_err(),
+        "precondition: the write must fail, got {outcome:?}"
+    );
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    assert!(banner_texts.is_empty(), "{banner_texts:?}");
 
     backend.shutdown().await;
 }

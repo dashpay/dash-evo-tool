@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Regression tests for render.py, diff.py and gallery.py on synthetic images.
+"""Regression tests for render.py, diff.py and gallery.py on synthetic images,
+and for env-value.awk on throwaway env files.
 
 usage: selftest.py
 Needs no display, no application build and no captured data. Run it after
@@ -7,7 +8,11 @@ changing any script in this directory.
 """
 
 import json
+import base64
+import re
+from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,6 +177,47 @@ class Gallery(Case):
         code, out = self.gallery(self.META, self.BOTH)
         self.assertEqual(code, 0, out)
         self.assertTrue(os.path.exists(self.path("index.html")))
+        text = Path(self.path("index.html")).read_text()
+        self.assertIn(
+            "<details><summary>Version without labels</summary>"
+            '<img src="annotated/clean/01-a.png" alt="A"></details>',
+            text,
+        )
+
+    def test_embedded_gallery_keeps_style_charset_and_both_images(self):
+        name = "01-a&b"
+        files = [("annotated", name + ".png"), ("annotated", "clean", name + ".png")]
+        code, out = self.gallery(
+            {"images": [{"name": name, "title": "A"}], "coverage": []}, files
+        )
+        self.assertEqual(code, 0, out)
+        image(self.path(*files[1]), (RECT, (255, 0, 0)))
+        code, out = run(
+            "gallery.py",
+            "--root",
+            self.root,
+            "--meta",
+            self.path("meta.json"),
+            "--embed",
+        )
+        self.assertEqual(code, 0, out)
+        with open(self.path("index.html")) as page:
+            text = page.read()
+        self.assertIn("<meta charset=utf-8>", text)
+        self.assertIn("img{max-width:100%", text)
+        images = re.findall(r'<img src="data:image/png;base64,([^"]+)"', text)
+        self.assertEqual(len(images), 2)
+        for encoded, file in zip(images, files):
+            self.assertEqual(
+                base64.b64decode(encoded), Path(self.path(*file)).read_bytes()
+            )
+        self.assertRegex(
+            text,
+            r"<details><summary>Version without labels</summary>"
+            r'<img src="data:image/png;base64,[^"]+" alt="A"></details>',
+        )
+        self.assertNotIn('href="data:', text)
+        self.assertNotIn('src="annotated/', text)
 
     def test_missing_labelled_image_stops_the_gallery(self):
         code, out = self.gallery(self.META, self.BOTH[1:])
@@ -192,6 +238,219 @@ class Gallery(Case):
         code, out = self.gallery(meta, self.BOTH)
         self.assertNotEqual(code, 0, out)
         self.assertIn("not listed", out)
+
+
+class EnvValue(unittest.TestCase):
+    """env-value.awk reads one variable from an env file the way the secret
+    helpers need it, and prints nothing for anything it cannot read safely.
+    The values here are fake; no real credential is ever used."""
+
+    NAME = "E2E_WALLET_MNEMONIC"
+
+    def value(self, text):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".env", newline="", delete=False
+        ) as f:
+            f.write(text)
+        self.addCleanup(os.unlink, f.name)
+        with open(f.name) as stdin:
+            r = subprocess.run(
+                [
+                    "awk",
+                    "-v",
+                    f"name={self.NAME}",
+                    "-f",
+                    os.path.join(HERE, "env-value.awk"),
+                ],
+                stdin=stdin,
+                capture_output=True,
+                text=True,
+            )
+        return r.returncode, r.stdout
+
+    def test_accepted_forms_yield_the_bare_value(self):
+        for text in [
+            f"{self.NAME}=alpha bravo\n",
+            f"{self.NAME}=alpha bravo   \n",
+            f"{self.NAME}=alpha bravo # note\n",
+            f'{self.NAME}="alpha bravo"\n',
+            f'{self.NAME}="alpha bravo"\r\n',
+            f"{self.NAME}='alpha bravo'\r\n",
+            f'export {self.NAME}="alpha bravo"\n',
+            f'{self.NAME}="alpha bravo"   # note\n',
+            f"OTHER=x\n{self.NAME}_NOT=y\n{self.NAME}=alpha bravo",
+        ]:
+            self.assertEqual(self.value(text), (0, "alpha bravo"), repr(text))
+
+    def test_anything_else_fails_and_prints_nothing(self):
+        for text in [
+            "OTHER=x\n",
+            f"{self.NAME}=\n",
+            f'{self.NAME}=""\n',
+            f'{self.NAME}="alpha bravo\n',
+            f'{self.NAME}="alpha bravo" trailing\n',
+            f"{self.NAME} = alpha bravo\n",
+            f"{self.NAME}= alpha bravo\n",
+            f'{self.NAME}= "alpha bravo"\n',
+            f"{self.NAME}=\talpha bravo\n",
+            f"{self.NAME}=alpha\\ bravo\n",
+            f"{self.NAME}=alpha bravo\\\n",
+            f'{self.NAME}=alpha "bravo\n',
+            f"{self.NAME}=alpha bravo'\n",
+        ]:
+            code, out = self.value(text)
+            self.assertNotEqual(code, 0, repr(text))
+            self.assertEqual(out, "", repr(text))
+
+
+class ProvisionWallet(unittest.TestCase):
+    """provision-wallet.sh pipes the phrase to the det-cli it checked, read
+    from the env file it was given. A fake det-cli records what it receives."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.received = os.path.join(self.dir, "received")
+        fake = os.path.join(self.dir, "det-cli")
+        with open(fake, "w") as f:
+            f.write(
+                '#!/bin/sh\ncase "$*" in *core-wallet-import*) cat >"$RECEIVED" ;; esac\n'
+            )
+        os.chmod(fake, 0o700)
+        os.mkdir(os.path.join(self.dir, "data"))
+
+    def provision(self, det_cli, env_file):
+        with open(os.path.join(self.dir, env_file), "w") as f:
+            f.write("E2E_WALLET_MNEMONIC=alpha bravo\n")
+        r = subprocess.run(
+            [
+                os.path.join(HERE, "provision-wallet.sh"),
+                det_cli,
+                "data",
+                "--env-file",
+                env_file,
+            ],
+            cwd=self.dir,
+            env={"PATH": "/usr/bin:/bin", "RECEIVED": self.received},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.received) as f:
+            return f.read()
+
+    def test_a_bare_det_cli_name_runs_the_checked_file(self):
+        self.assertEqual(self.provision("det-cli", "test.env"), "alpha bravo")
+
+    def test_an_option_shaped_env_file_is_read_as_a_file(self):
+        self.assertEqual(self.provision("./det-cli", "--version"), "alpha bravo")
+
+
+# Window 42 has the focus until the SWITCH_AT-th getactivewindow call, then
+# window 99, which belongs to no process. `type` appends its input to typed.
+FAKE_XDOTOOL = """#!/bin/sh
+n=$(cat "$STATE/calls" 2>/dev/null || echo 0)
+case "$1" in
+  getactivewindow)
+    n=$((n + 1)); echo "$n" >"$STATE/calls"
+    wid=42; [ -n "$SWITCH_AT" ] && [ "$n" -ge "$SWITCH_AT" ] && wid=99
+    if [ "$2" = getwindowpid ]; then [ "$wid" = 42 ] && echo "$FOCUS_PID"; else echo "$wid"; fi ;;
+  getwindowpid) [ "$2" = 42 ] && echo "$FOCUS_PID" ;;
+  type) cat >>"$STATE/typed" ;;
+esac
+"""
+
+
+class TypeSecret(unittest.TestCase):
+    """type-secret.sh types only into a window of a dash-evo-tool process, and
+    stops when the focus leaves it. A fake xdotool stands in for the display."""
+
+    VALUE = "alpha bravo"
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        bin_dir = os.path.join(self.dir, "bin")
+        os.mkdir(bin_dir)
+        self.write(os.path.join(bin_dir, "xdotool"), FAKE_XDOTOOL)
+        # Its process name (comm) is the script's file name: dash-evo-tool.
+        gui = os.path.join(self.dir, "dash-evo-tool")
+        self.write(gui, "#!/bin/sh\nread -r _\n")
+        self.gui = subprocess.Popen([gui], stdin=subprocess.PIPE)
+        self.addCleanup(self.gui.wait)
+        self.addCleanup(self.gui.stdin.close)
+        self.path = f"{bin_dir}:/usr/bin:/bin"
+
+    def write(self, path, text):
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, 0o700)
+
+    def type_secret(
+        self, focus_pid, *args, env_file="test.env", switch_at="", extra_env=None
+    ):
+        with open(os.path.join(self.dir, env_file), "w") as f:
+            f.write(f"E2E_WALLET_MNEMONIC={self.VALUE}\n")
+        r = subprocess.run(
+            [
+                os.path.join(HERE, "type-secret.sh"),
+                "--env-file",
+                env_file,
+                "E2E_WALLET_MNEMONIC",
+                *args,
+            ],
+            cwd=self.dir,
+            env={
+                "PATH": self.path,
+                "DISPLAY": ":fake",
+                "STATE": self.dir,
+                "FOCUS_PID": focus_pid,
+                "SWITCH_AT": str(switch_at),
+                **(extra_env or {}),
+            },
+            capture_output=True,
+            text=True,
+        )
+        self.output = r.stdout + r.stderr
+        typed = os.path.join(self.dir, "typed")
+        if not os.path.exists(typed):
+            return r.returncode, ""
+        with open(typed) as f:
+            return r.returncode, f.read()
+
+    def test_the_value_is_typed_into_the_gui_under_test(self):
+        self.assertEqual(self.type_secret(str(self.gui.pid)), (0, self.VALUE))
+        os.unlink(os.path.join(self.dir, "typed"))
+        self.assertEqual(self.type_secret(str(self.gui.pid), "2"), (0, "bravo"))
+
+    def test_a_window_of_another_program_gets_nothing(self):
+        self.assertEqual(self.type_secret(str(os.getpid())), (1, ""))
+
+    def test_a_window_without_a_process_gets_nothing(self):
+        self.assertEqual(self.type_secret(""), (1, ""))
+
+    def test_typing_stops_when_the_focus_moves(self):
+        code, typed = self.type_secret(str(self.gui.pid), switch_at=4)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            self.VALUE.startswith(typed) and len(typed) < len(self.VALUE), repr(typed)
+        )
+
+    def test_an_option_shaped_env_file_is_read_as_a_file(self):
+        self.assertEqual(
+            self.type_secret(str(self.gui.pid), env_file="--version"), (0, self.VALUE)
+        )
+
+    def test_an_inherited_trace_never_prints_the_value(self):
+        bash_env = os.path.join(self.dir, "trace.sh")
+        self.write(bash_env, "set -x\n")
+        for extra_env in [{"SHELLOPTS": "xtrace"}, {"BASH_ENV": bash_env}]:
+            code, typed = self.type_secret(str(self.gui.pid), extra_env=extra_env)
+            os.unlink(os.path.join(self.dir, "typed"))
+            self.assertEqual((code, typed), (0, self.VALUE), extra_env)
+            self.assertNotIn("bravo", self.output, extra_env)
+            traced = [line for line in self.output.splitlines() if line.startswith("+")]
+            self.assertEqual(traced, [], extra_env)
 
 
 if __name__ == "__main__":

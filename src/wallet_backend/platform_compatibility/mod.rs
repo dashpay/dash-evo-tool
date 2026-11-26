@@ -72,13 +72,19 @@ fn upgrade(
     }
     let stage_dir = builder.tempdir_in(parent)?;
     let stage_path = stage_dir.path().join("wallet.sqlite");
-    drop(SqlitePersister::open(SqlitePersisterConfig::new(&stage_path)).map_err(validation_error)?);
+    engine::initialize_stage(&stage_path)?;
+    let reference_path = stage_dir.path().join("current-reference.sqlite");
+    drop(
+        SqlitePersister::open(SqlitePersisterConfig::new(&reference_path))
+            .map_err(validation_error)?,
+    );
     let backup = engine::upgrade_locked(guard, &stage_path, |path| {
         let staged =
             SqlitePersister::open(SqlitePersisterConfig::new(path)).map_err(validation_error)?;
         staged.load().map_err(validation_error)?;
         staged.load_unowned_identities().map_err(validation_error)?;
-        Ok(())
+        drop(staged);
+        engine::verify_current_schema(path, &reference_path)
     })?;
     if let Some(backup) = backup {
         tracing::info!(backup = %backup.display(), "Upgraded pinned Platform database and retained original backup");
@@ -269,6 +275,234 @@ mod tests {
         assert!(error.to_string().contains("try again"));
     }
 
+    // The historical public fixture uses a placeholder txid; V022 validates body hashes.
+    fn populate_valid_public_rows(conn: &rusqlite::Connection) {
+        use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, TxOut};
+        use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
+
+        conn.execute_batch(include_str!("fixtures/public-rows.sql"))
+            .unwrap();
+        let (blob, script): (Vec<u8>, Vec<u8>) = conn
+            .query_row(
+                "SELECT record_blob, script FROM core_transactions CROSS JOIN core_utxos",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let (mut record, _): (TransactionRecord, _) =
+            bincode::serde::decode_from_slice(&blob, bincode::config::standard()).unwrap();
+        record.transaction.output = vec![TxOut {
+            value: 150_000,
+            script_pubkey: ScriptBuf::from_bytes(script),
+        }];
+        record.txid = record.transaction.txid();
+        let blob = bincode::serde::encode_to_vec(&record, bincode::config::standard()).unwrap();
+        let outpoint = bincode::serde::encode_to_vec(
+            OutPoint {
+                txid: record.txid,
+                vout: 0,
+            },
+            bincode::config::standard(),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE core_transactions SET txid = ?1, record_blob = ?2",
+            rusqlite::params![record.txid.as_byte_array().as_slice(), blob],
+        )
+        .unwrap();
+        conn.execute("UPDATE core_utxos SET outpoint = ?1", [outpoint])
+            .unwrap();
+    }
+
+    #[test]
+    fn platform_compatibility_refuses_invalid_history_without_rewriting_source() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("fixtures/67d4ef3.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("fixtures/public-rows.sql"))
+            .unwrap();
+        let original: Vec<u8> = conn
+            .query_row("SELECT record_blob FROM core_transactions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let version: i64 = conn
+            .query_row(
+                "SELECT max(version) FROM refinery_schema_history",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        let error = match open(SqlitePersisterConfig::new(&path)) {
+            Ok(_) => panic!("an invalid historical transaction must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                TaskError::PlatformDatabaseUpgrade {
+                    source: UpgradeError::TypedValidation(_)
+                }
+            ),
+            "{error:?}"
+        );
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT record_blob FROM core_transactions", [], |r| r
+                .get::<_, Vec<u8>>(0))
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT max(version) FROM refinery_schema_history",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            version
+        );
+    }
+
+    #[test]
+    fn platform_compatibility_runs_accounting_migration_on_copied_history() {
+        use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf, Transaction, TxIn, TxOut};
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
+            OutputDetail, OutputRole, TransactionDirection, TransactionRecord,
+        };
+        use dash_sdk::dpp::key_wallet::transaction_checking::{
+            TransactionContext, TransactionType,
+        };
+
+        for start_at_v020 in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+            let path = dir.path().join("wallet.sqlite");
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(include_str!("fixtures/67d4ef3.sql"))
+                .unwrap();
+            populate_valid_public_rows(&conn);
+            let script: Vec<u8> = conn
+                .query_row("SELECT script FROM core_utxos", [], |r| r.get(0))
+                .unwrap();
+            let address =
+                Address::from_script(&ScriptBuf::from_bytes(script), Network::Testnet).unwrap();
+            let record = TransactionRecord::new(
+                Transaction {
+                    version: 1,
+                    lock_time: 0,
+                    input: vec![TxIn::default()],
+                    output: vec![TxOut {
+                        value: 10,
+                        script_pubkey: address.script_pubkey(),
+                    }],
+                    special_transaction_payload: None,
+                },
+                AccountType::Standard {
+                    index: 0,
+                    standard_account_type: StandardAccountType::BIP44Account,
+                },
+                TransactionContext::Mempool,
+                TransactionType::Standard,
+                TransactionDirection::Incoming,
+                vec![],
+                vec![OutputDetail {
+                    index: 0,
+                    role: OutputRole::Received,
+                    address: Some(address),
+                    value: 10,
+                }],
+                999,
+            );
+            let txid = record.txid.as_byte_array().as_slice();
+            let original =
+                bincode::serde::encode_to_vec(&record, bincode::config::standard()).unwrap();
+            conn.execute(
+                "INSERT INTO core_transactions (wallet_id, txid, finalized, record_blob) VALUES (?1, ?2, 0, ?3)",
+                rusqlite::params![&[0xA1u8; 32][..], txid, &original],
+            ).unwrap();
+            drop(conn);
+            if start_at_v020 {
+                let stage = dir.path().join("v020.sqlite");
+                engine::initialize_stage(&stage).unwrap();
+                assert!(
+                    engine::upgrade(&path, &stage, |_| Ok(()))
+                        .unwrap()
+                        .is_some()
+                );
+            }
+
+            drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let preserved: Vec<u8> = conn
+                .query_row(
+                    "SELECT record_blob FROM core_transaction_record_originals WHERE txid = ?1",
+                    [txid],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(preserved, original, "retain the pre-repair record");
+            let repaired: Vec<u8> = conn
+                .query_row(
+                    "SELECT record_blob FROM core_transactions WHERE txid = ?1",
+                    [txid],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let (repaired_record, _): (TransactionRecord, _) =
+                bincode::serde::decode_from_slice(&repaired, bincode::config::standard()).unwrap();
+            assert_eq!(
+                repaired_record.net_amount, 10,
+                "wallet history uses the owned output amount"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM core_transaction_inputs WHERE txid = ?1",
+                    [txid],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap(),
+                1,
+                "index the historical input"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT max(version) FROM refinery_schema_history",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap(),
+                23
+            );
+            assert_eq!(
+                conn.query_row("SELECT synced_height FROM core_sync_state", [], |r| r
+                    .get::<_, i64>(0),)
+                    .unwrap(),
+                200,
+                "accounting repair must not reset chain sync"
+            );
+            drop(conn);
+            drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+            assert_eq!(
+                rusqlite::Connection::open(&path)
+                    .unwrap()
+                    .query_row(
+                        "SELECT record_blob FROM core_transactions WHERE txid = ?1",
+                        [txid],
+                        |r| r.get::<_, Vec<u8>>(0),
+                    )
+                    .unwrap(),
+                repaired,
+                "reopening must preserve the repaired record"
+            );
+        }
+    }
+
     #[test]
     fn platform_compatibility_normal_open_upgrades_old_profile() {
         let dir = tempfile::tempdir().unwrap();
@@ -278,10 +512,7 @@ mod tests {
             .unwrap()
             .execute_batch(include_str!("fixtures/67d4ef3.sql"))
             .unwrap();
-        rusqlite::Connection::open(&path)
-            .unwrap()
-            .execute_batch(include_str!("fixtures/public-rows.sql"))
-            .unwrap();
+        populate_valid_public_rows(&rusqlite::Connection::open(&path).unwrap());
         let original_error = match SqlitePersister::open(
             SqlitePersisterConfig::new(&path)
                 .with_auto_backup_dir(Some(dir.path().join("precondition-backup"))),

@@ -7,6 +7,7 @@ use rmcp::model::ToolAnnotations;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::backend_task::error::TaskError;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::dispatch_task;
@@ -14,6 +15,9 @@ use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 use crate::mcp::tools::WalletIdParams;
+use crate::model::spend_limit::SpendLimitKind;
+use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::WalletBackend;
 
 // ---------------------------------------------------------------------------
 // ShieldedShieldFromCore (Core -> Shielded via asset lock)
@@ -80,7 +84,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
 
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
             seed_hash,
@@ -167,28 +171,10 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
 
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
-        // Pre-flight: verify the wallet's total platform balance can cover the
-        // amount. The upstream coordinator selects the actual input addresses —
-        // DET no longer picks a single `from_address`.
-        {
-            let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
-            let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-            let total: u64 = wallet
-                .platform_address_info
-                .values()
-                .map(|info| info.balance)
-                .sum();
-            if total < param.amount_credits {
-                return Err(McpToolError::InvalidParam {
-                    message: format!(
-                        "Insufficient platform balance. Total available is {} credits but {} required.",
-                        total, param.amount_credits
-                    ),
-                });
-            }
-        }
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+        ensure_amount_shieldable(&backend, &seed_hash, param.amount_credits).await?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromBalance {
             seed_hash,
@@ -197,7 +183,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
 
         let result = dispatch_task(&ctx, task)
             .await
-            .map_err(McpToolError::TaskFailed)?;
+            .map_err(|error| shield_task_error(error, param.amount_credits))?;
 
         match result {
             BackendTaskSuccessResult::ShieldedCreditsShielded { .. } => {
@@ -209,6 +195,63 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
                 "Unexpected task result: {other:?}"
             ))),
         }
+    }
+}
+
+/// Refuse an amount above the shield-from-Platform Max before the shield
+/// starts. The Max is the send screen's quote, taken from the planner that
+/// selects the shield's inputs. While another shield from the wallet runs no
+/// Max is quoted; the shield then waits for it and checks the amount itself.
+async fn ensure_amount_shieldable(
+    backend: &WalletBackend,
+    seed_hash: &WalletSeedHash,
+    amount_credits: u64,
+) -> Result<(), McpToolError> {
+    let max_credits = match backend
+        .spend_limit_credits(seed_hash, SpendLimitKind::ShieldFromPlatform)
+        .await
+    {
+        Ok(max_credits) => max_credits,
+        Err(TaskError::SpendInProgress) => return Ok(()),
+        Err(error) => return Err(McpToolError::TaskFailed(error)),
+    };
+    if amount_credits > max_credits {
+        return Err(amount_not_shieldable(max_credits, amount_credits));
+    }
+    Ok(())
+}
+
+/// The refusal of an amount above the shieldable maximum, whichever check
+/// made it.
+fn amount_not_shieldable(max_credits: u64, amount_credits: u64) -> McpToolError {
+    McpToolError::InvalidParam {
+        message: format!(
+            "Insufficient platform balance. At most {max_credits} credits can be shielded \
+             but {amount_credits} were requested."
+        ),
+    }
+}
+
+/// The shield's own refusal of an amount the wallet cannot shield is a
+/// parameter error, as the pre-flight's is.
+fn shield_task_error(error: TaskError, amount_credits: u64) -> McpToolError {
+    match error {
+        TaskError::ShieldFromPlatformCapacityExceeded { max_shieldable, .. }
+            if max_shieldable < amount_credits =>
+        {
+            amount_not_shieldable(max_shieldable, amount_credits)
+        }
+        // A live input shortfall: the cached maximum still holds the amount.
+        TaskError::ShieldFromPlatformCapacityExceeded { .. } => McpToolError::InvalidParam {
+            message: format!(
+                "Insufficient platform balance. The platform balance changed and no longer \
+                 covers {amount_credits} credits. Wait for the balance to refresh, then try again."
+            ),
+        },
+        TaskError::ShieldFromPlatformNothingShieldable { .. } => McpToolError::InvalidParam {
+            message: error.to_string(),
+        },
+        other => McpToolError::TaskFailed(other),
     }
 }
 
@@ -274,7 +317,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let recipient_bytes =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&param.to_address)
@@ -369,7 +412,7 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let platform_addr =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
@@ -466,7 +509,7 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         resolve::validate_address(&param.to_address)?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let core_address = param
             .to_address
@@ -768,6 +811,153 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// When the pre-flight is skipped, the shield's capacity refusals still
+    /// reach the caller as parameter errors; other failures stay task failures.
+    #[test]
+    fn shield_capacity_refusals_are_parameter_errors() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let refusal = || {
+            Box::new(P::PlatformShieldCapacityExceeded {
+                available: 300,
+                required: 400,
+            })
+        };
+
+        let exceeded = shield_task_error(
+            TaskError::ShieldFromPlatformCapacityExceeded {
+                max_shieldable: 200,
+                source: refusal(),
+            },
+            250,
+        );
+        let nothing = shield_task_error(
+            TaskError::ShieldFromPlatformNothingShieldable { source: refusal() },
+            250,
+        );
+        let other = shield_task_error(TaskError::SpendInProgress, 250);
+
+        // The same message, in credits, as the pre-flight's refusal.
+        assert!(
+            matches!(
+                &exceeded,
+                McpToolError::InvalidParam { message } if message
+                    == "Insufficient platform balance. At most 200 credits can be shielded \
+                        but 250 were requested."
+            ),
+            "{exceeded:?}"
+        );
+        assert!(
+            matches!(nothing, McpToolError::InvalidParam { .. }),
+            "{nothing:?}"
+        );
+        assert!(
+            matches!(other, McpToolError::TaskFailed(TaskError::SpendInProgress)),
+            "{other:?}"
+        );
+    }
+
+    /// A live input shortfall refuses an amount the cached plan still holds.
+    /// The refusal then quotes no maximum, which would say the amount fits.
+    #[test]
+    fn a_live_shortfall_within_the_cached_maximum_quotes_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        for max_shieldable in [250, 300] {
+            let refused = shield_task_error(
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable,
+                    source: Box::new(P::PlatformShieldCapacityExceeded {
+                        available: 100,
+                        required: 400,
+                    }),
+                },
+                250,
+            );
+            let McpToolError::InvalidParam { message } = &refused else {
+                panic!("a capacity refusal is a parameter error: {refused:?}");
+            };
+            assert!(!message.contains("At most"), "{message}");
+            assert!(!message.contains("300"), "{message}");
+            assert!(message.contains("try again"), "{message}");
+        }
+    }
+
+    /// An amount the wallet's Platform balance holds but the shield planner
+    /// cannot shield (its fee reserve stays on the input) is refused as a
+    /// parameter error before the shield starts; the quoted Max passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_pre_flight_refuses_an_amount_above_the_shieldable_max() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (_ctx, backend, seed_hash) = backend_with_registered_wallet(dir.path()).await;
+        let balance = 100_000_000_000;
+        backend
+            .set_platform_address_balance_for_test(
+                &seed_hash,
+                PlatformP2PKHAddress::new([1; 20]),
+                balance,
+            )
+            .await;
+
+        let refused = ensure_amount_shieldable(&backend, &seed_hash, balance).await;
+        let max = backend
+            .spend_limit_credits(&seed_hash, SpendLimitKind::ShieldFromPlatform)
+            .await
+            .expect("shield quote");
+        let accepted = ensure_amount_shieldable(&backend, &seed_hash, max).await;
+        backend.shutdown().await;
+
+        assert!(
+            matches!(refused, Err(McpToolError::InvalidParam { .. })),
+            "{refused:?}"
+        );
+        assert!(0 < max && max < balance, "max {max}");
+        assert!(accepted.is_ok(), "{accepted:?}");
+    }
+
+    /// While a shield from the wallet's Platform balance runs, no Max is
+    /// quoted; the pre-flight leaves the amount to the shield, which waits
+    /// for the running one, rather than failing the request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_pre_flight_defers_to_the_shield_while_another_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (_ctx, backend, seed_hash) = backend_with_registered_wallet(dir.path()).await;
+
+        let running = backend.begin_platform_shield(&seed_hash);
+        let deferred = ensure_amount_shieldable(&backend, &seed_hash, 1).await;
+        drop(running);
+        let checked = ensure_amount_shieldable(&backend, &seed_hash, 1).await;
+        backend.shutdown().await;
+
+        assert!(deferred.is_ok(), "{deferred:?}");
+        assert!(
+            matches!(checked, Err(McpToolError::InvalidParam { .. })),
+            "{checked:?}"
+        );
+    }
+
+    /// A wired test context and its backend with one freshly generated wallet
+    /// registered upstream.
+    async fn backend_with_registered_wallet(
+        dir: &std::path::Path,
+    ) -> (
+        std::sync::Arc<crate::context::AppContext>,
+        std::sync::Arc<WalletBackend>,
+        WalletSeedHash,
+    ) {
+        let ctx = crate::context::test_support::wired_test_app_context(dir).await;
+        let backend = ctx.wallet_backend().expect("wired backend");
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+        (ctx, backend, seed_hash)
+    }
 
     /// Automation must be able to tell a transfer that succeeded without a
     /// known amount from one that reports a figure.

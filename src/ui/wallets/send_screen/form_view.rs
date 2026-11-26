@@ -123,13 +123,20 @@ pub(super) enum AmountProblem {
     NothingCovers { kind: PayFromKind, best: u64 },
     /// Auto found no funds at all.
     NoFunds,
+    /// Only the private balance can pay, and it waits for its verification.
+    ShieldedPaused,
     /// The explicit source can send at most `max`.
     OverMax { kind: PayFromKind, max: u64 },
     /// The ticked Advanced addresses hold at most `max`.
     OverTicked { max: u64 },
     /// No amount the source can fund covers the network fee.
     FeeNotCovered,
+    /// The wallet answered that Core can send nothing, for this reason.
+    CoreShortfall(CoreSendShortfall),
 }
+
+/// Why the private balance cannot pay yet (spec §3.1).
+const SHIELDED_BALANCE_UNVERIFIED: &str = "Your private balance is still being checked.";
 
 /// Short name of a balance kind (spec D-14).
 pub(super) fn kind_label(kind: PayFromKind) -> &'static str {
@@ -346,7 +353,9 @@ impl WalletSendScreen {
                         format_selector_balance(balance / CREDITS_PER_DUFF).replace(" DASH", ""),
                     )
                     .with_tooltip(kind_tooltip(PayFromKind::Shielded));
-                if let Some(refusal) = refused(PayFromKind::Shielded) {
+                if self.shielded_spending_paused() {
+                    shielded = shielded.disabled(SHIELDED_BALANCE_UNVERIFIED);
+                } else if let Some(refusal) = refused(PayFromKind::Shielded) {
                     shielded = shielded.disabled(refusal_message(refusal, own_pool));
                 }
                 chips.push(shielded);
@@ -437,18 +446,9 @@ impl WalletSendScreen {
                         "Auto: another transaction from {wallet} is still in progress. Wait for it to finish, or choose a balance under Pay from."
                     ),
                 ),
-                AutoMax::QuoteFailed { kind } => {
-                    status_line(
-                        ui,
-                        format!(
-                            "Auto: the available amount in {source} could not be checked.",
-                            source = kind_label(kind)
-                        ),
-                    );
-                    if ui.button("Retry available amount check").clicked() {
-                        self.asset_lock_balance.invalidate();
-                        self.spend_limits.invalidate();
-                    }
+                AutoMax::QuoteFailed { kind } => self.render_auto_quote_failed(ui, kind),
+                AutoMax::NoFunds if self.auto_waits_for_shielded() => {
+                    status_line(ui, "Auto: your private balance is still being checked.")
                 }
                 AutoMax::NoFunds => {
                     status_line(ui, format!("Auto: {wallet} has no funds to send."))
@@ -482,19 +482,7 @@ impl WalletSendScreen {
                 ),
             },
             Some(AutoSource::Checking { .. }) => status_line(ui, "Auto: checking balances…"),
-            Some(AutoSource::QuoteFailed { kind }) => {
-                status_line(
-                    ui,
-                    format!(
-                        "Auto: the available amount in {source} could not be checked.",
-                        source = kind_label(kind)
-                    ),
-                );
-                if ui.button("Retry available amount check").clicked() {
-                    self.asset_lock_balance.invalidate();
-                    self.spend_limits.invalidate();
-                }
-            }
+            Some(AutoSource::QuoteFailed { kind }) => self.render_auto_quote_failed(ui, kind),
             Some(AutoSource::Preview { .. }) | None => status_line(
                 ui,
                 "Auto: picks a balance once you enter who you're paying.",
@@ -516,6 +504,9 @@ impl WalletSendScreen {
                     .map(CoreSendShortfall::message)
                     .unwrap_or_default(),
             ),
+            Some(AutoSource::NoFunds) if self.auto_waits_for_shielded() => {
+                status_line(ui, "Auto: your private balance is still being checked.")
+            }
             Some(AutoSource::NoFunds) if foreign_private => status_line(
                 ui,
                 "Auto: only your private balance can pay a private address, and it holds nothing.",
@@ -532,6 +523,55 @@ impl WalletSendScreen {
         }
     }
 
+    /// Auto's line for a balance whose quote failed, with the way out: unlock
+    /// a wallet the backend registers only once unlocked, else retry.
+    fn render_auto_quote_failed(&mut self, ui: &mut Ui, kind: PayFromKind) {
+        if self.render_quote_unlock(ui, true) {
+            return;
+        }
+        status_line(
+            ui,
+            format!(
+                "Auto: the available amount in {source} could not be checked.",
+                source = kind_label(kind)
+            ),
+        );
+        if ui.button("Retry available amount check").clicked() {
+            self.asset_lock_balance.invalidate();
+            self.spend_limits.invalidate();
+        }
+    }
+
+    /// When the paying wallet's quote waits for an unlock, say so and offer
+    /// it; true when it did.
+    pub(super) fn render_quote_unlock(&mut self, ui: &mut Ui, auto: bool) -> bool {
+        let locked = self
+            .quote_needs_unlock
+            .is_some_and(|seed_hash| Some(seed_hash) == self.selected_wallet_seed_hash)
+            && self
+                .selected_wallet
+                .as_ref()
+                .is_some_and(wallet_needs_unlock);
+        if !locked {
+            return false;
+        }
+        let wallet = self.paying_wallet_name();
+        status_line(
+            ui,
+            if auto {
+                format!("Auto: unlock {wallet} to check its balances.")
+            } else {
+                format!("Unlock {wallet} to check the available amount.")
+            },
+        );
+        if ui.button("Unlock").clicked() {
+            self.unlock_target = self.selected_wallet.clone();
+            self.unlock_then_send = false;
+            self.wallet_unlock_popup.open();
+        }
+        true
+    }
+
     fn render_identity_picker(
         &mut self,
         ui: &mut Ui,
@@ -546,7 +586,7 @@ impl WalletSendScreen {
         };
         let mut picked = None;
         ui.horizontal(|ui| {
-            ui.label("Identity");
+            let label = ui.label("Identity");
             egui::ComboBox::from_id_salt(id_salt)
                 .selected_text(
                     chosen
@@ -561,7 +601,9 @@ impl WalletSendScreen {
                             picked = Some(identity.identity.id());
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
         });
         picked
     }
@@ -772,7 +814,10 @@ impl WalletSendScreen {
         });
     }
 
-    fn receive_chips(&mut self, to_wallet: Option<WalletSeedHash>) -> Vec<ChoiceChip<ReceiveInto>> {
+    pub(super) fn receive_chips(
+        &mut self,
+        to_wallet: Option<WalletSeedHash>,
+    ) -> Vec<ChoiceChip<ReceiveInto>> {
         let same_wallet = to_wallet.is_some() && to_wallet == self.selected_wallet_seed_hash;
         let explicit = self.form.explicit_source_kind().or_else(|| {
             self.identity_flow
@@ -798,7 +843,8 @@ impl WalletSendScreen {
         for kind in kinds {
             let mut chip = ChoiceChip::new(ReceiveInto::from_kind(kind), kind_label(kind))
                 .with_tooltip(kind_tooltip(kind));
-            if same_wallet && explicit == Some(kind) {
+            // Identities are separate accounts: one may pay another.
+            if same_wallet && explicit == Some(kind) && kind != PayFromKind::Identity {
                 chip = chip.disabled(PAYING_FROM_THIS_BALANCE);
             } else if let Some(source) = explicit {
                 match crate::model::send_route::route_refusal(
@@ -1315,6 +1361,9 @@ impl WalletSendScreen {
                 Some(AutoSource::NothingCovers {
                     best: Some((kind, best)),
                 }) => Some(AmountProblem::NothingCovers { kind, best }),
+                Some(AutoSource::NoFunds) if self.auto_waits_for_shielded() => {
+                    Some(AmountProblem::ShieldedPaused)
+                }
                 Some(AutoSource::NoFunds) => Some(AmountProblem::NoFunds),
                 _ => None,
             };
@@ -1323,6 +1372,9 @@ impl WalletSendScreen {
         let limits = self.amount_limits_for(source, self.validated_destination.as_ref());
         if limits.fee_not_covered {
             return Some(AmountProblem::FeeNotCovered);
+        }
+        if let QuoteState::Shortfall(reason) = limits.quote {
+            return Some(AmountProblem::CoreShortfall(reason));
         }
         if let Some(held) = self.ticked_held()
             && requested > held
@@ -1430,8 +1482,17 @@ impl WalletSendScreen {
                 );
                 None
             }
+            Some(AmountProblem::ShieldedPaused) => {
+                inline_warning(ui, SHIELDED_BALANCE_UNVERIFIED);
+                None
+            }
+            // Several recipients have no Amount field to show the reason with.
+            Some(AmountProblem::CoreShortfall(reason)) if several => {
+                inline_warning(ui, reason.message());
+                None
+            }
             // Shown with the Amount field itself.
-            Some(AmountProblem::FeeNotCovered) | None => None,
+            Some(AmountProblem::FeeNotCovered | AmountProblem::CoreShortfall(_)) | None => None,
         };
         // Recipient rows carry their own amounts, so no single fix applies.
         if let Some((credits, label)) = fix.filter(|_| !several)
@@ -1526,11 +1587,11 @@ impl WalletSendScreen {
         // Advanced source without per-address amounts pays as the simple
         // route does, and Platform sources pick the paying input themselves.
         let core_source = matches!(&self.selected_source, Some(SourceSelection::CoreWallet));
-        let to_platform =
-            self.destination_kind() == Some(AddressKind::Platform)
-                || self.form.recipients().iter().any(|row| {
+        let to_platform = self.destination_kind() == Some(AddressKind::Platform)
+            || (self.form.has_several_recipients()
+                && self.form.recipients().iter().any(|row| {
                     AddressKind::detect(row.address.trim()) == Some(AddressKind::Platform)
-                });
+                }));
         self.is_expert() && self.uses_explicit_payment() && core_source && to_platform
     }
 
@@ -1566,32 +1627,38 @@ impl WalletSendScreen {
             });
     }
 
-    pub(super) fn render_summary_details(&self, ui: &mut Ui) {
+    /// The Platform addresses Summary › Details lists as paying, if any.
+    pub(super) fn summary_details_allocation(&self) -> Option<AddressAllocationResult> {
         let Some(SourceSelection::PlatformAddresses(addresses)) = &self.selected_source else {
-            return;
+            return None;
         };
         // A shield's planner picks its own inputs.
         if self.destination_kind() == Some(AddressKind::Shielded) {
-            return;
+            return None;
         }
-        let Some(amount_credits) = self.requested_credits() else {
+        let amount_credits = self.requested_credits()?;
+        let allocation = match self.validated_destination.as_ref() {
+            Some(ValidatedAddress::Core(output)) => allocate_platform_withdrawal(
+                self.app_context.platform_version(),
+                addresses,
+                amount_credits,
+                &CoreScript::new(output.script_pubkey()),
+            ),
+            destination => allocate_platform_addresses(
+                &self.app_context.fee_estimator(),
+                addresses,
+                amount_credits,
+                destination.and_then(|v| v.as_platform()),
+            ),
+        };
+        (!allocation.inputs.is_empty()).then_some(allocation)
+    }
+
+    pub(super) fn render_summary_details(&self, ui: &mut Ui) {
+        let Some(allocation) = self.summary_details_allocation() else {
             return;
         };
-        let destination = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied());
-        let fee_estimator = self.app_context.fee_estimator();
-        let max_inputs = fee_estimator.max_platform_inputs();
-        let allocation = allocate_platform_addresses(
-            &fee_estimator,
-            addresses,
-            amount_credits,
-            destination.as_ref(),
-        );
-        if allocation.inputs.is_empty() {
-            return;
-        }
+        let max_inputs = self.app_context.fee_estimator().max_platform_inputs();
         let network = self.app_context.network;
         egui::CollapsingHeader::new("Details")
             .id_salt("send_summary_details")
@@ -1750,6 +1817,11 @@ impl WalletSendScreen {
             .or_else(|| self.own_balance_refusal())
         {
             return Some(refusal);
+        }
+        let shielded_paused =
+            self.form.pay_from() == PayFrom::Shielded && self.shielded_spending_paused();
+        if shielded_paused || self.auto_waits_for_shielded() {
+            return Some(SHIELDED_BALANCE_UNVERIFIED);
         }
         if self.requested_credits().filter(|v| *v > 0).is_none() {
             return Some(match self.route.auto_max {

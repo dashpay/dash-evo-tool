@@ -7,7 +7,7 @@
 //!
 //! Invariants:
 //! - Changing a From choice never clears the To value, and the reverse
-//!   (spec SR-16; fixes the old screen's lost-destination bug UX-001).
+//!   (spec SR-16; fixes P-01, the old screen clearing the destination).
 //! - Auto is on at most one side. Choosing Auto on one side while the other
 //!   side is on Auto pins the other side to a concrete choice and leaves a
 //!   one-shot notice there (spec §4.3); the side touched last wins.

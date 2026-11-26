@@ -407,6 +407,7 @@ pub(super) fn map_transaction_record(record: &TransactionRecord) -> WalletTransa
         height: record.height(),
         block_hash: block_info.map(|bi| bi.block_hash()),
         net_amount: record.net_amount,
+        direction: record.direction,
         fee: transaction_fee(record),
         label: Some(record.label.clone()).filter(|s| !s.is_empty()),
         // Per-wallet history — every record involves our addresses.
@@ -571,7 +572,7 @@ fn address_paths_from_info(
     let mut paths = BTreeMap::new();
     let mut index_pool =
         |pool: &dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPool| {
-            for entry in pool.addresses.values() {
+            for entry in pool.addresses().values() {
                 paths.insert(entry.address.clone(), entry.path.clone());
             }
         };
@@ -1118,7 +1119,6 @@ impl SnapshotStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
@@ -1635,7 +1635,7 @@ mod tests {
             .expect("managed account");
         for (tag, value) in [(0x61, 1_000_000), (0x62, 250_000)] {
             let address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             let outpoint = OutPoint::new(Txid::from_byte_array([tag; 32]), 0);
             let mut utxo = Utxo::new(
@@ -1703,7 +1703,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         let outpoint = OutPoint::new(Txid::from_byte_array([0x52; 32]), 0);
         let mut utxo = Utxo::new(
@@ -1815,7 +1815,7 @@ mod tests {
                 .standard_bip44_accounts
                 .get_mut(&0)
                 .expect("managed BIP44 account")
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("receive address")
         };
         let coin = |n: u8| {
@@ -1889,7 +1889,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         let outpoint = OutPoint::new(Txid::from_byte_array([0x54; 32]), 0);
         let mut utxo = Utxo::new(
@@ -1960,7 +1960,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         let outpoint = OutPoint::new(Txid::from_byte_array([0x56; 32]), 0);
         let mut utxo = Utxo::new(
@@ -2053,7 +2053,7 @@ mod tests {
                 .get_mut(&0)
                 .expect("managed account");
             let funding_address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             let mut utxo = Utxo::new(
                 outpoint,
@@ -2105,6 +2105,23 @@ mod tests {
             observed.asset_lock_inputs.final_funds_duffs, 1_000_000,
             "an uncontended recompute must observe the eligible composition"
         );
+    }
+
+    /// The wallet classifies a move into its own Platform keys, or between
+    /// its own accounts, as `Internal` while its Core balance goes down by
+    /// the locked amount or the fee. The history row must keep that
+    /// classification next to the signed amount: the sign alone reads as a
+    /// payment to someone else.
+    #[test]
+    fn a_history_row_keeps_the_wallets_direction_apart_from_the_amounts_sign() {
+        let mut internal = record(1, -1_750_000);
+        internal.direction = TransactionDirection::Internal;
+
+        let row = map_transaction_record(&internal);
+
+        assert_eq!(row.direction, TransactionDirection::Internal);
+        assert_eq!(row.net_amount, -1_750_000);
+        assert!(row.is_outgoing(), "the Core balance still went down");
     }
 
     #[test]

@@ -15,20 +15,27 @@ hash over migration name, i32 version and rendered SQL. Timestamps and the
 store-generation token are deterministic fixture values.
 
 The production bridge compares the source history and schema in
-`67d4ef3.sql`, and the destination guard `033ecae.sql` described below,
+`67d4ef3.sql`, and the intermediate guard `0c08eb6.sql` described below,
 before translating data. No code reads `e3cd7cf.sql` any more: it is kept
-as the reference for the V001–V018 migration names and checksums. The
-destination itself is created by the current public `SqlitePersister::open`,
-not by the fixture SQL. Updating either schema revision requires reviewing
-and regenerating these guards.
-The current destination guard is `033ecae.sql`, captured from an empty database
+as the reference for the V001–V018 migration names and checksums. The bridge
+copies into that intermediate schema, then runs the current public
+`SqlitePersister::open` on the populated stage before publishing it. The final
+schema and migration checksums must match an independently opened empty
+persister. Updating either historical schema requires reviewing and
+regenerating its guard.
+The intermediate guard is `0c08eb6.sql`, the schema of an empty database
 opened by `SqlitePersister::open` at Platform revision
-`033ecaee2f3badc8e04ff8be664062f33516e3e4`. The V001–V018 migration names and
+`0c08eb6c9f2f3ac313f86c88ff0925ee7bad55cc`. The V001–V018 migration names and
 checksums match `e3cd7cf.sql`. V019 adds only the nullable `asset_locks.operation_id`
 column, its unique index and immutability trigger (checksum `1537039181339941563`).
-The snapshot contains no domain rows; history timestamps are normalized. The
-bridge copies existing asset-lock blobs unchanged and leaves the new column NULL.
-A different migration occupying version 19 is not an accepted source history.
+V020 adds only the nullable `asset_locks.shielded_recipient` column and its
+immutability trigger (checksum `13071883127280964199`). The previous guard,
+`033ecae.sql` (V001–V019), is this file without the V020 changes. The snapshot
+contains no domain rows; history timestamps and the store-generation token are
+normalized fixture values, and its schema objects and migration history equal
+those of a V020 database the real runner creates. The bridge copies existing
+asset-lock blobs unchanged and leaves both new columns NULL. A different
+migration occupying version 19 is not an accepted source history.
 Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
 comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.
@@ -39,9 +46,29 @@ Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
 `6323a430c731a14bbec1d7a18466ca28bb083316` leave the migrations untouched.
 
 
+The current Platform pin is `d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3`
+on `v5.2-dev`. That line carries V021 `profile_address_encoding`, V022
+`core_transaction_accounting` (Platform #5948), including a Rust backfill that
+indexes historical inputs and repairs wallet-level transaction amounts while
+preserving original records, and V023 `core_locked_outpoints`. V001–V020 are
+unchanged. Keep the intermediate guard at V020 so V021–V023 run **after**
+copying the historical rows; an empty V022 schema would skip the backfill. The bridge publishes the resulting tables, indexes, history and data
+atomically. Unlike the earlier accounting branch, this migration does not reset
+Core synchronization or discard spend state.
+
+Regenerate the migration-source fingerprint with
+`scripts/migration-fixtures/check-pin-ancestry.sh --update`, then run the script
+without arguments. The public-runner compatibility tests verify the final
+persisted schema and accounting backfill; the V020 SQL guard remains unchanged.
+
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after
 applying its V002–V014 SQL. It selects the registered A1 wallet and its rows;
 the source fixture's separate empty B2 wallet has no account registration.
 The rows include a public account key, an identity, contact, transaction,
 UTXO and sync state. No seeds, private keys or real profiles are included.
+
+The public fixture's transaction uses a placeholder TXID that V022 now rejects.
+Tests of successful public-runner upgrades materialize a matching transaction
+body, TXID and UTXO outpoint at runtime. A separate refusal test keeps the
+original bytes and verifies that a failed backfill leaves the source unchanged.

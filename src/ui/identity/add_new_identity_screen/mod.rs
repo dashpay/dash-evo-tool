@@ -265,7 +265,7 @@ impl AddNewIdentityScreen {
             self.queue_warm_identity_keys(seed_hash, identity_index);
             return;
         };
-        let master = IdentityKeyEntry::from_cached_public_key(
+        let Ok(master) = IdentityKeyEntry::from_cached_public_key(
             master_pk,
             network,
             identity_index,
@@ -274,7 +274,9 @@ impl AddNewIdentityScreen {
             Purpose::AUTHENTICATION,
             SecurityLevel::MASTER,
             None,
-        );
+        ) else {
+            return;
+        };
 
         let mut others = Vec::with_capacity(default_keys.len());
         for (i, (key_type, purpose, security_level, contract_bounds)) in
@@ -285,7 +287,7 @@ impl AddNewIdentityScreen {
                 self.queue_warm_identity_keys(seed_hash, identity_index);
                 return;
             };
-            others.push(IdentityKeyEntry::from_cached_public_key(
+            let Ok(entry) = IdentityKeyEntry::from_cached_public_key(
                 pk,
                 network,
                 identity_index,
@@ -294,7 +296,10 @@ impl AddNewIdentityScreen {
                 purpose,
                 security_level,
                 contract_bounds,
-            ));
+            ) else {
+                return;
+            };
+            others.push(entry);
         }
 
         self.identity_keys = IdentityKeySpecs::new(Some(master), others);
@@ -711,7 +716,9 @@ impl AddNewIdentityScreen {
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
-            });
+            })
+            .response
+            .accessible_name("Funding method");
     }
 
     /// Return the deposit chooser to its initial state so the user is never
@@ -1330,18 +1337,18 @@ impl AddNewIdentityScreen {
         let cache = backend.auth_pubkey_cache().get(network, &seed_hash);
         match cache.get(network, identity_index, new_key_index) {
             Some(public_key) => {
-                self.identity_keys
-                    .others
-                    .push(IdentityKeyEntry::from_cached_public_key(
-                        public_key,
-                        network,
-                        identity_index,
-                        new_key_index,
-                        key_type,
-                        purpose,
-                        security_level,
-                        None,
-                    ));
+                if let Ok(entry) = IdentityKeyEntry::from_cached_public_key(
+                    public_key,
+                    network,
+                    identity_index,
+                    new_key_index,
+                    key_type,
+                    purpose,
+                    security_level,
+                    None,
+                ) {
+                    self.identity_keys.others.push(entry);
+                }
             }
             None => {
                 // Warm enough keys to cover the new index; the chooser rebuilds
@@ -1868,7 +1875,7 @@ mod funding_method_tests {
     use crate::model::amount::DASH_DECIMAL_PLACES;
     use crate::ui::Screen;
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid};
 
     fn different_asset_lock_inputs(seed_byte: u8) -> AssetLockInputState {
         AssetLockInputState::from_inputs([(
@@ -1943,7 +1950,7 @@ mod funding_method_tests {
             FundingMethod::UsePlatformAddress;
         screen.user_chose_funding_method = true;
 
-        let mut harness = crate::test_support::allowing_unnamed_widgets(Harness::builder())
+        let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
             .build_ui(|ui| {
                 screen.ui(ui);

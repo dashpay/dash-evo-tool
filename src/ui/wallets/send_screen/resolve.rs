@@ -15,6 +15,10 @@ use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::state::own_receive_addresses::OwnAddressKind;
 use crate::ui::state::send_form::{PayFrom, ToMode};
 
+/// How long the quotes and receiving address of a wallet just unlocked wait
+/// for its registration; a quote failure then shows again with Retry.
+pub(super) const REGISTRATION_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Whether a Max figure is known, still being quoted, or failed to quote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum QuoteState {
@@ -125,6 +129,33 @@ impl WalletSendScreen {
         self.get_shielded_balance()
     }
 
+    /// Whether the Shielded tab pauses spending the private balance.
+    pub(super) fn shielded_spending_paused(&self) -> bool {
+        crate::ui::wallets::shielded_tab::shielded_spending_paused(
+            &self.app_context.migration_status().state(),
+        )
+    }
+
+    /// A wallet unlocked for its quotes is asked again once registered;
+    /// until then, for at most [`REGISTRATION_QUOTE_WAIT`], its earlier
+    /// failures read as still checking.
+    pub(super) fn awaits_registration(&self, seed_hash: &WalletSeedHash) -> bool {
+        self.requote_on_registration
+            .is_some_and(|(waiting, since)| {
+                waiting == *seed_hash && since.elapsed() < REGISTRATION_QUOTE_WAIT
+            })
+    }
+
+    /// Auto has nothing to pay someone else's private address with only
+    /// because the private balance waits for its verification.
+    pub(super) fn auto_waits_for_shielded(&self) -> bool {
+        self.form.pay_from() == PayFrom::Auto
+            && self.destination_kind() == Some(AddressKind::Shielded)
+            && !self.shielded_destination_is_own_pool()
+            && self.shielded_spending_paused()
+            && self.spendable_shielded().is_some()
+    }
+
     /// What the Amount field may offer for paying `destination` from `source`.
     /// The same figures back Max, the field's limits and Auto's "covers" test.
     pub(super) fn amount_limits_for(
@@ -147,7 +178,9 @@ impl WalletSendScreen {
                     let max_duffs = if Self::funds_asset_lock(source, dest_kind) {
                         let max = self.asset_lock_max_amount(&seed_hash).ok();
                         if max.is_none() {
-                            quote = if self.asset_lock_balance.is_failed(&seed_hash) {
+                            quote = if self.asset_lock_balance.is_failed(&seed_hash)
+                                && !self.awaits_registration(&seed_hash)
+                            {
                                 QuoteState::Failed
                             } else if self.asset_lock_balance.is_busy(&seed_hash) {
                                 QuoteState::Busy
@@ -436,7 +469,9 @@ impl WalletSendScreen {
         else {
             return QuoteState::Ready;
         };
-        if self.spend_limits.is_failed(&seed_hash, kind, revision) {
+        if self.spend_limits.is_failed(&seed_hash, kind, revision)
+            && !self.awaits_registration(&seed_hash)
+        {
             return QuoteState::Failed;
         }
         if self.spend_limits.is_busy(&seed_hash, kind, revision) {
@@ -662,9 +697,19 @@ impl WalletSendScreen {
                     ),
                     None => (None, DestinationStatus::Fetching { kind }),
                 },
+                None if self
+                    .own_addresses
+                    .needs_unlock(&to_wallet, OwnAddressKind::Core)
+                    && !self.wallet_is_open(&to_wallet) =>
+                {
+                    (None, DestinationStatus::NeedsUnlock { wallet: to_wallet })
+                }
                 None => {
-                    view.address_requests
-                        .push((to_wallet, OwnAddressKind::Core));
+                    // An unlocked wallet derives addresses once registered.
+                    if !self.awaits_registration(&to_wallet) {
+                        view.address_requests
+                            .push((to_wallet, OwnAddressKind::Core));
+                    }
                     (None, DestinationStatus::Fetching { kind })
                 }
             },
@@ -720,7 +765,8 @@ impl WalletSendScreen {
         AutoDestination {
             kind: self.destination_kind(),
             shielded_is_own_pool,
-            same_account: same_wallet.then_some(kind),
+            // Identities are separate accounts: one may pay another.
+            same_account: (same_wallet && kind != PayFromKind::Identity).then_some(kind),
         }
     }
 
@@ -813,8 +859,9 @@ impl WalletSendScreen {
     }
 
     /// Why several recipients cannot be paid as entered: a row lacks its
-    /// address or amount, an address is not of the active network, or the
-    /// source cannot carry several outputs to these addresses.
+    /// address or amount, a Core amount has a fraction of a duff, an address
+    /// is not of the active network, or the source cannot carry several
+    /// outputs to these addresses.
     pub(super) fn recipient_rows_refusal(&self) -> Option<&'static str> {
         if !self.form.has_several_recipients() {
             return None;
@@ -829,6 +876,7 @@ impl WalletSendScreen {
         )
         .map(|refusal| match refusal {
             RecipientRowsRefusal::Incomplete => RECIPIENT_ROWS_INCOMPLETE,
+            RecipientRowsRefusal::CoreAmountTooPrecise => CORE_AMOUNT_TOO_PRECISE,
             RecipientRowsRefusal::InvalidAddress => RECIPIENT_ROWS_INVALID,
             RecipientRowsRefusal::Route => SEVERAL_RECIPIENTS_ROUTE,
         })
@@ -869,6 +917,7 @@ impl WalletSendScreen {
                 let addresses = self.platform_source_addresses();
                 (!addresses.is_empty()).then_some(SourceSelection::PlatformAddresses(addresses))
             }
+            PayFrom::Shielded if self.shielded_spending_paused() => None,
             PayFrom::Shielded => {
                 let seed_hash = self.selected_wallet_seed_hash?;
                 // A Shielded preset spends the private balance whatever it
@@ -951,7 +1000,7 @@ impl WalletSendScreen {
             max_of(&SourceSelection::PlatformAddresses(platform))
         };
         let shielded = match self.spendable_shielded() {
-            Some((seed_hash, balance)) if !several => {
+            Some((seed_hash, balance)) if !several && !self.shielded_spending_paused() => {
                 max_of(&SourceSelection::Shielded(seed_hash, balance))
             }
             _ => CandidateMax::Unavailable,
@@ -1061,6 +1110,20 @@ impl WalletSendScreen {
     /// Requests this frame's resolution needs: Max quotes and own receiving
     /// addresses.
     pub(super) fn route_requests(&mut self) -> Vec<BackendTask> {
+        if let Some((seed_hash, since)) = self.requote_on_registration {
+            if self
+                .app_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
+            {
+                self.requote_on_registration = None;
+                self.asset_lock_balance.invalidate();
+                self.spend_limits.invalidate();
+            } else if let Some(left) = REGISTRATION_QUOTE_WAIT.checked_sub(since.elapsed()) {
+                // Show the failure again when the wait ends, even if idle.
+                self.app_context.egui_ctx().request_repaint_after(left);
+            }
+        }
         let destination = self.destination_kind();
         let mut tasks = Vec::new();
         for source in self.route.quote_sources.clone() {

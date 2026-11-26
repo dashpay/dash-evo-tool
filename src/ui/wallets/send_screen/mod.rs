@@ -11,7 +11,7 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount}
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
     AddressAllocationResult, PlatformFeeEstimator, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, core_send_fee_at_max_duffs,
+    allocate_platform_addresses_with_fee, allocate_platform_withdrawal, core_send_fee_at_max_duffs,
     core_several_outputs_max_duffs, estimate_address_funding_fee_from_transition,
     estimate_asset_lock_core_fee_duffs, estimate_platform_fee,
     estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
@@ -349,6 +349,12 @@ pub struct WalletSendScreen {
     unlock_target: Option<Arc<RwLock<Wallet>>>,
     /// Send was pressed on a locked wallet: confirm once it is unlocked.
     unlock_then_send: bool,
+    /// A wallet whose Max quote was refused because only unlocking it
+    /// registers it with the wallet backend.
+    quote_needs_unlock: Option<WalletSeedHash>,
+    /// A wallet unlocked for its quotes, and when: they are asked again once
+    /// the backend has registered it.
+    requote_on_registration: Option<(WalletSeedHash, std::time::Instant)>,
     wallet_open_attempted: bool,
 }
 
@@ -434,6 +440,11 @@ const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into 
 const RECIPIENT_ROWS_INCOMPLETE: &str =
     "Enter an address and an amount for every recipient, or remove the rows you don't need.";
 
+/// Refusal of several recipients while a Core row's amount has more decimal
+/// places than a Core payment carries.
+const CORE_AMOUNT_TOO_PRECISE: &str =
+    "Core amounts can have at most 8 decimal places. Shorten the amounts that have more.";
+
 /// Refusal of several recipients while a row's address is not a Core or
 /// Platform address of the active network.
 const RECIPIENT_ROWS_INVALID: &str = "Every recipient needs a Core or Platform address of the network you're on. Check the addresses, or remove the rows you don't need.";
@@ -513,6 +524,8 @@ impl WalletSendScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             unlock_target: None,
             unlock_then_send: false,
+            quote_needs_unlock: None,
+            requote_on_registration: None,
             wallet_open_attempted: false,
         }
     }
@@ -809,9 +822,7 @@ impl WalletSendScreen {
     }
 
     fn parse_amount_to_credits(input: &str) -> Result<Credits, String> {
-        let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
-        let duffs = amount.dash_to_duffs()?;
-        Ok(duffs as Credits * 1000)
+        Ok(Amount::parse(input, DASH_DECIMAL_PLACES)?.value())
     }
 
     /// Detect address kind from the address string.
@@ -1205,10 +1216,14 @@ impl WalletSendScreen {
             ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
         } else if let Some(reason) = self.spend_limits.unavailable(&seed_hash, kind, revision) {
             ui.label(reason.message());
-        } else if self.spend_limits.is_failed(&seed_hash, kind, revision) {
-            ui.label("The available amount could not be checked.");
-            if ui.button("Retry available amount check").clicked() {
-                self.spend_limits.invalidate();
+        } else if self.spend_limits.is_failed(&seed_hash, kind, revision)
+            && !self.awaits_registration(&seed_hash)
+        {
+            if !self.render_quote_unlock(ui, false) {
+                ui.label("The available amount could not be checked.");
+                if ui.button("Retry available amount check").clicked() {
+                    self.spend_limits.invalidate();
+                }
             }
         } else if self.spend_limits.get(&seed_hash, kind, revision).is_none() {
             ui.label("Checking the available amount…");
@@ -1228,10 +1243,13 @@ impl WalletSendScreen {
             return;
         }
 
-        let failed = self.asset_lock_balance.is_failed(&seed_hash);
+        let awaits_registration = self.awaits_registration(&seed_hash);
+        let failed = self.asset_lock_balance.is_failed(&seed_hash) && !awaits_registration;
         let loading = self.asset_lock_max_amount(&seed_hash).is_err();
         if self.asset_lock_balance.is_busy(&seed_hash) {
             ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if failed && self.render_quote_unlock(ui, false) {
+            return;
         } else if failed {
             ui.label("The available amount could not be checked.");
         } else if loading {
@@ -1240,6 +1258,7 @@ impl WalletSendScreen {
             ui.label("The amount shown is safe but may be lower than your full available amount.");
         }
         if self.asset_lock_balance.should_offer_retry(&seed_hash)
+            && !awaits_registration
             && ui.button("Retry available amount check").clicked()
         {
             self.asset_lock_balance.invalidate_one(&seed_hash);
@@ -1823,15 +1842,11 @@ impl WalletSendScreen {
         let platform_version = self.app_context.platform_version();
         let max_inputs = max_platform_inputs(platform_version);
 
-        // Allocate addresses using state-transition-based fee estimation (no destination filter)
-        let allocation = allocate_platform_addresses_with_fee(
+        let allocation = allocate_platform_withdrawal(
+            platform_version,
             &addresses,
             amount_credits,
-            None,
-            max_inputs,
-            |inputs| {
-                estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
-            },
+            &output_script,
         );
 
         if allocation.shortfall > 0 {
@@ -2720,20 +2735,11 @@ impl WalletSendScreen {
                     .validated_destination
                     .as_ref()
                     .and_then(|v| v.as_core())?;
-                let output_script = CoreScript::new(dest.script_pubkey());
-                let platform_version = self.app_context.platform_version();
-                let allocation = allocate_platform_addresses_with_fee(
+                let allocation = allocate_platform_withdrawal(
+                    self.app_context.platform_version(),
                     addresses,
                     amount_credits,
-                    None,
-                    max_platform_inputs(platform_version),
-                    |inputs| {
-                        estimate_withdrawal_fee_from_transition(
-                            platform_version,
-                            inputs,
-                            &output_script,
-                        )
-                    },
+                    &CoreScript::new(dest.script_pubkey()),
                 );
                 Some(FeePreview::on_top(amount_credits, allocation.estimated_fee))
             }
@@ -2965,7 +2971,12 @@ impl WalletSendScreen {
                 _ => AdvancedSourceType::Core,
             }
         };
-        let ticked: BTreeMap<String, String> = self.form.ticked_advanced().into_iter().collect();
+        // Ticks and amounts of a hidden Advanced panel do not apply.
+        let ticked: BTreeMap<String, String> = if advanced {
+            self.form.ticked_advanced().into_iter().collect()
+        } else {
+            BTreeMap::new()
+        };
         let network = self.app_context.network;
         match self.advanced_source_type {
             AdvancedSourceType::Core => {
@@ -3458,8 +3469,8 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Answers the Core send quote with `error`, replacing any quote
-    /// request still in flight.
+    /// Answers the Core send quote with `error` the way the app delivers a
+    /// failed task, replacing any quote request still in flight.
     pub fn mark_core_send_error_for_test(&mut self, error: &TaskError) {
         let Some((seed_hash, kind, revision)) =
             self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
@@ -3467,12 +3478,11 @@ impl WalletSendScreen {
             return;
         };
         self.spend_limits.invalidate();
-        if let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) = self
+        if let Some(task) = self
             .spend_limits
             .ensure_requested(seed_hash, kind, revision)
         {
-            self.spend_limits
-                .mark_request_error(seed_hash, kind, request_id, error);
+            self.display_backend_task_error(&BackendTaskContext::from(&task), error);
         }
     }
 
@@ -3878,7 +3888,7 @@ impl WalletSendScreen {
                 | BackendTaskSuccessResult::PlatformAddressSyncPushed { .. }
                 | BackendTaskSuccessResult::RefreshedWallet { .. }
                 | BackendTaskSuccessResult::RefreshedIdentity(_)
-                | BackendTaskSuccessResult::LoadedIdentity(_)
+                | BackendTaskSuccessResult::LoadedIdentity { .. }
                 | BackendTaskSuccessResult::RegisteredIdentity(..)
                 | BackendTaskSuccessResult::ToppedUpIdentity(..)
                 | BackendTaskSuccessResult::IdentitiesLoaded { .. }
@@ -4186,6 +4196,19 @@ impl ScreenLike for WalletSendScreen {
                 WalletUnlockResult::Unlocked => {
                     // A receiving address may now be derived.
                     self.unlock_target = None;
+                    // Quotes and a receiving address refused while locked
+                    // are asked again once the backend registers the wallet.
+                    if let Some(seed_hash) = wallet.read().ok().map(|wallet| wallet.seed_hash())
+                        && (self
+                            .quote_needs_unlock
+                            .take_if(|waiting| *waiting == seed_hash)
+                            .is_some()
+                            || self
+                                .own_addresses
+                                .needs_unlock(&seed_hash, OwnAddressKind::Core))
+                    {
+                        self.requote_on_registration = Some((seed_hash, std::time::Instant::now()));
+                    }
                     if std::mem::take(&mut self.unlock_then_send) {
                         self.sync_route();
                         match self.prepare_send() {
@@ -4298,19 +4321,34 @@ impl ScreenLike for WalletSendScreen {
             self.send_banner.take_and_clear();
             self.send_status = SendStatus::Error;
         }
+        // The wallet of the awaited quote request this error answers.
+        let mut quoted_wallet = None;
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
-        {
-            self.asset_lock_balance.mark_request_error(
+            && self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
                 error,
-            );
+            )
+        {
+            quoted_wallet = Some(seed_hash);
         }
-        if let Some((seed_hash, kind, request_id)) = context.spend_limit_request() {
-            self.spend_limits
-                .mark_request_error(seed_hash, kind, request_id, error);
+        if let Some((seed_hash, kind, request_id)) = context.spend_limit_request()
+            && self
+                .spend_limits
+                .mark_request_error(seed_hash, kind, request_id, error)
+        {
+            quoted_wallet = Some(seed_hash);
+        }
+        if quoted_wallet.is_some() && matches!(error, TaskError::WalletLockedNotLoaded { .. }) {
+            self.quote_needs_unlock = quoted_wallet;
+        }
+        if let Some(seed_hash) = context.generated_receive_address_wallet()
+            && matches!(error, TaskError::WalletLockedNotLoaded { .. })
+        {
+            self.own_addresses
+                .mark_needs_unlock(seed_hash, OwnAddressKind::Core);
         }
     }
 
@@ -4371,7 +4409,7 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::AssetLockInputState;
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
-    use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{OutPoint, Txid};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
     use dash_sdk::dpp::secp256k1::SecretKey;
     use egui_kittest::Harness;
@@ -4466,7 +4504,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -4590,10 +4628,7 @@ mod tests {
     }
 
     fn render_identity_form(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
-        let mut harness = crate::test_support::allowing_unnamed_widgets(
-            crate::test_support::harness_builder_with_app_fonts(),
-        )
-        .build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut WalletSendScreen| {
                 screen.render_unified_send(ui);
             },
@@ -6588,7 +6623,6 @@ mod tests {
     #[test]
     fn core_send_max_is_requested_for_the_destination_script() {
         use crate::model::spend_limit::CoreDestinationScript;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
 
         let (mut screen, _temp_dir) = send_screen();
         screen.selected_source = Some(SourceSelection::CoreWallet);
@@ -6731,6 +6765,91 @@ mod tests {
                 .is_none(),
             "the answer is in, not pending"
         );
+    }
+
+    /// An explicit Core source the wallet settled as unable to send keeps
+    /// Send disabled for any amount, so the payment is never confirmed only
+    /// to be refused afterwards.
+    #[test]
+    fn a_settled_core_shortfall_is_an_amount_problem() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        let (mut screen, _temp_dir) = send_screen();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        screen.amount = Some(Amount::new_dash(0.01));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+
+        assert_eq!(
+            screen.amount_problem(),
+            Some(form_view::AmountProblem::CoreShortfall(
+                CoreSendShortfall::NothingSpendable
+            ))
+        );
+        assert_eq!(screen.missing_step(), Some("Fix the highlighted field."));
+    }
+
+    /// With several Core recipients there is no Amount field, so the reason
+    /// a settled Core shortfall keeps Send disabled must still be shown.
+    #[test]
+    fn a_settled_core_shortfall_names_its_reason_for_several_recipients() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        let (mut screen, _temp_dir) = send_screen();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        assert!(screen.form.has_several_recipients());
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+        assert_eq!(
+            screen.amount_problem(),
+            Some(form_view::AmountProblem::CoreShortfall(
+                CoreSendShortfall::NothingSpendable
+            ))
+        );
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                let _ = screen.render_form(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let shown = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(CoreSendShortfall::NothingSpendable.message())
+                    .include_labels(),
+            )
+            .count();
+        assert!(shown >= 1, "Send is disabled, so the form must say why");
     }
 
     /// The shield fee preview states the fee the shield is charged, not the
@@ -8191,15 +8310,15 @@ mod tests {
         );
     }
 
-    /// After the app's own SDK has been rebuilt it can be on a newer protocol
-    /// version than the wallet backend, which runs the transfer and sizes its
+    /// The app's own SDK can differ from the wallet backend's protocol
+    /// version. The backend runs the transfer and sizes its
     /// funding. Max and the check before sending must use the backend's fee
-    /// (212 852 duffs under protocol 13, not the 164 140 of protocol 14), or
+    /// on the backend's supported protocol version, or
     /// Max proposes an amount whose funding the wallet cannot build.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn core_to_shielded_max_fits_the_ceiling_when_the_sdks_differ() {
         const CEILING_DUFFS: u64 = 10_000_000;
-        const BACKEND_FEE_DUFFS: u64 = 212_852;
+        const BACKEND_FEE_DUFFS: u64 = 164_140;
 
         let (mut screen, _temp_dir) = send_screen();
         let (sender, _receiver) = tokio::sync::mpsc::channel(32);
@@ -8211,13 +8330,20 @@ mod tests {
             ))
             .await
             .expect("wallet backend");
-        let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
+        let pv13 = dash_sdk::dpp::version::PlatformVersion::get(13).expect("PV13");
         screen.app_context.sdk.store(Arc::new(
             dash_sdk::SdkBuilder::new_mock()
-                .with_version(pv14)
+                .with_version(pv13)
                 .build()
                 .expect("mock sdk"),
         ));
+        let app_fee = screen
+            .app_context
+            .fee_estimator()
+            .estimate_shield_from_core_fees_duffs(screen.app_context.platform_version())
+            .expect("app fee")
+            .0;
+        assert_ne!(app_fee, BACKEND_FEE_DUFFS, "SDK fees must differ");
         let seed_hash = core_source_with_ceiling(&mut screen, CEILING_DUFFS);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 
@@ -8346,7 +8472,7 @@ mod tests {
         );
     }
 
-    /// UX-001: what was typed for Someone else survives a trip to My wallets.
+    /// SR-16: what was typed for Someone else survives a trip to My wallets.
     #[test]
     fn the_typed_recipient_survives_switching_to_my_wallets_and_back() {
         let (mut screen, _temp_dir) = funded_send_screen();
@@ -8546,6 +8672,62 @@ mod tests {
         assert!(!screen.shows_fee_options());
     }
 
+    /// Recipient rows parked under My wallets are not paid, so their Platform
+    /// addresses do not bring up Fee options for a Core-to-Core payment.
+    #[test]
+    fn parked_recipient_rows_do_not_show_fee_options() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .app_context
+            .set_user_role(crate::model::user_role::UserRole::Power);
+        let seed_hash = screen.selected_wallet_seed_hash;
+        let core = testnet_core_address(9).to_string();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Advanced, PayFromKind::Core);
+        screen.form.choose_advanced_type(AdvancedSourceType::Core);
+        screen.form.set_advanced_ticked(&core, true);
+        screen.form.set_advanced_amount(&core, "0.5".to_string());
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(21), "0.2".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(22),
+            amount: "0.3".to_string(),
+        };
+        screen.sync_route();
+
+        const OTHER_WALLET: WalletSeedHash = [9; 32];
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, seed_hash, PayFromKind::Core);
+        screen.form.choose_to_wallet(OTHER_WALLET);
+        screen
+            .form
+            .choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        let _ = screen
+            .own_addresses
+            .ensure_requested(OTHER_WALLET, OwnAddressKind::Core);
+        screen.own_addresses.store(
+            OTHER_WALLET,
+            OwnAddressKind::Core,
+            testnet_core_address(44).to_string(),
+        );
+        screen.sync_route();
+        assert!(
+            screen.form.recipients().len() >= 2,
+            "precondition: parked rows"
+        );
+        assert_eq!(screen.destination_kind(), Some(AddressKind::Core));
+        assert!(
+            screen.uses_explicit_payment(),
+            "precondition: amounts per address"
+        );
+        assert!(!screen.shows_fee_options());
+    }
+
     /// A receiving address from another network (an answer to a request
     /// sent before a network switch) never becomes the destination: the
     /// request stays open so the right address can still arrive.
@@ -8655,6 +8837,28 @@ mod tests {
             screen.recipient_rows_refusal(),
             Some(RECIPIENT_ROWS_INCOMPLETE)
         );
+    }
+
+    /// A Core row with more than 8 decimal places is refused for its
+    /// precision, not as a row without an amount.
+    #[test]
+    fn several_recipients_refuse_a_core_amount_past_eight_decimals() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        for amount in ["0.000000001", "0.123456789"] {
+            screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+                address: testnet_core_address(22).to_string(),
+                amount: amount.to_string(),
+            };
+            screen.sync_route();
+            assert_eq!(
+                screen.prepare_send().err().as_deref(),
+                Some(CORE_AMOUNT_TOO_PRECISE),
+                "{amount}"
+            );
+        }
     }
 
     /// An explicit source that cannot carry several recipients keeps Send
@@ -8933,6 +9137,625 @@ mod tests {
         assert!(!identity_chip_enabled(&mut screen));
     }
 
+    /// Pay from › Identity with several identities shows the identity
+    /// picker; the harness's accessibility check needs it named.
+    #[test]
+    fn the_paying_identity_picker_is_named_for_screen_readers() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.identities_by_wallet = Some(BTreeMap::from([(
+            seed_hash,
+            vec![bound_identity(), sender_holding_a_transfer_key()],
+        )]));
+        screen.form.choose_pay_from(
+            PayFrom::Identity,
+            crate::model::send_route::PayFromKind::Identity,
+        );
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        assert!(
+            harness
+                .get_all_by_role(egui::accesskit::Role::ComboBox)
+                .any(|node| {
+                    egui_kittest::kittest::NodeT::accesskit_node(&node)
+                        .label()
+                        .as_deref()
+                        == Some("Identity")
+                }),
+            "the identity picker is shown and named by its label"
+        );
+    }
+
+    /// The private balance is not spent while the Shielded tab pauses
+    /// spending: the chip says why, an explicit choice resolves to no source
+    /// and Auto passes over it (spec §3.1, §4.1; SND-016).
+    #[test]
+    fn shielded_is_not_spent_until_its_balance_is_verified() {
+        use crate::backend_task::migration::MigrationError;
+        use crate::context::migration_status::{MigrationState, MigrationStep};
+        use crate::model::send_route::PayFromKind;
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen.app_context.set_user_role(UserRole::Power);
+        crate::context::test_support::prove_protocol_version(
+            &screen.app_context,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: vec![],
+            platform: vec![],
+            shielded_credits: 100_000_000 * CREDITS_PER_DUFF,
+        });
+        screen.typed_destination = Some(foreign_shielded_destination());
+        screen.amount = Some(Amount::new_dash(0.5));
+        let shielded_chip = |screen: &mut WalletSendScreen| {
+            screen
+                .pay_from_chips()
+                .into_iter()
+                .find(|chip| *chip.value() == PayFrom::Shielded)
+                .expect("the Shielded chip")
+        };
+        let pays_from_shielded = |screen: &WalletSendScreen| {
+            matches!(screen.selected_source, Some(SourceSelection::Shielded(..)))
+        };
+
+        let paused = [
+            MigrationState::Running {
+                step: MigrationStep::Shielded,
+            },
+            MigrationState::Failed {
+                error: Arc::new(MigrationError::WalletBackendUnavailable),
+            },
+        ];
+        for state in paused {
+            screen
+                .app_context
+                .migration_status()
+                .set_state(state.clone());
+            let chip = shielded_chip(&mut screen);
+            assert!(!chip.is_enabled(), "{state:?}");
+            assert!(
+                format!("{chip:?}").contains("Your private balance is still being checked."),
+                "{state:?}: {chip:?}"
+            );
+            screen.form.reset();
+            screen.sync_route();
+            assert!(!pays_from_shielded(&screen), "Auto under {state:?}");
+            screen
+                .form
+                .choose_pay_from(PayFrom::Shielded, PayFromKind::Shielded);
+            screen.sync_route();
+            assert!(!pays_from_shielded(&screen), "explicit under {state:?}");
+        }
+
+        screen
+            .app_context
+            .migration_status()
+            .set_state(MigrationState::Success);
+        assert!(shielded_chip(&mut screen).is_enabled());
+        screen.form.reset();
+        screen.sync_route();
+        assert!(pays_from_shielded(&screen), "Auto pays once verified");
+    }
+
+    /// A private balance held back while it is verified is not "no funds":
+    /// Auto paying a private address says it is being checked, with an
+    /// amount and with Max (spec §3.1).
+    #[test]
+    fn auto_does_not_call_a_paused_private_balance_empty() {
+        use crate::backend_task::migration::MigrationError;
+        use crate::context::migration_status::MigrationState;
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+
+        const PAUSED: &str = "Your private balance is still being checked.";
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen.app_context.set_user_role(UserRole::Power);
+        crate::context::test_support::prove_protocol_version(
+            &screen.app_context,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: vec![],
+            platform: vec![],
+            shielded_credits: 100_000_000 * CREDITS_PER_DUFF,
+        });
+        screen
+            .app_context
+            .migration_status()
+            .set_state(MigrationState::Failed {
+                error: Arc::new(MigrationError::WalletBackendUnavailable),
+            });
+        screen.typed_destination = Some(foreign_shielded_destination());
+        let mut amount_input = WalletSendScreen::new_amount_input();
+        amount_input.set_value(Amount::new_dash(0.5));
+        screen.amount_input = Some(amount_input);
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        for max in [false, true] {
+            if max {
+                harness.state_mut().form.press_max();
+                harness.run();
+            }
+            assert!(
+                harness
+                    .query_by_label_contains("Auto: your private balance is still being checked.")
+                    .is_some(),
+                "max: {max}"
+            );
+            for wrong in ["no funds", "Add funds"] {
+                assert!(
+                    harness.query_by_label_contains(wrong).is_none(),
+                    "max: {max}, shows {wrong:?}"
+                );
+            }
+            assert_eq!(harness.state().missing_step(), Some(PAUSED), "max: {max}");
+        }
+    }
+
+    /// After the paying wallet is unlocked for its quotes, Auto reads as
+    /// checking until the backend has registered the wallet, not as failed.
+    #[test]
+    fn auto_checks_while_an_unlocked_wallet_registers() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        });
+        // What a successful unlock leaves behind.
+        screen.quote_needs_unlock = None;
+        screen.requote_on_registration = Some((seed_hash, std::time::Instant::now()));
+        screen.sync_route();
+
+        assert!(
+            matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::Checking { .. })
+            ),
+            "{:?}",
+            screen.route.auto
+        );
+        assert_eq!(
+            screen.missing_step(),
+            Some("Checking the available amount…")
+        );
+    }
+
+    /// A funded screen whose password-protected wallet is locked, paying
+    /// from an explicit Core source.
+    fn locked_core_send_screen() -> (WalletSendScreen, tempfile::TempDir) {
+        let (ctx, temp_dir) = offline_ctx();
+        // Generated per run: no wallet secret is ever committed.
+        let password =
+            crate::model::secret::Secret::new(format!("{:032x}", rand::random::<u128>()));
+        let mut wallet = Wallet::new_from_seed(
+            crate::test_support::keys::seed(),
+            Network::Testnet,
+            Some("Locked".to_string()),
+            Some(&password),
+        )
+        .expect("wallet from seed");
+        wallet.wallet_seed.close();
+        let mut screen = WalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
+        let address = testnet_core_address(9);
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 200_000_000,
+            core_addresses: vec![(address, 200_000_000)],
+            platform: vec![],
+            shielded_credits: 0,
+        });
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        let mut amount_input = WalletSendScreen::new_amount_input();
+        amount_input.set_value(Amount::new_dash(0.5));
+        screen.amount_input = Some(amount_input);
+        (screen, temp_dir)
+    }
+
+    fn form_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(900.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    /// The asset-lock quote of a locked wallet offers the unlock; once
+    /// unlocked, it reads as checking while the wallet registers, with no
+    /// Retry, as the Core send quote does.
+    #[test]
+    fn the_asset_lock_quote_offers_the_unlock_then_checks_without_retry() {
+        let (mut screen, _temp_dir) = locked_core_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.typed_destination = Some(platform_destination());
+        screen.sync_route();
+        let task = screen
+            .request_asset_lock_max_amount_for(
+                &SourceSelection::CoreWallet,
+                Some(AddressKind::Platform),
+            )
+            .expect("an asset-lock quote request");
+        screen.display_backend_task_error(
+            &BackendTaskContext::from(&task),
+            &TaskError::WalletLockedNotLoaded {
+                wallet_label: "Locked".to_string(),
+            },
+        );
+        let mut harness = form_harness(screen);
+        let retry = |harness: &Harness<'static, WalletSendScreen>| {
+            harness
+                .query_by_label("Retry available amount check")
+                .is_some()
+        };
+        assert!(
+            harness
+                .query_by_label_contains("to check the available amount.")
+                .is_some()
+        );
+        assert!(!retry(&harness), "Retry would fail the same way");
+
+        // What a successful unlock leaves behind.
+        harness.state_mut().quote_needs_unlock = None;
+        harness.state_mut().requote_on_registration = Some((seed_hash, std::time::Instant::now()));
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("Checking the available amount…")
+                .is_some()
+        );
+        assert!(!retry(&harness), "no Retry while the wallet registers");
+    }
+
+    /// When the unlocked wallet's registration stalls, the wait ends: the
+    /// failure shows again with its Retry, without reopening Send.
+    #[test]
+    fn a_stalled_registration_gives_the_retry_back() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        });
+        screen.quote_needs_unlock = None;
+        let unlocked_at = std::time::Instant::now()
+            .checked_sub(resolve::REGISTRATION_QUOTE_WAIT + std::time::Duration::from_secs(1))
+            .expect("an instant before the wait");
+        screen.requote_on_registration = Some((seed_hash, unlocked_at));
+        screen.sync_route();
+
+        assert!(
+            matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::QuoteFailed { .. })
+            ),
+            "{:?}",
+            screen.route.auto
+        );
+    }
+
+    /// With an explicit Core source and Max, a quote refused for a locked
+    /// wallet still offers the unlock, though Max leaves the amount empty.
+    #[test]
+    fn max_on_an_explicit_source_offers_the_unlock() {
+        let (mut screen, _temp_dir) = locked_core_send_screen();
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.form.press_max();
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Locked".to_string(),
+        });
+        let mut harness = form_harness(screen);
+
+        assert!(
+            harness
+                .query_by_label_contains("to check the available amount.")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none()
+        );
+        harness.get_by_label("Unlock").click();
+        harness.run();
+        assert!(harness.state().wallet_unlock_popup.is_open());
+    }
+
+    /// Quotes held back after an unlock are asked again once the wallet
+    /// backend has registered the wallet, and not before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quotes_are_asked_again_once_the_unlocked_wallet_registers() {
+        let is_core_quote = |task: &BackendTask| {
+            matches!(
+                task,
+                BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend { .. },
+                    ..
+                })
+            )
+        };
+        let (ctx, _temp_dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let seed = crate::test_support::keys::seed();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet from seed");
+        let seed_hash = wallet.seed_hash();
+        let mut screen = WalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
+        let address = testnet_core_address(9);
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 200_000_000,
+            core_addresses: vec![(address, 200_000_000)],
+            platform: vec![],
+            shielded_credits: 0,
+        });
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(21)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        screen.sync_route();
+        screen.mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        });
+        // What a successful unlock leaves behind.
+        screen.quote_needs_unlock = None;
+        screen.requote_on_registration = Some((seed_hash, std::time::Instant::now()));
+        screen.sync_route();
+        assert!(
+            !screen.route_requests().iter().any(is_core_quote),
+            "nothing is asked before the wallet is registered"
+        );
+
+        ctx.wallet_backend()
+            .expect("wallet backend")
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("registration");
+        screen.sync_route();
+        assert!(screen.route_requests().iter().any(is_core_quote));
+        assert_eq!(screen.requote_on_registration, None);
+    }
+
+    /// Recipient rows keep a Platform amount to the credit: 11 decimals
+    /// are not cut to whole duffs.
+    #[test]
+    fn recipient_row_amounts_keep_every_credit() {
+        assert_eq!(
+            WalletSendScreen::parse_amount_to_credits("1.00000000001"),
+            Ok(100_000_000_001)
+        );
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(21), "0.00000000123".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(22),
+            amount: "0.00000000001".to_string(),
+        };
+        assert_eq!(screen.requested_credits(), Some(124));
+    }
+
+    /// Amounts typed under a hidden Advanced panel do not limit a Core
+    /// payment to several recipients: each address offers its whole balance.
+    #[test]
+    fn hidden_advanced_amounts_do_not_limit_several_core_recipients() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let funded = testnet_core_address(9).to_string();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Advanced, PayFromKind::Core);
+        screen.form.set_advanced_ticked(&funded, true);
+        screen.form.set_advanced_amount(&funded, "0.1".to_string());
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        screen.sync_explicit_payment();
+
+        let inputs: Vec<(String, String)> = screen
+            .core_inputs
+            .iter()
+            .map(|input| (input.address.to_string(), input.amount.clone()))
+            .collect();
+        assert_eq!(
+            inputs,
+            vec![(
+                funded,
+                Amount::dash_from_duffs(200_000_000).to_string_without_unit()
+            )]
+        );
+    }
+
+    /// My wallets › Core into another wallet that is locked and not yet
+    /// registered offers the unlock instead of fetching forever, and asks
+    /// again only once the unlocked wallet is registered.
+    #[test]
+    fn a_locked_receiving_wallet_offers_the_unlock_for_its_core_address() {
+        use super::resolve::DestinationStatus;
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        // Generated per run: no wallet secret is ever committed.
+        let password = format!("{:032x}", rand::random::<u128>());
+        let mut locked = Wallet::new_from_seed(
+            rand::random(),
+            Network::Testnet,
+            Some("Savings".to_string()),
+            Some(&crate::model::secret::Secret::new(password.clone())),
+        )
+        .expect("wallet from seed");
+        locked.wallet_seed.close();
+        let to_wallet = locked.seed_hash();
+        let locked = Arc::new(RwLock::new(locked));
+        screen
+            .app_context
+            .wallet_context()
+            .insert_test_wallet(to_wallet, locked.clone());
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, Some(seed_hash), PayFromKind::Core);
+        screen.form.choose_to_wallet(to_wallet);
+        screen
+            .form
+            .choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        let is_address_request = |task: &BackendTask| {
+            matches!(
+                task,
+                BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
+                    if *seed_hash == to_wallet
+            )
+        };
+        screen.sync_route();
+        let task = screen
+            .route_requests()
+            .into_iter()
+            .find(|task| is_address_request(task))
+            .expect("the receiving address is asked for");
+        screen.display_backend_task_error(
+            &BackendTaskContext::from(&task),
+            &TaskError::WalletLockedNotLoaded {
+                wallet_label: "Savings".to_string(),
+            },
+        );
+        screen.sync_route();
+        assert_eq!(
+            screen.route.destination_status,
+            DestinationStatus::NeedsUnlock { wallet: to_wallet }
+        );
+        assert!(!screen.route_requests().iter().any(is_address_request));
+
+        // Unlocked, and the backend is still registering the wallet.
+        locked
+            .write()
+            .expect("wallet")
+            .wallet_seed
+            .open(&password)
+            .expect("unlock");
+        screen.requote_on_registration = Some((to_wallet, std::time::Instant::now()));
+        screen.sync_route();
+        assert!(matches!(
+            screen.route.destination_status,
+            DestinationStatus::Fetching { .. }
+        ));
+        assert!(!screen.route_requests().iter().any(is_address_request));
+
+        // Registered: the address is asked for again.
+        screen.requote_on_registration = None;
+        screen.sync_route();
+        assert!(screen.route_requests().iter().any(is_address_request));
+    }
+
+    /// Under My wallets, an identity can pay another identity of the same
+    /// wallet: identities are separate accounts.
+    #[test]
+    fn an_identity_can_pay_another_identity_of_the_same_wallet() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        let payer = sender_holding_a_transfer_key();
+        let payee = sender_holding_a_transfer_key();
+        screen.identities_by_wallet = Some(BTreeMap::from([(
+            seed_hash,
+            vec![payer.clone(), payee.clone()],
+        )]));
+        screen
+            .form
+            .choose_pay_from(PayFrom::Identity, PayFromKind::Identity);
+        screen.form.choose_pay_identity(payer.identity.id());
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, Some(seed_hash), PayFromKind::Identity);
+        screen.form.choose_receive_into(
+            ReceiveInto::from_kind(PayFromKind::Identity),
+            PayFromKind::Identity,
+        );
+        screen.form.choose_receive_identity(payee.identity.id());
+        screen.amount = Some(Amount::new_dash(0.1));
+        screen.sync_route();
+
+        let identity_chip = screen
+            .receive_chips(Some(seed_hash))
+            .into_iter()
+            .find(|chip| *chip.value() == ReceiveInto::from_kind(PayFromKind::Identity))
+            .expect("the Identity chip");
+        assert!(identity_chip.is_enabled(), "{identity_chip:?}");
+        assert_eq!(screen.own_balance_refusal(), None);
+        assert!(matches!(
+            &screen.validated_destination,
+            Some(ValidatedAddress::Identity { id, .. }) if *id == payee.identity.id()
+        ));
+    }
+
+    /// Only the answer to the awaited quote request can ask for an unlock.
+    #[test]
+    fn a_superseded_locked_quote_reply_asks_for_no_unlock() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        let kind = SpendLimitKind::ShieldFromPlatform;
+        let stale = screen
+            .spend_limits
+            .ensure_requested(seed_hash, kind, 1)
+            .expect("a request");
+        let current = screen
+            .spend_limits
+            .ensure_requested(seed_hash, kind, 2)
+            .expect("a request");
+        let locked = TaskError::WalletLockedNotLoaded {
+            wallet_label: "Test wallet".to_string(),
+        };
+
+        screen.display_backend_task_error(&BackendTaskContext::from(&stale), &locked);
+        assert_eq!(screen.quote_needs_unlock, None);
+        screen.display_backend_task_error(&BackendTaskContext::from(&current), &locked);
+        assert_eq!(screen.quote_needs_unlock, Some(seed_hash));
+    }
+
     /// Switching My wallets to the paying wallet while Receive into names the
     /// paying balance keeps Send disabled and is refused before any task.
     #[test]
@@ -9018,6 +9841,57 @@ mod tests {
             panic!("a Platform withdrawal, got {action:?}");
         };
         assert_eq!(inputs.values().sum::<Credits>(), 10_000_000_000);
+    }
+
+    /// Summary › Details lists the Platform addresses a withdrawal spends,
+    /// also when its fee needs one more address than a transfer's would.
+    #[test]
+    fn summary_details_list_the_addresses_a_withdrawal_spends() {
+        let (mut screen, _temp_dir) = send_screen();
+        let output = testnet_core_address(47);
+        let script = CoreScript::new(output.script_pubkey());
+        let largest = PlatformAddress::try_from(testnet_core_address(8)).expect("address");
+        let addresses = vec![
+            (largest, testnet_core_address(8), 100_000_000_000),
+            (
+                PlatformAddress::try_from(testnet_core_address(9)).expect("address"),
+                testnet_core_address(9),
+                50_000_000_000,
+            ),
+        ];
+        let transfer_fee =
+            allocate_platform_addresses(&screen.app_context.fee_estimator(), &addresses, 1, None)
+                .estimated_fee;
+        let withdrawal_fee = estimate_withdrawal_fee_from_transition(
+            screen.app_context.platform_version(),
+            &BTreeMap::from([(largest, 0)]),
+            &script,
+        );
+        assert_ne!(
+            transfer_fee, withdrawal_fee,
+            "precondition: the fees differ"
+        );
+        // The largest address alone covers this after the smaller fee only.
+        let amount = 100_000_000_000 - transfer_fee.min(withdrawal_fee);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(addresses.clone()));
+        screen.validated_destination = Some(ValidatedAddress::Core(output));
+        screen.amount = Some(Amount::dash_from_credits(amount));
+
+        let AppAction::BackendTask(BackendTask::WalletTask(
+            WalletTask::WithdrawFromPlatformAddress { inputs, .. },
+        )) = screen
+            .send_platform_to_core([0; 32], addresses)
+            .expect("the withdrawal is built")
+        else {
+            panic!("a Platform withdrawal");
+        };
+        let details = screen
+            .summary_details_allocation()
+            .expect("Details lists the paying addresses");
+        assert_eq!(
+            details.inputs.keys().collect::<Vec<_>>(),
+            inputs.keys().collect::<Vec<_>>()
+        );
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

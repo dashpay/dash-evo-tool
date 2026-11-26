@@ -283,6 +283,31 @@ async fn persist_account_registrations(
     .await
 }
 
+/// `stored` with `fetched`, answered at `metadata`, folded in by upstream's
+/// `ManagedIdentity::take_fetched_identity`: raised key limits are kept, and
+/// below the stored revision so are the stored keys and any permanent
+/// disable. The balance is the fetched one; the caller orders it.
+///
+/// TODO(platform-wallet): a fetch at the stored revision still takes
+/// reversible key states whole, so a lagging proof can undo one
+/// (dashpay/platform#5542 item 6).
+pub(crate) fn fold_fetched_identity(
+    stored: &dash_sdk::platform::Identity,
+    fetched: &dash_sdk::platform::Identity,
+    metadata: &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata,
+) -> dash_sdk::platform::Identity {
+    let mut managed = platform_wallet::ManagedIdentity::new_out_of_wallet(stored.clone());
+    managed.take_fetched_identity(
+        fetched,
+        platform_wallet::BlockTime::new(
+            metadata.height,
+            metadata.core_chain_locked_height,
+            metadata.time_ms,
+        ),
+    );
+    managed.identity
+}
+
 impl WalletBackend {
     /// Register a new identity on Platform funded by an asset lock built and
     /// tracked-to-finality by the upstream `AssetLockManager`. Returns the
@@ -606,7 +631,9 @@ impl WalletBackend {
         self.inner
             .wallet_persister
             .load_unowned_identities()
-            .map_err(|source| TaskError::WalletStorage { source })
+            .map_err(|source| TaskError::WalletStorage {
+                source: source.into(),
+            })
     }
 
     /// The unowned identities as a manager, so a mutation keeps the bucket and
@@ -844,6 +871,7 @@ impl WalletBackend {
                         &address_signer,
                         &asset_lock_signer,
                         settings,
+                        None,
                     )
                     .await
                     .map(|_changeset| ())
@@ -947,7 +975,9 @@ impl WalletBackend {
                     .account(kw)
                     .ok_or(TaskError::WalletStateInconsistent)?;
                 let account_xpub = derived.account_xpub;
-                let managed = ManagedCoreKeysAccount::from_account(derived);
+                let managed = ManagedCoreKeysAccount::from_account(derived).map_err(|source| {
+                    TaskError::IdentityFundingAccountProvisionFailed { source }
+                })?;
                 info.core_wallet
                     .accounts
                     .insert_keys_bearing_account(managed)

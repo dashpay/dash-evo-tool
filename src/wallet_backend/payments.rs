@@ -61,8 +61,20 @@ const P2PKH_INPUT_SIZE: usize = 148;
 
 enum AssetLockDryRun {
     Builds,
-    Rejected { available: u64, required: u64 },
-    TooManyInputs { count: usize, max: usize },
+    Rejected {
+        available: u64,
+        required: u64,
+    },
+    TooManyInputs {
+        count: usize,
+        max: usize,
+    },
+    /// Final coins cannot fund the amount, but they could together with
+    /// `waiting` duffs of coins that are neither confirmed nor InstantSend
+    /// locked yet. Unbuildable now, and unlike a shortfall it fixes itself.
+    AwaitingFinality {
+        waiting: u64,
+    },
 }
 
 enum AssetLockDrainSeed {
@@ -247,12 +259,9 @@ pub(super) fn pooled_send_input_count(wallet: &Wallet, info: &ManagedWalletInfo)
 ///
 /// The pool mirrors [`platform_wallet::ASSET_LOCK_FUNDING_SOURCES`] at the
 /// default account index — the set every exact-amount asset lock DET builds
-/// draws from. The cap applies on top of the builder's own: the upstream
-/// exact-amount builder accepts up to the standard-transaction limit, so an
-/// amount only a larger lock could fund is treated as unbuildable here.
-// TODO(dashpay/platform#5513): the exact-amount asset-lock builder should
-// refuse more inputs than `max_asset_lock_transaction_inputs` itself, as its
-// drain does (DET follow-up draft: asset-lock-exact-input-cap).
+/// draws from. The dry run applies the asset-lock cap before prompting for
+/// secrets. Upstream also checks exact amounts and drains before broadcast,
+/// and refuses to resend an oversized tracked lock without a local finality proof.
 pub(super) struct AssetLockFundingPool {
     accounts: Vec<(ManagedCoreFundsAccount, Account)>,
     current_height: u32,
@@ -376,14 +385,19 @@ fn dry_run_asset_lock_amount(
 }
 
 // INTENTIONAL(upstream-bnb-dos): default `BranchAndBound` is algorithmically
-// bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget,
-// which closes rust-dashcore#918. The aggregate quote still has a deadline
-// because it performs many individually bounded selections under a write lock.
+// bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget
+// (`BNB_NODE_BUDGET`), which closes rust-dashcore#918. That covers every
+// default-strategy build here: the asset-lock dry runs and their Max searches
+// (`dry_run_asset_lock_amount*`), and the Core payment dry run, its Max search
+// and the real send (`dry_run_core_payment`, `largest_core_payment_at_most`,
+// `core_payment_builder`). The aggregate quotes still have a deadline because
+// they perform many individually bounded selections under a write lock.
 // Confirmed present: this crate's `Cargo.toml` pins `platform` to rev
-// 993584a6b53831026f2f5fe30f21a8f4d14a06e8, whose `key-wallet` dep pins
-// rust-dashcore rev 173ffac0, and that rev's `coin_selection.rs` is
-// byte-identical to the one carrying #919. Re-verify whenever either pin
-// moves — the key-wallet reference is a rev, so it cannot drift on its own.
+// d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3, whose workspace pins rust-dashcore
+// (`key-wallet`) to rev f0ddfd45f78e639e0caed3312515ac72b28ea823, and that
+// rev's `key-wallet/src/wallet/managed_wallet_info/coin_selection.rs` carries
+// the prune and the budget. Re-verify whenever either pin moves — the
+// key-wallet reference is a rev, so it cannot drift on its own.
 fn dry_run_asset_lock_amount_with_strategy(
     pool: &AssetLockFundingPool,
     amount_duffs: u64,
@@ -424,6 +438,9 @@ fn dry_run_asset_lock_amount_with_strategy(
             count,
             max: max.min(pool.max_inputs),
         }),
+        Err(BuilderError::FundsAwaitingFinality { waiting }) => {
+            Ok(AssetLockDryRun::AwaitingFinality { waiting })
+        }
         Err(source) => Err(source),
     }
 }
@@ -454,7 +471,10 @@ fn asset_lock_drain_ceiling(
             }),
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable))
         | Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
-        | Err(BuilderError::InsufficientFunds { .. }) => Ok(AssetLockDrainSeed::Unavailable),
+        | Err(BuilderError::InsufficientFunds { .. })
+        // Only coins that are not final yet could fund a drain: the Max is
+        // zero until they confirm, which is a known answer, not a failed read.
+        | Err(BuilderError::FundsAwaitingFinality { .. }) => Ok(AssetLockDrainSeed::Unavailable),
         Err(BuilderError::TooManyInputs { max, .. }) => Ok(AssetLockDrainSeed::TooManyInputs {
             max: max.min(pool.max_inputs),
         }),
@@ -489,9 +509,9 @@ fn largest_first_asset_lock_max_below(
             Some(SelectionStrategy::LargestFirst),
         )? {
             AssetLockDryRun::Builds => low = candidate,
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
-                high = candidate - 1
-            }
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => high = candidate - 1,
         }
     }
     Ok(low)
@@ -526,7 +546,9 @@ fn default_strategy_max_from_seed(
                 low = candidate;
                 step = step.saturating_mul(2);
             }
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => {
                 let mut high = candidate - 1;
                 while low < high {
                     if deadline.expired() {
@@ -536,7 +558,8 @@ fn default_strategy_max_from_seed(
                     match dry_run_asset_lock_amount(pool, midpoint)? {
                         AssetLockDryRun::Builds => low = midpoint,
                         AssetLockDryRun::Rejected { .. }
-                        | AssetLockDryRun::TooManyInputs { .. } => high = midpoint - 1,
+                        | AssetLockDryRun::TooManyInputs { .. }
+                        | AssetLockDryRun::AwaitingFinality { .. } => high = midpoint - 1,
                     }
                 }
                 return Ok(low);
@@ -586,17 +609,22 @@ fn asset_lock_max_below_upper_bound(
                     match dry_run_asset_lock_amount(pool, midpoint)? {
                         AssetLockDryRun::Builds => low = midpoint,
                         AssetLockDryRun::Rejected { .. }
-                        | AssetLockDryRun::TooManyInputs { .. } => high = midpoint - 1,
+                        | AssetLockDryRun::TooManyInputs { .. }
+                        | AssetLockDryRun::AwaitingFinality { .. } => high = midpoint - 1,
                     }
                 }
                 return Ok(low);
             }
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. }
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. }
                 if candidate == 0 =>
             {
                 return Ok(0);
             }
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => {
                 high = candidate - 1;
                 step = step.saturating_mul(2);
             }
@@ -621,6 +649,10 @@ fn full_range_asset_lock_max_amount(
 
     let mut high = match dry_run_asset_lock_amount(pool, MAX_MONEY.saturating_add(1))? {
         AssetLockDryRun::Rejected { available, .. } => available,
+        // No amount above what the final coins hold can build.
+        AssetLockDryRun::AwaitingFinality { .. } => {
+            pool.final_input_values().fold(0_u64, u64::saturating_add)
+        }
         AssetLockDryRun::Builds => MAX_MONEY,
         AssetLockDryRun::TooManyInputs { max, .. } => {
             return asset_lock_max_with_input_cap(pool, max, deadline);
@@ -635,9 +667,9 @@ fn full_range_asset_lock_max_amount(
         let candidate = low + (high - low).div_ceil(2);
         match dry_run_asset_lock_amount(pool, candidate)? {
             AssetLockDryRun::Builds => low = candidate,
-            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
-                high = candidate - 1
-            }
+            AssetLockDryRun::Rejected { .. }
+            | AssetLockDryRun::TooManyInputs { .. }
+            | AssetLockDryRun::AwaitingFinality { .. } => high = candidate - 1,
         }
     }
 
@@ -957,25 +989,18 @@ impl WalletBackend {
     }
 
     /// Refuse an exact-amount asset lock that would need more inputs than the
-    /// protocol accepts.
+    /// protocol accepts, that the wallet cannot fund, or that only coins still
+    /// awaiting confirmation could fund.
     ///
-    /// The upstream exact-amount builder enforces only the standard-transaction
-    /// limit, and Dash Core silently drops a larger asset lock, leaving its
-    /// inputs reserved and the lock unconfirmed. The same dry run the Max probe
-    /// uses decides it; other funding kinds are left to upstream.
+    /// The same dry run the Max probe uses avoids asking for secrets when
+    /// the amount cannot fit. Other funding kinds are checked upstream.
     ///
     /// Every asset-lock path runs it twice: before the secret session, so a
     /// doomed lock never prompts, and again inside the session immediately
     /// before the upstream build, because the wallet can change while the user
-    /// types a password. Upstream takes the wallet-manager lock itself and
-    /// builds and broadcasts in one call, so the second check is as close to
-    /// the build as DET can get; a concurrent spend or sync landing between
-    /// the two lock acquisitions can still change the selection.
-    // TODO(dashpay/platform#5513): once upstream enforces
-    // `max_asset_lock_inputs` for `Exact` builds in
-    // `broadcast_funded_asset_lock_with_operation` (its abandon arm covers
-    // only `DrainAll`), the cap is atomic with the build and this guard can go
-    // (DET follow-up draft: asset-lock-exact-input-cap).
+    /// types a password. Upstream checks the cap atomically with the actual
+    /// build before broadcast, covering selection changes between this dry
+    /// run and the build.
     pub(super) async fn ensure_asset_lock_within_input_cap(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1026,6 +1051,14 @@ impl WalletBackend {
                 available,
                 required,
             }),
+            // The real build refuses this too, so say so before the unlock
+            // prompt rather than after it.
+            Ok(AssetLockDryRun::AwaitingFinality { waiting }) => {
+                Err(TaskError::AssetLockFundsAwaitingConfirmation {
+                    waiting,
+                    source: None,
+                })
+            }
             // Any other build failure is the real build's to report, with the
             // error it already maps.
             Ok(AssetLockDryRun::Builds) | Err(_) => Ok(()),
@@ -1306,8 +1339,9 @@ impl WalletBackend {
     /// # Errors
     /// [`TaskError::AssetLockAlreadyUsed`] when the lock was already spent,
     /// [`TaskError::AssetLockNotEligibleForTopUp`] when it belongs to another
-    /// role or this wallet does not track it, and the generic
-    /// [`TaskError::WalletBackend`] envelope when upstream cannot resume it.
+    /// role or this wallet does not track it,
+    /// [`TaskError::AssetLockTransferTooManyInputs`] when the input cap blocks
+    /// resending it, and [`TaskError::WalletBackend`] for other resume failures.
     pub(crate) async fn resume_unbound_topup_asset_lock(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1339,9 +1373,7 @@ impl WalletBackend {
                     .asset_locks()
                     .resume_asset_lock(&out_point, None)
                     .await
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Arc::new(e),
-                    })?;
+                    .map_err(map_asset_lock_error)?;
                 let private_key =
                     self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
                 Ok((proof, private_key))
@@ -1454,7 +1486,7 @@ impl PooledScratch {
         // until one has a change address.
         let change_address = accounts.iter_mut().find_map(|(managed, account)| {
             managed
-                .next_change_address(Some(&account.account_xpub), true)
+                .next_change_address(Some(&account.account_xpub))
                 .ok()
         });
         Self {
@@ -1638,7 +1670,6 @@ fn core_quote_recipient(
     destination: CoreDestinationScript,
 ) -> dash_sdk::dpp::dashcore::Address {
     use dash_sdk::dpp::dashcore::address::Payload;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     let payload = match destination {
         CoreDestinationScript::PubkeyHash => {
             Payload::PubkeyHash(dash_sdk::dpp::dashcore::PubkeyHash::all_zeros())
@@ -1694,13 +1725,61 @@ fn map_core_finalize_error(
     }
 }
 
+/// Classify the wallet's refusals to build an asset lock without losing their
+/// source, handing every other error to `other`. Every flow that builds a lock
+/// maps these two refusals here.
+pub(super) fn map_asset_lock_refusal_or(
+    source: platform_wallet::error::PlatformWalletError,
+    other: impl FnOnce(platform_wallet::error::PlatformWalletError) -> TaskError,
+) -> TaskError {
+    match source {
+        platform_wallet::error::PlatformWalletError::AssetLockTooManyInputs { count, max } => {
+            TaskError::AssetLockTransferTooManyInputs {
+                count,
+                max,
+                source: Box::new(source),
+            }
+        }
+        // Only coins that are not final yet could fund the lock. Nothing was
+        // built for the wire, and the same request works once they confirm.
+        platform_wallet::error::PlatformWalletError::AssetLockFundsAwaitingFinality { waiting } => {
+            TaskError::AssetLockFundsAwaitingConfirmation {
+                waiting,
+                source: Some(Box::new(source)),
+            }
+        }
+        unrefused => other(unrefused),
+    }
+}
+
+/// Classify an asset-lock build or resume refusal without losing its source.
+pub(super) fn map_asset_lock_error(
+    source: platform_wallet::error::PlatformWalletError,
+) -> TaskError {
+    map_asset_lock_refusal_or(source, |source| match source {
+        // A tracked lock's transaction may already be on the network. The
+        // generic envelope below says to retry; this outcome says to check.
+        // No id is returned here, so there is nothing to watch.
+        platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(_) => {
+            TaskError::TransactionConfirmationUnknown {
+                txid: None,
+                source: Box::new(source),
+            }
+        }
+        other => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
+    })
+}
+
 /// Classify a broadcast failure from the payment path. Pure — unit-testable.
 ///
 /// An ambiguous outcome gets its own [`TaskError::TransactionConfirmationUnknown`]
 /// rather than the generic envelope: the payment may already be on the network,
 /// and upstream deliberately keeps its inputs reserved so it cannot be sent
 /// twice, so telling the user to retry would be both wrong and unactionable.
-/// Every definitive failure keeps the generic envelope.
+/// Input-limit refusals retain their typed guidance; other definitive failures
+/// keep the generic envelope.
 ///
 /// `txid` is the broadcast transaction's id when the caller holds it, so the UI
 /// can watch that transaction for a late confirmation; `None` where the
@@ -1717,17 +1796,16 @@ pub(super) fn map_core_broadcast_error(
                 source: Box::new(source),
             }
         }
-        other => TaskError::WalletBackend {
-            source: Arc::new(other),
-        },
+        other => map_asset_lock_error(other),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSET_LOCK_FEE_PER_KB, AssetLockFundingPool, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_pool, map_core_broadcast_error, map_core_finalize_error,
+        ASSET_LOCK_FEE_PER_KB, AssetLockDryRun, AssetLockFundingPool, MAX_MONEY, ProbeDeadline,
+        asset_lock_builder_height, asset_lock_max_amount_from_pool, asset_lock_max_with_input_cap,
+        dry_run_asset_lock_amount, map_core_broadcast_error, map_core_finalize_error,
         unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
@@ -1737,7 +1815,6 @@ mod tests {
     use dash_sdk::dpp::dashcore::ScriptBuf;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PublicKey, TxOut, Txid};
     use dash_sdk::dpp::key_wallet::Utxo;
     use dash_sdk::dpp::key_wallet::wallet::Wallet;
@@ -1813,7 +1890,7 @@ mod tests {
                 .get_mut(&0)
                 .expect("managed BIP44 account");
             let funding_address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             for index in 0..payments {
                 let outpoint = OutPoint::new(Txid::from_byte_array([index as u8 + 1; 32]), 0);
@@ -1892,7 +1969,7 @@ mod tests {
             .expect("managed BIP44 account");
         for (tag, value) in [(1, COIN_DUFFS), (2, COIN_DUFFS), (3, DUST_DUFFS)] {
             let address = bip44_managed
-                .next_receive_address(Some(&bip44.account_xpub), true)
+                .next_receive_address(Some(&bip44.account_xpub))
                 .expect("BIP44 address");
             let (outpoint, utxo) = coin(address, tag, value);
             bip44_managed.utxos.insert(outpoint, utxo);
@@ -1903,7 +1980,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP32 account");
         let address = bip32_managed
-            .next_receive_address(Some(&bip32.account_xpub), true)
+            .next_receive_address(Some(&bip32.account_xpub))
             .expect("BIP32 address");
         let (outpoint, utxo) = coin(address, 4, COIN_DUFFS);
         bip32_managed.utxos.insert(outpoint, utxo);
@@ -1950,7 +2027,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -1999,7 +2076,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2159,7 +2236,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2358,7 +2435,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2462,7 +2539,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
 
         for (txid_byte, value, is_confirmed) in [
@@ -2559,6 +2636,37 @@ mod tests {
             overshoot.is_err(),
             "the display-only snapshot amount must reproduce the builder rejection"
         );
+
+        // An amount the confirmed coin cannot fund but the pending one could is
+        // unbuildable now, not a failed probe. The input-capped search probes
+        // such amounts, between the Max and the confirmed total, and must land
+        // on the same Max.
+        let pool = AssetLockFundingPool::for_account(
+            managed_account,
+            account,
+            CURRENT_HEIGHT,
+            STANDARD_TRANSACTION_INPUT_CAP,
+        );
+        let above_max = dry_run_asset_lock_amount(&pool, CONFIRMED_DUFFS);
+        assert!(
+            matches!(
+                above_max,
+                Ok(AssetLockDryRun::AwaitingFinality {
+                    waiting: UNCONFIRMED_DUFFS
+                })
+            ),
+            "an amount only the pending coin could cover must be reported as awaiting finality"
+        );
+        assert_eq!(
+            asset_lock_max_with_input_cap(
+                &pool,
+                STANDARD_TRANSACTION_INPUT_CAP,
+                &ProbeDeadline::unbounded()
+            )
+            .expect("input-capped maximum"),
+            max_amount,
+            "probes that need the pending coin must narrow the search, not abort it"
+        );
     }
 
     #[test]
@@ -2594,7 +2702,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
 
         let values = (0..LARGE_UTXO_COUNT)
@@ -2859,7 +2967,7 @@ mod tests {
                 .get_mut(&0)
                 .expect("managed account");
             let funding_address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             for index in 0..UTXO_COUNT {
                 let outpoint = OutPoint::new(Txid::from_byte_array([index as u8; 32]), index);
@@ -3171,7 +3279,7 @@ mod tests {
             .funds_account_mut(&account_type)
             .expect("managed funding account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         for (index, value) in values.iter().enumerate() {
             let outpoint = OutPoint::new(Txid::from_byte_array([txid_byte; 32]), index as u32);
@@ -3260,6 +3368,64 @@ mod tests {
             quote.amount_duffs > (CAP - 1) * UTXO_DUFFS,
             "Max must still use the full cap: {}",
             quote.amount_duffs
+        );
+    }
+
+    /// A wallet whose only coin is neither confirmed nor InstantSend locked.
+    /// Its asset-lock Max is a known zero, not a failed balance check, and an
+    /// exact amount that coin could fund is refused before any secret is
+    /// opened, with the amount that is still waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn funds_awaiting_confirmation_quote_zero_and_are_refused_before_the_unlock() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const PENDING_DUFFS: u64 = 1_000_000;
+        let account_type = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(&platform_wallet, account_type, 0x67, &[PENDING_DUFFS]).await;
+        {
+            let wallet_id = platform_wallet.wallet_id();
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let info = manager
+                .get_wallet_info_mut(&wallet_id)
+                .expect("wallet info");
+            let managed_account = info
+                .core_wallet
+                .accounts
+                .funds_account_mut(&account_type)
+                .expect("managed funding account");
+            for utxo in managed_account.utxos.values_mut() {
+                utxo.is_confirmed = false;
+            }
+        }
+
+        let quote = backend
+            .asset_lock_max_amount(&seed_hash)
+            .await
+            .expect("a wallet with only pending funds has a known Max");
+        assert_eq!(quote.amount_duffs, 0);
+        assert!(!quote.is_partial);
+
+        let funding = platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
+            amount_duffs: PENDING_DUFFS / 2,
+            account_index: 0,
+        };
+        let refused = backend
+            .ensure_asset_lock_within_input_cap(&seed_hash, &funding)
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(TaskError::AssetLockFundsAwaitingConfirmation {
+                    waiting: PENDING_DUFFS,
+                    source: None,
+                })
+            ),
+            "{refused:?}"
         );
     }
 
@@ -3792,7 +3958,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn core_send_max_is_quoted_for_the_destination_script() {
         use crate::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =

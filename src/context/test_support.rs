@@ -179,7 +179,7 @@ fn test_app_context_with_kv_and_network(
     app_kv: Arc<DetKv>,
     network: Network,
 ) -> Arc<AppContext> {
-    crate::app_dir::ensure_env_file(dir);
+    crate::app_dir::ensure_env_file(dir).expect("write .env");
     let db = Arc::new(crate::database::Database::new(dir.join("data.db")).expect("db"));
     db.create_tables(true).expect("create tables");
     db.set_default_version().expect("set version");
@@ -272,13 +272,17 @@ pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
 
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
-    let sdk = Sdk::new_mock();
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(crate::sdk_wrapper::MIN_PLATFORM_VERSION)
+        .build()
+        .expect("mock sdk");
     let provider = ctx
         .spv_context_provider
         .read()
         .expect("context provider lock")
         .clone();
-    sdk.set_context_provider(provider);
+    sdk.set_context_provider(provider)
+        .expect("a provider that declares no network pairs with any SDK");
     sdk
 }
 
@@ -296,7 +300,8 @@ pub(crate) fn mock_sdk_at_for(ctx: &AppContext, protocol_version: u32) -> Sdk {
         .read()
         .expect("context provider lock")
         .clone();
-    sdk.set_context_provider(provider);
+    sdk.set_context_provider(provider)
+        .expect("a provider that declares no network pairs with any SDK");
     sdk
 }
 

@@ -379,6 +379,72 @@ fn w11_a_locked_wallet_asks_for_its_password_when_send_is_pressed() {
     });
 }
 
+/// A locked wallet the backend has not registered cannot quote until it is
+/// unlocked, so Auto offers the password prompt, not a retry that fails again.
+#[test]
+fn auto_offers_to_unlock_a_wallet_whose_quote_needs_it() {
+    with_isolated_data_dir(|| {
+        let password = format!("{:032x}", rand::random::<u128>());
+        let mut fixture = fixture(Some(&password));
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            1.0,
+        );
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness
+            .state_mut()
+            .mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+                wallet_label: "Main".to_string(),
+            });
+        harness.run();
+
+        assert!(has(&harness, "to check its balances."));
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none()
+        );
+        harness.get_by_label("Unlock").click();
+        harness.run();
+        assert!(harness.state().is_unlock_open_for_test());
+    });
+}
+
+/// The same offer under an explicit source: its quote status asks for the
+/// unlock instead of a retry that fails again.
+#[test]
+fn an_explicit_source_offers_to_unlock_a_wallet_whose_quote_needs_it() {
+    with_isolated_data_dir(|| {
+        let password = format!("{:032x}", rand::random::<u128>());
+        let mut fixture = fixture(Some(&password));
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            1.0,
+        );
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label_contains("Core ·").click();
+        harness.run();
+        harness
+            .state_mut()
+            .mark_core_send_error_for_test(&TaskError::WalletLockedNotLoaded {
+                wallet_label: "Main".to_string(),
+            });
+        harness.run();
+
+        assert!(has(&harness, "to check the available amount."));
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none()
+        );
+        harness.get_by_label("Unlock").click();
+        harness.run();
+        assert!(harness.state().is_unlock_open_for_test());
+    });
+}
+
 #[test]
 fn w13_narrow_chips_drop_their_balances() {
     with_isolated_data_dir(|| {

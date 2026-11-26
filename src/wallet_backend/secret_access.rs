@@ -373,19 +373,43 @@ impl SecretAccess {
             .expect("infallible metadata load");
     }
 
-    /// Replace the identity prompt-copy index. Used at hydration time and
-    /// after an opt-in migration so the sign-time prompt for a protected
-    /// identity shows its label and password hint. Display-only — never
-    /// gates whether a prompt fires (the vault scheme does). Poison-safe: a
-    /// poisoned lock is recovered so the index can self-heal after a panicked
-    /// reader.
-    pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], PromptMeta>) {
+    /// Upsert the prompt copy of freshly loaded identities and drop every
+    /// entry whose identity is no longer in `roster`, in one step. A filtered
+    /// load then refreshes only what it read and keeps the rest. Display-only —
+    /// never gates whether a prompt fires (the vault scheme does). Poison-safe.
+    /// `roster` must be sorted by identity ID.
+    pub fn merge_identity_prompt_index(
+        &self,
+        roster: &[[u8; 32]],
+        loaded: BTreeMap<[u8; 32], PromptMeta>,
+    ) {
         let mut guard = self
             .inner
             .identity_prompt_index
             .write()
             .unwrap_or_else(|poison| poison.into_inner());
-        *guard = index;
+        guard.retain(|identity_id, _| roster.binary_search(identity_id).is_ok());
+        guard.extend(loaded);
+    }
+
+    /// Drop the prompt copy of a removed identity.
+    pub fn forget_identity_prompt(&self, identity_id: &[u8; 32]) {
+        self.inner
+            .identity_prompt_index
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(identity_id);
+    }
+
+    /// The prompt copy indexed for `identity_id`, if any.
+    #[cfg(test)]
+    pub(crate) fn identity_prompt_meta(&self, identity_id: &[u8; 32]) -> Option<PromptMeta> {
+        self.inner
+            .identity_prompt_index
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(identity_id)
+            .cloned()
     }
 
     /// Run `f` with the plaintext secret for `scope`, obtaining it
@@ -1286,7 +1310,7 @@ mod tests {
     #[test]
     fn protected_single_key_import_and_rename_refresh_prompt_copy() {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+        use dash_sdk::dpp::dashcore::hashes::sha256;
 
         use crate::model::wallet::alias::AliasSource;
         use crate::wallet_backend::single_key::ImportPassphrase;
@@ -2388,6 +2412,37 @@ mod tests {
         assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
     }
 
+    /// A merge refreshes the identities it loaded, keeps the other identities
+    /// still in the roster, and drops those that left it.
+    #[test]
+    fn merging_prompt_copy_upserts_loaded_and_drops_delisted_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let sa = access(fresh_store(dir.path()), Arc::new(TestPrompt::never()));
+        let meta = |alias: &str| PromptMeta {
+            alias: Some(alias.to_string()),
+            password_hint: None,
+        };
+        let alias_of = |id: &[u8; 32]| sa.identity_prompt_meta(id).and_then(|m| m.alias);
+        let (kept, refreshed, delisted) = ([0x01; 32], [0x02; 32], [0x03; 32]);
+        sa.merge_identity_prompt_index(
+            &[kept, refreshed, delisted],
+            BTreeMap::from([
+                (kept, meta("kept")),
+                (refreshed, meta("old")),
+                (delisted, meta("gone")),
+            ]),
+        );
+
+        sa.merge_identity_prompt_index(
+            &[kept, refreshed],
+            BTreeMap::from([(refreshed, meta("new"))]),
+        );
+
+        assert_eq!(alias_of(&kept).as_deref(), Some("kept"));
+        assert_eq!(alias_of(&refreshed).as_deref(), Some("new"));
+        assert_eq!(alias_of(&delisted), None);
+    }
+
     /// The sign-time prompt for a protected identity carries the alias and
     /// password hint from the identity prompt-index (display-only). An empty
     /// index degrades to a generic label, never an error.
@@ -2408,13 +2463,16 @@ mod tests {
 
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(store, prompt.clone());
-        sa.set_identity_prompt_index(BTreeMap::from([(
-            identity_id,
-            PromptMeta {
-                alias: Some("alice.dash".to_string()),
-                password_hint: Some("the usual".to_string()),
-            },
-        )]));
+        sa.merge_identity_prompt_index(
+            &[identity_id],
+            BTreeMap::from([(
+                identity_id,
+                PromptMeta {
+                    alias: Some("alice.dash".to_string()),
+                    password_hint: Some("the usual".to_string()),
+                },
+            )]),
+        );
         let scope = SecretScope::IdentityKey {
             identity_id,
             target: PrivateKeyTarget::PrivateKeyOnMainIdentity,

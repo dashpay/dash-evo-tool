@@ -23,7 +23,7 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 
-use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+use dash_sdk::dpp::dashcore::hashes::sha256;
 use dash_sdk::dpp::dashcore::{Network, PrivateKey};
 use dash_sdk::dpp::secp256k1::SecretKey;
 

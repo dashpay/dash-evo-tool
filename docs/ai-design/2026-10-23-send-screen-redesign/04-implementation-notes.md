@@ -50,7 +50,7 @@ and the cached shielded receive address.
 | 32 | Identity Send (fixed sender, identity without a wallet, any identity on this device as recipient) | From fixed |
 | 33 | Identity Top up (wallet picker, in-flight refusal, other identities as source) | From wallet picker and chips; To fixed |
 | 34 | Move to wallet (own Core addresses only) | To fixed to My wallets · Core (new unused address), plus "Choose an address" (the old own-address picker) |
-| 35 | Unlock gate, password-less auto-open | 🔒 line under the wallet; unlock when Send is pressed; auto-open kept |
+| 35 | Unlock gate, password-less auto-open | 🔒 line under the wallet; unlock when Send is pressed, or from Auto's status line when a quote needs it (A16); auto-open kept |
 | 36 | Address field: usernames, `wallet:` / `type:` search, identity autocomplete | Someone else field, unchanged |
 | 37–40 | Send status screens, pending-send tracking, progress banner, background top-up, network reset, completion messages | Unchanged (network switch adds an info banner) |
 
@@ -73,6 +73,8 @@ and the cached shielded receive address.
 | A13 | §3.1: Identity enabled when it has a usable transfer key | A transfer key for Platform and identity recipients, a withdrawal key for Core addresses | Withdrawals sign with a different key |
 | A14 | §10: confirmation title | "Send {amount}?", confirm button "Send" | — |
 | A15 | §2: wallet names in status lines | A wallet without a name reads "Unnamed wallet" | Sentences stay complete |
+| A16 | §8: a failed Max quote shows "The available amount could not be checked." + [Retry available amount check]; §9: a locked wallet unlocks when Send is pressed | When the quote fails because the paying wallet is locked and not yet registered (`TaskError::WalletLockedNotLoaded`), Auto reads "Auto: unlock {wallet} to check its balances." with [Unlock], which opens `WalletUnlockPopup`. After the unlock, the quote reads as checking until the wallet backend has registered the wallet, then is asked again. If registration takes longer than a minute, the failure shows again with Retry; a later registration still asks again. The same offer appears under an explicit source's quote status ("Unlock {wallet} to check the available amount.") | A password-protected wallet is registered only once unlocked, so Retry would fail again and Send, which carries the unlock, stays disabled |
+| A17 | §3.1: Shielded disabled with "Your private balance is still being checked." while unverified | Also the Send hint for an explicit Shielded source, and, when only the private balance can pay (someone else's private address), Auto's status line, the Amount warning and the Send hint. The rule is the Shielded tab's spend lock (`shielded_spending_paused`): paused while the balance is being verified or after that failed, including after "Skip for now" | The spec names only the chip; without the other lines Auto would call a paused balance empty |
 
 ## 5. Issues found in the old screen
 
@@ -93,7 +95,7 @@ and the cached shielded receive address.
 | Form state | `src/ui/state/send_form.rs` (16), `src/ui/state/own_receive_addresses.rs` (3) |
 | Chips | `src/ui/components/choice_chips.rs` kittests (4) |
 | A1 regression | `core_and_platform_never_route_to_someone_elses_private_address` and `the_form_refuses_core_to_someone_elses_private_address` (`send_screen/mod.rs`), `w10_core_cannot_pay_someone_elses_private_address` (`tests/kittest/send_form.rs`) |
-| UX-001 | `the_typed_recipient_survives_switching_to_my_wallets_and_back` |
+| SR-16 (typed values survive section changes) | `the_typed_recipient_survives_switching_to_my_wallets_and_back` |
 | Flows | `tests/kittest/send_form.rs`: W1–W3, W5, W6, W8–W11, W13, W14. Each settles the harness before asserting; none counts frames |
 
 W4 (destination options), W7 (identity source) and W12 (confirmation) are covered by the existing

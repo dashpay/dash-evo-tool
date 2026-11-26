@@ -2,7 +2,6 @@ use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPat
 use crate::model::wallet::Wallet;
 use bincode::{Decode, Encode};
 use dash_sdk::dpp::dashcore::address::Payload;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PubkeyHash, PublicKey};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::{
@@ -132,7 +131,6 @@ fn find_wallet_path(
 mod tests {
     use super::*;
     use crate::context::test_support::identity_public_key;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
     use dash_sdk::dpp::platform_value::BinaryData;
@@ -188,6 +186,7 @@ mod tests {
             identity_index,
             key_index,
         )
+        .unwrap()
     }
 
     /// The signing-critical case: a User identity's ECDSA authentication key

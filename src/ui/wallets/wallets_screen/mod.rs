@@ -44,6 +44,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::wallet_backend::TransactionHistoryStatus;
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionDirection;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -997,13 +998,19 @@ impl WalletsBalancesScreen {
         }
     }
 
+    /// The row's label comes from the wallet's own classification, not from
+    /// the sign of the amount: a move between the wallet's own accounts or
+    /// into its own Platform keys lowers the Core balance yet is not a
+    /// payment to someone else. A mixing transaction has no label of its own
+    /// and keeps the one its amount gives.
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
-        if tx.is_incoming() {
-            "Received"
-        } else if tx.is_outgoing() {
-            "Sent"
-        } else {
-            "Internal"
+        match tx.direction {
+            TransactionDirection::Incoming => "Received",
+            TransactionDirection::Outgoing => "Sent",
+            TransactionDirection::Internal => "Internal",
+            TransactionDirection::CoinJoin if tx.is_incoming() => "Received",
+            TransactionDirection::CoinJoin if tx.is_outgoing() => "Sent",
+            TransactionDirection::CoinJoin => "Internal",
         }
     }
 
@@ -3147,6 +3154,56 @@ mod tests {
         );
     }
 
+    fn history_row(direction: TransactionDirection, net_amount: i64) -> WalletTransaction {
+        WalletTransaction {
+            txid: dash_sdk::dpp::dashcore::Txid::from([0x7A; 32]),
+            transaction: dash_sdk::dpp::dashcore::Transaction {
+                version: 3,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            timestamp: 0,
+            height: None,
+            block_hash: None,
+            net_amount,
+            direction,
+            fee: None,
+            label: None,
+            is_ours: true,
+            status: TransactionStatus::Unconfirmed,
+        }
+    }
+
+    /// Funding the wallet's own Platform address, or moving funds between its
+    /// own accounts, lowers the Core balance but pays nobody else. The row
+    /// must read "Internal", not "Sent", while the amount keeps its sign.
+    #[test]
+    fn an_internal_move_with_a_negative_amount_is_labelled_internal_not_sent() {
+        let row = history_row(TransactionDirection::Internal, -1_750_000);
+        assert_eq!(
+            WalletsBalancesScreen::transaction_direction_label(&row),
+            "Internal"
+        );
+        let (amount, _) = WalletsBalancesScreen::transaction_amount_display(&row, false);
+        assert!(amount.starts_with('-'), "{amount}");
+
+        for (direction, net_amount, label) in [
+            (TransactionDirection::Incoming, 50_000, "Received"),
+            (TransactionDirection::Outgoing, -50_000, "Sent"),
+            (TransactionDirection::Internal, 0, "Internal"),
+            (TransactionDirection::CoinJoin, -226, "Sent"),
+        ] {
+            assert_eq!(
+                WalletsBalancesScreen::transaction_direction_label(&history_row(
+                    direction, net_amount
+                )),
+                label
+            );
+        }
+    }
+
     fn summary(
         category: AccountCategory,
         index: Option<u32>,
@@ -3286,7 +3343,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -3493,7 +3550,7 @@ mod tests {
         use std::sync::{Arc, RwLock};
 
         fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-            crate::app_dir::ensure_env_file(dir);
+            crate::app_dir::ensure_env_file(dir).expect("write .env");
             let db_file = dir.join("data.db");
             let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
             db.create_tables(true).expect("create tables");

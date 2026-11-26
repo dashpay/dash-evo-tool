@@ -18,6 +18,7 @@ use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionDirection;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
 use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, MIN_PASSPHRASE_LEN};
@@ -323,7 +324,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::platform::Identity;
 use zeroize::Zeroizing;
@@ -675,7 +675,13 @@ pub struct WalletTransaction {
     pub timestamp: u64,
     pub height: Option<u32>,
     pub block_hash: Option<BlockHash>,
+    /// Signed change of the wallet's Core balance, in duffs.
     pub net_amount: i64,
+    /// What the transaction is to the wallet, as the wallet classified it.
+    /// Not derivable from the sign of [`Self::net_amount`]: a move between
+    /// the wallet's own accounts, or into its own Platform keys, is
+    /// `Internal` with a negative net (the fee, or the locked amount).
+    pub direction: TransactionDirection,
     pub fee: Option<u64>,
     pub label: Option<String>,
     pub is_ours: bool,
@@ -1101,7 +1107,7 @@ impl Wallet {
             KeyDerivationType::ECDSA,
             identity_index,
             key_index,
-        );
+        )?;
         let extended_public_key =
             derivation_path.derive_pub_ecdsa_for_master_seed(seed, network)?;
         Ok(extended_public_key.to_pub())
@@ -1242,7 +1248,7 @@ impl Wallet {
                 KeyDerivationType::ECDSA,
                 identity_index,
                 key_index,
-            );
+            )?;
             self.register_address_from_public_key(
                 public_key,
                 &derivation_path,
@@ -1411,7 +1417,7 @@ impl Wallet {
         app_context: &AppContext,
     ) -> Result<(), WalletError> {
         for account in 0..BOOTSTRAP_COINJOIN_ACCOUNT_COUNT {
-            let base_path = DerivationPath::coinjoin_path(network, account);
+            let base_path = DerivationPath::coinjoin_path(network, account)?;
             for index in 0..BOOTSTRAP_COINJOIN_ADDRESS_COUNT {
                 let mut components = base_path.as_ref().to_vec();
                 components.push(ChildNumber::Normal { index });
@@ -1457,7 +1463,7 @@ impl Wallet {
         registration_indices: &BTreeSet<u32>,
     ) -> Result<(), WalletError> {
         for &index in registration_indices {
-            let derivation_path = DerivationPath::identity_registration_path(network, index);
+            let derivation_path = DerivationPath::identity_registration_path(network, index)?;
             let extended_private_key =
                 derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
@@ -1479,7 +1485,7 @@ impl Wallet {
         app_context: &AppContext,
     ) -> Result<(), WalletError> {
         for index in 0..BOOTSTRAP_IDENTITY_INVITATION_COUNT {
-            let derivation_path = DerivationPath::identity_invitation_path(network, index);
+            let derivation_path = DerivationPath::identity_invitation_path(network, index)?;
             let extended_private_key =
                 derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
@@ -1503,8 +1509,11 @@ impl Wallet {
     ) -> Result<(), WalletError> {
         for &registration_index in registration_indices {
             for top_up_index in 0..BOOTSTRAP_IDENTITY_TOPUP_PER_REGISTRATION {
-                let derivation_path =
-                    DerivationPath::identity_top_up_path(network, registration_index, top_up_index);
+                let derivation_path = DerivationPath::identity_top_up_path(
+                    network,
+                    registration_index,
+                    top_up_index,
+                )?;
                 let extended_private_key =
                     derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
                 let private_key = extended_private_key.to_priv();
@@ -2381,7 +2390,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
 
     use super::test_support::{open_wallet as test_wallet, test_seed};
 
@@ -2579,6 +2587,7 @@ mod tests {
             height: Some(100),
             block_hash: None,
             net_amount: 50_000,
+            direction: TransactionDirection::Incoming,
             fee: Some(226),
             label: None,
             is_ours: true,
@@ -2606,6 +2615,7 @@ mod tests {
             height: None,
             block_hash: None,
             net_amount: -30_000,
+            direction: TransactionDirection::Outgoing,
             fee: Some(226),
             label: None,
             is_ours: true,
@@ -2633,6 +2643,7 @@ mod tests {
             height: None,
             block_hash: None,
             net_amount: 0,
+            direction: TransactionDirection::Internal,
             fee: None,
             label: None,
             is_ours: false,
@@ -3000,7 +3011,10 @@ mod tests {
     fn representative_bootstrap_paths(network: Network) -> Vec<DerivationPath> {
         let coin_type = coin_type_for_network(network);
         let coinjoin = {
-            let mut c = DerivationPath::coinjoin_path(network, 0).as_ref().to_vec();
+            let mut c = DerivationPath::coinjoin_path(network, 0)
+                .unwrap()
+                .as_ref()
+                .to_vec();
             c.push(ChildNumber::Normal { index: 3 });
             DerivationPath::from(c)
         };
@@ -3044,9 +3058,9 @@ mod tests {
                 ChildNumber::Normal { index: 4 },
             ]),
             coinjoin,
-            DerivationPath::identity_registration_path(network, 2),
-            DerivationPath::identity_invitation_path(network, 3),
-            DerivationPath::identity_top_up_path(network, 1, 2),
+            DerivationPath::identity_registration_path(network, 2).unwrap(),
+            DerivationPath::identity_invitation_path(network, 3).unwrap(),
+            DerivationPath::identity_top_up_path(network, 1, 2).unwrap(),
             topup_not_bound,
             provider_owner,
             DerivationPath::platform_payment_path(network, 0, 0, 6),
@@ -3148,7 +3162,7 @@ mod tests {
         let seed = test_seed();
         let slice = vec![Arc::new(RwLock::new(wallet))];
 
-        let path = DerivationPath::identity_registration_path(network, 0);
+        let path = DerivationPath::identity_registration_path(network, 0).unwrap();
         let reference = *path
             .derive_priv_ecdsa_for_master_seed(&seed, network)
             .expect("reference derive")
@@ -3182,7 +3196,7 @@ mod tests {
         // An empty path always derives successfully, so force the "wallet not
         // present" branch on the slice-derive with a non-matching seed hash and
         // confirm the resulting message holds no seed material.
-        let path = DerivationPath::identity_registration_path(network, 0);
+        let path = DerivationPath::identity_registration_path(network, 0).unwrap();
         let slice = vec![Arc::new(RwLock::new(wallet))];
         let err = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
             &slice,
@@ -3601,9 +3615,8 @@ mod tests {
     /// upstream `next_unused`, which can only return a watched address.
     #[test]
     fn receive_address_stays_within_upstream_watched_pool() {
-        use dash_sdk::dpp::key_wallet::gap_limit::DEFAULT_EXTERNAL_GAP_LIMIT;
         use dash_sdk::dpp::key_wallet::managed_account::address_pool::{
-            AddressPool, AddressPoolType, KeySource,
+            AddressPool, AddressPoolType, DEFAULT_EXTERNAL_GAP_LIMIT, KeySource,
         };
 
         let network = Network::Testnet;
@@ -3622,7 +3635,7 @@ mod tests {
 
         // The upstream next-unused address is, by construction, watched.
         let watched_addr = watched_pool
-            .next_unused(&KeySource::Public(account_xpub), false)
+            .next_unused(&KeySource::Public(account_xpub))
             .expect("upstream next_unused");
         assert!(
             watched_pool.contains_address(&watched_addr),

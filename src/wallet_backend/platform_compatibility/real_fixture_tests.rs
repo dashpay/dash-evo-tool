@@ -1,17 +1,16 @@
 //! Real-data regression test for the bridge: a profile the released
 //! `v1.0.0-weekly.20260908` build (Platform pin 67d4ef3) wrote on testnet,
-//! published as a migration-fixture artifact (`tests/migration-fixtures/`).
+//! committed as a migration-fixture archive (`tests/migration-fixtures/`).
 //!
 //! The synthetic tests next door prove the bridge on rows written for them.
 //! This one feeds it bytes a real build wrote: a funded wallet's UTXO,
 //! transaction, address pool and sync state, and an uncheckpointed WAL left by
 //! the app's own clean shutdown.
 //!
-//! Env-gated. It runs only when `MIGRATION_FIXTURES_DIR` points at the
-//! downloaded fixture archives, as the migration-matrix workflow does, and
-//! otherwise reports the skip and passes. With the variable set, a missing or
-//! altered archive fails: silently testing nothing is the failure mode the
-//! fixture exists to prevent.
+//! Env-gated. It runs only in the archived-profile suite, which sets
+//! `MIGRATION_FIXTURES_DIR`, and otherwise reports the skip and passes. With
+//! the variable set, a missing or altered archive fails: silently testing
+//! nothing is the failure mode the fixture exists to prevent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -23,12 +22,14 @@ use sha2::{Digest, Sha256};
 
 use super::open;
 
-/// Directory of fixture archives, shared with the migration-matrix harness.
+/// Set by the archived-profile suite, shared with the migration-matrix harness.
 const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
 /// The manifest entry this test reads.
 const FIXTURE_ID: &str = "v1.0.0-weekly.20260908-wallet-only";
-/// The committed manifest: the archive name and checksum the download is held to.
+/// The committed manifest: the archive path, size and checksum.
 const MANIFEST: &str = include_str!("../../../tests/migration-fixtures/manifest.json");
+/// Directory the manifest's archive paths are relative to.
+const FIXTURES_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/migration-fixtures");
 /// The fixture wallet's balance at capture: one faucet payment of 1 tDASH.
 const CAPTURED_BALANCE_DUFFS: u64 = 100_000_000;
 /// Per-network store holding the fixture wallet.
@@ -41,6 +42,11 @@ const VERSION_TABLES: [&str; 2] = ["refinery_schema_history", "meta_data_version
 /// Marker in the name of the backup the bridge retains next to an upgraded
 /// database.
 const BACKUP_MARKER: &str = ".platform-67d4ef3-backup-";
+/// Rows the upgrade derives from the fixture wallet's history: Platform's
+/// V022 indexes the inputs of every stored transaction, and the captured
+/// faucet payment spends one. Its record needs no repair, so V022's table of
+/// original records stays empty.
+const NETWORK_DB_DERIVED_ROWS: [(&str, i64); 1] = [("core_transaction_inputs", 1)];
 
 #[test]
 fn platform_compatibility_upgrades_the_real_weekly_20260908_profile() {
@@ -49,11 +55,11 @@ fn platform_compatibility_upgrades_the_real_weekly_20260908_profile() {
     };
 
     assert_eq!(
-        assert_upgrade(&staged, NETWORK_DB),
+        assert_upgrade(&staged, NETWORK_DB, &NETWORK_DB_DERIVED_ROWS),
         [CAPTURED_BALANCE_DUFFS],
         "{NETWORK_DB} must still load its one captured wallet, with the captured balance"
     );
-    assert_upgrade(&staged, APP_DB);
+    assert_upgrade(&staged, APP_DB, &[]);
 }
 
 /// The fixture unpacked into an owner-only temporary data directory.
@@ -82,13 +88,12 @@ impl Staged {
 /// Unpacks the fixture named by [`FIXTURE_ID`], or returns `None` when
 /// [`FIXTURES_DIR_ENV`] is unset.
 fn stage() -> Option<Staged> {
-    let Some(fixtures_dir) = std::env::var_os(FIXTURES_DIR_ENV).filter(|dir| !dir.is_empty())
-    else {
+    if std::env::var_os(FIXTURES_DIR_ENV).is_none_or(|dir| dir.is_empty()) {
         eprintln!(
-            "skipped: {FIXTURES_DIR_ENV} is unset; the migration-matrix workflow points it at the downloaded fixture archives"
+            "skipped: {FIXTURES_DIR_ENV} is unset; the archived-profile suite sets it to run this test"
         );
         return None;
-    };
+    }
     let manifest: serde_json::Value =
         serde_json::from_str(MANIFEST).expect("the committed manifest parses");
     let entry = manifest["fixtures"]
@@ -97,21 +102,30 @@ fn stage() -> Option<Staged> {
         .iter()
         .find(|fixture| fixture["id"] == FIXTURE_ID)
         .unwrap_or_else(|| panic!("the manifest has no `{FIXTURE_ID}` entry"));
-    let artifact = &entry["artifact"];
-    let archive_name = artifact["archive_filename"]
+    let recorded = &entry["archive"];
+    let archive_path = recorded["path"]
         .as_str()
         .expect("the entry names its archive");
-    let expected_sha256 = artifact["sha256"]
+    let expected_sha256 = recorded["sha256"]
         .as_str()
         .expect("the entry records the archive checksum");
+    let expected_size = recorded["bytes"]
+        .as_u64()
+        .expect("the entry records the archive size");
 
-    let archive = Path::new(&fixtures_dir).join(archive_name);
+    let archive = Path::new(FIXTURES_ROOT).join(archive_path);
     let bytes = std::fs::read(&archive).unwrap_or_else(|error| {
         panic!(
             "{FIXTURES_DIR_ENV} is set, but {} cannot be read: {error}",
             archive.display()
         )
     });
+    assert_eq!(
+        bytes.len() as u64,
+        expected_size,
+        "{} does not match the manifest size",
+        archive.display()
+    );
     assert_eq!(
         hex::encode(Sha256::digest(&bytes)),
         expected_sha256,
@@ -152,9 +166,10 @@ fn stage() -> Option<Staged> {
 ///
 /// The contract: the captured file really is the divergent 67d4ef3 schema (it
 /// does not open without the bridge); the bridge opens it and the typed loads
-/// succeed; no row is lost (see [`assert_rows_kept`]); one backup of the
-/// original is retained with the same rows; and a second open changes nothing.
-fn assert_upgrade(staged: &Staged, db_name: &str) -> Vec<u64> {
+/// succeed; no row is lost and the tables the upgrade adds hold exactly
+/// `derived_rows` (see [`assert_rows_kept`]); one backup of the original is
+/// retained with the same rows; and a second open changes nothing.
+fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) -> Vec<u64> {
     let path = staged.data_dir.join(db_name);
     let before = table_counts(&path, &staged.scratch(&format!("{db_name}-before")));
     assert!(
@@ -179,7 +194,7 @@ fn assert_upgrade(staged: &Staged, db_name: &str) -> Vec<u64> {
     drop(persister);
 
     let after = table_counts(&path, &staged.scratch(&format!("{db_name}-after")));
-    assert_rows_kept(db_name, &before, &after);
+    assert_rows_kept(db_name, &before, &after, derived_rows);
 
     let backups = backup_files(&path);
     let [backup] = &backups.iter().collect::<Vec<_>>()[..] else {
@@ -252,9 +267,15 @@ fn table_counts(path: &Path, scratch: &Path) -> BTreeMap<String, i64> {
 }
 
 /// The upgrade loses no row: every data table keeps its row count (a table
-/// the target schema drops may disappear only if it was empty), and every
-/// table the target schema adds starts empty.
-fn assert_rows_kept(db_name: &str, before: &BTreeMap<String, i64>, after: &BTreeMap<String, i64>) {
+/// the target schema drops may disappear only if it was empty). A table the
+/// target schema adds holds only rows the upgrade derives from that data:
+/// exactly `derived_rows`, and nothing in any other new table.
+fn assert_rows_kept(
+    db_name: &str,
+    before: &BTreeMap<String, i64>,
+    after: &BTreeMap<String, i64>,
+    derived_rows: &[(&str, i64)],
+) {
     for (table, rows) in data_tables(before) {
         assert_eq!(
             after.get(table).copied().unwrap_or(0),
@@ -266,9 +287,10 @@ fn assert_rows_kept(db_name: &str, before: &BTreeMap<String, i64>, after: &BTree
         .into_iter()
         .filter(|(table, rows)| !before.contains_key(*table) && *rows != 0)
         .collect();
-    assert!(
-        filled_new_tables.is_empty(),
-        "{db_name}: tables the upgrade created must start empty, found {filled_new_tables:?}"
+    assert_eq!(
+        filled_new_tables,
+        derived_rows.iter().copied().collect::<BTreeMap<_, _>>(),
+        "{db_name}: tables the upgrade created must hold only the rows it derives from the profile's history"
     );
 }
 

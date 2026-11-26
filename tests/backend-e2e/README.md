@@ -41,6 +41,25 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 | Variable | Required | Description |
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
+| `E2E_NETWORK` | No | `testnet` (default) or `devnet`. Devnet needs `E2E_ENV_FILE` with `DEVNET_dapi_addresses`, `DEVNET_core_host` (SPV peer, Core P2P port 20001) and `DEVNET_devnet_name`; run `devnet_setup::fund_framework_platform_address` once to fund the framework wallet's platform address. |
+| `E2E_ENV_FILE` | No | `.env` copied into each fresh workdir instead of the bundled `.env.example`. |
+
+### Running against a devnet
+
+Testnet is the default. To run against a devnet:
+
+1. Write a `.env` with the devnet's `DEVNET_dapi_addresses`, `DEVNET_core_host`
+   (a Core node whose P2P port 20001 is reachable; SPV syncs from it) and
+   `DEVNET_devnet_name`, and point `E2E_ENV_FILE` at it.
+2. Set `E2E_NETWORK=devnet` and fund the framework wallet from the devnet
+   (the init failure prints its address).
+3. Run `devnet_setup::fund_framework_platform_address` once, so the DPNS tests
+   that fund identities from platform addresses find credits.
+
+The workdir is `<tmp>/dash-evo-e2e-devnet`, separate from the testnet one.
+Devnet SPV sync also needs the app to send the devnet name and user agent to
+dash-spv (fix tracked in branch `fix/spv-devnet-name-user-agent`); without it
+the sync never leaves 0 headers.
 
 ### What the DPNS registration tests cost
 
@@ -149,7 +168,7 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 2. Create a persistent workdir under `/tmp/` (deterministic path, with numbered
    fallback slots guarded by a `.lock` file -- see "Persistent workdir" below).
 3. Copy `.env.example` into the workdir via `ensure_env_file()`.
-4. Create a SQLite database and `AppContext` for `Network::Testnet`, passing the workdir as `data_dir`.
+4. Create a SQLite database and `AppContext` for the network under test (`E2E_NETWORK`, testnet by default), passing the workdir as `data_dir`.
 5. Start SPV in light-client mode and wait for peer connections (60s timeout).
 6. Restore the framework wallet from `E2E_WALLET_MNEMONIC` (required).
 7. Register the wallet with `AppContext` (idempotent -- handles "already imported").
@@ -256,6 +275,7 @@ list; keep this table in sync when adding or removing a module.
 | Module | What it tests |
 |---|---|
 | `cleanup_only` | Standalone cleanup -- sweeps orphaned test wallets on init |
+| `devnet_setup` | Devnet bootstrap: funds the framework wallet's platform address |
 | `fetch_contract` | Platform contract queries (DashPay, non-existent ID, with descriptions) |
 | `identity_create` | Identity registration funded from a wallet |
 | `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |

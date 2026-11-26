@@ -43,7 +43,7 @@ elif [[ " $* " == *' --test migration-matrix '* ]]; then
     fi
     [[ "$CASE_NAME" == empty-matrix ]] || echo 'Running 3 migration fixture(s)'
     echo 'test result: ok. 1 passed; 0 failed;'
-elif [[ " $* " == *' --lib platform_compatibility_upgrades_the_real '* ]]; then
+elif [[ " $* " == *' --lib platform_compatibility::real_fixture_tests '* ]]; then
     [[ "$CASE_NAME" != compatibility-failure ]]
     [[ "$CASE_NAME" != skipped-compatibility ]] || echo 'skipped: fixtures are missing'
     echo 'test result: ok. 1 passed; 0 failed;'

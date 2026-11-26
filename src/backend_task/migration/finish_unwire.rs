@@ -2882,6 +2882,7 @@ mod tests {
             }),
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         }
         .save(tmp.path())
         .expect("write initial config");
@@ -3041,6 +3042,7 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
+            invalid_networks: Vec::new(),
         }
         .save(tmp.path())
         .expect("write initial config");

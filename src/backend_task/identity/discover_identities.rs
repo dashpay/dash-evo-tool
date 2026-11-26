@@ -8,7 +8,7 @@ use crate::model::identity_discovery::{
     DiscoveryIntent, DiscoveryReadiness, DiscoverySummary, IDENTITY_GAP_LIMIT,
     IDENTITY_SCAN_HARD_CAP, should_continue_scan,
 };
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use std::sync::{Arc, RwLock};
@@ -45,10 +45,17 @@ impl AppContext {
         DiscoveryReadiness::assess(proofs_ready, self.connection_status.spv_status())
     }
 
-    /// Refuse an explicit wallet identity search the network cannot answer yet,
-    /// before it prompts for a password or sends a lookup.
-    pub(super) fn ensure_wallet_identity_discovery_ready(&self) -> Result<(), TaskError> {
-        discovery_admission(self.wallet_identity_discovery_readiness())
+    /// Admit an explicit identity search of the wallet `seed_hash`, or refuse it
+    /// before it prompts for a password or sends a lookup if the network cannot
+    /// answer yet. An admitted search is the retry the wallet's "cannot search
+    /// yet" notice asks for, so it removes that notice.
+    pub(super) fn admit_wallet_identity_search(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<(), TaskError> {
+        discovery_admission(self.wallet_identity_discovery_readiness())?;
+        self.clear_wallet_search_notice(seed_hash);
+        Ok(())
     }
 
     /// Discover and load identities derived from a wallet by checking the

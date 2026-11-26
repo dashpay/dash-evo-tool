@@ -134,6 +134,27 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
+/// The cache record of a fetched profile, normalized by upstream as its own
+/// profile reader does: it decides which avatar URL and payment-address bytes
+/// are kept. The raw form values in [`ProfileSnapshot`] are not affected.
+fn cached_profile(
+    f: BackendProfileFields,
+) -> platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
+    platform_wallet::normalize_persisted_profile(
+        platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
+            display_name: f.display_name,
+            public_message: f.bio.clone(),
+            bio: f.bio,
+            avatar_url: f.avatar_url,
+            avatar_hash: f.avatar_hash,
+            avatar_fingerprint: f.avatar_fingerprint,
+            core_payment_address: f.core_payment_address,
+            platform_payment_address: f.platform_payment_address,
+            shielded_address: f.shielded_address,
+        },
+    )
+}
+
 /// Cache a fetched profile; a mirror failure leaves the next refresh to retry.
 async fn mirror_profile_to_backend(
     app_context: &Arc<AppContext>,
@@ -141,7 +162,6 @@ async fn mirror_profile_to_backend(
     fields: Option<BackendProfileFields>,
 ) {
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-    use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
 
     let Ok(backend) = app_context.wallet_backend() else {
         // Pre-init / headless: nothing to mirror. View paths fall back to
@@ -150,25 +170,7 @@ async fn mirror_profile_to_backend(
     };
 
     let has_profile = fields.is_some();
-    // Upstream decides which payment-address bytes are valid addresses.
-    let profile = fields.map(|f| DashPayProfile {
-        display_name: f.display_name,
-        public_message: f.bio.clone(),
-        bio: f.bio,
-        avatar_url: f.avatar_url,
-        avatar_hash: f.avatar_hash,
-        avatar_fingerprint: f.avatar_fingerprint,
-        core_payment_address: f
-            .core_payment_address
-            .filter(|address| platform_wallet::valid_transparent_payment_address(address)),
-        platform_payment_address: f
-            .platform_payment_address
-            .filter(|address| platform_wallet::valid_transparent_payment_address(address)),
-        shielded_address: f
-            .shielded_address
-            .and_then(|address| platform_wallet::validated_shielded_address(&address))
-            .map(|address| address.to_vec()),
-    });
+    let profile = fields.map(cached_profile);
 
     if let Err(e) = backend.dashpay_set_profile(owner, profile).await {
         tracing::debug!(
@@ -561,6 +563,110 @@ mod tests {
                 TaskError::DashPay(DashPayError::ProfileValidationFailed { .. })
             ),
             "unexpected error: {error:?}"
+        );
+    }
+
+    fn fetched_fields(avatar_url: &str) -> BackendProfileFields {
+        let shielded = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
+            &crate::test_support::keys::seed(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            0,
+        )
+        .expect("ZIP-32 derivation from a valid test seed")
+        .address_at(0)
+        .to_raw_address_bytes();
+        let mut core = vec![0x00];
+        core.extend_from_slice(&crate::test_support::keys::secret_bytes()[..20]);
+        let mut platform = vec![0x01];
+        platform.extend_from_slice(&crate::test_support::keys::secret_bytes()[..20]);
+        BackendProfileFields {
+            display_name: Some("Alice".into()),
+            bio: Some("About me".into()),
+            avatar_url: non_empty(avatar_url),
+            avatar_hash: Some([7; 32]),
+            avatar_fingerprint: Some([3; 8]),
+            core_payment_address: Some(core),
+            platform_payment_address: Some(platform),
+            shielded_address: Some(shielded.to_vec()),
+        }
+    }
+
+    /// The mirror caches every valid payment address of a fetched profile.
+    #[test]
+    fn profile_mirror_keeps_valid_payment_addresses() {
+        let fields = fetched_fields("https://example.com/a.png");
+        let (core, platform, shielded) = (
+            fields.core_payment_address.clone(),
+            fields.platform_payment_address.clone(),
+            fields.shielded_address.clone(),
+        );
+        let cached = cached_profile(fields);
+        assert_eq!(cached.core_payment_address, core);
+        assert_eq!(cached.platform_payment_address, platform);
+        assert_eq!(cached.shielded_address, shielded);
+        assert_eq!(cached.display_name.as_deref(), Some("Alice"));
+        assert_eq!(cached.bio.as_deref(), Some("About me"));
+        assert_eq!(cached.public_message.as_deref(), Some("About me"));
+        assert_eq!(
+            cached.avatar_url.as_deref(),
+            Some("https://example.com/a.png")
+        );
+    }
+
+    /// A malformed payment address is dropped; its valid siblings are kept.
+    #[test]
+    fn profile_mirror_drops_only_the_malformed_address() {
+        for malformed in 0..3 {
+            let mut fields = fetched_fields("https://example.com/a.png");
+            let expected = (
+                fields.core_payment_address.clone(),
+                fields.platform_payment_address.clone(),
+                fields.shielded_address.clone(),
+            );
+            match malformed {
+                0 => fields.core_payment_address = Some(vec![0x02; 21]),
+                1 => fields.platform_payment_address = Some(vec![0x00; 20]),
+                _ => fields.shielded_address = Some(vec![0xFF; 43]),
+            }
+            let cached = cached_profile(fields);
+            let keep =
+                |index, value: Option<Vec<u8>>| (malformed != index).then_some(value).flatten();
+            assert_eq!(
+                cached.core_payment_address,
+                keep(0, expected.0),
+                "case {malformed}"
+            );
+            assert_eq!(
+                cached.platform_payment_address,
+                keep(1, expected.1),
+                "case {malformed}"
+            );
+            assert_eq!(
+                cached.shielded_address,
+                keep(2, expected.2),
+                "case {malformed}"
+            );
+        }
+    }
+
+    /// The mirror caches an avatar URL exactly as upstream's own profile reader
+    /// would: a non-HTTPS URL is dropped.
+    #[test]
+    fn profile_mirror_normalizes_the_avatar_url_like_upstream() {
+        for url in ["http://example.com/a.png", "https://example.com/a.png"] {
+            let cached = cached_profile(fetched_fields(url));
+            let upstream = platform_wallet::normalize_persisted_profile(
+                platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
+                    avatar_url: Some(url.into()),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(cached.avatar_url, upstream.avatar_url, "{url}");
+        }
+        assert!(
+            cached_profile(fetched_fields("http://example.com/a.png"))
+                .avatar_url
+                .is_none()
         );
     }
 

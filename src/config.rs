@@ -34,8 +34,27 @@ pub struct Config {
     pub local_config: Option<NetworkConfig>,
     /// Networks whose saved settings were rejected, and why.
     #[serde(skip)]
-    pub(crate) invalid_networks: Vec<(Network, envy::Error)>,
+    pub(crate) invalid_networks: Vec<(Network, NetworkSettingError)>,
 }
+
+/// Why a network's saved settings were rejected. Holds no rejected value: a
+/// setting can be a credential pasted into the wrong line, and this error
+/// reaches logs, startup reports and MCP responses.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NetworkSettingError {
+    /// A number setting holds something that is not a number in its range.
+    #[error("The setting {field} is not a number the app can use.")]
+    InvalidNumber {
+        field: &'static str,
+        kind: std::num::IntErrorKind,
+    },
+    /// The settings could not be read for a reason the app does not name.
+    #[error("The network settings could not be read.")]
+    Unreadable,
+}
+
+/// The `NetworkConfig` field holding the Core RPC port, its only number.
+const CORE_RPC_PORT_FIELD: &str = "core_rpc_port";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -167,8 +186,13 @@ impl Config {
         }
     }
 
+    /// The networks whose saved settings were rejected.
+    pub fn rejected_networks(&self) -> impl Iterator<Item = Network> + '_ {
+        self.invalid_networks.iter().map(|(network, _)| *network)
+    }
+
     /// Why `network`'s saved settings were rejected, if they were.
-    pub fn network_settings_error(&self, network: Network) -> Option<&envy::Error> {
+    pub fn network_settings_error(&self, network: Network) -> Option<&NetworkSettingError> {
         self.invalid_networks
             .iter()
             .find_map(|(rejected, error)| (*rejected == network).then_some(error))
@@ -450,7 +474,7 @@ fn load_network_config(
     prefix: &'static str,
     process_entries: &[(String, String)],
     file_entries: &[(String, String)],
-) -> Result<Option<NetworkConfig>, envy::Error> {
+) -> Result<Option<NetworkConfig>, NetworkSettingError> {
     let mut entries = std::collections::HashMap::new();
     for (key, value) in process_entries.iter().chain(file_entries) {
         if let Some(field) = key.strip_prefix(prefix) {
@@ -463,9 +487,19 @@ fn load_network_config(
     if entries.is_empty() {
         return Ok(None);
     }
+    // Checked here, not read from envy's error, whose text quotes the value.
+    if let Some(port) = entries.get(&format!("{prefix}{CORE_RPC_PORT_FIELD}"))
+        && let Err(error) = port.parse::<u16>()
+    {
+        return Err(NetworkSettingError::InvalidNumber {
+            field: CORE_RPC_PORT_FIELD,
+            kind: *error.kind(),
+        });
+    }
     envy::prefixed(prefix)
         .from_iter::<_, NetworkConfig>(entries)
         .map(Some)
+        .map_err(|_| NetworkSettingError::Unreadable)
 }
 
 fn validate_env_contents(contents: &str) -> Result<(), ConfigError> {
@@ -687,6 +721,48 @@ mod tests {
                 "{network}"
             );
         }
+    }
+
+    /// A rejected setting can hold a credential pasted into the wrong line, so
+    /// what is kept of the rejection, and every report built on it, names the
+    /// network and the setting but never the value.
+    #[test]
+    fn rejected_settings_keep_the_setting_but_not_its_value() {
+        if crate::test_support::run_test_in_child(
+            "config::tests::rejected_settings_keep_the_setting_but_not_its_value",
+            &[],
+        ) {
+            return;
+        }
+        let marker = format!("marker{:016x}", rand::random::<u64>());
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("MAINNET_core_rpc_port={marker}\n"),
+        )
+        .expect("write .env");
+        let config = Config::load_from(dir.path()).expect("retain the rejection");
+        let source = config
+            .network_settings_error(Network::Mainnet)
+            .cloned()
+            .expect("mainnet rejected");
+        let error = crate::backend_task::error::TaskError::NoNetworkAvailable {
+            source: Box::new(crate::context::NetworkContextError::InvalidSettings {
+                network: Network::Mainnet,
+                source,
+            }),
+        };
+        for report in [format!("{error:?}"), error.to_string()] {
+            assert!(!report.contains(&marker), "{report}");
+        }
+        assert!(format!("{error:?}").contains("core_rpc_port"), "{error:?}");
+        assert_eq!(
+            config.network_settings_error(Network::Mainnet),
+            Some(&NetworkSettingError::InvalidNumber {
+                field: "core_rpc_port",
+                kind: std::num::IntErrorKind::InvalidDigit,
+            })
+        );
     }
 
     #[test]

@@ -31,6 +31,9 @@ pub enum McpToolError {
     /// The app could not start for this tool call.
     #[error("{0}")]
     StartupFailed(#[source] TaskError),
+    /// The saved settings of the network to start on were rejected.
+    #[error("{0}")]
+    InvalidSettings(#[source] crate::context::NetworkContextError),
     #[error("{0}")]
     Internal(String),
     #[error(
@@ -93,6 +96,12 @@ impl From<McpToolError> for McpError {
                 CODE_INTERNAL,
                 e.to_string(),
                 Some(serde_json::Value::String(format!("{task_err:?}"))),
+            ),
+            // The cause names the setting and the problem, never its value.
+            McpToolError::InvalidSettings(cause) => (
+                CODE_INTERNAL,
+                e.to_string(),
+                Some(serde_json::Value::String(format!("{cause:?}"))),
             ),
             McpToolError::Internal(_) => (CODE_INTERNAL, e.to_string(), None),
             McpToolError::StorageInspection { .. } => (CODE_INTERNAL, e.to_string(), None),

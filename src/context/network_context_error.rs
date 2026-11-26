@@ -5,7 +5,7 @@ use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::dashcore::Network;
 
 use crate::backend_task::error::TaskError;
-use crate::config::ConfigError;
+use crate::config::{ConfigError, NetworkSettingError};
 
 /// A failure of [`AppContext::new`](crate::context::AppContext::new).
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +27,7 @@ pub enum NetworkContextError {
     InvalidSettings {
         network: Network,
         #[source]
-        source: envy::Error,
+        source: NetworkSettingError,
     },
 
     /// No node addresses are saved for this network.

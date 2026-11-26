@@ -161,10 +161,71 @@ async fn standalone_tool_call_reports_invalid_network_settings() {
 
     let cause = NetworkContextError::InvalidSettings {
         network: Network::Mainnet,
-        source: envy::Error::Custom(String::new()),
+        source: crate::config::NetworkSettingError::Unreadable,
     }
     .to_string();
     assert!(error.to_string().contains(&cause), "got: {error}");
+}
+
+/// The startup error for a rejected setting carries the setting and what is
+/// wrong with it in its error data, never the value, which may be a
+/// credential.
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_invalid_settings_name_the_setting_but_not_its_value() {
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_invalid_settings_name_the_setting_but_not_its_value",
+        |dir| {
+            let marker = format!("marker{:016x}", rand::random::<u64>());
+            std::fs::write(
+                dir.join(".env"),
+                format!("MAINNET_core_rpc_port={marker}\nTESTNET_core_host=127.0.0.1\n"),
+            )
+            .expect("write .env");
+            dir.to_path_buf()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    let data_dir = std::env::var_os("DASH_EVO_DATA_DIR").expect("data dir");
+    let settings =
+        std::fs::read_to_string(std::path::Path::new(&data_dir).join(".env")).expect("read .env");
+    let marker = settings
+        .lines()
+        .find_map(|line| line.strip_prefix("MAINNET_core_rpc_port="))
+        .expect("marker");
+    let error = rmcp::ErrorData::from(error);
+    let data = error.data.as_ref().expect("error data").to_string();
+    assert!(data.contains("core_rpc_port"), "{data}");
+    assert!(!data.contains(marker), "{data}");
+    assert!(!error.message.contains(marker), "{}", error.message);
+}
+
+/// When the network to start on has no settings, the report also names the
+/// networks whose settings were rejected, which may be what needs fixing.
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_missing_network_names_rejected_networks() {
+    let Some(error) = lazy_startup_error(
+        "mcp::tests::standalone_missing_network_names_rejected_networks",
+        |dir| {
+            std::fs::write(dir.join(".env"), "TESTNET_core_rpc_port=invalid\n")
+                .expect("write .env");
+            dir.to_path_buf()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("Networks with invalid settings: testnet"),
+        "{error}"
+    );
 }
 
 #[cfg(feature = "cli")]

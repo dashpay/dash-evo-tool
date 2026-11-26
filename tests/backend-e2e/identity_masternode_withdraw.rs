@@ -23,7 +23,7 @@
 //! - `E2E_MN_VOTING_KEY` — voting private key (WIF or 64-hex); TC-MN-019 only.
 //! - `E2E_MN_NODE_TYPE`  — "masternode" or "evonode" (optional, default "evonode").
 
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{
@@ -314,12 +314,10 @@ async fn test_mn020_load_wrong_key_rejected() {
     // A valid-format WIF that is (overwhelmingly) NOT a key on the identity.
     // Capture the actual WIF value BEFORE moving it into the task so we can
     // check for key-material leakage in TC-MN-061 below.
-    let wrong_key_wif = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
-        &secret_11,
-        dash_sdk::dpp::dashcore::Network::Testnet,
-    )
-    .expect("valid private key")
-    .to_wif();
+    let wrong_key_wif =
+        dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(&secret_11, e2e_network())
+            .expect("valid private key")
+            .to_wif();
 
     let task = load_task(
         pro_tx_hash,

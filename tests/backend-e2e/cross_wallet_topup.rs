@@ -7,7 +7,7 @@
 //! asset lock, broadcast, IS proof, `TopUpIdentity` acceptance on Platform,
 //! and the paying wallet's persister state afterward — against a live network.
 
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::error::TaskError;
@@ -24,10 +24,14 @@ use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
 /// `wallet_id` — the exact corruption shape a cross-wallet top-up must never
 /// produce. Mirrors `orphaned_identity_key_rows` in
 /// `src/context/wallet_lifecycle/tests.rs`, but points at the real wallet
-/// persister this live e2e run actually wrote (`<workdir>/det-testnet.sqlite`),
+/// persister this live e2e run actually wrote (`<workdir>/det-<network>.sqlite`),
 /// not an offline fixture.
 fn orphaned_identity_key_rows(data_dir: &std::path::Path) -> i64 {
-    let path = data_dir.join("det-testnet.sqlite");
+    let file = match e2e_network() {
+        dash_sdk::dpp::dashcore::Network::Devnet => "det-devnet.sqlite",
+        _ => "det-testnet.sqlite",
+    };
+    let path = data_dir.join(file);
     let connection =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("open the live wallet persister read-only");

@@ -27,15 +27,15 @@
 //!   --ignored --nocapture spv_reconnect_succeeds_without_already_open
 //! ```
 
+use crate::framework::harness::e2e_network;
+
 use crate::framework::wait;
 use dash_evo_tool::app::TaskResult;
-use dash_evo_tool::app_dir::ensure_env_file;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
 use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
 use dash_evo_tool::utils::tasks::TaskManager;
-use dash_sdk::dpp::dashcore::Network;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -58,7 +58,7 @@ async fn spv_reconnect_succeeds_without_already_open() {
     let workdir =
         std::env::temp_dir().join(format!("dash-evo-e2e-reconnect-{}", std::process::id()));
     std::fs::create_dir_all(&workdir).expect("create reconnect test workdir");
-    ensure_env_file(&workdir).expect("write .env");
+    crate::framework::harness::write_workdir_env(&workdir).expect("write .env");
 
     let db_path = workdir.join("data.db");
     let db = Arc::new(create_database_at_path(&db_path).expect("create reconnect test DB"));
@@ -72,7 +72,7 @@ async fn spv_reconnect_succeeds_without_already_open() {
     let app_context = Arc::new(
         AppContext::new(
             workdir.clone(),
-            Network::Testnet,
+            e2e_network(),
             db,
             subtasks,
             connection_status,

@@ -14,6 +14,8 @@
 //! framework wallet; they are `#[ignore]` like the rest of the backend-e2e
 //! suite. See `tests/backend-e2e/README.md`.
 
+use crate::framework::harness::e2e_network;
+
 use crate::framework::harness;
 use crate::framework::wait;
 use std::sync::Arc;
@@ -131,7 +133,6 @@ async fn re_registration_is_idempotent_for_funded_wallet() {
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     use dash_evo_tool::app::TaskResult;
-    use dash_evo_tool::app_dir::ensure_env_file;
     use dash_evo_tool::context::AppContext;
     use dash_evo_tool::context::connection_status::ConnectionStatus;
     use dash_evo_tool::database::test_helpers::{
@@ -139,7 +140,6 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     };
     use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
     use dash_evo_tool::utils::tasks::TaskManager;
-    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::key_wallet::bip32::{
         ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
     };
@@ -159,7 +159,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     let workdir =
         std::env::temp_dir().join(format!("dash-evo-e2e-coldboot-{}", std::process::id()));
     std::fs::create_dir_all(&workdir).expect("create cold-boot workdir");
-    ensure_env_file(&workdir).expect("write .env");
+    crate::framework::harness::write_workdir_env(&workdir).expect("write .env");
 
     let db_path = workdir.join("data.db");
     let db = Arc::new(create_database_at_path(&db_path).expect("create cold-boot database"));
@@ -169,12 +169,12 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     // xpub against the seed's derivation).
     let seed_hash = {
         let w =
-            dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+            dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, e2e_network(), None, None)
                 .expect("build wallet for hash");
         w.seed_hash()
     };
     let epk = {
-        let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).expect("master key");
+        let master = ExtendedPrivKey::new_master(e2e_network(), &seed).expect("master key");
         let path = DerivationPath::from(vec![
             ChildNumber::Hardened { index: 44 },
             ChildNumber::Hardened { index: 1 },
@@ -189,7 +189,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
         &seed,
         &epk,
         "cold-boot-migrated",
-        Network::Testnet,
+        e2e_network(),
     )
     .expect("insert legacy wallet row");
 
@@ -201,7 +201,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     let secret_store = AppContext::open_secret_store(&workdir).expect("open secret store");
     let app_context = AppContext::new(
         workdir.clone(),
-        Network::Testnet,
+        e2e_network(),
         db,
         subtasks,
         connection_status,

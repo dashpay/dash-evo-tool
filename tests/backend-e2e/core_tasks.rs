@@ -1,7 +1,7 @@
 //! Backend E2E tests for CoreTask variants (TC-001 to TC-012).
 
 use crate::framework::fixtures;
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::task_runner::{expect_asset_lock_broadcast, run_task};
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -79,7 +79,7 @@ async fn test_tc003_refresh_single_key_wallet_info() {
 
     let skw = SingleKeyWallet::new(
         private_key_bytes,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         None,
         Some("E2E TC-003".to_string()),
     )
@@ -184,7 +184,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
 
     let skw = SingleKeyWallet::new(
         private_key_bytes,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         None,
         Some("E2E TC-009 sender".to_string()),
     )

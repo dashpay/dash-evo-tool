@@ -1,5 +1,7 @@
 // Tests implemented in Task 2 (WalletTask tests: TC-012 to TC-019)
 
+use crate::framework::harness::e2e_network;
+
 use crate::framework::harness;
 use crate::framework::task_runner::{
     expect_asset_lock_broadcast, run_task, run_task_with_nonce_retry,
@@ -204,11 +206,7 @@ async fn tc_013_fetch_platform_address_balances_empty() {
             network,
         } => {
             assert_eq!(sh, seed_hash, "TC-013: seed_hash mismatch");
-            assert_eq!(
-                network,
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                "TC-013: expected testnet network"
-            );
+            assert_eq!(network, e2e_network(), "TC-013: expected testnet network");
             tracing::info!(
                 "TC-013 passed: {} platform addresses returned",
                 balances.len()
@@ -230,7 +228,7 @@ async fn step_fund_platform_address(
     let platform_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         false,
     )
     .await;
@@ -284,7 +282,7 @@ async fn step_fetch_balances(
     let expected_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         false,
     )
     .await;
@@ -303,7 +301,7 @@ async fn step_fetch_balances(
             assert_eq!(sh, seed_hash, "step_fetch_balances: seed_hash mismatch");
             assert_eq!(
                 network,
-                dash_sdk::dpp::dashcore::Network::Testnet,
+                e2e_network(),
                 "step_fetch_balances: expected testnet"
             );
             let specific_balance = balances.get(&expected_addr).map(|(b, _)| *b).unwrap_or(0);
@@ -340,14 +338,14 @@ async fn step_transfer_credits(
     let source_candidate = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         false, // reuse existing — same address step 1 funded
     )
     .await;
     let dest_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         true, // skip_known — derive a fresh one
     )
     .await;
@@ -514,7 +512,7 @@ async fn step_withdraw(
     let fresh_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         true,
     )
     .await;
@@ -756,7 +754,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     let platform_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         true, // skip_known — get a fresh one
     )
     .await;

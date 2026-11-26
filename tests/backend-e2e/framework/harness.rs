@@ -129,6 +129,27 @@ const MAX_WORKDIR_SLOTS: usize = 10;
 /// freed lower slot is still picked up.
 static WORKDIR_SLOT_FLOOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Network under test: `E2E_NETWORK` (`testnet` default, or `devnet`).
+pub fn e2e_network() -> Network {
+    match std::env::var("E2E_NETWORK").as_deref() {
+        Err(_) | Ok("") | Ok("testnet") => Network::Testnet,
+        Ok("devnet") => Network::Devnet,
+        Ok(other) => panic!("E2E_NETWORK={other} is not supported; use testnet or devnet"),
+    }
+}
+
+/// Write a workdir `.env`: a copy of `E2E_ENV_FILE` when set (e.g. devnet
+/// endpoints), otherwise the bundled `.env.example`. Never overwrites.
+pub fn write_workdir_env(workdir: &std::path::Path) -> std::io::Result<()> {
+    match std::env::var_os("E2E_ENV_FILE") {
+        Some(source) if !workdir.join(".env").exists() => {
+            std::fs::copy(source, workdir.join(".env")).map(drop)
+        }
+        Some(_) => Ok(()),
+        None => ensure_env_file(workdir),
+    }
+}
+
 /// Get (or initialize) the shared test context.
 pub async fn ctx() -> &'static BackendTestContext {
     CTX.get_or_init(BackendTestContext::init).await
@@ -286,7 +307,7 @@ impl BackendTestContext {
         let framework_wallet_hash = {
             let tmp_wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
                 seed,
-                Network::Testnet,
+                e2e_network(),
                 None,
                 None,
             )
@@ -297,7 +318,10 @@ impl BackendTestContext {
         // Deterministic workdir — always the same path so the database, wallets,
         // and SPV data persist across runs. If the primary path is locked by
         // another process, fall back to numbered alternatives (slot 1, 2, ...).
-        let base = std::env::temp_dir().join("dash-evo-e2e-testnet");
+        let base = match e2e_network() {
+            Network::Testnet => std::env::temp_dir().join("dash-evo-e2e-testnet"),
+            other => std::env::temp_dir().join(format!("dash-evo-e2e-{other}")),
+        };
         let slot_floor = WORKDIR_SLOT_FLOOR.load(std::sync::atomic::Ordering::SeqCst);
         let WorkdirHandles {
             dir: workdir,
@@ -309,7 +333,7 @@ impl BackendTestContext {
         tracing::info!("E2E workdir: {}", workdir.display());
 
         // Ensure .env is present in the workdir (no env var mutation needed).
-        ensure_env_file(&workdir).expect("write .env");
+        write_workdir_env(&workdir).expect("write .env");
 
         // Create database
         let db_path = workdir.join("data.db");
@@ -324,7 +348,7 @@ impl BackendTestContext {
 
         let app_context = AppContext::new(
             workdir.clone(),
-            Network::Testnet,
+            e2e_network(),
             db,
             subtasks,
             connection_status,
@@ -333,7 +357,7 @@ impl BackendTestContext {
             secret_store,
             UserRoleCell::new(UserRole::Power),
         )
-        .expect("Failed to create AppContext for testnet");
+        .expect("Failed to create AppContext");
 
         // Purge stale wallets from the persistent DB before SPV starts.
         // SPV builds a bloom filter for every loaded wallet address — accumulated
@@ -380,7 +404,7 @@ impl BackendTestContext {
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
-            Network::Testnet,
+            e2e_network(),
             Some("E2E Framework Wallet".to_string()),
             None,
         )
@@ -587,7 +611,7 @@ impl BackendTestContext {
 
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
-            Network::Testnet,
+            e2e_network(),
             Some("E2E Test Wallet".to_string()),
             None,
         )

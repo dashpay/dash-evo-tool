@@ -12,6 +12,8 @@
 //! sequential contact flow merged into a single lifecycle test:
 //! send request -> load requests -> accept -> register addresses -> update info.
 
+use crate::framework::harness::e2e_network;
+
 use crate::framework::dashpay_helpers;
 use crate::framework::fixtures;
 use crate::framework::harness;
@@ -630,11 +632,8 @@ async fn step_update_contact_info(
             let secret_key =
                 dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
                     .expect("Step 5: invalid secret key");
-            let pk = PrivateKey::from_byte_array(
-                secret_key.as_secret_bytes(),
-                dash_sdk::dpp::dashcore::Network::Testnet,
-            )
-            .expect("valid secret key");
+            let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), e2e_network())
+                .expect("valid secret key");
             pk.public_key().to_bytes().into()
         });
 

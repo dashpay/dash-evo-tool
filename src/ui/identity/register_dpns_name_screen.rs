@@ -263,13 +263,15 @@ impl RegisterDpnsNameScreen {
             .map(|(_, contest_fund)| *contest_fund)
     }
 
-    fn admission_reserve(&self) -> u64 {
+    fn admission_reserve(&self, needs_vote: bool) -> u64 {
         self.app_context
             .dpns_contract()
             .document_type_for_name("domain")
             .map(|domain| {
                 username_name_admission_reserve_credits(
                     domain,
+                    self.label(),
+                    needs_vote,
                     self.app_context.sdk_platform_version(),
                 )
             })
@@ -340,7 +342,7 @@ impl RegisterDpnsNameScreen {
             } else {
                 0
             },
-            admission_reserve: self.admission_reserve(),
+            admission_reserve: self.admission_reserve(availability.needs_vote()),
         })
     }
 
@@ -1278,13 +1280,15 @@ mod tests {
     }
 
     /// A DPNS contract that picks the first preorder of a name makes the
-    /// network hold 0.001 DASH beyond the fees before it accepts the name, so
+    /// network hold a reserve beyond the fees before it accepts the name, so
     /// the confirm step asks for that much more than it charges.
     #[test]
     fn confirm_requires_the_name_admission_reserve_beyond_the_charge() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        for (version, reserve) in [(14, 0), (15, 100_000_000)] {
+        // Protocol 15: the scan budget, the lookup query allowance and the
+        // competitors' hashes of a 9-character name.
+        for (version, reserve) in [(14, 0), (15, 122_100_000)] {
             let pv = dash_sdk::dpp::version::PlatformVersion::get(version).expect("version");
             ctx.sdk.store(Arc::new(
                 dash_sdk::SdkBuilder::new_mock()
@@ -1292,8 +1296,13 @@ mod tests {
                     .build()
                     .expect("mock sdk"),
             ));
-            let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-            assert_eq!(screen.admission_reserve(), reserve, "protocol {version}");
+            let mut screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+            screen.name_input = "alice-123".to_owned();
+            assert_eq!(
+                screen.admission_reserve(false),
+                reserve,
+                "protocol {version}"
+            );
             let review = RegistrationReview {
                 label: "alice-123".to_owned(),
                 identity_id: dash_sdk::platform::Identifier::from([7; 32]),
@@ -1301,7 +1310,7 @@ mod tests {
                 needs_vote: false,
                 registration_fee: 90_000_000,
                 contest_fee: 0,
-                admission_reserve: screen.admission_reserve(),
+                admission_reserve: screen.admission_reserve(false),
             };
             assert_eq!(review.total(), 90_000_000, "protocol {version}");
             assert_eq!(

@@ -247,8 +247,12 @@ impl AppContext {
         // fee and only then turn the second document down. The admission
         // reserve is held, not charged, but the name document is refused
         // without it.
-        let admission_reserve =
-            username_name_admission_reserve_credits(domain_document_type, sdk.version());
+        let admission_reserve = username_name_admission_reserve_credits(
+            domain_document_type,
+            &input.name_input,
+            outcome == DpnsRegistrationOutcome::PendingCommunityVote,
+            sdk.version(),
+        );
         let required = estimated_fee.saturating_add(admission_reserve);
         if balance_before < required {
             return Err(TaskError::UsernameRegistrationBalanceTooLow {
@@ -672,32 +676,39 @@ mod tests {
         ctx.sdk.store(Arc::new(mock_sdk()));
         let vote_fee = crate::model::fee_estimation::contest_fee_credits(platform_version);
         let domain_contract = ctx.dpns_contract();
-        let admission_reserve =
+        let domain = domain_contract
+            .document_type_for_name("domain")
+            .expect("DPNS domain document type");
+        let admission_reserve = |label: &str, needs_vote: bool| {
             crate::model::fee_estimation::username_name_admission_reserve_credits(
-                domain_contract
-                    .document_type_for_name("domain")
-                    .expect("DPNS domain document type"),
+                domain,
+                label,
+                needs_vote,
                 platform_version,
-            );
+            )
+        };
         assert!(
-            admission_reserve > 0,
-            "the DPNS contract under test must pick the first preorder of a name"
+            admission_reserve("alice-123", false) > admission_reserve("alice", true),
+            "the DPNS contract under test must pick the first preorder of a name, \
+             reading competitors only for a name no vote decides"
         );
         // Short by the reserve: the balance covers both fees but not what Platform
         // holds back before admitting the name document. Short by one credit: just
         // under everything required.
-        for (label, approved_contest_fee, short_by) in [
-            ("alice-123", 0, admission_reserve),
-            ("alice", vote_fee, admission_reserve),
-            ("alice-123", 0, 1),
-            ("alice", vote_fee, 1),
+        for (label, approved_contest_fee, short_by_reserve) in [
+            ("alice-123", 0, true),
+            ("alice", vote_fee, true),
+            ("alice-123", 0, false),
+            ("alice", vote_fee, false),
         ] {
             let needs_vote = approved_contest_fee > 0;
+            let reserve = admission_reserve(label, needs_vote);
+            let short_by = if short_by_reserve { reserve } else { 1 };
             let required = ctx
                 .fee_estimator()
                 .estimate_username_registration(label.len(), needs_vote)
                 + approved_contest_fee
-                + admission_reserve;
+                + reserve;
             let mut identity = identity_with_signing_key(3);
             // The stored copy still covers everything; Platform's balance does not.
             identity.identity.set_balance(required);

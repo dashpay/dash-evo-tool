@@ -50,7 +50,7 @@ pub fn classify_dpns_registration_outcome(
 
 /// The name fields a `domain` document for `label` carries: the ones a
 /// contest on the name is decided by.
-fn dpns_name_fields(label: &str) -> BTreeMap<String, Value> {
+pub(crate) fn dpns_name_fields(label: &str) -> BTreeMap<String, Value> {
     let text = |value: &str| Value::Text(value.to_string());
     BTreeMap::from([
         ("label".to_string(), text(strip_dash_suffix(label))),

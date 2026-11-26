@@ -5854,6 +5854,38 @@ mod spv_devnet_identity_tests {
         );
     }
 
+    /// The name configured for the app reaches the SPV client the wallet
+    /// backend builds, with Core's `devnet-` prefix dropped. Nothing connects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_wallet_backend_gives_dash_spv_the_configured_devnet_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx =
+            crate::context::test_support::test_app_context_for_network(dir.path(), Network::Devnet);
+        ctx.config.write().expect("config").devnet_name = Some("devnet-humid".to_string());
+        let (tx, _events) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+
+        let config = ctx
+            .wallet_backend()
+            .expect("wallet backend")
+            .build_client_config();
+
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
     /// Without a devnet name the client config is left as it was.
     #[test]
     fn a_client_without_a_devnet_name_is_unchanged() {

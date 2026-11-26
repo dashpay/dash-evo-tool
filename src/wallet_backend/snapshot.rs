@@ -572,7 +572,7 @@ fn address_paths_from_info(
     let mut paths = BTreeMap::new();
     let mut index_pool =
         |pool: &dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPool| {
-            for entry in pool.addresses.values() {
+            for entry in pool.addresses().values() {
                 paths.insert(entry.address.clone(), entry.path.clone());
             }
         };
@@ -1635,7 +1635,7 @@ mod tests {
             .expect("managed account");
         for (tag, value) in [(0x61, 1_000_000), (0x62, 250_000)] {
             let address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             let outpoint = OutPoint::new(Txid::from_byte_array([tag; 32]), 0);
             let mut utxo = Utxo::new(
@@ -1703,7 +1703,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         let outpoint = OutPoint::new(Txid::from_byte_array([0x52; 32]), 0);
         let mut utxo = Utxo::new(
@@ -1815,7 +1815,7 @@ mod tests {
                 .standard_bip44_accounts
                 .get_mut(&0)
                 .expect("managed BIP44 account")
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("receive address")
         };
         let coin = |n: u8| {
@@ -1889,7 +1889,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         let outpoint = OutPoint::new(Txid::from_byte_array([0x54; 32]), 0);
         let mut utxo = Utxo::new(
@@ -1960,7 +1960,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         let outpoint = OutPoint::new(Txid::from_byte_array([0x56; 32]), 0);
         let mut utxo = Utxo::new(
@@ -2053,7 +2053,7 @@ mod tests {
                 .get_mut(&0)
                 .expect("managed account");
             let funding_address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             let mut utxo = Utxo::new(
                 outpoint,

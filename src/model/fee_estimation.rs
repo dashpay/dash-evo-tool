@@ -1264,6 +1264,23 @@ where
     }
 }
 
+/// Allocates platform addresses for a withdrawal of `amount_credits` to
+/// `output_script`, charging the withdrawal fee of the inputs chosen.
+pub(crate) fn allocate_platform_withdrawal(
+    platform_version: &PlatformVersion,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    output_script: &CoreScript,
+) -> AddressAllocationResult {
+    allocate_platform_addresses_with_fee(
+        addresses,
+        amount_credits,
+        None,
+        max_platform_inputs(platform_version),
+        |inputs| estimate_withdrawal_fee_from_transition(platform_version, inputs, output_script),
+    )
+}
+
 /// Allocates platform addresses for a transfer, selecting which addresses to use
 /// and how much from each.
 ///
@@ -1390,17 +1407,69 @@ pub fn estimate_core_payment_fee_duffs(
         .map(|(_, quote)| quote.spendable_input_count)
         .unwrap_or(fallback_input_count)
         .max(1);
-    let change_output_fee = core_fee_rate()
-        .calculate_fee(estimate_tx_size(0, 2, false).saturating_sub(estimate_tx_size(0, 1, false)));
     let bound = tolerance::CORE_SEND.apply_fee(
         pooled_send_fee_duffs(input_count, destination)
-            .saturating_add(change_output_fee)
+            .saturating_add(core_extra_output_fee_duffs())
             .saturating_add(CORE_CHANGE_FORGONE_MAX_DUFFS),
     );
     match quote.and_then(|(_, quote)| quote.spendable_total_duffs) {
         Some(total_duffs) => bound.min(total_duffs.saturating_sub(amount_duffs)),
         None => bound,
     }
+}
+
+/// Fee, in duffs, one more plain output adds to a Core payment.
+fn core_extra_output_fee_duffs() -> u64 {
+    core_fee_rate()
+        .calculate_fee(estimate_tx_size(0, 2, false).saturating_sub(estimate_tx_size(0, 1, false)))
+}
+
+/// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` in total
+/// to `output_count` recipients. It is the bound of
+/// [`estimate_core_payment_fee_duffs`] with one more output per extra
+/// recipient, so it is never below what the build charges: every coin the
+/// build could spend (`quote`, else `fallback_input_count`), with change, plus
+/// the remainder the build may give the miner, and never more than what those
+/// coins hold beyond the amount. Outputs are priced as P2PKH, the larger kind.
+/// `output_count` is clamped to at least 1.
+pub fn estimate_core_several_outputs_fee_duffs(
+    output_count: usize,
+    amount_duffs: u64,
+    quote: Option<CoreSendQuoteFee>,
+    fallback_input_count: usize,
+) -> u64 {
+    let input_count = quote
+        .map(|quote| quote.spendable_input_count)
+        .unwrap_or(fallback_input_count)
+        .max(1);
+    let bound = tolerance::CORE_SEND.apply_fee(
+        pooled_send_fee_duffs(input_count, CoreDestinationScript::PubkeyHash)
+            .saturating_add(
+                core_extra_output_fee_duffs().saturating_mul(output_count.max(1) as u64),
+            )
+            .saturating_add(CORE_CHANGE_FORGONE_MAX_DUFFS),
+    );
+    match quote.and_then(|quote| quote.spendable_total_duffs) {
+        Some(total_duffs) => bound.min(total_duffs.saturating_sub(amount_duffs)),
+        None => bound,
+    }
+}
+
+/// The Core send Max, in duffs, for a payment to `output_count` recipients,
+/// from `single_output_max_duffs`, the Max proven for one output: the fee of
+/// every further output, priced as P2PKH, the larger kind, and of the longer
+/// output count the builder encodes (change included) comes out of it.
+/// `output_count` is clamped to at least 1.
+pub fn core_several_outputs_max_duffs(single_output_max_duffs: u64, output_count: usize) -> u64 {
+    use dash_sdk::dpp::dashcore::consensus::encode::VarInt;
+    let output_count = output_count.max(1);
+    let extra_output_bytes =
+        estimate_tx_size(0, output_count, false).saturating_sub(estimate_tx_size(0, 1, false));
+    let output_count_bytes = VarInt(output_count as u64 + 1)
+        .len()
+        .saturating_sub(VarInt(2).len());
+    single_output_max_duffs
+        .saturating_sub(core_fee_rate().calculate_fee(extra_output_bytes + output_count_bytes))
 }
 
 /// Core (L1) fee, in duffs, of a payment spending `num_inputs` chosen coins
@@ -1626,7 +1695,7 @@ mod tests {
         use dash_sdk::dpp::platform_value::Value;
         use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
         use dash_sdk::platform::Identifier;
-        for version in [13, 14] {
+        for version in [14, 15] {
             let pv = PlatformVersion::get(version).unwrap();
             let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
             let owner = Identifier::from([1; 32]);
@@ -1687,9 +1756,7 @@ mod tests {
     #[test]
     fn contest_fee_follows_protocol_version() {
         // USR-TC-005
-        let pv13 = PlatformVersion::get(13).expect("PV13");
         let pv14 = PlatformVersion::get(14).expect("PV14");
-        assert_eq!(contest_fee_credits(pv13), 20_000_000_000);
         assert_eq!(contest_fee_credits(pv14), 10_000_000_000);
     }
 
@@ -1698,11 +1765,10 @@ mod tests {
     #[test]
     fn credit_transfer_estimate_covers_the_balance_the_network_requires() {
         let required_above_amount = [
-            8_555_220_u64, // protocol 11
-            8_753_740,     // protocols 12 to 14
-            8_754_240,     // signed with a hashed ECDSA key
-            8_755_720,     // testnet
-            9_038_740,     // signed with a BLS key
+            8_753_740, // protocol 14
+            8_754_240, // signed with a hashed ECDSA key
+            8_755_720, // testnet
+            9_038_740, // signed with a BLS key
         ];
         let estimate = PlatformFeeEstimator::latest().estimate_credit_transfer();
         for required in required_above_amount {
@@ -1720,11 +1786,10 @@ mod tests {
     #[test]
     fn credit_transfer_to_addresses_estimate_covers_the_balance_the_network_requires() {
         let required_above_amount = [
-            (1, 17_091_200_u64), // protocol 11
-            (1, 17_329_060),     // protocols 12 to 14
-            (1, 17_331_040),     // testnet
-            (1, 17_438_660),     // a larger amount
-            (1, 17_723_660),     // a larger amount, signed with a BLS key
+            (1, 17_329_060), // protocol 14
+            (1, 17_331_040), // testnet
+            (1, 17_438_660), // a larger amount
+            (1, 17_723_660), // a larger amount, signed with a BLS key
             (2, 23_396_440),
             (2, 23_615_640),
             (2, 23_900_640),
@@ -1814,35 +1879,35 @@ mod tests {
     }
 
     /// 0.000505 DASH is the "required" figure the network reports when it
-    /// refuses a smaller top-up funding under protocol 13.
+    /// refuses a smaller top-up funding under protocol 14.
     #[test]
     fn identity_topup_minimum_funding_is_the_fee_the_network_requires() {
-        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let pv14 = PlatformVersion::get(14).expect("PV14");
         assert_eq!(
-            identity_topup_min_funding_duffs(pv13).expect("PV13 defines the top-up fee"),
+            identity_topup_min_funding_duffs(pv14).expect("PV14 defines the top-up fee"),
             50_500
         );
     }
 
-    /// Under protocol 13 the network takes 0.00202 DASH plus 0.000065 DASH for
+    /// Under protocol 14 the network takes 0.00202 DASH plus 0.000065 DASH for
     /// every key from the funding of a new identity.
     #[test]
     fn identity_create_minimum_funding_grows_with_the_number_of_keys() {
-        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let pv14 = PlatformVersion::get(14).expect("PV14");
         let minimum = |keys| {
-            identity_create_min_funding_duffs(keys, pv13).expect("PV13 defines the creation fee")
+            identity_create_min_funding_duffs(keys, pv14).expect("PV14 defines the creation fee")
         };
         assert_eq!(minimum(1), 208_500);
         assert_eq!(minimum(4), 228_000);
     }
 
     /// With the fee taken from the amount, the amount is the whole funding and
-    /// must cover the fee for one recipient: 0.00056 DASH under protocol 13.
+    /// must cover the fee for one recipient: 0.00056 DASH under protocol 14.
     #[test]
     fn address_funding_minimum_is_the_whole_fee_when_taken_from_the_amount() {
-        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let pv14 = PlatformVersion::get(14).expect("PV14");
         assert_eq!(
-            PlatformFeeEstimator::new(pv13, 1000).address_funding_min_amount_duffs(true),
+            PlatformFeeEstimator::new(pv14, 1000).address_funding_min_amount_duffs(true),
             56_000
         );
     }
@@ -1852,15 +1917,15 @@ mod tests {
     /// recipients, so only the smallest named amount binds.
     #[test]
     fn address_funding_minimum_with_change_makes_up_what_the_estimate_leaves_short() {
-        let pv13 = PlatformVersion::get(13).expect("PV13");
-        let smallest_named = pv13
+        let pv14 = PlatformVersion::get(14).expect("PV14");
+        let smallest_named = pv14
             .dpp
             .state_transitions
             .address_funds
             .min_output_amount
             .div_ceil(CREDITS_PER_DUFF);
         assert_eq!(
-            PlatformFeeEstimator::new(pv13, 1000).address_funding_min_amount_duffs(false),
+            PlatformFeeEstimator::new(pv14, 1000).address_funding_min_amount_duffs(false),
             smallest_named
         );
     }
@@ -1870,17 +1935,17 @@ mod tests {
     /// unless the smallest named amount is what binds.
     #[test]
     fn address_funding_with_change_at_the_minimum_funds_what_the_network_requires() {
-        let pv13 = PlatformVersion::get(13).expect("PV13");
+        let pv14 = PlatformVersion::get(14).expect("PV14");
         let required_credits =
-            calculate_address_funding_from_asset_lock_min_required_fee(0, 2, pv13);
-        let smallest_output_duffs = pv13
+            calculate_address_funding_from_asset_lock_min_required_fee(0, 2, pv14);
+        let smallest_output_duffs = pv14
             .dpp
             .state_transitions
             .address_funds
             .min_output_amount
             .div_ceil(CREDITS_PER_DUFF);
         for multiplier in [1000, 1500, 2000, 3000, 4000, 10_000] {
-            let estimator = PlatformFeeEstimator::new(pv13, multiplier);
+            let estimator = PlatformFeeEstimator::new(pv14, multiplier);
             let minimum = estimator.address_funding_min_amount_duffs(false);
             let funding = |amount: u64| {
                 (amount + estimator.estimate_address_funding_from_asset_lock_duffs(2))
@@ -2193,6 +2258,56 @@ mod tests {
         );
     }
 
+    /// Several outputs cost the single-output bound plus one output each.
+    #[test]
+    fn core_several_outputs_fee_is_the_single_output_bound_plus_each_output() {
+        use crate::model::spend_limit::CoreDestinationScript::PubkeyHash;
+        let quote = CoreSendQuoteFee {
+            fee_at_max_duffs: 1,
+            spendable_input_count: 100,
+            spendable_total_duffs: None,
+        };
+        let one = estimate_core_several_outputs_fee_duffs(1, 1_000, Some(quote), 0);
+        assert_eq!(
+            one,
+            estimate_core_payment_fee_duffs(PubkeyHash, 1_000, Some((u64::MAX, quote)), 0),
+            "one recipient is priced exactly as the single-output bound"
+        );
+        let three = estimate_core_several_outputs_fee_duffs(3, 1_000, Some(quote), 0);
+        assert_eq!(three, one + 2 * core_extra_output_fee_duffs());
+        assert!(
+            three >= estimate_core_l1_send_fee_duffs(100, 3),
+            "never below the transaction of every coin with change"
+        );
+    }
+
+    /// The fee cannot be more than the coins hold beyond the amount, and with
+    /// no quote the wallet's own coin count stands in.
+    #[test]
+    fn core_several_outputs_fee_is_capped_and_falls_back() {
+        let quote = CoreSendQuoteFee {
+            fee_at_max_duffs: 1,
+            spendable_input_count: 100,
+            spendable_total_duffs: Some(1_500),
+        };
+        assert_eq!(
+            estimate_core_several_outputs_fee_duffs(2, 1_000, Some(quote), 0),
+            500
+        );
+        assert_eq!(
+            estimate_core_several_outputs_fee_duffs(2, 1_000, None, 100),
+            estimate_core_several_outputs_fee_duffs(
+                2,
+                1_000,
+                Some(CoreSendQuoteFee {
+                    spendable_total_duffs: None,
+                    ..quote
+                }),
+                0
+            )
+        );
+    }
+
     /// A pooled send is priced as platform-wallet's `pooled_max_sendable`
     /// prices it, which at a whole duff per byte is the plain size estimate,
     /// less what a shorter P2SH output script saves.
@@ -2319,7 +2434,7 @@ mod tests {
     /// the estimator's protocol version, scaled by the multiplier.
     #[test]
     fn minimum_fee_estimates_are_upstreams_at_the_estimators_version() {
-        for version in [12, 13, PlatformVersion::latest().protocol_version] {
+        for version in [14, PlatformVersion::latest().protocol_version] {
             let pv = PlatformVersion::get(version).expect("known protocol version");
             let estimator = PlatformFeeEstimator::new(pv, 2000);
             let min_fees = &pv.fee_version.state_transition_min_fees;
@@ -2444,11 +2559,9 @@ mod tests {
         compute_minimum_shielded_fee(2, platform_version).expect("shielded fee") + funding_cost
     }
 
-    /// Protocol versions that know the shield from the Core wallet, with the
-    /// fee the network takes under each, in credits. Under 12 and 13 the fee is
-    /// not a whole number of duffs; under 14 it is.
-    const SHIELD_FROM_CORE_FEE_BY_PROTOCOL: [(u32, u64); 3] =
-        [(12, 212_851_200), (13, 212_851_200), (14, 164_140_000)];
+    /// Supported protocols and their shield-from-Core fees in credits.
+    const SHIELD_FROM_CORE_FEE_BY_PROTOCOL: [(u32, u64); 2] =
+        [(14, 164_140_000), (15, 164_140_000)];
 
     /// The fee added to a shield from the Core wallet must be the fee the
     /// network takes, rounded up to whole duffs — not less, and not padded.
@@ -2516,7 +2629,7 @@ mod tests {
     /// amount carries that remainder; the entered amount would understate it.
     #[test]
     fn shield_from_core_reports_the_remainder_of_rounding_the_fee_up() {
-        for (protocol, remainder_credits) in [(12, 800), (13, 800), (14, 0)] {
+        for (protocol, remainder_credits) in [(13, 800), (14, 0), (15, 0)] {
             let platform_version = PlatformVersion::get(protocol).expect("known protocol");
             for amount_duffs in [1, 100_000, 100_000_000] {
                 let funding = PlatformFeeEstimator::latest()

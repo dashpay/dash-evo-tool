@@ -1,6 +1,6 @@
 //! User notifications for identity and DashPay task outcomes.
 use super::top_up_identity_screen::finish_top_up;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{IdentitySaveWarning, TaskError};
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, CacheUpdate};
 use crate::ui::task_feedback::{DomainFeedback, Feedback};
 use crate::ui::{
@@ -45,6 +45,10 @@ impl DomainFeedback for IdentityFeedback {
 
 pub(crate) fn show(ctx: &egui::Context, result: &BackendTaskSuccessResult) -> Option<BannerHandle> {
     let (message, kind) = match result {
+        BackendTaskSuccessResult::LoadedIdentity {
+            warning: Some(warning),
+            ..
+        } => return Some(show_identity_save_warning(ctx, warning)),
         BackendTaskSuccessResult::RemovedIdentities {
             network,
             associated_cleanup_failed,
@@ -91,6 +95,21 @@ pub(crate) fn show(ctx: &egui::Context, result: &BackendTaskSuccessResult) -> Op
     Some(handle)
 }
 
+/// Tell the user about an identity save the wallet store could not confirm.
+/// Carries no identity id: the tray holds five, this banner never
+/// auto-dismisses and dedup is by exact text, so one per identity would evict
+/// whatever the user was reading. The id is in the save's log line.
+pub(crate) fn show_identity_save_warning(
+    ctx: &egui::Context,
+    warning: &IdentitySaveWarning,
+) -> BannerHandle {
+    let banner = MessageBanner::set_global(ctx, warning, MessageType::Warning);
+    banner.with_details(warning);
+    banner.disable_auto_dismiss();
+    ctx.request_repaint();
+    banner
+}
+
 pub(crate) fn clear_profile_saving_banner_after_error(
     ctx: &egui::Context,
     context: &BackendTaskContext,
@@ -125,6 +144,39 @@ mod tests {
                 [identity_byte; 32],
             ))),
         }
+    }
+
+    /// A load the GUI started shows the save warning its result carries,
+    /// and keeps it up until the user dismisses it.
+    #[test]
+    fn a_loaded_identity_shows_its_save_warning() {
+        use crate::ui::task_feedback::{DomainFeedback, Feedback, ResultDelivery};
+        let ctx = egui::Context::default();
+        let warning = IdentitySaveWarning::WalletFreeUnconfirmed {
+            source: std::sync::Arc::new(TaskError::TaskManagerShuttingDown),
+        };
+        let result = BackendTaskSuccessResult::LoadedIdentity {
+            identity: crate::context::test_support::bare_user_identity(
+                Identifier::from([3; 32]),
+                Network::Testnet,
+            ),
+            warning: Some(warning.clone()),
+        };
+        let feedback = Feedback {
+            ctx: &ctx,
+            contexts: &Default::default(),
+            delivery: ResultDelivery {
+                sender_in_view: true,
+                sender_gone: false,
+            },
+        };
+
+        IdentityFeedback.on_success(&feedback, &BackendTaskContext::Unknown, &result);
+
+        assert_eq!(
+            crate::ui::components::message_banner::global_banner_texts(&ctx),
+            vec![warning.to_string()]
+        );
     }
 
     #[test]

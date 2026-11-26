@@ -4,6 +4,16 @@
 
 See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/) for setup and usage instructions.
 
+## Network compatibility
+
+DET requires Dash Platform protocol 14 or newer on every network. It starts at
+version 14 and follows newer versions confirmed by verified network responses.
+On connection and reconnection, DET checks the network version. A confirmed
+version below 14 shows a persistent warning: wait for the network to upgrade,
+or choose another network in Settings. A failed check is logged and does not
+block operations. The server reports incompatible operations through the normal
+error handling. Saved data from older app versions remains readable.
+
 ## Features
 
 **Identity**

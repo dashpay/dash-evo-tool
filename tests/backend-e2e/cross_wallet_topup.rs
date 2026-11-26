@@ -234,16 +234,23 @@ async fn cross_wallet_topup_e2e() {
     .await;
 
     match resume_result {
-        // Two valid rejection paths, both meaning "the reuse was refused":
+        // Three valid rejection paths, all meaning "the reuse was refused":
         // - `AssetLockAlreadyUsed`: the wallet's own tracked-lock status is
         //   already `Consumed` (caught locally before any network call).
         // - `PlatformAlreadyExists`: the local status was NOT `Consumed` (the
         //   documented gap this test exists to cover — see the module doc),
         //   so the task went ahead and Platform itself rejected the
         //   already-broadcast transaction.
+        // - `AssetLockOutPointAlreadyConsumed`: the task went ahead and
+        //   Platform rejected the new transition because the lock's outpoint
+        //   is already consumed (the canonical consensus rejection).
         // Any other error is unexpected and must fail the test loudly rather
         // than be silently accepted as "refused".
-        Err(e @ (TaskError::AssetLockAlreadyUsed | TaskError::PlatformAlreadyExists { .. })) => {
+        Err(
+            e @ (TaskError::AssetLockAlreadyUsed
+            | TaskError::PlatformAlreadyExists { .. }
+            | TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+        ) => {
             tracing::info!("resuming the spent lock was correctly refused: {:?}", e);
         }
         Err(e) => {

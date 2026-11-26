@@ -63,9 +63,9 @@ Testnet is the default. To run against a devnet:
    unset afterwards: later runs, and every testnet run, skip the transfer.
 
 The workdir is `<tmp>/dash-evo-e2e-devnet`, separate from the testnet one.
-Devnet SPV sync also needs the app to send the devnet name and user agent to
-dash-spv (fix tracked in branch `fix/spv-devnet-name-user-agent`); without it
-the sync never leaves 0 headers.
+Devnet SPV sync needs DET to send the devnet name and user agent to dash-spv,
+which it does from #1250 (in `v1.0-dev`), and `DEVNET_devnet_name` set in the
+env file: without the name, dash-spv refuses to start on Devnet.
 
 ### What the DPNS registration tests cost
 

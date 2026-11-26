@@ -2533,15 +2533,18 @@ impl WalletBackend {
         IdentityMetaView::new(&self.inner.app_kv)
     }
 
-    /// Replace the JIT chokepoint's identity prompt-copy index from the loaded
-    /// identities (alias) and their persisted hints ([`Self::identity_meta`]).
-    /// Display-only: it never decides whether to prompt (the vault scheme
-    /// does). Best-effort — a missing hint degrades to "no hint", never an
-    /// error. Called whenever identities are (re)loaded so the sign-time prompt
-    /// for an opted-in identity shows its label and hint.
+    /// Refresh the JIT chokepoint's identity prompt-copy index with the loaded
+    /// identities (alias) and their persisted hints ([`Self::identity_meta`]),
+    /// keeping the entries of other identities still in `roster` and dropping
+    /// the rest. Display-only: it never decides whether to prompt (the vault
+    /// scheme does). Best-effort — a missing hint degrades to "no hint", never
+    /// an error. Called whenever identities are (re)loaded so the sign-time
+    /// prompt for an opted-in identity shows its label and hint.
+    /// `roster` must be sorted by identity ID.
     pub fn seed_identity_prompt_index(
         &self,
         identities: &[crate::model::qualified_identity::QualifiedIdentity],
+        roster: &[[u8; 32]],
     ) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
@@ -2566,7 +2569,9 @@ impl WalletBackend {
                 )
             })
             .collect();
-        self.inner.secret_access.set_identity_prompt_index(index);
+        self.inner
+            .secret_access
+            .merge_identity_prompt_index(roster, index);
     }
 
     /// View over the DET-owned identity-authentication public-key cache

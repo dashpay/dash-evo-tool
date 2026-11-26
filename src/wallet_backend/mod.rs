@@ -611,6 +611,29 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
     spv_root_dir(data_dir).join(network_prefix(network))
 }
 
+/// The devnet name dash-spv needs, from the configured `devnet_name`: `None`
+/// off Devnet or when unset, and without Core's `devnet-` datadir prefix.
+fn spv_devnet_name_from(network: Network, configured: Option<&str>) -> Option<String> {
+    if network != Network::Devnet {
+        return None;
+    }
+    let name = configured?.trim();
+    let name = name.strip_prefix("devnet-").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Give a devnet SPV client its chain parameters and the user agent devnet
+/// peers require (`devnet.devnet-<name>` suffix); without both, devnet Core
+/// peers refuse the handshake. No change when `devnet_name` is `None`.
+fn with_devnet_identity(config: ClientConfig, devnet_name: Option<&str>) -> ClientConfig {
+    let Some(name) = devnet_name else {
+        return config;
+    };
+    let devnet = DevnetConfig::new(name.to_string());
+    let user_agent = devnet.user_agent(dash_sdk::dash_spv::VERSION);
+    config.with_devnet(devnet).with_user_agent(user_agent)
+}
+
 /// The upstream shielded coordinator's store,
 /// `<data_dir>/det-<network>-shielded.sqlite` — the sibling of
 /// [`wallet_database_path`] holding all Orchard state.
@@ -3381,24 +3404,13 @@ impl WalletBackend {
         if let Some(peer) = self.inner.peer {
             config.add_peer(peer);
         }
-        if let Some(name) = &self.inner.devnet_name {
-            // Devnet peers gate on the `devnet.devnet-<name>` user-agent suffix.
-            let devnet = DevnetConfig::new(name.clone());
-            let user_agent = devnet.user_agent(dash_sdk::dash_spv::VERSION);
-            config = config.with_devnet(devnet).with_user_agent(user_agent);
-        }
-        config
+        with_devnet_identity(config, self.inner.devnet_name.as_deref())
     }
 
-    /// The configured devnet name without Core's `devnet-` datadir prefix.
+    /// The configured devnet name for SPV, `None` off Devnet.
     fn spv_devnet_name(ctx: &Arc<AppContext>, network: Network) -> Option<String> {
-        if network != Network::Devnet {
-            return None;
-        }
         let cfg = ctx.config.read().ok()?;
-        let name = cfg.devnet_name.as_deref()?.trim();
-        let name = name.strip_prefix("devnet-").unwrap_or(name);
-        (!name.is_empty()).then(|| name.to_string())
+        spv_devnet_name_from(network, cfg.devnet_name.as_deref())
     }
 
     /// Resolve an explicit SPV peer for local networks. Devnet/Regtest have
@@ -5796,5 +5808,57 @@ mod masternode_membership_tests {
         };
         let membership = membership_from_summaries([summary]);
         assert_eq!(membership.get(&loaded), Some(&true));
+    }
+}
+
+#[cfg(test)]
+mod spv_devnet_identity_tests {
+    use super::*;
+
+    /// Only Devnet gets a name; Core's `devnet-` datadir prefix and blank
+    /// values are normalised away.
+    #[test]
+    fn the_devnet_name_is_taken_only_on_devnet_without_its_prefix() {
+        let named = |network, configured| spv_devnet_name_from(network, configured);
+        assert_eq!(
+            named(Network::Devnet, Some("humid")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(
+            named(Network::Devnet, Some(" devnet-humid ")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(named(Network::Devnet, Some("devnet-")), None);
+        assert_eq!(named(Network::Devnet, Some("  ")), None);
+        assert_eq!(named(Network::Devnet, None), None);
+        for network in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            assert_eq!(named(network, Some("humid")), None, "{network:?}");
+        }
+    }
+
+    /// A devnet client carries the chain parameters and the user agent whose
+    /// `devnet.devnet-<name>` suffix devnet peers require.
+    #[test]
+    fn a_devnet_client_identifies_itself_with_its_devnet_name() {
+        let config = with_devnet_identity(ClientConfig::new(Network::Devnet), Some("humid"));
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// Without a devnet name the client config is left as it was.
+    #[test]
+    fn a_client_without_a_devnet_name_is_unchanged() {
+        let plain = ClientConfig::new(Network::Testnet);
+        let user_agent = plain.user_agent.clone();
+        let config = with_devnet_identity(plain, None);
+        assert!(config.devnet.is_none());
+        assert_eq!(config.user_agent, user_agent);
     }
 }

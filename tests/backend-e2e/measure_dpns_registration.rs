@@ -136,7 +136,7 @@ async fn measure(label: String, needs_vote: bool, funding: Option<u64>) -> Measu
             .fee_estimator()
             .estimate_username_registration(label.len(), needs_vote)
             .saturating_add(vote_fee)
-            .saturating_add(name_admission_reserve(app_context))
+            .saturating_add(name_admission_reserve(app_context, &label, needs_vote))
     });
 
     let funded = platform_funded_identity(ctx, funding).await;

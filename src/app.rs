@@ -168,25 +168,40 @@ fn boot_auto_start_spv(
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
 
 /// Set up `saved`, or else the first of `others` that `make` can build. When
-/// none can be, the error keeps why `saved` could not be set up.
+/// none can be, the error keeps why `saved` could not be set up, unless
+/// `saved` has no settings and another network's were rejected: then it keeps
+/// that rejection, the one the user can fix.
 fn first_available_network<T>(
     saved: Network,
     others: impl IntoIterator<Item = Network>,
     mut make: impl FnMut(Network) -> Result<T, crate::context::NetworkContextError>,
 ) -> Result<(Network, T), TaskError> {
+    use crate::context::NetworkContextError;
     let saved_error = match make(saved) {
         Ok(built) => return Ok((saved, built)),
         Err(error) => error,
     };
     tracing::warn!(network = ?saved, error = ?saved_error, "Could not set up the saved network; trying the others");
+    let mut rejected = None;
     for network in others {
         match make(network) {
             Ok(built) => return Ok((network, built)),
-            Err(error) => tracing::warn!(?network, ?error, "Could not set up network"),
+            Err(error) => {
+                tracing::warn!(?network, ?error, "Could not set up network");
+                if rejected.is_none()
+                    && matches!(error, NetworkContextError::InvalidSettings { .. })
+                {
+                    rejected = Some(error);
+                }
+            }
         }
     }
+    let source = match (saved_error, rejected) {
+        (NetworkContextError::NotConfigured { .. }, Some(rejected)) => rejected,
+        (saved_error, _) => saved_error,
+    };
     Err(TaskError::NoNetworkAvailable {
-        source: Box::new(saved_error),
+        source: Box::new(source),
     })
 }
 
@@ -3459,5 +3474,43 @@ mod network_choice_tests {
             }
         ));
         assert!(format!("{error:?}").contains("NoDapiAddresses"));
+    }
+
+    /// A saved network with no settings at all is not what stops startup when
+    /// another network has settings that were rejected: the details name that
+    /// network and its invalid setting instead.
+    #[test]
+    fn no_network_names_a_rejected_network_over_a_missing_saved_one() {
+        let rejected = crate::config::NetworkSettingError::InvalidNumber {
+            field: "core_rpc_port",
+            kind: std::num::IntErrorKind::InvalidDigit,
+        };
+        let error = first_available_network(
+            Network::Mainnet,
+            [Network::Testnet, Network::Devnet],
+            |network| {
+                Err::<(), _>(match network {
+                    Network::Testnet => NetworkContextError::InvalidSettings {
+                        network,
+                        source: rejected.clone(),
+                    },
+                    network => NetworkContextError::NotConfigured { network },
+                })
+            },
+        )
+        .expect_err("nothing can be set up");
+        let TaskError::NoNetworkAvailable { source } = &error else {
+            panic!("expected NoNetworkAvailable, got {error:?}");
+        };
+        assert!(
+            matches!(
+                **source,
+                NetworkContextError::InvalidSettings {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{source:?}"
+        );
     }
 }

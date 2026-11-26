@@ -612,7 +612,8 @@ impl BackendTestContext {
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
             e2e_network(),
-            Some("E2E Test Wallet".to_string()),
+            // Wallet aliases are unique per app; a fixed one fails the second call.
+            Some(format!("E2E Test Wallet {:08x}", rand::random::<u32>())),
             None,
         )
         .expect("Failed to create test wallet");
@@ -1106,8 +1107,8 @@ fn try_lock_exclusive(_file: &std::fs::File) -> Result<bool, std::io::Error> {
 #[cfg(test)]
 mod workdir_tests {
     use super::*;
+    use platform_wallet_storage::WalletStorageError;
     use platform_wallet_storage::secrets::SecretStoreError;
-    use platform_wallet_storage::{InsecureAncestor, WalletStorageError};
 
     #[test]
     fn slot_held_only_for_in_process_open_handles() {
@@ -1121,13 +1122,6 @@ mod workdir_tests {
             source: Box::new(SecretStoreError::AlreadyLocked),
         }));
 
-        assert!(!is_slot_held(&TaskError::WalletDataFolderInsecure {
-            source: WalletStorageError::InsecureParentDir {
-                ancestor: PathBuf::from("/data/tmp"),
-                reason: InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
-            }
-            .into(),
-        }));
         assert!(!is_slot_held(&TaskError::SecretStore {
             source: Box::new(SecretStoreError::Corruption),
         }));
@@ -1187,47 +1181,5 @@ mod workdir_tests {
             }
             other => panic!("expected DirectoryUnusable, got: {other:?}"),
         }
-    }
-
-    /// A group-writable parent directory stops the slot scan at the first slot
-    /// with the real cause, instead of cycling every slot and blaming locks.
-    #[cfg(unix)]
-    #[test]
-    fn insecure_parent_dir_stops_the_scan_with_its_cause() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let scratch = tempfile::tempdir().expect("scratch dir");
-        let shared = scratch.path().join("group-writable");
-        std::fs::create_dir(&shared).expect("create shared dir");
-        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o775))
-            .expect("chmod 0775");
-        let base = shared.join("dash-evo-e2e-testnet");
-
-        let Err(err) = open_available_workdir(&base, 0) else {
-            panic!("a group-writable parent must refuse the workdir");
-        };
-        let WorkdirOpenError::StoreRefused { dir, store, source } = &err else {
-            panic!("expected StoreRefused, got: {err:?}");
-        };
-        assert_eq!(dir, &base, "the scan stops at the first slot");
-        assert_eq!(*store, WorkdirStore::AppKv);
-        match source.as_ref() {
-            TaskError::WalletDataFolderInsecure { source } => {
-                let WalletStorageError::InsecureParentDir { ancestor, .. } = source.as_ref() else {
-                    panic!("expected InsecureParentDir, got: {source:?}");
-                };
-                assert_eq!(ancestor, &shared, "the refused ancestor is named");
-            }
-            other => panic!("expected WalletDataFolderInsecure, got: {other:?}"),
-        }
-        assert!(
-            !base.with_file_name("dash-evo-e2e-testnet-1").exists(),
-            "no further slot may be tried"
-        );
-        let report = error_report(&err);
-        assert!(
-            report.contains(&shared.display().to_string()),
-            "the report names the offending directory: {report}"
-        );
     }
 }

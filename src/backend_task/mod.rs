@@ -252,7 +252,7 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable or insecure data folder, or
+/// newer/incompatible app build, an unwritable data folder, or
 /// a compatibility upgrade that fails the same way on every attempt). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
@@ -261,8 +261,7 @@ pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     match error {
         TaskError::WalletDataTooNew { .. }
         | TaskError::WalletDataIncompatible { .. }
-        | TaskError::WalletStorageAccessDenied { .. }
-        | TaskError::WalletDataFolderInsecure { .. } => true,
+        | TaskError::WalletStorageAccessDenied { .. } => true,
         TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
         _ => false,
     }
@@ -1672,7 +1671,7 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build, or an insecure data folder) is terminal — retrying won't
+            // build, or an unwritable data folder) is terminal — retrying won't
             // help and the generic "deferred" banner is misleading. Surface
             // those variants so the user sees the actionable message; every
             // other init error is a transient deferral the cold-boot bridge
@@ -3678,7 +3677,7 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build, or an insecure data folder) are terminal; every other init
+    /// build, or an unwritable data folder) are terminal; every other init
     /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
@@ -3693,17 +3692,6 @@ mod tests {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
                 ))
-                .into(),
-            }
-        ));
-        assert!(is_terminal_storage_open_error(
-            &TaskError::WalletDataFolderInsecure {
-                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                    ancestor: std::path::PathBuf::from("/shared"),
-                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                        mode: 0o777,
-                    },
-                }
                 .into(),
             }
         ));

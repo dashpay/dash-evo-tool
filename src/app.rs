@@ -37,6 +37,7 @@ use crate::context::connection_status::ConnectionStatus;
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationState;
 use crate::database::Database;
+use crate::model::identity_discovery::DiscoveryReadiness;
 use crate::model::settings::AppSettings;
 use crate::model::spv_status::SpvStatus;
 use crate::ui::components::passphrase_modal;
@@ -2470,6 +2471,18 @@ impl App for AppState {
                             }
                             TaskError::MasternodeListNotReady { .. } => {
                                 self.connection_banner.track_quorum_startup_error(handle);
+                            }
+                            TaskError::WalletIdentityDiscoveryNotReady => {
+                                self.connection_banner.track_wallet_search_refusal(
+                                    handle,
+                                    DiscoveryReadiness::Syncing,
+                                );
+                            }
+                            TaskError::WalletIdentityDiscoverySyncStopped => {
+                                self.connection_banner.track_wallet_search_refusal(
+                                    handle,
+                                    DiscoveryReadiness::SyncStopped,
+                                );
                             }
                             TaskError::TransactionConfirmationUnknown {
                                 txid: Some(txid), ..

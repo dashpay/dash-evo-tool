@@ -124,6 +124,7 @@ impl AppContext {
         }
 
         self.wallet_context().clear();
+        self.clear_wallet_search_notices();
         // The per-wallet deletes above ran while the wallets were still loaded,
         // so a warm in flight could write an entry back; none can from here on.
         failures.extend(backend.forget_auth_pubkey_caches(&hd_seed_hashes));

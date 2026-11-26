@@ -1763,3 +1763,53 @@ fn an_older_refreshs_failed_step_leaves_the_newer_refreshs_banner_up() {
         );
     });
 }
+
+/// A wallet identity search refused because the network was not ready keeps
+/// its banner while that state lasts, and loses it once readiness moves on,
+/// so "Network sync is stopped" does not outlive a reconnect.
+#[test]
+fn a_wallet_search_refusal_banner_goes_once_readiness_moves_on() {
+    use dash_evo_tool::backend_task::identity::IdentityTask;
+    use dash_evo_tool::model::spv_status::SpvStatus;
+    for (refusal, refused_at, moved_on) in [
+        (
+            TaskError::WalletIdentityDiscoverySyncStopped,
+            SpvStatus::Stopped,
+            SpvStatus::Syncing,
+        ),
+        (
+            TaskError::WalletIdentityDiscoveryNotReady,
+            SpvStatus::Syncing,
+            SpvStatus::Stopped,
+        ),
+    ] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+            let app_context = harness.state().current_app_context().clone();
+            app_context.connection_status().set_spv_status(refused_at);
+            harness.run_steps(3);
+            let message = refusal.to_string();
+            deliver(
+                &mut harness,
+                TaskResult::Error {
+                    context: BackendTaskContext::for_dispatch_for_test(&BackendTask::IdentityTask(
+                        IdentityTask::RefreshMyUsernameRequests,
+                    )),
+                    error: refusal,
+                },
+            );
+            harness.run_steps(3);
+            assert!(
+                harness.query_by_label_contains(&message).is_some(),
+                "the refusal stays reported while the network is {refused_at:?}"
+            );
+
+            app_context.connection_status().set_spv_status(moved_on);
+            harness.run_steps(3);
+            assert!(
+                harness.query_by_label_contains(&message).is_none(),
+                "the refusal goes once the network is {moved_on:?}"
+            );
+        });
+    }
+}

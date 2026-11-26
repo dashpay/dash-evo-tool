@@ -8551,4 +8551,32 @@ async fn a_scan_that_skips_a_wallet_needing_unlock_says_so() {
         .await;
 }
 
+/// Clearing the network's data removes every wallet, so no notice may keep
+/// naming one, even when part of the clear fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_the_network_database_removes_search_notices() {
+    let password = "correct-wallet-password";
+    for partial_failure in [false, true] {
+        let (ctx, _tmp, seed_hash, wallet) =
+            context_with_locked_protected_wallet(crate::test_support::keys::seed(), password).await;
+        ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+        unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        backend.set_clear_shielded_test_failure(partial_failure);
+
+        let result = ctx.clear_network_database().await;
+
+        assert_eq!(
+            result.is_err(),
+            partial_failure,
+            "only the forced failure makes the clear incomplete: {result:?}"
+        );
+        assert!(
+            search_notices(&ctx).is_empty(),
+            "a cleared network keeps no notice (partial failure: {partial_failure})"
+        );
+        backend.shutdown().await;
+    }
+}
+
 mod deletion_sentinel;

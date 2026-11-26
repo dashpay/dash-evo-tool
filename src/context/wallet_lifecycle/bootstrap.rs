@@ -96,6 +96,10 @@ impl AppContext {
         // entering with nothing to do is harmless. The upstream 60 s
         // ShieldedSyncManager loop picks up any newly bound wallets automatically.
         let wallet = Arc::clone(wallet);
+        // Read before the seed: a Clear Database that starts after this
+        // deletes the seed, so the bootstrap must stop rather than register
+        // and bind the wallet again.
+        let clear_generation = backend.shielded_lifecycle_generation();
         let result = backend
             .secret_access()
             .with_secret_session(
@@ -105,6 +109,18 @@ impl AppContext {
                     let seed = plaintext
                         .expose_hd_seed()
                         .ok_or(TaskError::WalletLocked)?;
+                    // Registration through the shielded bind is one operation
+                    // Clear Database cannot run under.
+                    let Some(admission) = backend
+                        .shielded_operation_admission_since(clear_generation)
+                        .await
+                    else {
+                        tracing::debug!(
+                            wallet = %hex::encode(seed_hash),
+                            "Wallet bootstrap dropped; its data was cleared while it waited"
+                        );
+                        return Ok(());
+                    };
                     if let Ok(mut guard) = wallet.write() {
                         // Re-check under the write lock: a concurrent bootstrap
                         // may have run between the read above and here.
@@ -135,8 +151,9 @@ impl AppContext {
                     // Best-effort — a failure only defers the first shielded op prompt.
                     // The upstream ShieldedSyncManager 60s loop picks up any newly
                     // bound wallets automatically; no manual sync trigger needed.
-                    if let Err(error) =
-                        backend.ensure_shielded_bound(&seed_hash, seed).await
+                    if let Err(error) = backend
+                        .ensure_shielded_bound_admitted(&admission, &seed_hash, seed)
+                        .await
                     {
                         tracing::debug!(
                             wallet = %hex::encode(seed_hash),
@@ -148,6 +165,7 @@ impl AppContext {
                         // from the upstream key slot. Cache it for the frame loop.
                         self.cache_shielded_receive_address(&backend, &seed_hash).await;
                     }
+                    drop(admission);
                     // Register every established contact's DIP-15 receiving
                     // account so SPV watches the addresses each contact pays us
                     // at. Seed-bearing (the receiving path is hardened) and

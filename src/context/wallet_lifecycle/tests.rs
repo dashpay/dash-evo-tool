@@ -2695,6 +2695,97 @@ async fn clear_network_database_refuses_while_a_shielded_bind_runs() {
     assert!(bind.is_ok(), "the bind finishes once released: {bind:?}");
 }
 
+/// A wallet bootstrap registers the wallet upstream and binds its shielded
+/// keys as one operation. Clear must not delete the seed while that
+/// registration is under way, or the wallet is published and bound afterwards
+/// with no saved seed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_refuses_while_a_wallet_bootstrap_registers() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    WalletSeedView::new(&ctx.secret_store())
+        .set_raw(&seed_hash, &seed)
+        .expect("save the seed");
+    let wallet = Arc::new(std::sync::RwLock::new(wallet));
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+
+    let pause = backend.set_registration_test_pause();
+    let bootstrap = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.bootstrap_wallet_addresses_jit(&wallet).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the bootstrap reaches registration");
+    let result = ctx.clear_network_database().await;
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the bootstrap resumes");
+    tokio::time::timeout(std::time::Duration::from_secs(30), bootstrap)
+        .await
+        .expect("the bootstrap finishes")
+        .expect("bootstrap task");
+    let registered = backend.is_wallet_registered(&seed_hash);
+    backend.shutdown().await;
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearShieldedBusy { .. })),
+        "a running wallet bootstrap must stop the clear: {result:?}"
+    );
+    assert!(seed_kept, "a refused clear must keep the seed");
+    assert!(registered, "the bootstrap finishes its registration");
+}
+
+/// Work that read its seed before a Clear Database began is not admitted once
+/// the clear has finished, so it cannot write the cleared wallet back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_admission_refuses_work_queued_behind_a_clear() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let before_clear = backend.shielded_lifecycle_generation();
+    let exclusion = backend
+        .try_exclude_shielded_operations()
+        .expect("no shielded operation runs");
+    let queued = tokio::spawn({
+        let backend = backend.clone();
+        async move {
+            backend
+                .shielded_operation_admission_since(before_clear)
+                .await
+                .is_some()
+        }
+    });
+    drop(exclusion);
+    let stale_admitted = queued.await.expect("queued task");
+    let fresh_admitted = backend
+        .shielded_operation_admission_since(backend.shielded_lifecycle_generation())
+        .await
+        .is_some();
+    backend.shutdown().await;
+
+    assert!(
+        !stale_admitted,
+        "work queued behind a clear must be refused"
+    );
+    assert!(fresh_admitted, "work started after the clear is admitted");
+}
+
 /// Clear Database reports success only once the upstream wallet is removed,
 /// while its shielded exclusion still holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

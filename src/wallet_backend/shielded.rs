@@ -56,15 +56,27 @@ impl WalletBackend {
     /// coordinator.  A no-op when the wallet is already bound; one call needed
     /// per wallet per process lifetime.
     ///
-    /// Called from `bootstrap_wallet_addresses_jit` (Phase C-bind) inside the
-    /// existing `with_secret_session` scope; also callable directly for the
-    /// MCP headless path.
+    /// `bootstrap_wallet_addresses_jit` binds through
+    /// [`Self::ensure_shielded_bound_admitted`] inside its secret session; this
+    /// entry point serves the MCP headless path.
     pub(crate) async fn ensure_shielded_bound(
         &self,
         seed_hash: &WalletSeedHash,
         seed: &[u8],
     ) -> Result<(), TaskError> {
-        let _shielded_lifecycle = self.shielded_operation_admission().await;
+        let admission = self.shielded_operation_admission().await;
+        self.ensure_shielded_bound_admitted(&admission, seed_hash, seed)
+            .await
+    }
+
+    /// [`Self::ensure_shielded_bound`] for a caller already holding a
+    /// shielded operation admission across a wider operation.
+    pub(crate) async fn ensure_shielded_bound_admitted(
+        &self,
+        _admission: &tokio::sync::RwLockReadGuard<'_, ()>,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8],
+    ) -> Result<(), TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         #[cfg(test)]
         let barrier = self

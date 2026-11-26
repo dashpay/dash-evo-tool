@@ -395,17 +395,23 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
-    /// Held shared by every DET shielded bind and payment for its whole run,
-    /// and exclusively by Clear Database from before the shielded reset until
+    /// Held shared by every DET shielded bind and payment for its whole run
+    /// (a wallet bootstrap from its registration through its bind), and
+    /// exclusively by Clear Database from before the shielded reset until
     /// every key and wallet is deleted. Upstream's own admission covers only
     /// the reset, so a bind waiting behind it would otherwise resume mid-wipe.
     shielded_lifecycle: tokio::sync::RwLock<()>,
+    /// Bumped each time Clear Database takes [`Inner::shielded_lifecycle`], so
+    /// work that read the seed before a clear can tell it is stale.
+    shielded_lifecycle_generation: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     shielded_bind_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_attempts: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    registration_test_pause: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -727,12 +733,15 @@ impl WalletBackend {
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 shielded_lifecycle: tokio::sync::RwLock::new(()),
+                shielded_lifecycle_generation: std::sync::atomic::AtomicU64::new(0),
                 #[cfg(test)]
                 shielded_bind_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_attempts: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
                 registration_test_barrier: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                registration_test_pause: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -1262,6 +1271,18 @@ impl WalletBackend {
         if let Some(barrier) = registration_test_barrier {
             barrier.wait().await;
         }
+        #[cfg(test)]
+        let registration_test_pause = self
+            .inner
+            .registration_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        #[cfg(test)]
+        if let Some(pause) = registration_test_pause {
+            pause.wait().await;
+            pause.wait().await;
+        }
         let outcome = flight
             .outcome
             .get_or_init(|| async {
@@ -1376,10 +1397,34 @@ impl WalletBackend {
     pub(crate) fn try_exclude_shielded_operations(
         &self,
     ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, TaskError> {
-        self.inner
+        let exclusion = self
+            .inner
             .shielded_lifecycle
             .try_write()
-            .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })
+            .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })?;
+        self.inner
+            .shielded_lifecycle_generation
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(exclusion)
+    }
+
+    /// The Clear Database count, to pass to
+    /// [`Self::shielded_operation_admission_since`] once the seed is held.
+    pub(crate) fn shielded_lifecycle_generation(&self) -> u64 {
+        self.inner
+            .shielded_lifecycle_generation
+            .load(Ordering::SeqCst)
+    }
+
+    /// [`Self::shielded_operation_admission`] for work that read its seed when
+    /// the count was `generation`: `None` when Clear Database has started
+    /// since, so the work stops instead of writing a cleared wallet back.
+    pub(crate) async fn shielded_operation_admission_since(
+        &self,
+        generation: u64,
+    ) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
+        let admission = self.shielded_operation_admission().await;
+        (self.shielded_lifecycle_generation() == generation).then_some(admission)
     }
 
     /// Wallet ids the upstream manager holds, including loaded wallets no DET
@@ -1399,6 +1444,19 @@ impl WalletBackend {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&barrier));
         barrier
+    }
+
+    /// Pause the next W2 registration twice on a two-party barrier, before it
+    /// publishes the wallet: when it gets there, and before it registers.
+    #[cfg(test)]
+    pub(crate) fn set_registration_test_pause(&self) -> Arc<tokio::sync::Barrier> {
+        let pause = Arc::new(tokio::sync::Barrier::new(2));
+        *self
+            .inner
+            .registration_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&pause));
+        pause
     }
 
     #[cfg(test)]

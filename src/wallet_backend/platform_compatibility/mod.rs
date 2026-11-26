@@ -327,7 +327,7 @@ mod tests {
         assert!(error.to_string().contains("try again"));
     }
 
-    // The historical public fixture uses a placeholder txid; V021 validates body hashes.
+    // The historical public fixture uses a placeholder txid; V022 validates body hashes.
     fn populate_valid_public_rows(conn: &rusqlite::Connection) {
         use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, TxOut};
         use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
@@ -529,7 +529,7 @@ mod tests {
                     |r| r.get::<_, i64>(0),
                 )
                 .unwrap(),
-                21
+                23
             );
             assert_eq!(
                 conn.query_row("SELECT synced_height FROM core_sync_state", [], |r| r

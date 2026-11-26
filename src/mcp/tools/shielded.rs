@@ -84,7 +84,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
 
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
             seed_hash,
@@ -171,7 +171,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
 
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
         ensure_amount_shieldable(&backend, &seed_hash, param.amount_credits).await?;
@@ -317,7 +317,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let recipient_bytes =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&param.to_address)
@@ -412,7 +412,7 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let platform_addr =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
@@ -509,7 +509,7 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         resolve::validate_address(&param.to_address)?;
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_shielded_operations_ready(&ctx).await?;
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let core_address = param
             .to_address

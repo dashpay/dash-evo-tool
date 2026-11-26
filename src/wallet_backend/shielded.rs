@@ -171,14 +171,15 @@ impl WalletBackend {
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
+                let prover: &'static platform_wallet::wallet::shielded::CachedOrchardProver =
+                    &platform_wallet::wallet::shielded::CachedOrchardProver;
                 wallet
                     .shielded_fund_from_asset_lock(
                         &coordinator,
                         funding,
                         vec![(recipient, None)],
                         &asset_lock_signer,
-                        &prover,
+                        prover,
                         None,
                         dummy_outputs,
                         settings,

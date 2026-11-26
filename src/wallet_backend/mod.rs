@@ -51,6 +51,7 @@ mod payments;
 pub(crate) mod persist_fault_test_support;
 pub mod platform_compatibility;
 pub(crate) mod poison;
+mod protocol_refresh;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
@@ -101,6 +102,7 @@ pub(crate) use tokens::{TokenActionCommon, TokenActor};
 
 use coordinator_gate::CoordinatorGate;
 use identity_ops::Funding;
+pub(crate) use identity_ops::fold_fetched_identity;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
@@ -176,7 +178,7 @@ async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
 where
     IsSyncing: FnMut() -> bool,
     SyncNow: FnOnce() -> SyncFuture,
-    SyncFuture: std::future::Future<Output = ()>,
+    SyncFuture: std::future::Future,
 {
     // TODO: Upstream `IdentitySyncManager::sync_now()` should return a performed/skipped
     // outcome or completion generation; before/after `is_syncing()` samples are racy.
@@ -507,6 +509,8 @@ struct Inner {
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
     coordinator_gate: Arc<CoordinatorGate>,
+    protocol_refresh: protocol_refresh::ProtocolRefresh,
+    app_context: std::sync::Weak<AppContext>,
     /// Frame-loop result channel, used by [`WalletBackend::start`] to nudge
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
@@ -610,6 +614,14 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
 /// [`wallet_database_path`] holding all Orchard state.
 pub(crate) fn shielded_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}-shielded.sqlite", network_prefix(network)))
+}
+
+fn protocol_refresh_action(context: std::sync::Weak<AppContext>) -> impl Fn() + Send + Sync {
+    move || {
+        if let Some(ctx) = context.upgrade() {
+            ctx.queue_platform_protocol_refresh();
+        }
+    }
 }
 
 impl WalletBackend {
@@ -749,6 +761,8 @@ impl WalletBackend {
                 secret_access,
                 start_latch: StartLatch::default(),
                 coordinator_gate,
+                protocol_refresh: protocol_refresh::ProtocolRefresh::default(),
+                app_context: Arc::downgrade(ctx),
                 task_result_sender,
                 spend_activity: Arc::default(),
                 platform_shield_activity: Arc::default(),
@@ -2073,6 +2087,7 @@ impl WalletBackend {
         reason = "PlatformWalletError is an upstream type we cannot shrink"
     )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
+        self.inner.protocol_refresh.stop().await;
         let config = self.build_client_config();
 
         // New API: `start(config)` (async, initializes the SPV client) is called first,
@@ -2080,6 +2095,10 @@ impl WalletBackend {
         // The old `spawn_in_background(config)` combined both steps.
         let spv = self.inner.pwm.spv_arc();
         spv.start(config).await?;
+        self.inner.protocol_refresh.start(
+            self.inner.app_context.clone(),
+            Arc::clone(&self.inner.coordinator_gate),
+        );
         spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The
@@ -2101,11 +2120,12 @@ impl WalletBackend {
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
-        // is provably reachable. Cloning the sender avoids capturing any
-        // `Weak<AppContext>` in this run-loop closure.
+        // is provably reachable.
         let task_result_sender = self.inner.task_result_sender.clone();
         let network = self.inner.network;
+        let refresh_protocol = protocol_refresh_action(self.inner.app_context.clone());
         self.inner.coordinator_gate.arm(Box::new(move || {
+            refresh_protocol();
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
@@ -2141,6 +2161,16 @@ impl WalletBackend {
         Ok(())
     }
 
+    /// Whether this backend's SPV session has the masternode list needed for proofs.
+    pub(crate) fn quorum_keys_ready(&self) -> bool {
+        self.inner.coordinator_gate.masternodes_ready()
+    }
+
+    /// Schedule a metadata probe within the running, quorum-ready SPV session.
+    pub(crate) fn queue_platform_protocol_refresh(&self) {
+        self.inner.protocol_refresh.queue();
+    }
+
     /// Whether chain sync has been started on this backend.
     ///
     /// Reflects the latch set by [`Self::start`]; used by tests and by callers
@@ -2151,8 +2181,8 @@ impl WalletBackend {
 
     /// Stop all upstream background tasks. Idempotent.
     ///
-    /// Stops the SPV run-loop task **first**, then quiesces the sync-manager
-    /// coordinators.  Ordering matters for the platform-open registry:
+    /// Drains metadata probes, stops the SPV run-loop task, then quiesces the
+    /// sync-manager coordinators. Ordering matters for the platform-open registry:
     ///
     /// The spawned SPV background task holds `Arc<SpvRuntime>`, which
     /// transitively keeps `Arc<SqlitePersister>` alive via the chain
@@ -2176,6 +2206,8 @@ impl WalletBackend {
     /// *consumers* is safe — no new events can arrive, and any in-flight
     /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
+        let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
         // manager tears down its coordinators.  Errors here are non-fatal —
@@ -2204,7 +2236,8 @@ impl WalletBackend {
     /// Unlike [`Self::shutdown`], this deliberately does **not** call
     /// `pwm.shutdown()`: that cancels and joins the wallet-event adapter task,
     /// which has no re-create path, so a subsequent restart would lose event
-    /// processing. Instead it stops the restartable pieces only:
+    /// processing. Metadata probes are cancelled and drained before the SPV
+    /// session loses its quorum keys. The restartable pieces stop in order:
     ///
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
@@ -2232,6 +2265,7 @@ impl WalletBackend {
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner.protocol_refresh.stop().await;
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
@@ -2499,15 +2533,18 @@ impl WalletBackend {
         IdentityMetaView::new(&self.inner.app_kv)
     }
 
-    /// Replace the JIT chokepoint's identity prompt-copy index from the loaded
-    /// identities (alias) and their persisted hints ([`Self::identity_meta`]).
-    /// Display-only: it never decides whether to prompt (the vault scheme
-    /// does). Best-effort — a missing hint degrades to "no hint", never an
-    /// error. Called whenever identities are (re)loaded so the sign-time prompt
-    /// for an opted-in identity shows its label and hint.
+    /// Refresh the JIT chokepoint's identity prompt-copy index with the loaded
+    /// identities (alias) and their persisted hints ([`Self::identity_meta`]),
+    /// keeping the entries of other identities still in `roster` and dropping
+    /// the rest. Display-only: it never decides whether to prompt (the vault
+    /// scheme does). Best-effort — a missing hint degrades to "no hint", never
+    /// an error. Called whenever identities are (re)loaded so the sign-time
+    /// prompt for an opted-in identity shows its label and hint.
+    /// `roster` must be sorted by identity ID.
     pub fn seed_identity_prompt_index(
         &self,
         identities: &[crate::model::qualified_identity::QualifiedIdentity],
+        roster: &[[u8; 32]],
     ) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
@@ -2532,7 +2569,9 @@ impl WalletBackend {
                 )
             })
             .collect();
-        self.inner.secret_access.set_identity_prompt_index(index);
+        self.inner
+            .secret_access
+            .merge_identity_prompt_index(roster, index);
     }
 
     /// View over the DET-owned identity-authentication public-key cache
@@ -3383,7 +3422,7 @@ impl WalletBackend {
     }
 }
 
-/// Registers contact accounts and bumps each newly inserted account's monitor revision.
+/// Registers contact accounts and returns how many were newly inserted.
 fn register_contact_accounts_in_managed_wallet(
     info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     accounts: impl IntoIterator<
@@ -3393,17 +3432,10 @@ fn register_contact_accounts_in_managed_wallet(
         ),
     >,
 ) -> usize {
-    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-
     let mut newly_inserted = 0;
     for (account_type, account_xpub) in accounts {
         match add_contact_receiving_account(info, account_type, account_xpub) {
-            Ok(Some(key)) => {
-                newly_inserted += 1;
-                if let Some(account) = info.accounts.dashpay_receival_accounts.get_mut(&key) {
-                    account.bump_monitor_revision();
-                }
-            }
+            Ok(Some(_)) => newly_inserted += 1,
             Ok(None) => {}
             Err(error) => {
                 tracing::debug!(%error, "Skipping contact account: managed insert failed");
@@ -3751,7 +3783,30 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::PrivateContactRequestPending(_)
         | P::PrivateContactStoreNotRead(_)
         | P::PublicContactRequestUnconfirmed(_)
-        | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // pending outcome DET can watch, so they take the generic envelope too.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        ) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
     }
@@ -4131,7 +4186,30 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::PublicContactRequestUnconfirmed(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
-        | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
+        | P::ShutdownIncomplete(_)
+        // Variants introduced by Platform `v5.2-dev` d6556f98. None is a
+        // Platform rejection of this op or a pending outcome DET can watch.
+        | P::InvitationClaimedByThisWallet { .. }
+        | P::InvitationAlreadyClaimed { .. }
+        | P::InvitationKeysAlreadyRegistered { .. }
+        | P::InvitationNotReady(_)
+        | P::DashpayAccountBuild { .. }
+        | P::IdentityLookupFailed { .. }
+        | P::ContractNotFound { .. }
+        | P::DocumentNotFound { .. }
+        | P::BalanceHistoryInconsistentHeights { .. }
+        | P::ShieldedTipPending
+        | P::ShieldedBalanceBusy
+        | P::ShieldedTipRecipientMismatch { .. }
+        | P::ShieldedSpendNotExecuted { .. }
+        | P::ShieldedTooManyNotes { .. }
+        | P::ShieldedProtocolVersionMismatch { .. }
+        | P::TokenShieldedPoolDisabled { .. }
+        | P::TokenConfigurationUnavailable { .. }
+        | P::TokenShieldedInsufficientBalance { .. }
+        | P::TokenShieldedPoolSpendPending { .. }
+        | P::ShieldedOperationInProgress
+        => IdentityOpErrorKind::Other,
     }
 }
 
@@ -4463,13 +4541,12 @@ mod tests {
         )
     }
 
-    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Covers the managed-state seam after contact xpub derivation, including generation gating.
     /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
     #[test]
-    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
+    fn contact_registration_counts_only_new_keys() {
         use dash_sdk::dpp::key_wallet::account::AccountType;
         use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -4508,16 +4585,15 @@ mod tests {
             user_identity_id: [1u8; 32],
             friend_identity_id: [3u8; 32],
         };
-        let max_monitor_revision = |info: &ManagedWalletInfo| {
-            info.accounts
-                .dashpay_receival_accounts
-                .values()
-                .map(ManagedAccountTrait::monitor_revision)
-                .max()
-                .unwrap_or_default()
-        };
         let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
         info.update_synced_height(500);
+        let contact_keys = |info: &ManagedWalletInfo| {
+            info.accounts
+                .dashpay_receival_accounts
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+        };
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4525,11 +4601,7 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
@@ -4537,34 +4609,14 @@ mod tests {
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
+        assert_eq!(contact_keys(&info), [first_key]);
 
         assert_eq!(
             register_contact_accounts_in_managed_wallet(&mut info, [first_contact, second_contact]),
             1
         );
         assert_eq!(info.account_generation(), 2);
-        assert_eq!(max_monitor_revision(&info), 1);
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
-            1
-        );
-        assert_eq!(
-            info.accounts.dashpay_receival_accounts[&second_key].monitor_revision(),
-            1
-        );
-        let mut revisions = info
-            .accounts
-            .dashpay_receival_accounts
-            .values()
-            .map(ManagedAccountTrait::monitor_revision)
-            .collect::<Vec<_>>();
-        revisions.sort_unstable();
-        assert_eq!(revisions, [1, 1]);
+        assert_eq!(contact_keys(&info), [first_key, second_key]);
     }
 
     /// The durable wallet databases are siblings of `det-app.sqlite` in the
@@ -5731,6 +5783,7 @@ mod masternode_membership_tests {
         let summary = platform_wallet::masternode::MasternodeListSummary {
             pro_tx_hash: wire,
             service_address: None,
+            service_addresses: Vec::new(),
             platform_http_port: None,
             operator_public_key: [0; 48],
             voting_key_id: [0; 20],
@@ -5738,6 +5791,7 @@ mod masternode_membership_tests {
             is_valid: true,
             is_evonode: true,
             has_extended_net_info: false,
+            operator_key_is_legacy: false,
         };
         let membership = membership_from_summaries([summary]);
         assert_eq!(membership.get(&loaded), Some(&true));

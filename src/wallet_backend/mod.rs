@@ -199,9 +199,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dash_async::{ShutdownReport, WorkerStatus};
 use dash_sdk::Sdk;
-use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
+use dash_sdk::dash_spv::{ClientConfig, DevnetConfig};
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::{PlatformWalletManager, WalletWorker};
@@ -461,6 +461,8 @@ struct Inner {
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
+    /// Devnet name for the SPV user agent and chain params; `None` off Devnet.
+    devnet_name: Option<String>,
     network: Network,
     /// Disposable per-network chain cache: `<data_dir>/spv/<network>/`.
     spv_storage_dir: std::path::PathBuf,
@@ -695,6 +697,7 @@ impl WalletBackend {
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
+        let devnet_name = Self::spv_devnet_name(ctx, network);
 
         let app_kv = ctx.app_kv();
 
@@ -750,6 +753,7 @@ impl WalletBackend {
                 profile_timestamps: dashpay::ProfileTimestamps::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
+                devnet_name,
                 network,
                 spv_storage_dir,
                 wallet_database_path,
@@ -3377,7 +3381,24 @@ impl WalletBackend {
         if let Some(peer) = self.inner.peer {
             config.add_peer(peer);
         }
+        if let Some(name) = &self.inner.devnet_name {
+            // Devnet peers gate on the `devnet.devnet-<name>` user-agent suffix.
+            let devnet = DevnetConfig::new(name.clone());
+            let user_agent = devnet.user_agent(dash_sdk::dash_spv::VERSION);
+            config = config.with_devnet(devnet).with_user_agent(user_agent);
+        }
         config
+    }
+
+    /// The configured devnet name without Core's `devnet-` datadir prefix.
+    fn spv_devnet_name(ctx: &Arc<AppContext>, network: Network) -> Option<String> {
+        if network != Network::Devnet {
+            return None;
+        }
+        let cfg = ctx.config.read().ok()?;
+        let name = cfg.devnet_name.as_deref()?.trim();
+        let name = name.strip_prefix("devnet-").unwrap_or(name);
+        (!name.is_empty()).then(|| name.to_string())
     }
 
     /// Resolve an explicit SPV peer for local networks. Devnet/Regtest have

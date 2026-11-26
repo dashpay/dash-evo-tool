@@ -199,9 +199,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dash_async::{ShutdownReport, WorkerStatus};
 use dash_sdk::Sdk;
-use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
+use dash_sdk::dash_spv::{ClientConfig, DevnetConfig};
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::{PlatformWalletManager, WalletWorker};
@@ -461,6 +461,9 @@ struct Inner {
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
+    /// Devnet name dash-spv requires at startup and puts in its user agent;
+    /// `None` off Devnet. Genesis and quorum settings do not depend on it.
+    devnet_name: Option<String>,
     network: Network,
     /// Disposable per-network chain cache: `<data_dir>/spv/<network>/`.
     spv_storage_dir: std::path::PathBuf,
@@ -609,6 +612,31 @@ pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::P
     spv_root_dir(data_dir).join(network_prefix(network))
 }
 
+/// The devnet name dash-spv needs, from the configured `devnet_name`: `None`
+/// off Devnet or when unset, and without Core's `devnet-` datadir prefix.
+fn spv_devnet_name_from(network: Network, configured: Option<&str>) -> Option<String> {
+    if network != Network::Devnet {
+        return None;
+    }
+    let name = configured?.trim();
+    let name = name.strip_prefix("devnet-").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Attach the `DevnetConfig` dash-spv requires before it connects, and the
+/// user agent with the `devnet.devnet-<name>` suffix Dash Core peers check
+/// during the handshake. The name selects no chain parameters: genesis comes
+/// from the network, and no quorum override is set. No change when
+/// `devnet_name` is `None`.
+fn with_devnet_identity(config: ClientConfig, devnet_name: Option<&str>) -> ClientConfig {
+    let Some(name) = devnet_name else {
+        return config;
+    };
+    let devnet = DevnetConfig::new(name.to_string());
+    let user_agent = devnet.user_agent(dash_sdk::dash_spv::VERSION);
+    config.with_devnet(devnet).with_user_agent(user_agent)
+}
+
 /// The upstream shielded coordinator's store,
 /// `<data_dir>/det-<network>-shielded.sqlite` — the sibling of
 /// [`wallet_database_path`] holding all Orchard state.
@@ -695,6 +723,7 @@ impl WalletBackend {
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
+        let devnet_name = Self::spv_devnet_name(ctx, network);
 
         let app_kv = ctx.app_kv();
 
@@ -750,6 +779,7 @@ impl WalletBackend {
                 profile_timestamps: dashpay::ProfileTimestamps::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
+                devnet_name,
                 network,
                 spv_storage_dir,
                 wallet_database_path,
@@ -2533,15 +2563,18 @@ impl WalletBackend {
         IdentityMetaView::new(&self.inner.app_kv)
     }
 
-    /// Replace the JIT chokepoint's identity prompt-copy index from the loaded
-    /// identities (alias) and their persisted hints ([`Self::identity_meta`]).
-    /// Display-only: it never decides whether to prompt (the vault scheme
-    /// does). Best-effort — a missing hint degrades to "no hint", never an
-    /// error. Called whenever identities are (re)loaded so the sign-time prompt
-    /// for an opted-in identity shows its label and hint.
+    /// Refresh the JIT chokepoint's identity prompt-copy index with the loaded
+    /// identities (alias) and their persisted hints ([`Self::identity_meta`]),
+    /// keeping the entries of other identities still in `roster` and dropping
+    /// the rest. Display-only: it never decides whether to prompt (the vault
+    /// scheme does). Best-effort — a missing hint degrades to "no hint", never
+    /// an error. Called whenever identities are (re)loaded so the sign-time
+    /// prompt for an opted-in identity shows its label and hint.
+    /// `roster` must be sorted by identity ID.
     pub fn seed_identity_prompt_index(
         &self,
         identities: &[crate::model::qualified_identity::QualifiedIdentity],
+        roster: &[[u8; 32]],
     ) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
@@ -2566,7 +2599,9 @@ impl WalletBackend {
                 )
             })
             .collect();
-        self.inner.secret_access.set_identity_prompt_index(index);
+        self.inner
+            .secret_access
+            .merge_identity_prompt_index(roster, index);
     }
 
     /// View over the DET-owned identity-authentication public-key cache
@@ -3377,7 +3412,13 @@ impl WalletBackend {
         if let Some(peer) = self.inner.peer {
             config.add_peer(peer);
         }
-        config
+        with_devnet_identity(config, self.inner.devnet_name.as_deref())
+    }
+
+    /// The configured devnet name for SPV, `None` off Devnet.
+    fn spv_devnet_name(ctx: &Arc<AppContext>, network: Network) -> Option<String> {
+        let cfg = ctx.config.read().ok()?;
+        spv_devnet_name_from(network, cfg.devnet_name.as_deref())
     }
 
     /// Resolve an explicit SPV peer for local networks. Devnet/Regtest have
@@ -5790,5 +5831,89 @@ mod masternode_membership_tests {
         };
         let membership = membership_from_summaries([summary]);
         assert_eq!(membership.get(&loaded), Some(&true));
+    }
+}
+
+#[cfg(test)]
+mod spv_devnet_identity_tests {
+    use super::*;
+
+    /// Only Devnet gets a name; Core's `devnet-` datadir prefix and blank
+    /// values are normalised away.
+    #[test]
+    fn the_devnet_name_is_taken_only_on_devnet_without_its_prefix() {
+        let named = |network, configured| spv_devnet_name_from(network, configured);
+        assert_eq!(
+            named(Network::Devnet, Some("humid")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(
+            named(Network::Devnet, Some(" devnet-humid ")).as_deref(),
+            Some("humid")
+        );
+        assert_eq!(named(Network::Devnet, Some("devnet-")), None);
+        assert_eq!(named(Network::Devnet, Some("  ")), None);
+        assert_eq!(named(Network::Devnet, None), None);
+        for network in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            assert_eq!(named(network, Some("humid")), None, "{network:?}");
+        }
+    }
+
+    /// A devnet client carries the `DevnetConfig` dash-spv requires and the
+    /// user agent whose `devnet.devnet-<name>` suffix devnet peers require.
+    #[test]
+    fn a_devnet_client_identifies_itself_with_its_devnet_name() {
+        let config = with_devnet_identity(ClientConfig::new(Network::Devnet), Some("humid"));
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// The name configured for the app reaches the SPV client the wallet
+    /// backend builds, with Core's `devnet-` prefix dropped. Nothing connects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_wallet_backend_gives_dash_spv_the_configured_devnet_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx =
+            crate::context::test_support::test_app_context_for_network(dir.path(), Network::Devnet);
+        ctx.config.write().expect("config").devnet_name = Some("devnet-humid".to_string());
+        let (tx, _events) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+
+        let config = ctx
+            .wallet_backend()
+            .expect("wallet backend")
+            .build_client_config();
+
+        assert_eq!(
+            config.devnet.as_ref().map(|d| d.name.as_str()),
+            Some("humid")
+        );
+        assert!(
+            config.user_agent.ends_with("(devnet.devnet-humid)/"),
+            "user agent: {}",
+            config.user_agent
+        );
+    }
+
+    /// Without a devnet name the client config is left as it was.
+    #[test]
+    fn a_client_without_a_devnet_name_is_unchanged() {
+        let plain = ClientConfig::new(Network::Testnet);
+        let user_agent = plain.user_agent.clone();
+        let config = with_devnet_identity(plain, None);
+        assert!(config.devnet.is_none());
+        assert_eq!(config.user_agent, user_agent);
     }
 }

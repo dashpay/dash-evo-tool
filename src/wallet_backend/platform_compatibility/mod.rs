@@ -55,61 +55,112 @@ const PINNED_PR_HISTORY: [(i64, &str, &str); 14] = [
 const HISTORY_READ_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
-    if needs_upgrade_release(&config.path) {
-        let data_dir = config.path.parent().unwrap_or_else(|| Path::new(""));
-        refuse_stores_needing_upgrade_release(data_dir)?;
-        return Err(TaskError::AppDataNeedsUpgradeRelease {
+    match probe_lineage(&config.path) {
+        Lineage::NotPinned => open_with_housekeeping(config, engine::tidy_backups_locked),
+        Lineage::Pinned => {
+            let data_dir = config.path.parent().unwrap_or_else(|| Path::new(""));
+            refuse_stores_needing_upgrade_release(data_dir)?;
+            Err(TaskError::AppDataNeedsUpgradeRelease {
+                database: config.path,
+            })
+        }
+        Lineage::Unknown(source) => Err(TaskError::WalletDataCheckFailed {
             database: config.path,
-        });
+            source,
+        }),
     }
-    open_with_housekeeping(config, engine::tidy_backups_locked)
 }
 
 /// Refuses when any wallet store in `data_dir` is on the pinned-PR lineage,
-/// naming every such network. Must run before `det-app.sqlite` is opened:
-/// opening migrates it past what v1.0.0-weekly.20261117 can read, which would
-/// leave the network stores that release still has to convert unconvertible.
+/// naming every such network, or when one of them, or the app database,
+/// cannot be checked. Must run before `det-app.sqlite` is opened: opening
+/// migrates it past what v1.0.0-weekly.20261117 can read, which would leave
+/// the network stores that release still has to convert unconvertible. Only
+/// every check succeeding with no match passes.
+///
+/// A store known to be pinned is reported before one that could not be
+/// checked: its advice is needed either way, and the unchecked store is
+/// checked again on the next start.
 pub(crate) fn refuse_stores_needing_upgrade_release(data_dir: &Path) -> Result<(), TaskError> {
-    let networks: Vec<_> = super::all_networks()
-        .into_iter()
-        .filter(|network| needs_upgrade_release(&super::wallet_database_path(data_dir, *network)))
-        .collect();
-    if !networks.is_empty() {
+    let mut pinned = Vec::new();
+    let mut unchecked = None;
+    for network in super::all_networks() {
+        let database = super::wallet_database_path(data_dir, network);
+        match probe_lineage(&database) {
+            Lineage::NotPinned => {}
+            Lineage::Pinned => pinned.push(network),
+            Lineage::Unknown(source) => {
+                unchecked.get_or_insert((database, source));
+            }
+        }
+    }
+    if !pinned.is_empty() {
         return Err(TaskError::WalletDataNeedsUpgradeRelease {
-            networks: UpgradeReleaseNetworks(networks),
+            networks: UpgradeReleaseNetworks(pinned),
         });
     }
     let app_database = super::app_database_path(data_dir);
-    if needs_upgrade_release(&app_database) {
-        return Err(TaskError::AppDataNeedsUpgradeRelease {
-            database: app_database,
-        });
+    match probe_lineage(&app_database) {
+        Lineage::Pinned => {
+            return Err(TaskError::AppDataNeedsUpgradeRelease {
+                database: app_database,
+            });
+        }
+        Lineage::Unknown(source) => {
+            unchecked.get_or_insert((app_database, source));
+        }
+        Lineage::NotPinned => {}
     }
-    Ok(())
+    match unchecked {
+        Some((database, source)) => Err(TaskError::WalletDataCheckFailed { database, source }),
+        None => Ok(()),
+    }
 }
 
-/// Whether the existing database at `path` is on the pinned-PR lineage. Reads
-/// the migration history through a read-only connection, before anything else
-/// opens the file. A database that cannot be read is left to the normal open,
-/// which reports its own error.
-fn needs_upgrade_release(path: &Path) -> bool {
+/// What the migration history of a database says about its lineage.
+#[derive(Debug)]
+enum Lineage {
+    /// Written at the pinned-PR revision: only the upgrade release converts it.
+    Pinned,
+    /// Absent, or on any other lineage.
+    NotPinned,
+    /// The history could not be read, so the lineage is not known.
+    Unknown(rusqlite::Error),
+}
+
+/// The lineage of the database at `path`, from its migration history read
+/// through a read-only connection, before anything else opens the file.
+fn probe_lineage(path: &Path) -> Lineage {
     if !path.exists() {
-        return false;
+        return Lineage::NotPinned;
     }
     match read_history(path) {
-        Ok(history) => history.is_some_and(|history| {
-            history.len() == PINNED_PR_HISTORY.len()
-                && history.iter().zip(PINNED_PR_HISTORY).all(
-                    |((version, name, checksum), expected)| {
-                        (*version, name.as_str(), checksum.as_str()) == expected
-                    },
-                )
-        }),
-        Err(error) => {
-            tracing::warn!(?error, database = %path.display(), "Could not read the wallet database history before opening it; opening it normally");
-            false
+        Ok(history) => {
+            let pinned = history.is_some_and(|history| {
+                history.len() == PINNED_PR_HISTORY.len()
+                    && history.iter().zip(PINNED_PR_HISTORY).all(
+                        |((version, name, checksum), expected)| {
+                            (*version, name.as_str(), checksum.as_str()) == expected
+                        },
+                    )
+            });
+            if pinned {
+                Lineage::Pinned
+            } else {
+                Lineage::NotPinned
+            }
+        }
+        Err(source) => {
+            tracing::warn!(error = ?source, database = %path.display(), "Could not read the wallet database history before opening it; refusing to open it");
+            Lineage::Unknown(source)
         }
     }
+}
+
+/// Whether the existing database at `path` is on the pinned-PR lineage.
+#[cfg(test)]
+fn needs_upgrade_release(path: &Path) -> bool {
+    matches!(probe_lineage(path), Lineage::Pinned)
 }
 
 /// At most one row more than [`PINNED_PR_HISTORY`]; `None` without a history table.
@@ -285,6 +336,55 @@ mod tests {
         assert!(
             denied.to_string().contains("permission to change"),
             "{denied}"
+        );
+    }
+
+    /// A store known to be pinned is reported before one that cannot be
+    /// checked; with no pinned store, the unchecked one is named.
+    #[test]
+    fn a_pinned_store_is_reported_before_an_unchecked_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pinned = super::super::wallet_database_path(dir.path(), Network::Mainnet);
+        let unchecked = super::super::wallet_database_path(dir.path(), Network::Testnet);
+        seed_pinned_pr_history(&pinned).expect("seed the pinned store");
+        std::fs::write(&unchecked, b"not a database").expect("write the store");
+
+        let error =
+            refuse_stores_needing_upgrade_release(dir.path()).expect_err("a pinned store refuses");
+        assert!(
+            matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks }
+                if networks.0 == [Network::Mainnet]),
+            "{error:?}"
+        );
+
+        let alone = tempfile::tempdir().expect("tempdir");
+        let unchecked = super::super::wallet_database_path(alone.path(), Network::Testnet);
+        std::fs::write(&unchecked, b"not a database").expect("write the store");
+        let error = refuse_stores_needing_upgrade_release(alone.path())
+            .expect_err("an unchecked store refuses");
+        assert!(
+            matches!(&error, TaskError::WalletDataCheckFailed { database, .. } if *database == unchecked),
+            "{error:?}"
+        );
+    }
+
+    /// A store whose lineage cannot be checked is not opened: it may be on the
+    /// pinned lineage, which only the upgrade release may change.
+    #[test]
+    fn open_refuses_a_store_it_cannot_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let database = dir.path().join("wallet.sqlite");
+        std::fs::write(&database, b"not a database").expect("write the store");
+        let error = open(SqlitePersisterConfig::new(&database))
+            .err()
+            .expect("an unchecked store must not open");
+        assert!(
+            matches!(&error, TaskError::WalletDataCheckFailed { database: path, .. } if *path == database),
+            "{error:?}"
+        );
+        assert_eq!(
+            std::fs::read(&database).expect("read the store"),
+            b"not a database"
         );
     }
 

@@ -2012,6 +2012,77 @@ impl AppContext {
 mod tests {
     use super::*;
 
+    /// A file's bytes and modification time, `None` when it does not exist.
+    type FileState = Option<(Vec<u8>, std::time::SystemTime)>;
+
+    /// The app database's file and its sidecars, as they are on disk.
+    fn app_database_state(data_dir: &std::path::Path) -> Vec<(String, FileState)> {
+        let app_database = crate::wallet_backend::app_database_path(data_dir);
+        ["", "-wal", "-shm", "-journal"]
+            .into_iter()
+            .map(|suffix| {
+                let mut path = app_database.as_os_str().to_owned();
+                path.push(suffix);
+                let path = std::path::PathBuf::from(path);
+                let state = std::fs::read(&path).ok().map(|bytes| {
+                    let modified = std::fs::metadata(&path)
+                        .and_then(|metadata| metadata.modified())
+                        .expect("modification time");
+                    (bytes, modified)
+                });
+                (suffix.to_owned(), state)
+            })
+            .collect()
+    }
+
+    /// Startup refuses when the pinned-lineage check cannot read a network
+    /// store, naming that store, and leaves the app database untouched:
+    /// opening it migrates it past what the upgrade release can read, which
+    /// would strand that store if it is on the pinned lineage.
+    fn assert_unreadable_store_stops_startup(make_unreadable: impl FnOnce(&std::path::Path)) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        drop(AppContext::open_app_kv(dir.path()).expect("create the app database"));
+        let store = crate::wallet_backend::wallet_database_path(dir.path(), Network::Testnet);
+        make_unreadable(&store);
+        let before = app_database_state(dir.path());
+
+        let Err(error) = AppContext::open_app_kv(dir.path()) else {
+            panic!("an unreadable store must stop startup");
+        };
+
+        assert!(
+            matches!(&error, TaskError::WalletDataCheckFailed { database, .. } if *database == store),
+            "{error:?}"
+        );
+        assert_eq!(app_database_state(dir.path()), before);
+    }
+
+    #[test]
+    fn a_store_that_is_not_a_database_stops_startup() {
+        assert_unreadable_store_stops_startup(|store| {
+            std::fs::write(store, b"not a database").expect("write the store");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_store_the_app_may_not_read_stops_startup() {
+        use std::os::unix::fs::PermissionsExt;
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+        assert_unreadable_store_stops_startup(|store| {
+            let connection = rusqlite::Connection::open(store).expect("create the store");
+            connection
+                .execute_batch("CREATE TABLE refinery_schema_history (version INTEGER)")
+                .expect("write the store");
+            drop(connection);
+            std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o000))
+                .expect("deny reading the store");
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn vault_access_denied_keeps_permission_advice_for_both_open_modes() {

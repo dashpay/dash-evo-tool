@@ -252,8 +252,10 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable data folder, or data only an
-/// earlier release can upgrade). These
+/// newer/incompatible app build, an unwritable data folder, data only an
+/// earlier release can upgrade, or a store whose lineage could not be checked:
+/// that check already waited out a busy lock, and what remains, another copy
+/// of the app holding the store or missing permission, needs the user). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
 /// error is retried by the cold-boot bridge.
@@ -267,6 +269,7 @@ pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
             | TaskError::SecretStoreAccessDenied { .. }
             | TaskError::WalletDataNeedsUpgradeRelease { .. }
             | TaskError::AppDataNeedsUpgradeRelease { .. }
+            | TaskError::WalletDataCheckFailed { .. }
     )
 }
 
@@ -3733,6 +3736,12 @@ mod tests {
         assert!(is_terminal_storage_open_error(
             &TaskError::AppDataNeedsUpgradeRelease {
                 database: std::path::PathBuf::from("det-app.sqlite"),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataCheckFailed {
+                database: std::path::PathBuf::from("det-testnet.sqlite"),
+                source: rusqlite::Error::InvalidQuery,
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

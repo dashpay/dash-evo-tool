@@ -865,6 +865,19 @@ pub enum TaskError {
     )]
     AppDataNeedsUpgradeRelease { database: std::path::PathBuf },
 
+    /// The check for data only an earlier release can upgrade could not read
+    /// this database, so nothing is opened: if it is on that layout, opening
+    /// the app database would leave it unconvertible.
+    #[error(
+        "Dash Evo Tool could not read your saved data in {database} before starting. Close any other open copies of Dash Evo Tool, make sure your account has permission to open this file, then start the application again.",
+        database = .database.display()
+    )]
+    WalletDataCheckFailed {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.
     #[error(

@@ -53,7 +53,8 @@ impl AppContext {
         // below, so a mid-failure crash cannot strand current state. The
         // pre-update database remains a read-only recovery artifact. The
         // upstream (watch-only) persistor rows have no seed; they are removed
-        // before the shielded exclusion ends, and a failure is reported.
+        // after the identity keys below and before the shielded exclusion
+        // ends, and a failure is reported.
         let ClearAllOutcome {
             upstream_ids,
             hd_seed_hashes,
@@ -63,13 +64,6 @@ impl AppContext {
             .into_iter()
             .chain(wallet_failures)
             .collect();
-        for wallet_id in upstream_ids {
-            if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
-                tracing::warn!(%error, "Upstream wallet removal failed during clear");
-                failures.push(error);
-            }
-        }
-
         // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays
         // (blocked / rejected markers, timestamps, reverse address map)
         // share the `det:dashpay:` prefix and come out in one sweep. The
@@ -92,6 +86,7 @@ impl AppContext {
                 failures.push(TaskError::DashpaySidecarStorage { source });
             }
         }
+        let mut identity_keys_cleared = true;
         match self.local_identity_ids() {
             Ok(owners) => {
                 for owner in owners {
@@ -110,6 +105,7 @@ impl AppContext {
                             owner = %owner,
                             "Identity private-key wipe failed during clear: {e:?}"
                         );
+                        identity_keys_cleared = false;
                         failures.push(e);
                     }
                 }
@@ -119,8 +115,30 @@ impl AppContext {
                 // surface as an incomplete clear — never a silent success that
                 // leaves identity private keys on disk.
                 tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
+                identity_keys_cleared = false;
                 failures.push(e);
             }
+        }
+
+        // Removing a wallet cascades to the identities it owns and drops their
+        // stored records, the only list of their vault keys, so it runs after
+        // the key wipe above. When that wipe did not complete, the wallets stay
+        // so the records do: the clear is incomplete, and clearing again finds
+        // every key. Every wallet the upstream manager holds is removed, so a
+        // wallet kept by an earlier incomplete clear goes too.
+        if identity_keys_cleared {
+            let mut wallet_ids: std::collections::BTreeSet<_> = upstream_ids.into_iter().collect();
+            wallet_ids.extend(backend.upstream_wallet_ids().await);
+            for wallet_id in wallet_ids {
+                if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                    tracing::warn!(%error, "Upstream wallet removal failed during clear");
+                    failures.push(error);
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Upstream wallets kept after an incomplete identity key wipe; clear again after a restart"
+            );
         }
 
         // Unlink DET's two retired legacy shielded files. The unlinks are

@@ -1382,8 +1382,8 @@ impl WalletBackend {
             .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })
     }
 
-    /// Wallet ids the upstream manager holds.
-    #[cfg(test)]
+    /// Wallet ids the upstream manager holds, including loaded wallets no DET
+    /// wallet matches.
     pub(crate) async fn upstream_wallet_ids(&self) -> Vec<WalletId> {
         self.inner.pwm.wallet_ids().await
     }

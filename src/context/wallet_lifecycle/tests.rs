@@ -2724,6 +2724,99 @@ async fn clear_network_database_removes_the_upstream_wallet_before_returning() {
     assert!(remaining.is_empty(), "upstream wallets left: {remaining:?}");
 }
 
+/// Removing a wallet cascades to the identities it owns and drops their
+/// stored records, which are the only list of their vault keys. Clear must
+/// delete those keys first, so a wallet-owned identity's vaulted key (kept
+/// outside any retained-import inventory) does not survive the clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_wipes_keys_of_a_wallet_owned_identity() {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let key_id = key.id();
+    let mut private_keys = KeyStorage::default();
+    private_keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+        ),
+    );
+    let identity_id = Identifier::from([0x44u8; 32]);
+    let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+    let qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: Some(0),
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist local identity");
+    backend
+        .ensure_identity_managed(&seed_hash, &qi.identity, 0)
+        .await
+        .expect("the wallet owns the identity upstream");
+
+    let store = ctx.secret_store();
+    let view = IdentityKeyView::new(&store, identity_id.to_buffer());
+    assert!(
+        view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+            .expect("vault read before clear")
+            .is_some(),
+        "precondition: the identity private key is in the vault before clear"
+    );
+
+    let result = ctx.clear_network_database().await;
+    let key_left = view
+        .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+        .expect("vault read after clear")
+        .is_some();
+    backend.shutdown().await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        !key_left,
+        "the wallet-owned identity's vault key must be deleted"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
     let (ctx, sender, _tmp) = offline_testnet_context();

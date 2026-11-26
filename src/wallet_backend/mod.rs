@@ -623,8 +623,10 @@ fn spv_devnet_name_from(network: Network, configured: Option<&str>) -> Option<St
 }
 
 /// Give a devnet SPV client its chain parameters and the user agent devnet
-/// peers require (`devnet.devnet-<name>` suffix); without both, devnet Core
-/// peers refuse the handshake. No change when `devnet_name` is `None`.
+/// peers require. Without the `DevnetConfig`, dash-spv refuses the devnet
+/// configuration before connecting; without the `devnet.devnet-<name>`
+/// user-agent suffix, devnet Core peers drop the handshake. No change when
+/// `devnet_name` is `None`.
 fn with_devnet_identity(config: ClientConfig, devnet_name: Option<&str>) -> ClientConfig {
     let Some(name) = devnet_name else {
         return config;

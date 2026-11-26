@@ -365,6 +365,27 @@ pub enum TaskError {
         source: Option<std::sync::Arc<platform_wallet::error::PlatformWalletError>>,
     },
 
+    /// Clearing saved wallet data stopped because the shielded reset failed.
+    /// Nothing DET stores was deleted, but upstream may have reset part of the
+    /// shielded store (the commitment tree before a failed subwallet purge,
+    /// or part of either) and always drops its in-memory sync state, so the
+    /// shielded balance resynchronizes.
+    #[error(
+        "Your data was not cleared because the shielded balance data could not be reset. Your wallets and keys were not deleted, but some shielded balance data may already be removed and will be downloaded again. Restart the app and clear your data again. If it keeps failing, check that your disk has free space and that the app can write to its data folder."
+    )]
+    WalletDataClearShieldedResetFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Clearing saved wallet data was refused before anything was deleted: no
+    /// shielded coordinator is configured, so the shielded store cannot be
+    /// reset.
+    #[error(
+        "Your data was not cleared because the shielded balance data is not available, and nothing was deleted. Restart the app and clear your data again. If it keeps failing, check that your disk has free space and that the app can write to its data folder."
+    )]
+    WalletDataClearShieldedUnavailable,
+
     /// Clearing saved wallet data ran to completion, but at least one
     /// secret-bearing delete failed, so some data may still be on disk.
     #[error(

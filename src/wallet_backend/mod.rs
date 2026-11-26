@@ -417,7 +417,9 @@ struct Inner {
     #[cfg(test)]
     bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
-    clear_shielded_test_failure: std::sync::atomic::AtomicBool,
+    clear_shielded_test_error: std::sync::Mutex<Option<PlatformWalletError>>,
+    #[cfg(test)]
+    clear_shielded_test_coordinator_missing: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     clear_shielded_test_refusal: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -779,7 +781,9 @@ impl WalletBackend {
                 #[cfg(test)]
                 bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
                 #[cfg(test)]
-                clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
+                clear_shielded_test_error: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                clear_shielded_test_coordinator_missing: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 clear_shielded_test_refusal: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -1545,11 +1549,23 @@ impl WalletBackend {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Make the next shielded clear fail with `error` in place of upstream's
+    /// own result.
     #[cfg(test)]
-    pub(crate) fn set_clear_shielded_test_failure(&self, fail: bool) {
+    pub(crate) fn set_clear_shielded_test_error(&self, error: PlatformWalletError) {
+        *self
+            .inner
+            .clear_shielded_test_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+    }
+
+    /// Make the shielded clear find no shielded coordinator configured.
+    #[cfg(test)]
+    pub(crate) fn set_clear_shielded_test_coordinator_missing(&self) {
         self.inner
-            .clear_shielded_test_failure
-            .store(fail, std::sync::atomic::Ordering::Relaxed);
+            .clear_shielded_test_coordinator_missing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Make the shielded clear return upstream's refusal for an operation in
@@ -2020,17 +2036,30 @@ impl WalletBackend {
 
     /// Reset the upstream shielded coordinator for this network: quiesces the
     /// 60-second sync loop and empties the coordinator's per-subwallet store so
-    /// the next bind cold-resyncs from index 0. Idempotent and a no-op when
-    /// shielded support was never configured. Used by the "delete all local
-    /// data" sweep.
+    /// the next bind cold-resyncs from index 0. Used by the "delete all local
+    /// data" sweep, which must keep its own data when this fails.
     pub(crate) async fn clear_shielded(&self) -> Result<(), TaskError> {
+        // Upstream reports a missing coordinator as a store error, like a
+        // failed reset; asked first, it is known to have cleared nothing.
+        let coordinator_missing = self.inner.pwm.shielded_coordinator().await.is_none();
         #[cfg(test)]
-        if self
+        let coordinator_missing = coordinator_missing
+            || self
+                .inner
+                .clear_shielded_test_coordinator_missing
+                .load(std::sync::atomic::Ordering::Relaxed);
+        if coordinator_missing {
+            return Err(TaskError::WalletDataClearShieldedUnavailable);
+        }
+        #[cfg(test)]
+        if let Some(error) = self
             .inner
-            .clear_shielded_test_failure
-            .load(std::sync::atomic::Ordering::Relaxed)
+            .clear_shielded_test_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
         {
-            return Err(TaskError::WalletDataClearUnavailable);
+            return Err(shielded_clear_error(error));
         }
         #[cfg(test)]
         if self
@@ -3746,7 +3775,7 @@ fn shielded_clear_error(e: PlatformWalletError) -> TaskError {
         | PlatformWalletError::ShutdownIncomplete(_) => TaskError::WalletDataClearShieldedBusy {
             source: Some(Arc::new(e)),
         },
-        e => TaskError::WalletBackend {
+        e => TaskError::WalletDataClearShieldedResetFailed {
             source: Arc::new(e),
         },
     }
@@ -4757,7 +4786,7 @@ mod tests {
             shielded_clear_error(PlatformWalletError::ShieldedStoreError(
                 "reset_commitment_tree failed".into()
             )),
-            TaskError::WalletBackend { .. }
+            TaskError::WalletDataClearShieldedResetFailed { .. }
         ));
     }
 

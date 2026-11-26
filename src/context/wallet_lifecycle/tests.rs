@@ -2957,31 +2957,190 @@ async fn clear_network_database_wipes_keys_of_a_wallet_owned_identity() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
+/// Run Clear Database with a failing shielded reset, set up by `fail`, over a
+/// wallet registered upstream, a stored identity with a vaulted key and an
+/// upgrade backup, and assert that none of it was deleted. Returns the error.
+async fn clear_with_failing_shielded_reset(
+    fail: impl FnOnce(&crate::wallet_backend::WalletBackend),
+) -> TaskError {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
     let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    backend.set_clear_shielded_test_failure(true);
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let key_id = key.id();
+    let mut private_keys = KeyStorage::default();
+    private_keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+        ),
+    );
+    let identity_id = Identifier::from([0x55u8; 32]);
+    let qi = QualifiedIdentity {
+        identity: Identity::create_basic_identity(identity_id, pv).expect("basic identity"),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist local identity");
+    let backup = ctx
+        .data_dir()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+    std::fs::write(&backup, b"old wallet history").unwrap();
+    fail(&backend);
 
     let result = ctx.clear_network_database().await;
 
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let meta_kept = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .is_some();
+    let wallet_loaded = ctx.wallet_context().has_hd_wallets();
+    let upstream_kept =
+        backend.is_wallet_registered(&seed_hash) && !backend.upstream_wallet_ids().await.is_empty();
+    let identity_kept = ctx.local_identity_ids().expect("list identities") == vec![identity_id];
+    let identity_key_kept = IdentityKeyView::new(&ctx.secret_store(), identity_id.to_buffer())
+        .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+        .expect("identity vault read")
+        .is_some();
+    let backup_kept = backup.exists();
     backend.shutdown().await;
-    match result {
-        Err(TaskError::WalletDataClearIncomplete {
-            failed,
-            first_error,
-        }) => {
-            assert_eq!(failed, 1, "the shielded clear should be the only failure");
-            assert!(
-                matches!(*first_error, TaskError::WalletDataClearUnavailable),
-                "the aggregate must preserve the shielded clear error"
-            );
-        }
-        other => panic!("shielded clear failure must make clear incomplete: {other:?}"),
-    }
+
+    assert!(seed_kept, "the seed must not be deleted");
+    assert!(meta_kept, "the wallet record must not be deleted");
+    assert!(wallet_loaded, "the wallet must stay loaded");
+    assert!(upstream_kept, "the upstream wallet must not be removed");
+    assert!(identity_kept, "the identity must stay listed");
+    assert!(identity_key_kept, "the identity key must not be deleted");
+    assert!(backup_kept, "the upgrade backup must not be deleted");
+    result.expect_err("a failed shielded reset must stop the clear")
+}
+
+/// Upstream keeps the shielded notes when the commitment-tree reset fails and
+/// the caller must keep its own data: Clear Database stops before deleting
+/// anything and says the shielded data may be partly reset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_when_the_commitment_tree_reset_fails() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShieldedStoreError(
+                "reset_commitment_tree failed: disk I/O error".into(),
+            ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedResetFailed { .. }),
+        "{error:?}"
+    );
+}
+
+/// A subwallet purge fails after the tree was reset: still nothing of DET's is
+/// deleted, and the error does not claim that nothing was cleared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_when_the_subwallet_purge_fails() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShieldedStoreError(
+                "purge_all_subwallets failed: database is locked".into(),
+            ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedResetFailed { .. }),
+        "{error:?}"
+    );
+    assert!(!error.to_string().contains("nothing was"), "{error}");
+}
+
+/// Without a shielded coordinator the shielded store cannot be reset, so
+/// Clear Database deletes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_without_a_shielded_coordinator() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_coordinator_missing()
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedUnavailable),
+        "{error:?}"
+    );
+}
+
+/// A shielded sync pass that does not stop in time makes upstream refuse the
+/// reset: nothing is deleted and the user waits for it to finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_when_shielded_sync_does_not_stop() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShutdownIncomplete(
+                "shielded sync pass did not drain".into(),
+            ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedBusy { .. }),
+        "{error:?}"
+    );
+}
+
+/// A shielded operation in flight makes upstream refuse the reset: nothing is
+/// deleted and the user waits for it to finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_while_a_shielded_operation_holds_upstream() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShieldedOperationInProgress,
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedBusy { .. }),
+        "{error:?}"
+    );
 }
 
 /// A legacy shielded-file removal failure must not skip upgrade-backup removal:

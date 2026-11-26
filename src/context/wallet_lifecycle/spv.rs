@@ -33,19 +33,13 @@ impl AppContext {
         backend.clear_test_pause_point().await;
 
         // Reset the upstream shielded coordinator first (it quiesces its sync
-        // loop and empties the per-network store). Upstream refuses the reset
-        // before clearing anything while a shielded operation or a sync pass
-        // still runs; stop then, before any key is deleted, so the data is
-        // never half-wiped. Any other failure must not skip the steps below:
-        // record it and keep going.
-        let shielded_failure = match backend.clear_shielded().await {
-            Ok(()) => None,
-            Err(error @ TaskError::WalletDataClearShieldedBusy { .. }) => return Err(error),
-            Err(error) => {
-                tracing::warn!(%error, "Shielded coordinator reset failed during clear");
-                Some(error)
-            }
-        };
+        // loop and empties the per-network store). On any failure stop before
+        // deleting anything: upstream requires its caller to keep its own data
+        // when the reset fails, and a failed reset may have run part-way.
+        if let Err(error) = backend.clear_shielded().await {
+            tracing::warn!(%error, "Clear Database stopped: the shielded reset failed");
+            return Err(error);
+        }
 
         // F60: permanently delete every wallet's secret-bearing state so the
         // "delete all local data" promise holds — wallets must NOT rehydrate
@@ -62,10 +56,7 @@ impl AppContext {
             hd_seed_hashes,
             failures: wallet_failures,
         } = backend.forget_all_wallets_local();
-        let mut failures: Vec<TaskError> = shielded_failure
-            .into_iter()
-            .chain(wallet_failures)
-            .collect();
+        let mut failures: Vec<TaskError> = wallet_failures;
         // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays
         // (blocked / rejected markers, timestamps, reverse address map)
         // share the `det:dashpay:` prefix and come out in one sweep. The

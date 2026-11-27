@@ -3,7 +3,37 @@
 
 use super::*;
 
+use crate::model::identity_discovery::DiscoveryReadiness;
+use crate::model::wallet::meta::wallet_label;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::wallet_backend::SecretLease;
+use std::sync::PoisonError;
+
+/// The notice an unlock shows when its identity search cannot run, if any.
+///
+/// Only an operation-scoped unlock needs one: its seed is forgotten once the
+/// unlock's own work ends, so the later all-wallets sweep cannot search the
+/// wallet. A session-long unlock leaves the seed to that sweep, and a storage
+/// update unlock is not a request to search.
+pub(super) fn unlock_discovery_notice(
+    retention: WalletUnlockRetention,
+    readiness: DiscoveryReadiness,
+    wallet_name: &str,
+) -> Option<String> {
+    if retention != WalletUnlockRetention::OperationOnly {
+        return None;
+    }
+    match readiness {
+        DiscoveryReadiness::Ready => None,
+        DiscoveryReadiness::Syncing => Some(format!(
+            "Identities in wallet “{wallet_name}” cannot be searched yet. Connect to the wallet's network if needed. Once sync finishes, go to Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
+        )),
+        DiscoveryReadiness::SyncStopped => Some(format!(
+            "Identities in wallet “{wallet_name}” cannot be searched yet. Make sure you are connected to the wallet's network. Once sync finishes, go to Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
+        )),
+    }
+}
 
 impl AppContext {
     /// Verify and open a password-protected wallet through the secret chokepoint.
@@ -101,6 +131,20 @@ impl AppContext {
         // already-registered wallet is a no-op) and resolved prompt-free from the
         // session cache. The in-memory wallet is flipped `Open` only after the
         // chokepoint succeeds above, so the JIT `is_open()` gate passes.
+        let wallet_name = wallet_label(
+            &self
+                .wallet_context()
+                .hd_alias(&seed_hash)
+                .unwrap_or_default(),
+            &seed_hash,
+        );
+        if let Some(text) = unlock_discovery_notice(
+            retention,
+            self.wallet_identity_discovery_readiness(),
+            &wallet_name,
+        ) {
+            self.show_wallet_search_notice(seed_hash, text);
+        }
         self.drive_unlock_registration(wallet, lease);
         Ok(())
     }
@@ -132,6 +176,44 @@ impl AppContext {
                 ctx.discover_unlocked_wallet_identities(&wallet).await;
                 drop(lease);
             });
+    }
+
+    /// Show `text` as the wallet's "cannot search yet" notice until the wallet
+    /// is searched, replacing an earlier notice for it. The notice stays until
+    /// dismissed, holding nothing but the banner handle.
+    fn show_wallet_search_notice(&self, seed_hash: WalletSeedHash, text: String) {
+        self.clear_wallet_search_notice(&seed_hash);
+        let banner = MessageBanner::set_global(self.egui_ctx(), text, MessageType::Info);
+        banner.disable_auto_dismiss();
+        self.wallet_search_notices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(seed_hash, banner);
+    }
+
+    /// Remove the wallet's "cannot search yet" notice, if one is shown.
+    pub(crate) fn clear_wallet_search_notice(&self, seed_hash: &WalletSeedHash) {
+        let notice = self
+            .wallet_search_notices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(seed_hash);
+        if let Some(notice) = notice {
+            notice.clear();
+        }
+    }
+
+    /// Remove every "cannot search yet" notice of this network.
+    pub(crate) fn clear_wallet_search_notices(&self) {
+        let notices = std::mem::take(
+            &mut *self
+                .wallet_search_notices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for notice in notices.into_values() {
+            notice.clear();
+        }
     }
 
     /// Wipe the session-cached seed when a wallet is locked.

@@ -1370,6 +1370,115 @@ fn section_expanded(harness: &App, title: &str) -> Option<bool> {
         .is_expanded()
 }
 
+fn tab_to_detail_control(harness: &mut App, label: &str) {
+    for _ in 0..80 {
+        harness.key_press(egui::Key::Tab);
+        harness.run_steps(1);
+        if harness
+            .query_by(|node| node.is_focused())
+            .is_some_and(|node| node.accesskit_node().label().as_deref() == Some(label))
+        {
+            harness.run_steps(6);
+            return;
+        }
+    }
+    panic!("Tab must reach {label}");
+}
+
+#[test]
+fn tab_reveals_pinned_section_headers_and_buttons() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut harness =
+            open_detail_with_vote_rows(0xBD, "mn-focus", 30, egui::vec2(800.0, 600.0));
+        harness.set_size(egui::vec2(800.0, 480.0));
+        harness.run_steps(6);
+        assert!(
+            harness.get_by_label("Danger zone").rect().bottom()
+                > harness.get_by_label("This node's votes").rect().top(),
+            "the pinned content must overflow"
+        );
+        for label in ["Keys", "Add voting key", "Danger zone", "Remove masternode"] {
+            tab_to_detail_control(&mut harness, label);
+            assert_detail_label_unclipped(&harness, label);
+            if matches!(label, "Keys" | "Danger zone") {
+                harness.key_press(egui::Key::Enter);
+                harness.run_steps(3);
+            }
+        }
+    });
+}
+
+#[test]
+fn segment_round_trip_collapses_danger_zone_and_keeps_node_and_keys() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut harness =
+            open_detail_with_vote_rows(0xBE, "mn-round-trip", 0, egui::vec2(1260.0, 900.0));
+        toggle_detail_section(&mut harness, "Keys");
+        toggle_detail_section(&mut harness, "Danger zone");
+        click_detail_button(&mut harness, "Add voting key");
+        assert_eq!(section_expanded(&harness, "Danger zone"), Some(true));
+        harness.get_by_label("Votes").click();
+        harness.run_steps(3);
+        harness.get_by_label("Nodes").click();
+        harness.run_steps(3);
+        assert!(harness.query_all_by_label("mn-round-trip").count() > 0);
+        assert_eq!(section_expanded(&harness, "Keys"), Some(true));
+        assert!(
+            harness.query_by_label("Save").is_some(),
+            "keep the open key form"
+        );
+        assert_eq!(section_expanded(&harness, "Danger zone"), Some(false));
+        assert!(!remove_button_present(&harness));
+    });
+}
+
+fn assert_ineligible_node_summary(seed: impl FnOnce(&Arc<AppContext>)) {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let context = harness.state().current_app_context().clone();
+        seed(&context);
+        activate_masternodes_tab(&mut harness, &context);
+        harness.get_by_label("Open mn-ineligible").click();
+        harness.run_steps(3);
+        assert_eq!(section_expanded(&harness, "Keys"), Some(false));
+        assert!(
+            harness
+                .get_by_label("Vote with this node")
+                .accesskit_node()
+                .is_disabled()
+        );
+        assert!(
+            harness
+                .query_by_label("This node has no voting key loaded. Open Keys to add it.")
+                .is_some()
+        );
+        assert!(
+            harness.query_by_label("V").is_none(),
+            "the summary must not claim a voting key is ready"
+        );
+    });
+}
+
+#[test]
+fn collapsed_keys_summary_requires_a_private_key_reference_for_voting() {
+    assert_ineligible_node_summary(|context| {
+        seed_node_with_voter(context, 0xBF, "mn-ineligible");
+    });
+}
+
+#[test]
+fn collapsed_keys_summary_requires_an_associated_voter_identity() {
+    assert_ineligible_node_summary(|context| {
+        seed_node_with_purpose_filed_voting_key(context, 0xC0, "mn-ineligible");
+    });
+}
+
 /// Whether a clickable `Remove masternode` button is on screen. The collapsed
 /// Danger zone names the action as plain text, which is not a way to reach it.
 fn remove_button_present(harness: &App) -> bool {

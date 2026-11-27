@@ -267,7 +267,7 @@ fn section_header(ui: &mut Ui, title: &str, color: Color32, open: &mut bool) {
     )
     .max(ui.spacing().interact_size);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = reveal_on_focus(response.on_hover_cursor(egui::CursorIcon::PointingHand));
     if response.clicked() {
         *open = !*open;
     }
@@ -300,6 +300,13 @@ fn section_header(ui: &mut Ui, title: &str, color: Color32, open: &mut bool) {
         );
         ui.painter().galley(text_pos, galley, color);
     }
+}
+
+fn reveal_on_focus(response: egui::Response) -> egui::Response {
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
+    response
 }
 
 /// `Roles:` and the V/O/P presence letters (glyph, not colour-only — NFR-6).
@@ -748,8 +755,11 @@ impl MasternodeDetailView {
                 None
             }
         };
-        let presence = self.key_presence;
         let missing_voter = !self.identity.can_cast_masternode_vote();
+        let presence = MasternodeKeyPresence {
+            voting: !missing_voter,
+            ..self.key_presence
+        };
         // Remembered per node, unlike the Danger zone: an open Keys section
         // exposes nothing destructive.
         let id = egui::Id::unique("masternode_detail_keys").with(self.identity.identity.id());
@@ -800,8 +810,7 @@ impl MasternodeDetailView {
                     );
                     // `small_button` keeps the copy affordance text-height and
                     // vertically centered with the voter-identity label.
-                    if ui
-                        .small_button("Copy")
+                    if reveal_on_focus(ui.small_button("Copy"))
                         .clickable_tooltip("Copy voter identity ID")
                         .clicked()
                     {
@@ -816,7 +825,7 @@ impl MasternodeDetailView {
             render_protection_tier(details, tier, dark_mode);
             if tier.is_some_and(ProtectionTier::offers_add_protection)
                 && let Some(key) = self.first_protectable_key()
-                && details.button("Add password protection…").clicked()
+                && reveal_on_focus(details.button("Add password protection…")).clicked()
             {
                 action = Some(self.open_key_info_with_protection_prompt(&key));
             }
@@ -837,7 +846,7 @@ impl MasternodeDetailView {
                 manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
             manage.horizontal_wrapped(|ui| {
                 for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
-                    let button = ui.button(format!("{label} ›"));
+                    let button = reveal_on_focus(ui.button(format!("{label} ›")));
                     let button = match tip {
                         Some(tip) => button.clickable_tooltip(tip),
                         None => button,
@@ -875,7 +884,7 @@ impl MasternodeDetailView {
 
         match self.voter_key_prompt.as_mut() {
             None => {
-                if ui.button("Add voting key").clicked() {
+                if reveal_on_focus(ui.button("Add voting key")).clicked() {
                     // Node context is already bound (`self.identity`) — the
                     // prompt only asks for the voting key, no ProTxHash re-entry.
                     self.voter_key_prompt = Some(
@@ -888,7 +897,7 @@ impl MasternodeDetailView {
             Some(prompt) => {
                 prompt.show(ui);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if reveal_on_focus(ui.button("Cancel")).clicked() {
                         self.voter_key_prompt = None;
                     }
                     let has_key = !self
@@ -896,7 +905,8 @@ impl MasternodeDetailView {
                         .as_ref()
                         .map(PasswordInput::is_empty)
                         .unwrap_or(true);
-                    if ui.add_enabled(has_key, egui::Button::new("Save")).clicked() {
+                    if reveal_on_focus(ui.add_enabled(has_key, egui::Button::new("Save"))).clicked()
+                    {
                         action = self.submit_voter_key();
                     }
                 });
@@ -1095,6 +1105,11 @@ impl MasternodeDetailView {
             .y
     }
 
+    /// Hide destructive controls when leaving the Nodes segment.
+    pub(super) fn collapse_danger_zone(&mut self) {
+        self.danger_zone_open = false;
+    }
+
     /// The collapsible Danger zone holding `Remove masternode`, which opens the
     /// removal confirmation.
     fn render_danger_zone(&mut self, ui: &mut Ui, dark_mode: bool) {
@@ -1114,10 +1129,10 @@ impl MasternodeDetailView {
                     RichText::new(DANGER_ZONE_NOTE).color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(6.0);
-                ui.add_enabled(
+                reveal_on_focus(ui.add_enabled(
                     !migration_in_progress,
                     ComponentStyles::danger_button("Remove masternode"),
-                )
+                ))
                 .disabled_tooltip(
                     "Wait for the storage update to finish before removing this masternode.",
                 )

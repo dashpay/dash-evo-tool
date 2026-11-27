@@ -161,7 +161,8 @@ impl AppContext {
                 KeyDerivationType::ECDSA,
                 identity_index,
                 index,
-            ),
+            )
+            .map_err(|e| TaskError::from(crate::database::WalletError::from(e)))?,
         });
         Ok((identity, key))
     }
@@ -198,16 +199,18 @@ impl AppContext {
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
             .await?;
-        let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
-            return Err(TaskError::MasterKeyNotFound);
-        };
-        let master_key_id = master_key.identity_public_key.id();
         let (identity, fetched) =
             Identity::fetch_with_metadata(sdk, qualified_identity.identity.id(), None).await?;
         let identity = identity.ok_or(TaskError::IdentityNotFoundLocally)?;
         // The fetched balance stands until the update's proof reports a newer one.
         let mut balance_provenance = BalanceProvenance::ObservedAt(fetched.height);
         qualified_identity.identity = identity;
+        // Picked from the keys as just fetched, so a master disabled on the
+        // network since the last refresh is passed over.
+        let master_key_id = qualified_identity
+            .identity_update_signing_key()
+            .map(|key| key.id())
+            .ok_or(TaskError::MasterKeyNotFound)?;
         qualified_identity.identity.bump_revision();
         let assigned_key_id = qualified_identity.identity.get_public_key_max_id() + 1;
         if let NewKeyMaterial::Derived { expected_key_id } = material {
@@ -682,7 +685,8 @@ mod tests {
                 KeyDerivationType::ECDSA,
                 0,
                 3,
-            ),
+            )
+            .unwrap(),
         });
         insert_derived_key(&mut identity, &key).unwrap();
         identity
@@ -1125,7 +1129,8 @@ mod tests {
                 KeyDerivationType::ECDSA,
                 1,
                 1,
-            ),
+            )
+            .unwrap(),
         };
         stray.in_wallet_at_derivation_path = Some(stray_path.clone());
         identity
@@ -1244,7 +1249,8 @@ mod tests {
                     KeyDerivationType::ECDSA,
                     0,
                     3,
-                ),
+                )
+                .unwrap(),
             })
         );
     }
@@ -1803,7 +1809,8 @@ mod tests {
                 KeyDerivationType::ECDSA,
                 0,
                 3,
-            ),
+            )
+            .unwrap(),
         });
         insert_derived_key(&mut snapshot, &key).expect("file the derived key");
         snapshot

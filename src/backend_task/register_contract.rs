@@ -244,14 +244,33 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let signing_time =
+            super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
         let alias = (!alias.is_empty()).then_some(alias);
         ensure_private_document_entries_fit(&data_contract, None)?;
         let owner_id = data_contract.owner_id();
         self.register_signed_contract(
             data_contract,
             || async move { sdk.get_identity_nonce(owner_id, true, None).await },
-            signing_key,
-            &identity,
+            |contract, nonce| async move {
+                super::contract::validate_contract_signing_key(
+                    &identity,
+                    &signing_key,
+                    sdk.protocol_version_info().verified_version,
+                    signing_time,
+                )?;
+                let prepared = contract_create_transition(
+                    contract,
+                    nonce,
+                    signing_key.clone(),
+                    &identity,
+                    sdk.version(),
+                )
+                .await?;
+                // Unlocking can outlive an expiry or activation; recheck before sending.
+                super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
+                Ok(prepared)
+            },
             sdk.version(),
             alias.as_deref(),
             kind,
@@ -266,21 +285,21 @@ impl AppContext {
     }
 
     /// [`Self::register_data_contract`] with the network steps passed in:
-    /// `fresh_nonce` reads and bumps the owner's identity nonce, `submit` sends
+    /// `fresh_nonce` reads and bumps the owner's identity nonce, `prepare`
+    /// validates the signing key and builds the transition, `submit` sends
     /// the signed transition and waits for its result, and `find` looks a
     /// registration whose result could not be read up under its
     /// Platform-assigned ID. While the owner has a registration pending, its
     /// nonce is reused instead of a fresh one, so at most one attempt executes.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the transition's inputs plus the two network steps"
+        reason = "the registration's inputs plus preparation and network steps"
     )]
-    async fn register_signed_contract<S, Nonce, Submitted, Found>(
+    async fn register_signed_contract<Nonce, Prepared, Submitted, Found>(
         &self,
         data_contract: DataContract,
         fresh_nonce: impl FnOnce() -> Nonce,
-        signing_key: IdentityPublicKey,
-        signer: &S,
+        prepare: impl FnOnce(DataContract, IdentityNonce) -> Prepared,
         platform_version: &PlatformVersion,
         alias: Option<&str>,
         kind: RegistrationKind,
@@ -288,8 +307,8 @@ impl AppContext {
         find: impl FnOnce(Identifier) -> Found,
     ) -> Result<BackendTaskSuccessResult, TaskError>
     where
-        S: Signer<IdentityPublicKey>,
         Nonce: Future<Output = Result<IdentityNonce, SdkError>>,
+        Prepared: Future<Output = Result<(StateTransition, Identifier), TaskError>>,
         Submitted: Future<Output = Result<DataContract, SdkError>>,
         Found: Future<Output = Result<Option<DataContract>, TaskError>>,
     {
@@ -310,14 +329,7 @@ impl AppContext {
             }
             None => fresh_nonce().await?,
         };
-        let (transition, contract_id) = contract_create_transition(
-            data_contract,
-            identity_nonce,
-            signing_key,
-            signer,
-            platform_version,
-        )
-        .await?;
+        let (transition, contract_id) = prepare(data_contract, identity_nonce).await?;
         let pending = PendingContractRegistration {
             identity_nonce,
             contract_id,
@@ -924,8 +936,15 @@ mod tests {
                     fresh_nonce_read.set(true);
                     std::future::ready(Ok(fresh_nonce))
                 },
-                signing_key(),
-                &FixedSigner,
+                |contract, nonce| {
+                    contract_create_transition(
+                        contract,
+                        nonce,
+                        signing_key(),
+                        &FixedSigner,
+                        ctx.platform_version(),
+                    )
+                },
                 ctx.platform_version(),
                 alias,
                 kind,
@@ -1678,8 +1697,15 @@ mod tests {
         let first = ctx.register_signed_contract(
             as_created(&ctx.dpns_contract()),
             || std::future::ready(Ok(5)),
-            signing_key(),
-            &FixedSigner,
+            |contract, nonce| {
+                contract_create_transition(
+                    contract,
+                    nonce,
+                    signing_key(),
+                    &FixedSigner,
+                    ctx.platform_version(),
+                )
+            },
             ctx.platform_version(),
             None,
             RegistrationKind::Contract,
@@ -2330,5 +2356,165 @@ mod tests {
 
         assert!(matches!(saved, Err(TaskError::WalletBackendNotYetWired)));
         assert_eq!(calls, LOCAL_SAVE_ATTEMPTS);
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+    use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dapi_client::{
+        DapiClientError, DumpData, ExecutionError, ExecutionResponse, mock::MockResult,
+    };
+    use dash_sdk::dapi_grpc::platform::v0::{
+        BroadcastStateTransitionRequest, WaitForStateTransitionResultRequest,
+    };
+    use dash_sdk::dapi_grpc::tonic::Status;
+    use dash_sdk::dpp::data_contract::conversion::value::v0::DataContractValueConversionMethodsV0;
+    use dash_sdk::dpp::identity::SecurityLevel;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::platform_value::platform_value;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
+    use dash_sdk::query_types::IdentityNonceFetcher;
+
+    /// An offline SDK that answers the identity nonce of `owner`.
+    async fn sdk_with_nonce(owner: Identifier) -> Sdk {
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("a mock SDK");
+        sdk.mock()
+            .expect_fetch::<IdentityNonceFetcher, _>(owner, Some(IdentityNonceFetcher(1)))
+            .await
+            .expect("nonce expectation");
+        sdk
+    }
+
+    fn save<R>(dir: &std::path::Path, request: &R, response: &MockResult<R>)
+    where
+        R: dash_sdk::dapi_client::transport::TransportRequest,
+    {
+        let dump = DumpData::new(request, response);
+        dump.save(&dir.join(dump.filename().expect("dump name")))
+            .expect("dump saved");
+    }
+
+    /// A registration whose broadcast may have reached Platform, and whose
+    /// result cannot be read, may already be paid for: the user is told to
+    /// check before trying again, never just to retry.
+    #[tokio::test]
+    async fn a_registration_that_may_have_been_accepted_is_reported_unconfirmed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let mut key = auth_key(1, SecurityLevel::CRITICAL);
+        let secret = crate::test_support::keys::labelled_secret(
+            "context::test_support::identity_holding",
+            1,
+        );
+        key.set_data(
+            dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1
+                .public_key_data_from_private_key_data(&secret, context.network())
+                .expect("generated key")
+                .into(),
+        );
+        let identity = identity_holding(std::slice::from_ref(&key));
+        let owner = Identifier::from([8; 32]);
+        let contract = DataContract::from_value(
+            platform_value!({
+                "$formatVersion": "1",
+                "id": Identifier::from([7; 32]).to_string(Encoding::Base58),
+                "ownerId": owner.to_string(Encoding::Base58),
+                "version": 1,
+                "documentSchemas": { "note": {
+                    "type": "object",
+                    "properties": { "text": { "type": "string", "maxLength": 20, "position": 0 } },
+                    "additionalProperties": false
+                } }
+            }),
+            true,
+            PlatformVersion::latest(),
+        )
+        .expect("a contract");
+
+        // The exact transition registration signs, from a separate SDK so
+        // both read the same nonce.
+        let preparation_sdk = sdk_with_nonce(owner).await;
+        let nonce = preparation_sdk
+            .get_identity_nonce(owner, true, None)
+            .await
+            .expect("identity nonce");
+        let (transition, contract_id) = contract_create_transition(
+            contract.clone(),
+            nonce,
+            key.clone(),
+            &identity,
+            preparation_sdk.version(),
+        )
+        .await
+        .expect("a signed transition");
+        let dumps = tempfile::tempdir().expect("tempdir");
+        let broadcast: BroadcastStateTransitionRequest = transition
+            .broadcast_request_for_state_transition()
+            .expect("broadcast request");
+        save(
+            dumps.path(),
+            &broadcast,
+            &Err(ExecutionError {
+                possibly_accepted: false,
+                inner: DapiClientError::Transport(TransportError::Grpc(Status::already_exists(
+                    "tx already exists in cache",
+                ))),
+                address: None,
+                retries: 0,
+            }),
+        );
+        // No proof comes back: the outcome stays unknown.
+        let wait: WaitForStateTransitionResultRequest = transition
+            .wait_for_state_transition_result_request()
+            .expect("wait request");
+        save(
+            dumps.path(),
+            &wait,
+            &Ok(ExecutionResponse {
+                inner: Default::default(),
+                retries: 0,
+                address: "http://127.0.0.1".parse().expect("address"),
+            }),
+        );
+        let mut sdk = sdk_with_nonce(owner).await;
+        sdk.mock()
+            .load_expectations_sync(dumps.path())
+            .expect("submission expectations");
+        sdk.mock()
+            .expect_fetch::<DataContract, _>(contract_id, None)
+            .await
+            .expect("contract lookup expectation");
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let result = context
+            .register_data_contract(
+                contract,
+                String::new(),
+                identity,
+                key,
+                RegistrationKind::Contract,
+                &sdk,
+                sender,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::ContractRegistrationUnconfirmed { contract_id: id, .. })
+                    if *id == contract_id
+            ),
+            "{result:?}"
+        );
     }
 }

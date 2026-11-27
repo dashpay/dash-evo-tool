@@ -12,12 +12,16 @@ use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::dpns::DpnsRegistrationOutcome;
-use dash_evo_tool::model::fee_estimation::contest_fee_credits;
+use dash_evo_tool::model::fee_estimation::{
+    contest_fee_credits, username_name_admission_reserve_credits,
+};
 use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 use dash_evo_tool::model::wallet::Wallet;
 use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::platform::types::identity::PublicKeyHash;
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 use futures::FutureExt;
@@ -332,6 +336,19 @@ pub(crate) async fn balance_below(
     }
 }
 
+/// The balance the app holds back for the name document's reference
+/// admission, on top of the registration charge; zero on protocol versions
+/// without it. Funding must cover it or the app refuses the registration.
+pub(crate) fn name_admission_reserve(app_context: &AppContext) -> u64 {
+    let platform_version = app_context.sdk_platform_version();
+    let dpns = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+        .expect("the DPNS contract should load");
+    let domain = dpns
+        .document_type_for_name("domain")
+        .expect("the DPNS contract should define domain");
+    username_name_admission_reserve_credits(domain, platform_version)
+}
+
 /// A random 19-letter label, which opens a community vote.
 pub(crate) fn vote_label() -> String {
     let mut rng = rand::rng();
@@ -500,7 +517,8 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
     let dpns_name = format!("e2e-platform-{:016x}", random_suffix);
     let funding = app_context
         .fee_estimator()
-        .estimate_username_registration(dpns_name.len(), false);
+        .estimate_username_registration(dpns_name.len(), false)
+        .saturating_add(name_admission_reserve(app_context));
 
     let funded = platform_funded_identity(ctx, funding).await;
     returning_credits(app_context, &funded, async {
@@ -552,7 +570,8 @@ async fn test_register_contested_dpns_name_funded_from_platform_addresses() {
     let funding = app_context
         .fee_estimator()
         .estimate_username_registration(dpns_name.len(), true)
-        .saturating_add(vote_fee);
+        .saturating_add(vote_fee)
+        .saturating_add(name_admission_reserve(app_context));
 
     let funded = platform_funded_identity(ctx, funding).await;
     returning_credits(

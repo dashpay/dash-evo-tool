@@ -74,6 +74,9 @@ fn main() -> ExitCode {
     runtime.shutdown_timeout(POST_CLOSE_SHUTDOWN_TIMEOUT);
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        // Free the vault and database before the dialog below: it blocks, and
+        // a restart while it is up must not find them held.
+        startup.release();
     }
     if result.is_err() || outcome.failed() {
         // Notice to the real terminal, independent of tracing (fd 2 is
@@ -91,6 +94,14 @@ fn main() -> ExitCode {
             causes.push(error);
         }
         report_startup_failure(&causes);
+        // Only now: the dialog points the user to the log, which holds the
+        // causes once they are reported. It explains a window that never
+        // opened, so an eframe error after the app was built gets none.
+        if let Err(error) = &result
+            && !outcome.window_opened()
+        {
+            crate::boot::show_window_failure_dialog(error);
+        }
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

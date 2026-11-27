@@ -2,7 +2,8 @@
 //! pre-funded; a fresh devnet needs this run once before the DPNS tests.
 //!
 //! To move funds, opt in with `E2E_NETWORK=devnet` and
-//! `E2E_DEVNET_BOOTSTRAP=1`. Unset the bootstrap flag after funding.
+//! `E2E_DEVNET_BOOTSTRAP=1`. After funding, unset the flag in the shell and
+//! remove it from the project `.env` (or set it to `0`).
 
 use crate::framework::funding::derive_platform_receive_address;
 use crate::framework::harness::{ctx, devnet_bootstrap_amount};

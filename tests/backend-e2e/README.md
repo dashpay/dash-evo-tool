@@ -61,7 +61,9 @@ Testnet is the default. To run against a devnet:
    Platform addresses find credits. Budget the transfer amount
    (`E2E_PLATFORM_FUND_DUFFS`, 25 DASH by default), the Core transaction fee,
    and at least 10 DASH to leave in the framework wallet's Core balance for
-   the harness. Unset `E2E_DEVNET_BOOTSTRAP` after funding.
+   the harness. After funding, unset `E2E_DEVNET_BOOTSTRAP` in your shell,
+   and remove it from the project `.env` (or set it to `0`) if you put it
+   there: the tests load that file, so the flag would stay on.
 
 If bootstrap reports an error, check the framework wallet's Platform address
 balance before rerunning it. The transfer may have succeeded before the balance
@@ -70,7 +72,10 @@ refresh failed, and rerunning bootstrap could send the full amount again.
 Each devnet uses `<tmp>/dash-evo-e2e-devnet-<name-hash>`, with a numeric suffix
 for fallback slots. A saved `.env` must match `E2E_ENV_FILE` byte for byte.
 If the harness reports a mismatch or missing configuration in a used slot,
-move that workdir aside or retry with the original configuration. If variable
+move that workdir aside or retry with the original configuration. Also move
+the workdir aside when the devnet deployment changes between runs (for
+example, new endpoints or a reset chain), because the harness reuses its saved
+state as long as `E2E_ENV_FILE` is unchanged. If variable
 substitution changes the resolved devnet settings within a test process, use
 stable values in `E2E_ENV_FILE` and restart the tests.
 Devnet SPV sync needs DET to send the devnet name and user agent to dash-spv,

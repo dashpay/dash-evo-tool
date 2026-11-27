@@ -61,7 +61,9 @@ Testnet is the default. To run against a devnet:
    Platform addresses find credits. Budget the transfer amount
    (`E2E_PLATFORM_FUND_DUFFS`, 25 DASH by default), the Core transaction fee,
    and at least 10 DASH to leave in the framework wallet's Core balance for
-   the harness. Unset `E2E_DEVNET_BOOTSTRAP` after funding.
+   the harness. After funding, unset `E2E_DEVNET_BOOTSTRAP` in your shell,
+   and remove it from the project `.env` (or set it to `0`) if you put it
+   there: the tests load that file, so the flag would stay on.
 
 If bootstrap reports an error, check the framework wallet's Platform address
 balance before rerunning it. The transfer may have succeeded before the balance
@@ -70,7 +72,10 @@ refresh failed, and rerunning bootstrap could send the full amount again.
 Each devnet uses `<tmp>/dash-evo-e2e-devnet-<name-hash>`, with a numeric suffix
 for fallback slots. A saved `.env` must match `E2E_ENV_FILE` byte for byte.
 If the harness reports a mismatch or missing configuration in a used slot,
-move that workdir aside or retry with the original configuration. If variable
+move that workdir aside or retry with the original configuration. Also move
+the workdir aside when the devnet deployment changes between runs (for
+example, new endpoints or a reset chain), because the harness reuses its saved
+state as long as `E2E_ENV_FILE` is unchanged. If variable
 substitution changes the resolved devnet settings within a test process, use
 stable values in `E2E_ENV_FILE` and restart the tests.
 Devnet SPV sync needs DET to send the devnet name and user agent to dash-spv,
@@ -94,8 +99,9 @@ version), which the network never returns, and opens a public vote on testnet.
 
 ### Masternode tests
 
-`identity_masternode_withdraw` needs a testnet masternode or evonode with funded
-Platform credits and its private keys. These are the only names the tests read:
+`identity_masternode_withdraw` needs a masternode or evonode on the selected
+network with funded Platform credits and its private keys. These are the only
+names the tests read:
 
 | Variable | Needed by | Description |
 |---|---|---|
@@ -197,10 +203,15 @@ devnet name hash for Devnet. If a slot is held by another process,
   gracefully.
 - SPV sync is faster on repeat runs because prior state may be cached.
 
-Clean the workdir manually if you need a fresh start:
+For a fresh start, stop any running backend E2E tests and remove their local
+workdirs. This also removes copied `.env` files, including any credentials in
+the legacy shared `dash-evo-e2e-devnet` workdir and any leftover reconnect or
+cold-boot workdirs. If the tests used a temporary directory other than `/tmp`,
+set `TMPDIR` to that directory for this command.
 
 ```bash
-rm -rf /tmp/dash-evo-e2e-testnet*
+rm -rf -- /tmp/dash-evo-e2e-devnet \
+  "${TMPDIR:-/tmp}"/dash-evo-e2e-{testnet,devnet,reconnect-,coldboot-}*
 ```
 
 ## Wallet architecture

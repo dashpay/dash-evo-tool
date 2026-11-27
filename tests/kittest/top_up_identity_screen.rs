@@ -13,6 +13,7 @@ use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{
     BackendTask, BackendTaskContext, BackendTaskSuccessResult, CacheDomain, CacheUpdate, FeeResult,
 };
+use dash_evo_tool::context::NetworkContextError;
 use dash_evo_tool::model::address::ValidatedAddress;
 use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -966,6 +967,9 @@ fn top_up_ends_on_a_failure_handled_outside_the_general_error_path() {
                 context: dispatch,
                 error: TaskError::NetworkContextCreationFailed {
                     network: Network::Regtest,
+                    source: Box::new(NetworkContextError::NoDapiAddresses {
+                        network: Network::Regtest,
+                    }),
                 },
             },
         );

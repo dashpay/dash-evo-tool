@@ -345,6 +345,13 @@ impl ScreenLike for AddContactScreen {
                         if !matches!(key_action, AppAction::None) {
                             inner_action = key_action;
                         }
+                        // A key chosen here signs with its own wallet.
+                        crate::ui::identity::sync_signing_wallet(
+                            Some(identity),
+                            self.selected_key.as_ref(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
+                        );
                     }
                 }
             });

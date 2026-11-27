@@ -1,6 +1,10 @@
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::version::{PlatformVersion, v14::PLATFORM_V14};
 use dash_sdk::platform::ContextProvider;
+
+/// The oldest Platform version DET uses to build new operations.
+pub const MIN_PLATFORM_VERSION: &PlatformVersion = &PLATFORM_V14;
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
 use std::time::Duration;
 use tracing::info;
@@ -20,23 +24,22 @@ fn request_settings() -> RequestSettings {
 
 /// Build an SDK for `network` that tracks the network's protocol version.
 ///
-/// The SDK is never pinned: it starts at upstream's per-network minimum (the
-/// lowest version the network still runs) and ratchets upward to whatever the
-/// network reports in proven responses. A rebuilt connection starts there
-/// too: nothing learned from the endpoints it replaces is carried over.
+/// Starts at DET's minimum on every network and upgrades after verified proofs.
+/// Rebuilding starts a fresh observation; the seed does not prove network support.
 pub fn initialize_sdk<P: ContextProvider + 'static>(
     address_list: AddressList,
     network: Network,
     context_provider: P,
-) -> Result<Sdk, String> {
+) -> Result<Sdk, Box<dash_sdk::Error>> {
     let request_settings = request_settings();
 
     let sdk = SdkBuilder::new(address_list)
         .with_network(network)
+        .with_initial_version(MIN_PLATFORM_VERSION)
         .with_context_provider(context_provider)
         .with_settings(request_settings)
         .build()
-        .map_err(|e| format!("Failed to build SDK: {e}"))?;
+        .map_err(Box::new)?;
 
     info!(
         ?network,

@@ -102,8 +102,8 @@ async fn tc_074_shielded_lifecycle() {
          {increase_credits} < {entered_credits} ({baseline} -> {after_shield})"
     );
     // The reported figure is the entered amount plus what rounding the fee up
-    // to whole duffs adds (800 credits under protocols 12 and 13), and it is
-    // what arrived. The equality holds because the suite runs serially and
+    // to whole duffs adds, and it is what arrived.
+    // The equality holds because the suite runs serially and
     // nothing else pays this wallet's shielded address between the two syncs;
     // a payment from outside in that window would show up here as a surplus.
     if let Some(reported_credits) = reported_credits {

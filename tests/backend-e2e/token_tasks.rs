@@ -650,7 +650,7 @@ async fn step_update_config(
         .expect("Step 11: UpdateTokenConfig failed");
 
     match result {
-        BackendTaskSuccessResult::UpdatedTokenConfig(description, fee) => {
+        BackendTaskSuccessResult::UpdatedTokenConfig(description, fee, _) => {
             assert!(
                 fee.estimated_fee > 0,
                 "Config update fee should be positive"
@@ -778,9 +778,12 @@ async fn tc_065_mint_unauthorized() {
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::PlatformRejected { .. }
+            dash_evo_tool::backend_task::error::TaskError::TokenOperationRejected {
+                operation: dash_evo_tool::backend_task::error::TokenOperationKind::Mint,
+                ..
+            }
         ),
-        "TC-065: expected PlatformRejected for unauthorized mint, got: {:?}",
+        "TC-065: expected a rejected mint for an unauthorized mint, got: {:?}",
         err
     );
     tracing::info!("TC-065: unauthorized mint correctly rejected: {:?}", err);

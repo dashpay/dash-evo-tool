@@ -3174,7 +3174,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let database =
             Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("test database"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -3522,7 +3522,7 @@ mod tests {
         // Loading a local masternode needs the wallet backend wired offline.
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path().to_path_buf();
-        crate::app_dir::ensure_env_file(&data_dir);
+        crate::app_dir::ensure_env_file(&data_dir).expect("write .env");
         let context = AppContext::new(
             data_dir.clone(),
             Network::Testnet,

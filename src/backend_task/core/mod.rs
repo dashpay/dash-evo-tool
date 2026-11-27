@@ -416,7 +416,7 @@ mod send_payment_unsupported_options {
     use dash_sdk::dpp::dashcore::Network;
 
     fn network_free_ctx(tmp: &std::path::Path) -> std::sync::Arc<AppContext> {
-        crate::app_dir::ensure_env_file(tmp);
+        crate::app_dir::ensure_env_file(tmp).expect("write .env");
         let db_file = tmp.join("data.db");
         let db = std::sync::Arc::new(crate::database::Database::new(&db_file).expect("db"));
         // Force legacy wallet-family schema for tests — `initialize`

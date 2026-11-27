@@ -1095,6 +1095,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn render_merge_keeps_new_banner_and_does_not_restore_cleared_banner() {
+        let ctx = egui::Context::default();
+        let cleared = MessageBanner::set_global(&ctx, "Old banner", MessageType::Info);
+        let rendered = get_banners(&ctx).pop().expect("banner in render snapshot");
+
+        MessageBanner::set_global(&ctx, "New banner", MessageType::Info);
+        cleared.clear();
+
+        MessageBanner::merge_rendered_banners(&ctx, vec![(rendered, BannerStatus::Visible)]);
+
+        assert_eq!(
+            global_banner_texts(&ctx),
+            ["New banner"],
+            "the cleared banner must stay gone and the new banner must survive"
+        );
+    }
+
+    #[test]
     fn same_text_replacement_keeps_fresh_flags_after_render_merge() {
         let ctx = egui::Context::default();
         MessageBanner::set_global(&ctx, "Warning", MessageType::Warning);

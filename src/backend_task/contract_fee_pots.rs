@@ -10,6 +10,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::contract_fee_pots::{SeatedModerators, has_elected_moderation};
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -18,7 +19,7 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::contract_fee_pots::ContractFeePots;
-use dash_sdk::platform::transition::contract_fee_claim::ClaimContractFees;
+use dash_sdk::platform::transition::contract_fee_claim::ClaimContractFeesWithMetadata;
 use dash_sdk::platform::{Fetch, Identifier};
 
 /// The key requirements of a fee claim: a CRITICAL authentication key, and
@@ -87,12 +88,23 @@ impl AppContext {
         let identity = qualified_identity.identity.clone();
         let signer = Arc::new(qualified_identity);
 
-        let claimed = identity
-            .claim_contract_fees(sdk, contract_id, pot, Some(&signing_key), signer, None)
+        let (claimed, metadata) = identity
+            .claim_contract_fees_with_metadata(
+                sdk,
+                contract_id,
+                pot,
+                Some(&signing_key),
+                signer,
+                None,
+            )
             .await?;
 
         let claimant_balance = claimed.balances.get(&identity_id).copied();
-        self.persist_paid_balances(&identity_id, &claimed.balances)?;
+        self.persist_paid_balances(
+            &identity_id,
+            &claimed.balances,
+            BalanceProvenance::ObservedAt(metadata.height),
+        )?;
 
         Ok(BackendTaskSuccessResult::ContractFeesClaimed {
             contract_id,
@@ -112,15 +124,17 @@ impl AppContext {
         &self,
         claimant: &Identifier,
         balances: &BTreeMap<Identifier, Credits>,
+        observed: BalanceProvenance,
     ) -> Result<(), TaskError> {
         // Every write is tried, so one failure does not leave the other
         // paid identities stale; the first failure is reported.
         let mut first_failure = None;
         for (identity_id, balance) in balances {
-            let saved = self.edit_local_qualified_identity(identity_id, |fresh| {
-                fresh.identity.set_balance(*balance);
-                Ok(())
-            });
+            let saved =
+                self.edit_local_qualified_identity_observed(identity_id, observed, |fresh| {
+                    fresh.identity.set_balance(*balance);
+                    Ok(())
+                });
             match saved {
                 Ok(_) => {}
                 // A paid co-recipient not kept on this device has no record
@@ -177,7 +191,11 @@ mod tests {
 
         // Nothing is stored for this identity, so the write fails.
         let claimant = Identifier::random();
-        let result = ctx.persist_paid_balances(&claimant, &BTreeMap::from([(claimant, 1_000)]));
+        let result = ctx.persist_paid_balances(
+            &claimant,
+            &BTreeMap::from([(claimant, 1_000)]),
+            BalanceProvenance::ObservedAt(51),
+        );
 
         assert!(
             matches!(
@@ -190,21 +208,27 @@ mod tests {
 
     /// The proof carries the new balance of every identity the pot paid: each
     /// one kept on this device is updated, not only the claimant's, and the
-    /// paid identities not kept here are skipped.
+    /// paid identities not kept here are skipped, even after a prior refresh
+    /// has established a balance watermark.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_claim_stores_the_new_balance_of_every_paid_identity_kept_here() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::wired_test_app_context(temp_dir.path()).await;
         let [claimant, co_moderator, stranger] = [1, 2, 3].map(|byte| Identifier::new([byte; 32]));
         for id in [claimant, co_moderator] {
-            let identity = crate::context::test_support::bare_user_identity(id, ctx.network);
-            ctx.insert_local_qualified_identity(&identity, &None)
-                .expect("identity stored");
+            let mut identity = crate::context::test_support::bare_user_identity(id, ctx.network);
+            identity.identity.set_balance(100);
+            ctx.insert_local_qualified_identity_observed(
+                &mut identity,
+                &None,
+                BalanceProvenance::ObservedAt(50),
+            )
+            .expect("identity stored with its observed balance");
         }
         let balances =
             BTreeMap::from([(claimant, 1_000), (co_moderator, 2_000), (stranger, 3_000)]);
 
-        ctx.persist_paid_balances(&claimant, &balances)
+        ctx.persist_paid_balances(&claimant, &balances, BalanceProvenance::ObservedAt(51))
             .expect("balances saved");
 
         let balance = |id| {

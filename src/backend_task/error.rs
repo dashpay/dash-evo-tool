@@ -380,7 +380,7 @@ pub enum TaskError {
     /// when DET's own operation gate refused. Clearing again once it has
     /// finished deletes everything.
     #[error(
-        "A shielded transaction or shielded balance update is still running, so nothing was cleared. Wait for it to finish, then clear your data again."
+        "A shielded transaction, a shielded balance update or a wallet setup is still running, so nothing was cleared. Wait for it to finish, then clear your data again."
     )]
     WalletDataClearShieldedBusy {
         #[source]

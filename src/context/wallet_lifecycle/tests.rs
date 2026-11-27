@@ -3306,12 +3306,17 @@ async fn clear_network_database_shielded_store_failure_explains_manual_recovery(
         let (before_deletion, after_deletion) = message
             .split_once("Delete the file and those matching files manually")
             .unwrap_or_else(|| panic!("missing backup and deletion advice: {message}"));
+        let mut before = before_deletion;
         for step in [
             "wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal",
             "including those to your own wallets",
+            "close the app",
             "back up the file together with any matching files ending in -wal, -shm, or -journal",
         ] {
-            assert!(before_deletion.contains(step), "{step}: {message}");
+            before = before
+                .split_once(step)
+                .unwrap_or_else(|| panic!("missing or out of order: {step:?} in {message}"))
+                .1;
         }
         assert!(after_deletion.contains("sync again"), "{message}");
         let mut remaining = after_deletion;

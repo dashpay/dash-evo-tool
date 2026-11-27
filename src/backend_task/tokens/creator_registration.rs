@@ -166,7 +166,7 @@ impl AppContext {
         .map_err(|error| match error {
             dash_sdk::Error::Protocol(source) => TaskError::InvalidTokenDraft {
                 source: Box::new(crate::model::token_creator::DraftError::private_documents(
-                    source,
+                    source, version,
                 )),
             },
             other => TaskError::from(other),
@@ -410,19 +410,12 @@ impl AppContext {
     /// Saves the accepted contract and its token only where nothing is cached yet: a later
     /// configuration update may have replaced the creation-time settings.
     fn creator_cache_receipt(&self, accepted: &DataContract, alias: &str) -> Result<(), TaskError> {
-        let cached = match self.get_contract_by_id(&accepted.id()) {
-            Ok(cached) => cached.map(|cached| cached.contract),
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    "Cached token contract is unreadable; filling missing tokens from the accepted contract"
-                );
-                None
-            }
-        };
+        let cached = self
+            .get_contract_by_id(&accepted.id())?
+            .map(|cached| cached.contract);
         let contract = cached.as_ref().unwrap_or(accepted);
         let mut missing = Vec::new();
-        for position in contract.tokens().keys().copied() {
+        for position in accepted.tokens().keys().copied() {
             // An existing entry is kept even if this build cannot read it.
             if let Some(token_id) = contract.token_id(position)
                 && !self.has_token_entry(&token_id)?
@@ -1147,7 +1140,7 @@ mod tests {
     /// Restoring a receipt must not replace token settings a later update
     /// saved, but it still fills a missing token entry.
     #[tokio::test(flavor = "multi_thread")]
-    async fn token_registration_restore_keeps_newer_token_settings() {
+    async fn review_regression_restore_keeps_newer_settings_without_tracking_later_tokens() {
         use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Setters;
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
@@ -1184,6 +1177,7 @@ mod tests {
         let mut newer_config = contract.expected_token_configuration(0).unwrap().clone();
         newer_config.set_max_supply(Some(456));
         newer.add_token(0, newer_config.clone());
+        newer.add_token(1, newer_config.clone());
         context.replace_contract(contract.id(), &newer).unwrap();
         context.remove_token(&token_id).unwrap();
         context
@@ -1194,12 +1188,16 @@ mod tests {
             Some(newer_config),
             "a missing entry is filled from the cached contract"
         );
+        assert!(
+            !context
+                .has_token_entry(&newer.token_id(1).unwrap())
+                .unwrap()
+        );
     }
 
-    /// A cache entry this build cannot read never blocks the restore: it is
-    /// kept as it is, and missing entries are still filled.
+    /// An unreadable contract must not make healthy tracked tokens disappear.
     #[tokio::test(flavor = "multi_thread")]
-    async fn token_registration_restore_fills_missing_entries_past_unreadable_ones() {
+    async fn review_regression_restore_preserves_healthy_tokens_beside_unreadable_contract() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let (mut record, contract) = fixture(&context);
@@ -1207,6 +1205,23 @@ mod tests {
         let journal = context.token_registration_journal().unwrap();
         journal.claim(&record).unwrap();
         let token_id = contract.token_id(0).unwrap();
+        let version = PlatformVersion::latest();
+        let healthy = canonical_contract(
+            record.owner,
+            8,
+            TokenDraft::example(false)
+                .parse(record.owner, context.network, version, 0)
+                .unwrap(),
+            version,
+        )
+        .unwrap();
+        context
+            .insert_contract_if_not_exists(
+                &healthy,
+                Some("Healthy"),
+                crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded,
+            )
+            .unwrap();
 
         // An unreadable payload, then an unreadable stored record.
         for envelope in [false, true] {
@@ -1230,12 +1245,14 @@ mod tests {
             else {
                 panic!("the restore is accepted ({envelope})");
             };
-            assert!(outcome.local_cache_saved, "{envelope}");
-            assert_eq!(
-                context.get_token_config_for_id(&token_id).unwrap(),
-                Some(contract.expected_token_configuration(0).unwrap().clone()),
-                "the missing token is filled from the accepted contract ({envelope})"
-            );
+            let listed = context
+                .get_all_known_tokens_with_data_contract()
+                .expect("restoring an unreadable contract must not break the registry");
+            assert!(listed.contains_key(&healthy.token_id(0).unwrap()));
+            assert!(outcome.journal_saved);
+            assert!(!outcome.local_cache_saved, "{envelope}");
+            assert!(!context.has_token_entry(&token_id).unwrap());
+            assert!(context.get_contract_by_id(&contract.id()).is_err());
         }
     }
 

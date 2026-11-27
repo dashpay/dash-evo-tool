@@ -73,7 +73,15 @@ impl TokensScreen {
                         action=AppAction::BackendTask(BackendTask::ContractTask(Box::new(crate::backend_task::contract::ContractTask::FetchContractsWithDescriptions(vec![record.contract_id]))));
                     }
                     if ui
-                        .add_enabled(!pending, egui::Button::new("Create another token"))
+                        .add_enabled(
+                            !pending
+                                && self
+                                    .creator_workspace
+                                    .outcome
+                                    .as_ref()
+                                    .is_none_or(|outcome| outcome.journal_saved),
+                            egui::Button::new("Create another token"),
+                        )
                         .clicked()
                     {
                         self.creator_workspace = CreatorWorkspace {
@@ -722,6 +730,48 @@ mod tests {
             );
         harness.run();
         (harness, actions)
+    }
+
+    #[test]
+    fn review_regression_unsaved_confirmation_cannot_be_dismissed() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (screen, record) = confirmed_but_unsaved(&context);
+        let (mut harness, _) = render_review(screen);
+        assert!(
+            harness
+                .get_by_label("Create another token")
+                .accesskit_node()
+                .is_disabled()
+        );
+        assert!(
+            !harness
+                .get_by_label("Restore local receipt · no payment")
+                .accesskit_node()
+                .is_disabled()
+        );
+        assert_eq!(
+            harness.state().creator_workspace.recovery.as_ref(),
+            Some(&record)
+        );
+        harness
+            .state_mut()
+            .creator_workspace
+            .outcome
+            .as_mut()
+            .unwrap()
+            .journal_saved = true;
+        harness.run_steps(2);
+        assert!(
+            !harness
+                .get_by_label("Create another token")
+                .accesskit_node()
+                .is_disabled()
+        );
+        harness.get_by_label("Create another token").click();
+        harness.run_steps(2);
+        assert!(harness.state().creator_workspace.recovery.is_none());
     }
 
     /// A failed retry must not hide a creation Platform already confirmed.

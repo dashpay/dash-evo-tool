@@ -132,10 +132,33 @@ impl DraftError {
             },
         )
     }
-    /// Names the private document type whose entries are too small, and the
-    /// size they need; other refusals stay generic.
-    pub fn private_documents(source: ProtocolError) -> Self {
+    /// Gives a correction within the reviewed network's private document limits.
+    pub fn private_documents(
+        source: ProtocolError,
+        version: &dash_sdk::dpp::version::PlatformVersion,
+    ) -> Self {
+        let maximum = version
+            .system_limits
+            .max_private_document_entry_size
+            .unwrap_or(u32::MAX);
         let issue = match source {
+            ProtocolError::PrivateDocumentEntrySizeTooSmall {
+                ref document_type_name,
+                minimum_entry_size,
+                ..
+            } if minimum_entry_size > maximum => DraftIssue::PrivatePayloadTooLarge {
+                document_type: document_type_name.clone(),
+                maximum,
+                source: Box::new(source),
+            },
+            ProtocolError::UnboundedPrivateDocumentProperty {
+                ref document_type_name,
+                ref property_name,
+            } => DraftIssue::PrivatePropertyUnbounded {
+                document_type: document_type_name.clone(),
+                property: property_name.clone(),
+                source: Box::new(source),
+            },
             ProtocolError::PrivateDocumentEntrySizeTooSmall {
                 ref document_type_name,
                 minimum_entry_size,
@@ -258,6 +281,24 @@ pub enum DraftIssue {
     PrivateEntrySize {
         document_type: String,
         minimum: u32,
+        #[source]
+        source: Box<ProtocolError>,
+    },
+    #[error(
+        "The private document type {document_type} needs more than the network limit of {maximum} bytes. Reduce the maximum lengths or item counts of its fields."
+    )]
+    PrivatePayloadTooLarge {
+        document_type: String,
+        maximum: u32,
+        #[source]
+        source: Box<ProtocolError>,
+    },
+    #[error(
+        "The private document type {document_type} has no maximum size for field {property}. Set a maximum length or item count for that field."
+    )]
+    PrivatePropertyUnbounded {
+        document_type: String,
+        property: String,
         #[source]
         source: Box<ProtocolError>,
     },
@@ -754,6 +795,73 @@ mod policy_tests {
         assert_eq!(
             draft.policy, policy,
             "SDK templates describe permissions only"
+        );
+    }
+}
+
+#[cfg(test)]
+mod private_document_guidance_tests {
+    use super::*;
+    use dash_sdk::dpp::{dashcore::Network, version::PlatformVersion};
+    use dash_sdk::platform::Identifier;
+
+    fn refusal(max_items: Option<u32>) -> DraftError {
+        let version = PlatformVersion::latest();
+        let owner = Identifier::from([18; 32]);
+        let mut draft = TokenDraft::example(false);
+        let mut property = serde_json::json!({
+            "type": "array", "byteArray": true, "position": 0,
+        });
+        if let Some(maximum) = max_items {
+            property["maxItems"] = maximum.into();
+        }
+        draft.documents = serde_json::json!({
+            "request": {
+                "type": "object", "private": {"entrySize": 376},
+                "documentsMutable": false, "canBeDeleted": false,
+                "properties": {"key": property}, "required": ["key"],
+                "additionalProperties": false,
+            }
+        })
+        .to_string();
+        let contract = contract::canonical_contract(
+            owner,
+            1,
+            draft.parse(owner, Network::Testnet, version, 0).unwrap(),
+            version,
+        )
+        .unwrap();
+        let dash_sdk::Error::Protocol(error) =
+            dash_sdk::platform::transition::put_contract::ensure_private_document_entries_fit(
+                &contract, None,
+            )
+            .unwrap_err()
+        else {
+            panic!("expected a typed private document refusal")
+        };
+        DraftError::private_documents(error, version)
+    }
+
+    #[test]
+    fn review_regression_oversized_private_payload_recommends_smaller_bounds() {
+        let error = refusal(Some(5000));
+        assert_eq!(error.section, Section::Documents);
+        let message = error.to_string();
+        assert!(
+            message.contains("request") && message.contains("4096") && message.contains("Reduce"),
+            "{message}"
+        );
+        assert!(!message.contains("Set its entrySize"), "{message}");
+    }
+
+    #[test]
+    fn review_regression_unbounded_private_property_names_the_field() {
+        let error = refusal(None);
+        assert_eq!(error.section, Section::Documents);
+        let message = error.to_string();
+        assert!(
+            message.contains("request") && message.contains("key") && message.contains("maximum"),
+            "{message}"
         );
     }
 }

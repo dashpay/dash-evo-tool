@@ -32,7 +32,6 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
 
@@ -137,13 +136,11 @@ pub struct AddKeyScreen {
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -183,13 +180,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -234,13 +229,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -680,7 +673,7 @@ impl AddKeyScreen {
                 }
             });
         ui.add_space(20.0);
-        if ui.button("Back to Identities Screen").clicked() {
+        if ui.button("Back").clicked() {
             action = AppAction::PopScreenAndRefresh;
         }
         action
@@ -707,7 +700,7 @@ impl AddKeyScreen {
                 );
             });
         ui.add_space(20.0);
-        if ui.button("Back to Identities Screen").clicked() {
+        if ui.button("Back").clicked() {
             action = AppAction::PopScreenAndRefresh;
         }
         action
@@ -718,10 +711,7 @@ impl AddKeyScreen {
             ui,
             "Key Added Successfully!".to_string(),
             vec![
-                (
-                    "Back to Identities Screen".to_string(),
-                    AppAction::PopScreenAndRefresh,
-                ),
+                ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
                     "Add another key".to_string(),
                     AppAction::Custom("add_another".to_string()),
@@ -1984,11 +1974,7 @@ mod derived_key_tests {
         harness.run();
         assert!(harness.query_by_label("Copy private key").is_none());
         assert!(harness.query_by_label("Private Key:").is_none());
-        assert!(
-            harness
-                .query_by_label("Back to Identities Screen")
-                .is_some()
-        );
+        assert!(harness.query_by_label("Back").is_some());
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
         let own_add = pending_add(&mut screen);
@@ -2000,6 +1986,37 @@ mod derived_key_tests {
         let mut harness = not_saved_harness(screen);
         harness.run();
         assert!(harness.query_by_label("Copy private key").is_some());
+    }
+
+    #[test]
+    fn add_key_returns_to_its_caller() {
+        use crate::context::test_support::{identity_holding, test_app_context};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        for status in [
+            AddKeyStatus::Complete,
+            AddKeyStatus::KeyOnNetworkNotSaved,
+            AddKeyStatus::DerivedKeyOnNetworkNotSaved,
+        ] {
+            let mut screen = AddKeyScreen::new(identity_holding(&[]), &ctx);
+            screen.add_key_status = status;
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, (screen, action): &mut (AddKeyScreen, AppAction)| {
+                        let frame_action = screen.ui(ui);
+                        if frame_action != AppAction::None {
+                            *action = frame_action;
+                        }
+                    },
+                    (screen, AppAction::None),
+                );
+            harness.run();
+            harness.get_by_label("Back").click();
+            harness.run();
+            assert_eq!(harness.state().1, AppAction::PopScreenAndRefresh);
+        }
     }
 }
 

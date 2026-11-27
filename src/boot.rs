@@ -20,6 +20,7 @@
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
@@ -28,13 +29,44 @@ use platform_wallet_storage::secrets::{SecretStore, SecretString};
 use crate::app::AppState;
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::model::error_report::StartupFailure;
+use crate::model::error_report::{StartupFailure, WindowFailureKind, window_failure_text};
 use crate::ui::components::passphrase_modal::{
     PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
 use crate::ui::components::startup_error_dialog::{StartupErrorDialog, StartupErrorDialogAction};
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
+
+/// A panic caught while the app was being built. Never shown as the message:
+/// the dialog falls back to the generic one and shows this in the details. A
+/// formatted panic message is redacted as the panic hook redacts it.
+#[derive(thiserror::Error)]
+#[error("startup panicked: {message}")]
+pub struct BootPanic {
+    message: crate::logging::PanicMessage,
+}
+
+impl BootPanic {
+    fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
+        Self {
+            message: crate::logging::PanicMessage::from_payload(payload),
+        }
+    }
+}
+
+impl std::fmt::Debug for BootPanic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootPanic")
+            .field("message", &format_args!("{}", self.message))
+            .finish()
+    }
+}
+
+/// `build()`, with a panic turned into a [`BootPanic`] error.
+fn catch_boot_panic<T>(build: impl FnOnce() -> Result<T, BootError>) -> Result<T, BootError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+        .unwrap_or_else(|payload| Err(Box::new(BootPanic::from_payload(&*payload))))
+}
 
 /// Sole owner of the production boot environment: resolve the app data
 /// directory (creating it if needed), ensure the `.env` file exists, and
@@ -168,10 +200,17 @@ impl BootApp {
         // Every boot outcome, the failure dialog included, keeps selections
         // out of PRIMARY.
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
-        match preparation
-            .0
-            .and_then(|prepared| Self::open(ctx, prepared, outcome))
-        {
+        Self::guarded(outcome, || {
+            preparation
+                .0
+                .and_then(|prepared| Self::open(ctx, prepared, outcome))
+        })
+    }
+
+    /// `build()`, or the failure state when it fails or panics. A panic leaves
+    /// the half-built app behind; only the failure dialog is shown afterwards.
+    fn guarded(outcome: &StartupOutcome, build: impl FnOnce() -> Result<Self, BootError>) -> Self {
+        match catch_boot_panic(build) {
             Ok(app) => app,
             Err(error) => Self::failed(&*error, outcome),
         }
@@ -238,12 +277,14 @@ impl BootApp {
         };
         match AppContext::open_secret_store_with_passphrase(&state.data_dir, passphrase) {
             Ok(store) => {
-                *self = match AppState::new_inner(
-                    state.ctx.clone(),
-                    Arc::clone(&state.db),
-                    state.data_dir.clone(),
-                    store,
-                ) {
+                *self = match catch_boot_panic(|| {
+                    AppState::new_inner(
+                        state.ctx.clone(),
+                        Arc::clone(&state.db),
+                        state.data_dir.clone(),
+                        store,
+                    )
+                }) {
                     Ok(app) => BootApp::Running(Box::new(app)),
                     Err(error) => Self::failed(&*error, &state.outcome),
                 };
@@ -315,6 +356,40 @@ impl eframe::App for BootApp {
     }
 }
 
+/// Tell the user in a system dialog that the app window could not be opened,
+/// so a launch without a terminal does not end silently. Best effort: without
+/// a dialog service (e.g. no zenity or kdialog on Linux) only the log remains.
+pub fn show_window_failure_dialog(error: &eframe::Error) {
+    let text = window_failure_text(
+        window_failure_kind(error),
+        crate::logging::log_file_path().as_deref(),
+    );
+    if let Err(error) = native_dialog::DialogBuilder::message()
+        .set_level(native_dialog::MessageLevel::Error)
+        .set_title(crate::ui::components::startup_error_dialog::STARTUP_ERROR_TITLE)
+        .set_text(text)
+        .alert()
+        .show()
+    {
+        tracing::warn!(
+            ?error,
+            "Could not show the system dialog about the window failure"
+        );
+    }
+}
+
+/// Which layer kept eframe from opening the window, so the dialog gives
+/// advice that fits: winit talks to the desktop, wgpu to the graphics driver.
+fn window_failure_kind(error: &eframe::Error) -> WindowFailureKind {
+    match error {
+        eframe::Error::Winit(_) | eframe::Error::WinitEventLoop(_) => {
+            WindowFailureKind::DesktopSession
+        }
+        eframe::Error::Wgpu(_) => WindowFailureKind::Graphics,
+        eframe::Error::AppCreation(_) => WindowFailureKind::Other,
+    }
+}
+
 /// Reports a failed startup and exits with `main`'s failure status when
 /// dropped. eframe drops its storage, joining the profile save, before the
 /// app, so the exit cannot cut that save short.
@@ -360,7 +435,8 @@ struct Prepared {
 impl BootPreparation {
     /// Prepare the data folder and database, and open the seed vault.
     pub fn run() -> Self {
-        Self(AppState::boot_inputs().and_then(|(data_dir, db)| {
+        Self(catch_boot_panic(|| {
+            let (data_dir, db) = AppState::boot_inputs()?;
             let decision = classify_open(&data_dir)?;
             Ok(Prepared {
                 data_dir,
@@ -448,9 +524,18 @@ impl Startup {
         }
     }
 
+    /// Drop successful boot steps without building the app, releasing the
+    /// vault and the database; a failure stays for the terminal notice.
+    pub fn release(&mut self) {
+        if self.error().is_none() {
+            *self = Self::Spent;
+        }
+    }
+
     /// Build the boot app. Successful steps are handed over and the startup
     /// becomes [`Self::Spent`]; a failure stays here for the terminal notice.
     pub fn boot(&mut self, ctx: egui::Context, outcome: &StartupOutcome) -> BootApp {
+        outcome.window_opened.store(true, Ordering::Release);
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match std::mem::replace(self, Self::Spent) {
             Self::Prepared {
@@ -476,9 +561,16 @@ impl Startup {
 pub struct StartupOutcome {
     shown: Arc<Mutex<Option<FailureNotice>>>,
     held_vault: Arc<Mutex<Option<Arc<SecretStore>>>>,
+    window_opened: Arc<AtomicBool>,
 }
 
 impl StartupOutcome {
+    /// Whether eframe opened the window and built the app. An eframe error
+    /// after that is not a failure to open the window.
+    pub fn window_opened(&self) -> bool {
+        self.window_opened.load(Ordering::Acquire)
+    }
+
     fn mark_failed(&self, failure: &StartupFailure) {
         *self.shown.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(FailureNotice(failure.clone()));
@@ -680,6 +772,43 @@ mod tests {
         };
         assert_ne!(failure.report().message(), GENERIC_STARTUP_FAILURE);
         assert!(outcome.failed());
+    }
+
+    /// A panic while the app is being built shows the dialog with the generic
+    /// message and the panic text in the details, instead of closing silently.
+    #[test]
+    fn panic_during_boot_enters_failed_state() {
+        let outcome = StartupOutcome::default();
+
+        let app = BootApp::guarded(&outcome, || panic!("boot exploded"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a boot panic must be fatal");
+        };
+        assert_eq!(failure.report().message(), GENERIC_STARTUP_FAILURE);
+        assert!(
+            failure.report().details().contains("boot exploded"),
+            "{}",
+            failure.report().details()
+        );
+        assert!(outcome.failed());
+    }
+
+    /// A formatted panic message can embed any runtime value, so like the
+    /// panic hook the dialog, log and terminal get only its length.
+    #[test]
+    fn formatted_boot_panic_message_is_redacted() {
+        const MARKER: &str = "runtime-value-marker";
+        let outcome = StartupOutcome::default();
+
+        let app = BootApp::guarded(&outcome, || panic!("boot exploded with {MARKER}"));
+
+        let BootApp::Failed(failure) = &app else {
+            panic!("a boot panic must be fatal");
+        };
+        let details = failure.report().details();
+        assert!(!details.contains(MARKER), "{details}");
+        assert!(details.contains("redacted"), "{details}");
     }
 
     /// The failure dialog keeps no egui memory, so closing it writes nothing to
@@ -963,6 +1092,33 @@ mod tests {
         assert!(!startup.persist_window());
     }
 
+    /// A graphics failure and an app-creation failure each get their own kind
+    /// of advice, not one fixed text for every window failure.
+    #[test]
+    fn window_failure_kind_follows_the_failing_layer() {
+        let graphics = eframe::Error::Wgpu(eframe::egui_wgpu::WgpuError::NoSurfaceFormatsAvailable);
+        assert_eq!(window_failure_kind(&graphics), WindowFailureKind::Graphics);
+
+        let creation = eframe::Error::AppCreation(Box::new(std::io::Error::other("x")));
+        assert_eq!(window_failure_kind(&creation), WindowFailureKind::Other);
+    }
+
+    /// Releasing a successful preparation frees the vault for another launch,
+    /// so a restart while the window failure dialog is up is not refused.
+    #[test]
+    fn release_frees_the_vault() {
+        let Some(dir) = in_data_dir_child(keyless_vault) else {
+            return;
+        };
+        let mut startup = Startup::prepare(Ok::<_, std::io::Error>(dir.clone()));
+        assert!(startup.persist_window(), "the vault opened and is held");
+
+        startup.release();
+
+        assert!(startup.error().is_none());
+        AppContext::open_secret_store(&dir).expect("the vault is free after release");
+    }
+
     /// Each data folder step gets its own plain message; paths and I/O
     /// details stay in the technical details.
     #[test]
@@ -1005,11 +1161,13 @@ mod tests {
     #[test]
     fn spent_startup_does_not_prepare_again() {
         let outcome = StartupOutcome::default();
+        assert!(!outcome.window_opened());
         assert!(matches!(
             Startup::Spent.boot(egui::Context::default(), &outcome),
             BootApp::Failed(_)
         ));
         assert!(outcome.failed());
+        assert!(outcome.window_opened());
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.

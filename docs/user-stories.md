@@ -865,6 +865,15 @@ As a user, I want the app to sign with a key that can actually sign the action, 
 - Signing eligibility never hides imported identities, keys, contracts, documents, token prices or configuration. Disabled voting keys remain importable for history and key management but cannot cast votes.
 - For other actions where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
 
+### IDN-025: Check wallet identity search readiness before unlocking [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to know whether my wallet's identities can be searched before entering its password, so that I do not unlock it only to be told to wait.
+
+- In Load Existing Identity → From my wallet, a disconnected or still-syncing network shows guidance to connect and wait before offering wallet unlock or search.
+- When the network becomes ready, the guidance disappears and the locked wallet can be unlocked without reopening the form.
+- Both the default search and the advanced specific-index search still check readiness when submitted.
+
 ## DPNS (DPN)
 
 ### DPN-001: Register a username [Implemented]

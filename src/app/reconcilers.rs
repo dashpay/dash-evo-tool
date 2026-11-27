@@ -1042,7 +1042,9 @@ impl StoragePrepGate {
             } else {
                 config = config.with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
             }
-            let message = if failure.retryable {
+            let message = if failure.retryable
+                && !matches!(failure.error, TaskError::ShieldedStoreOpenFailed { .. })
+            {
                 STORAGE_PREP_FAILED_MESSAGE.to_string()
             } else {
                 failure.error.to_string()

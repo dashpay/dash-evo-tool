@@ -1,7 +1,7 @@
 //! IdentityTask backend E2E tests: TC-020 through TC-030.
 
 use crate::framework::fixtures::shared_identity;
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::{
@@ -14,7 +14,6 @@ use dash_evo_tool::model::qualified_identity::IdentityType;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::WalletArcRef;
-use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -72,7 +71,7 @@ async fn step_top_up_from_platform_addresses(
     let platform_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         si.wallet_seed_hash,
-        Network::Testnet,
+        e2e_network(),
         false,
     )
     .await;
@@ -195,7 +194,7 @@ async fn step_add_key(
         use dash_sdk::dpp::dashcore::PrivateKey;
         let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
             .expect("invalid secret key");
-        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), e2e_network())
             .expect("valid secret key");
         pk.public_key().to_bytes().into()
     });
@@ -286,7 +285,7 @@ async fn step_transfer_to_addresses(
     let platform_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         si.wallet_seed_hash,
-        Network::Testnet,
+        e2e_network(),
         false,
     )
     .await;
@@ -580,13 +579,13 @@ async fn tc_031_incremental_address_discovery() {
     let platform_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,
         si.wallet_seed_hash,
-        dash_sdk::dpp::dashcore::Network::Testnet,
+        e2e_network(),
         false,
     )
     .await;
     tracing::info!(
         "Platform address: {}",
-        platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet)
+        platform_addr.to_bech32m_string(e2e_network())
     );
 
     // Step 2: Fund it

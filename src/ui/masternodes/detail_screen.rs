@@ -209,12 +209,11 @@ impl MasternodeDetailView {
     }
 }
 
-/// A bordered section, open while `open` holds. Its header (`id`) toggles it;
+/// A bordered section, open while `open` holds. Its header toggles it;
 /// `summary` renders beside the header while collapsed. A `danger` section turns
 /// its border and title red while open. Returns the body's output when open.
 fn collapsible_section<R>(
     ui: &mut Ui,
-    id: egui::Id,
     open: &mut bool,
     title: &str,
     danger: bool,
@@ -238,7 +237,7 @@ fn collapsible_section<R>(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                section_header(ui, id, title, title_color, open);
+                section_header(ui, title, title_color, open);
                 if !*open {
                     summary(ui);
                 }
@@ -253,7 +252,7 @@ fn collapsible_section<R>(
 
 /// A section header: arrow and title as one control — one keyboard stop, named
 /// by the title, reporting whether the section is expanded.
-fn section_header(ui: &mut Ui, id: egui::Id, title: &str, color: Color32, open: &mut bool) {
+fn section_header(ui: &mut Ui, title: &str, color: Color32, open: &mut bool) {
     let galley = egui::WidgetText::from(RichText::new(title).strong().color(color)).into_galley(
         ui,
         Some(egui::TextWrapMode::Extend),
@@ -267,10 +266,8 @@ fn section_header(ui: &mut Ui, id: egui::Id, title: &str, color: Color32, open: 
         galley.size().y + 2.0 * padding.y,
     )
     .max(ui.spacing().interact_size);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let response = ui
-        .interact(rect, id, egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
         *open = !*open;
     }
@@ -540,7 +537,7 @@ impl MasternodeDetailView {
             .votes_height
             .unwrap_or(f32::INFINITY)
             .min(available * (1.0 - PINNED_MAX_SHARE));
-        egui::ScrollArea::vertical()
+        let pinned = egui::ScrollArea::vertical()
             .id_salt("masternode_detail_pinned")
             .max_height((available - votes_reserve).max(0.0))
             .auto_shrink([false, true])
@@ -567,7 +564,8 @@ impl MasternodeDetailView {
                 ui.add_space(8.0);
                 self.render_danger_zone(ui, dark_mode);
             });
-        let votes_top = ui.cursor().top();
+        // From the pinned area's edge, so the spacing after it counts too.
+        let votes_top = pinned.inner_rect.bottom();
         ui.add_space(12.0);
         if let Some(node) = self.render_votes_heading(ui, dark_mode) {
             outcome = DetailOutcome::VoteWithNode(node);
@@ -756,7 +754,6 @@ impl MasternodeDetailView {
         let mut open = ui.data_mut(|data| data.get_persisted::<bool>(id).unwrap_or(false));
         let action = collapsible_section(
             ui,
-            id,
             &mut open,
             "Keys",
             false,
@@ -1099,11 +1096,8 @@ impl MasternodeDetailView {
     /// removal confirmation.
     fn render_danger_zone(&mut self, ui: &mut Ui, dark_mode: bool) {
         let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
-        let id =
-            egui::Id::unique("masternode_detail_danger_zone").with(self.identity.identity.id());
         let remove_clicked = collapsible_section(
             ui,
-            id,
             &mut self.danger_zone_open,
             "Danger zone",
             true,

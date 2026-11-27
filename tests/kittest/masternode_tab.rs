@@ -1655,6 +1655,35 @@ fn a_tall_pinned_area_scrolls_on_its_own_and_leaves_room_for_vote_rows() {
     });
 }
 
+/// When a few vote rows need less than the share a tall pinned area leaves
+/// them, they get all the room they need, so they show in full and do not
+/// scroll — the pinned area scrolls instead.
+#[test]
+fn few_vote_rows_keep_all_their_room_under_a_tall_pinned_area() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        const CONTESTS: usize = 3;
+        let window = egui::vec2(800.0, 700.0);
+        let mut harness = open_detail_with_vote_rows(0xBA, "mn-few-rows-01", CONTESTS, window);
+        toggle_detail_section(&mut harness, "Keys");
+        toggle_detail_section(&mut harness, "Danger zone");
+        harness.run_steps(6);
+
+        let heading = harness.get_by_label("This node's votes").rect();
+        let rows = vote_row_rects(&harness, CONTESTS);
+        harness.hover_at(egui::pos2(heading.left() + 40.0, rows[0].center().y));
+        harness.run_steps(3);
+        wheel_down(&mut harness);
+        let scrolled = vote_row_rects(&harness, CONTESTS);
+        assert_eq!(
+            rows.iter().map(|row| row.top()).collect::<Vec<_>>(),
+            scrolled.iter().map(|row| row.top()).collect::<Vec<_>>(),
+            "rows that fit their reserve must not scroll"
+        );
+    });
+}
+
 /// Whether the button `label` lies wholly inside the pinned area, which ends
 /// above the votes heading, with nothing scrolled out of view at its top.
 fn fully_visible_in_pinned_area(harness: &App, label: &str) -> bool {

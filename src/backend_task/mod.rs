@@ -251,7 +251,7 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
     Some((identity_id, token))
 }
 
-/// Whether a storage-open failure needs the user to act outside the app.
+/// Whether retrying in the app cannot fix a storage-open failure.
 /// An in-use lineage check can be retried once the other connection finishes.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     if matches!(error, TaskError::WalletDataCheckFailed { .. }) {

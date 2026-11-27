@@ -5511,6 +5511,57 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    /// Each cause of a failed lineage check gets advice for that cause, and
+    /// every advice ends by starting the app again.
+    #[test]
+    fn wallet_data_check_failure_advice_matches_its_cause() {
+        let sqlite = |code| {
+            WalletDataCheckError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None,
+            ))
+        };
+        let cases = [
+            (
+                sqlite(rusqlite::ffi::SQLITE_BUSY),
+                "Another program is using the file.",
+            ),
+            (
+                sqlite(rusqlite::ffi::SQLITE_FULL),
+                "Free up space on the disk",
+            ),
+            (
+                sqlite(rusqlite::ffi::SQLITE_IOERR),
+                "drive that contains the file is connected",
+            ),
+            (sqlite(rusqlite::ffi::SQLITE_NOMEM), "free up memory"),
+            (
+                sqlite(rusqlite::ffi::SQLITE_PERM),
+                "permission to open this file",
+            ),
+            (
+                sqlite(rusqlite::ffi::SQLITE_CANTOPEN),
+                "permission to open this file",
+            ),
+            (
+                WalletDataCheckError::Metadata {
+                    path: "det-testnet.sqlite-wal".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                },
+                "permission to open this file",
+            ),
+        ];
+        for (source, advice) in cases {
+            let message = TaskError::WalletDataCheckFailed {
+                database: "det-testnet.sqlite".into(),
+                source,
+            }
+            .to_string();
+            assert!(message.contains(advice), "{advice}: {message}");
+            assert!(message.ends_with("start Dash Evo Tool again."), "{message}");
+        }
+    }
+
     /// A data folder the app may not write to gets its own advice; any other
     /// file failure keeps the general one.
     #[test]

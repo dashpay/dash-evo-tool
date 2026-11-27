@@ -37,6 +37,7 @@ use crate::context::connection_status::ConnectionStatus;
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationState;
 use crate::database::Database;
+use crate::model::identity_discovery::DiscoveryReadiness;
 use crate::model::settings::AppSettings;
 use crate::model::spv_status::SpvStatus;
 use crate::ui::components::passphrase_modal;
@@ -1723,6 +1724,8 @@ impl AppState {
         if let Ok(backend) = self.current_app_context().wallet_backend() {
             backend.forget_all_secrets();
         }
+        // Its "cannot search yet" notices name wallets of the network being left.
+        self.current_app_context().clear_wallet_search_notices();
 
         self.chosen_network = network;
         self.network_selection_required = false;
@@ -2484,6 +2487,18 @@ impl App for AppState {
                             }
                             TaskError::MasternodeListNotReady { .. } => {
                                 self.connection_banner.track_quorum_startup_error(handle);
+                            }
+                            TaskError::WalletIdentityDiscoveryNotReady => {
+                                self.connection_banner.track_wallet_search_refusal(
+                                    handle,
+                                    DiscoveryReadiness::Syncing,
+                                );
+                            }
+                            TaskError::WalletIdentityDiscoverySyncStopped => {
+                                self.connection_banner.track_wallet_search_refusal(
+                                    handle,
+                                    DiscoveryReadiness::SyncStopped,
+                                );
                             }
                             TaskError::TransactionConfirmationUnknown {
                                 txid: Some(txid), ..

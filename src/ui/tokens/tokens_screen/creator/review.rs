@@ -136,6 +136,17 @@ impl TokensScreen {
             });
             return action;
         }
+        self.invalidate_creator_review();
+        self.selected_key = self.selected_identity.as_ref().and_then(|identity| {
+            self.selected_key.as_ref().and_then(|key| {
+                crate::ui::helpers::signable_key_now(
+                    identity,
+                    key,
+                    self.app_context.contract_signing_scope(),
+                )
+                .cloned()
+            })
+        });
         let mut unlocked = false;
         card(ui, |ui| {
             heading(
@@ -167,6 +178,7 @@ impl TokensScreen {
                     &mut self.selected_identity,
                     &mut self.selected_key,
                     crate::ui::helpers::TransactionType::RegisterContract,
+                    self.app_context.contract_signing_scope(),
                 );
             });
             let issuer = self.selected_identity.as_ref().map(|qi| qi.identity.id());
@@ -510,6 +522,68 @@ mod tests {
         assert!(screen.creator_workspace.prepared.is_none());
         assert!(!screen.creator_workspace.acknowledged);
     }
+    fn authorized_review(context: &std::sync::Arc<crate::context::AppContext>) -> TokensScreen {
+        let mut prepared = prepared(context);
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            prepared.contract.owner_id(),
+            context.network,
+            true,
+        );
+        prepared.key = identity.identity.public_keys()[&1].clone();
+        let mut screen =
+            TokensScreen::new(context, super::super::super::TokensSubscreen::TokenCreator);
+        screen.selected_key = Some(prepared.key.clone());
+        screen.selected_identity = Some(identity);
+        screen.creator_workspace.prepared = Some(prepared);
+        screen.creator_workspace.acknowledged = true;
+        screen
+    }
+
+    #[test]
+    fn an_expired_published_key_invalidates_an_authorized_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = authorized_review(&context);
+        screen.invalidate_creator_review();
+        assert!(screen.creator_workspace.prepared.is_some());
+        assert!(screen.creator_workspace.acknowledged);
+
+        let expired = screen
+            .selected_key
+            .clone()
+            .unwrap()
+            .with_limits(None, Some(1));
+        screen
+            .selected_identity
+            .as_mut()
+            .unwrap()
+            .identity
+            .add_public_key(expired);
+        screen.invalidate_creator_review();
+
+        assert!(screen.creator_workspace.prepared.is_none());
+        assert!(!screen.creator_workspace.acknowledged);
+    }
+
+    #[test]
+    fn losing_the_signing_wallet_invalidates_the_review_and_clears_the_wallet() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = authorized_review(&context);
+        screen.selected_wallet = Some(std::sync::Arc::new(std::sync::RwLock::new(
+            crate::model::wallet::test_support::open_wallet(),
+        )));
+        screen.wallet_open_attempted = true;
+        screen.selected_key = None;
+
+        screen.update_selected_wallet();
+
+        assert!(screen.selected_wallet.is_none());
+        assert!(!screen.wallet_open_attempted);
+        assert!(screen.creator_workspace.prepared.is_none());
+        assert!(!screen.creator_workspace.acknowledged);
+    }
+
     #[test]
     fn token_registration_preparation_result_never_approves_a_draft_edited_while_waiting() {
         let dir = tempfile::tempdir().unwrap();

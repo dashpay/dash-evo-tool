@@ -202,6 +202,11 @@ pub struct AppContext {
     /// so the sweep runs once; cleared in
     /// [`stop_spv`](Self::stop_spv) so a reconnect re-arms it.
     identity_autodiscovery_fired: AtomicBool,
+    /// Per wallet, the shown "identities cannot be searched yet" notice of an
+    /// unlock; removed once that wallet is searched, removed, or left behind by
+    /// a network switch.
+    wallet_search_notices:
+        Mutex<HashMap<WalletSeedHash, crate::ui::components::message_banner::BannerHandle>>,
     /// How far this session's most recent load of each identity got, stamped with
     /// the token of the load it belongs to. The single source of truth for whether
     /// a dispatched load is still outstanding and whether it actually succeeded —
@@ -609,6 +614,7 @@ impl AppContext {
             core_client: core_client.into(),
             has_wallet: false.into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
+            wallet_search_notices: Mutex::default(),
             identity_loads: Default::default(),
             wallet_context: Arc::new(WalletContext::default()),
             identity_record_locks: Mutex::new(HashMap::new()),
@@ -1196,6 +1202,15 @@ impl AppContext {
         info
     }
 
+    /// Contract signing rules from this network's verified SDK response.
+    pub fn contract_signing_scope(
+        &self,
+    ) -> crate::model::identity_key_usability::SigningScope<'static> {
+        crate::model::identity_key_usability::SigningScope::DataContract {
+            protocol_version: self.protocol_version_info().verified_version,
+        }
+    }
+
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
         // Signing override: only the Developer role may relax the security-level
         // and purpose checks when signing a state transition.
@@ -1654,8 +1669,9 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Stored owner, falling back to the DPNS signing key's wallet for legacy
-    /// records.
+    /// Stored owner, falling back for legacy records to the wallet of the
+    /// identity's username signing key, then to the loaded wallet that derives
+    /// any of its keys, whatever the key is bound to.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
             return Some(hash);
@@ -1666,8 +1682,9 @@ impl AppContext {
     }
 
     /// The wallet that owns a loaded identity: its stored owner, else (legacy
-    /// records) the loaded wallet behind its DPNS signing key. Not
-    /// `associated_wallets`, which lists every loaded wallet.
+    /// records) the wallet of its username signing key, then the loaded wallet
+    /// that derives any of its keys. Not `associated_wallets`, which lists
+    /// every loaded wallet.
     pub(crate) fn identity_owner_wallet(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
         if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&qi.identity.id()) {
             return Some(hash);
@@ -1676,11 +1693,16 @@ impl AppContext {
     }
 
     /// Owner of a legacy record without a stored wallet link.
-    // TODO(signing-key-wallet): switch to `wallet_for_signing_key` once #1117
-    // lands, so the owner is the wallet deriving a key the identity actually
-    // signs with, not the one behind its DPNS key.
     fn legacy_owner_wallet_hash(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
-        let wallet = crate::ui::identity::get_selected_wallet(qi, Some(self), None).ok()??;
+        let wallet = crate::ui::identity::get_selected_wallet(qi, Some(self), None)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                qi.identity
+                    .public_keys()
+                    .values()
+                    .find_map(|key| crate::ui::identity::wallet_for_signing_key(qi, Some(key)))
+            })?;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }
@@ -2995,5 +3017,66 @@ mod tests {
         }
 
         assert_eq!(maximum.load(Ordering::SeqCst), MAX_CONCURRENT_DPNS_VOTERS);
+    }
+
+    /// Regression: the owner of an identity stored without a wallet link was
+    /// read from its DPNS signing key, so an identity whose keys are all bound
+    /// to another contract had no owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unlinked_identity_is_owned_by_the_wallet_deriving_its_keys() {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (identity, wallet) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let seed_hash = wallet.read().expect("wallet").seed_hash();
+        ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        assert_eq!(
+            ctx.owning_wallet_hash(identity.identity.id()),
+            Some(seed_hash)
+        );
+    }
+
+    /// Regression: an unlinked identity whose keys come from two wallets was
+    /// owned by the wallet of its lowest key id, no longer by the wallet of
+    /// its DPNS signing key as before, so Add Identity could preselect the
+    /// other wallet. The signing-key wallet comes first again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unlinked_identity_is_owned_by_its_signing_key_wallet_first() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        // Key 1, bound to DashPay, from wallet A; key 2, the DPNS signing
+        // key, from wallet B.
+        let (mut identity, wallet_a) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let wallet_b =
+            crate::model::wallet::test_support::open_wallet_on(crate::test_support::keys::seed());
+        let hash_a = wallet_a.read().expect("wallet").seed_hash();
+        let hash_b = wallet_b.seed_hash();
+        assert_ne!(hash_a, hash_b);
+        let mut keys = identity.identity.public_keys().clone();
+        keys.insert(2, auth_key(2, SecurityLevel::HIGH));
+        identity.identity.set_public_keys(keys);
+        hold_as_wallet_reference(&mut identity, 2, hash_b);
+        ctx.wallet_context().insert_test_wallet(hash_a, wallet_a);
+        ctx.wallet_context()
+            .insert_test_wallet(hash_b, Arc::new(std::sync::RwLock::new(wallet_b)));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        assert_eq!(ctx.owning_wallet_hash(identity.identity.id()), Some(hash_b));
     }
 }

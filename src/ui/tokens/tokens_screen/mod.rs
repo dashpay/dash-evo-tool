@@ -786,6 +786,8 @@ impl TokensScreen {
     /// picks one it offers.
     fn refresh_token_creator_identity(&mut self) {
         let Some(id) = self.selected_identity.as_ref().map(|qi| qi.identity.id()) else {
+            self.creator_workspace.prepared = None;
+            self.creator_workspace.acknowledged = false;
             return;
         };
         let Some(fresh) = self
@@ -800,15 +802,43 @@ impl TokensScreen {
             self.creator_workspace.acknowledged = false;
             return;
         };
-        self.selected_key = self.selected_key.take().and_then(|selected| {
-            let published = fresh.identity.public_keys().get(&selected.id())?;
-            (crate::model::qualified_identity::encrypted_key_storage::same_key(
-                &selected, published,
-            ) && published.disabled_at().is_none()
-                && fresh.private_keys.candidates(published).next().is_some())
-            .then(|| published.clone())
+        self.selected_key = self.selected_key.as_ref().and_then(|selected| {
+            crate::ui::helpers::signable_key_now(
+                fresh,
+                selected,
+                self.app_context.contract_signing_scope(),
+            )
+            .cloned()
         });
         self.selected_identity = Some(fresh.clone());
+        self.invalidate_creator_review();
+    }
+
+    /// A review remains authorized only for its current, usable signer.
+    fn invalidate_creator_review(&mut self) {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        if self
+            .creator_workspace
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| {
+                self.selected_identity.as_ref().is_none_or(|identity| {
+                    identity.identity.id() != prepared.contract.owner_id()
+                        || self.selected_key.as_ref() != Some(&prepared.key)
+                        || crate::ui::helpers::signable_key_now(
+                            identity,
+                            &prepared.key,
+                            self.app_context.contract_signing_scope(),
+                        ) != Some(&prepared.key)
+                }) || self
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(crate::ui::components::wallet_unlock_popup::wallet_needs_unlock)
+            })
+        {
+            self.creator_workspace.prepared = None;
+            self.creator_workspace.acknowledged = false;
+        }
     }
 
     /// Stops waiting for a balance refresh or keyword search when the screen is
@@ -1037,7 +1067,7 @@ impl TokensScreen {
 }
 
 pub(super) fn offered_by_token_creator(identity: &QualifiedIdentity) -> bool {
-    identity.identity_type == IdentityType::User && !identity.private_keys.is_empty()
+    identity.identity_type == IdentityType::User
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -2192,21 +2222,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_keeps_a_watch_only_issuer_for_drafting() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            Identifier::from([0x42; 32]),
+            context.network,
+            false,
+        );
+        let id = identity.identity.id();
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        context.set_selected_identity(Some(id));
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(id)
+        );
+        screen.refresh_on_arrival();
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(id)
+        );
+
+        let harness = token_creator_review_harness(screen);
+        assert!(harness.state().selected_key.is_none());
+        harness.get_by_label("Draft overview");
+        assert!(
+            !harness
+                .get_by_label("Check settings")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        );
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_never_keeps_an_identity_it_does_not_offer() {
         use egui_kittest::kittest::Queryable;
         let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
-        for (case, ineligible) in [
-            ("masternode", IdentityType::Masternode),
-            ("keyless user", IdentityType::User),
-        ] {
+        for (case, ineligible) in [("masternode", IdentityType::Masternode)] {
             let tmp = tempfile::tempdir().expect("test tmpdir");
             let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
-            let ineligible_keys: &[_] = if ineligible == IdentityType::User {
-                &[]
-            } else {
-                &key
-            };
-            let ineligible = identity_holding(&context, 0x01, ineligible, ineligible_keys);
+            let ineligible = identity_holding(&context, 0x01, ineligible, &key);
             let ineligible_id = ineligible.identity.id();
             context
                 .insert_local_qualified_identity(&ineligible, &None)

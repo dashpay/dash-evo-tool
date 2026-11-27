@@ -3,21 +3,15 @@ use crate::ui::{MessageType, components::MessageBanner};
 
 impl TokensScreen {
     pub(super) fn update_selected_wallet(&mut self) {
-        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
-            let wallet_changed = match (&self.selected_wallet, &new_wallet) {
-                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
-                (None, None) => false,
-                _ => true,
-            };
-            if wallet_changed {
-                self.wallet_open_attempted = false;
-            }
-            self.selected_wallet = new_wallet;
+        if crate::ui::identity::sync_signing_wallet(
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.creator_workspace.prepared = None;
+            self.creator_workspace.acknowledged = false;
+            self.wallet_unlock_popup.close();
         }
     }
     pub(super) fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {

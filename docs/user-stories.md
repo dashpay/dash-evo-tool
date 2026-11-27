@@ -854,6 +854,17 @@ As a user, I want to remove an identity from this device from the identity's own
 
 ---
 
+### IDN-024: Signing avoids keys that cannot sign [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the app to sign with a key that can actually sign the action, so that my actions are not refused because of an expired, used-up or out-of-scope key.
+
+- On supported Platform networks (protocol 14 and newer), automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
+- Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
+- Creating or updating a contract (including registering a token contract) accepts a key with a spending limit or future expiry on verified protocol 14. On protocol 15, or before the network version is verified, both automatic and manual selection require a key without either restriction. Open forms follow newly verified network rules; the backend confirms them again before signing and sending.
+- Signing eligibility never hides imported identities, keys, contracts, documents, token prices or configuration. Disabled voting keys remain importable for history and key management but cannot cast votes.
+- For other actions where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
+
 ## DPNS (DPN)
 
 ### DPN-001: Register a username [Implemented]
@@ -1113,7 +1124,8 @@ As a user, I want to view past payments sent and received through DashPay so tha
 
 As an everyday user, I want to generate a DashPay QR code so that someone nearby can scan it to add me as a contact or send a payment.
 
-- QR code encodes DashPay profile or payment info.
+- The QR code is a DashPay contact code in the standard DashPay format (DIP-15), so other DashPay wallets can scan it. It shows the identity's username and works for one hour.
+- Scanning another wallet's contact QR code sends that contact a request it can accept automatically. An expired or unreadable code is refused before anything is sent.
 
 ### DPY-009: Edit contact info [Implemented]
 **Persona:** Alex, Priya
@@ -1817,6 +1829,8 @@ As a user with more than one wallet, I want every wallet picker to show each wal
 As a user whose app fails to start, I want a window that explains what happened so that I can fix it myself or ask for help with the right information.
 
 - When startup fails after the app window can open, the app shows a window instead of closing silently; the app itself does not open behind it.
+- An unexpected internal error while the app is being set up shows the same window with the general message.
+- When the app window itself cannot be opened, a system dialog says so with advice that fits the cause (updating the graphics drivers, or reconnecting to the desktop), names the log file when there is one, and links the issue page with a warning that it is public.
 - The window says in plain language what happened and what to try. A known cause (for example, a data folder other accounts can change) gets its own message; any other cause gets a general one.
 - It suggests reporting the problem on the project's issue page if the user cannot solve it, shows that address so it can be copied, and can open it in the browser.
 - It shows the technical details, selectable and with a Copy details button, and where the log file is.
@@ -1911,7 +1925,7 @@ As a masternode operator, I want to load my masternode by its ProTxHash and DIP3
 
 As a masternode operator, I want a card list of my loaded masternodes showing type, voter readiness, key status, and voting status, so that I can assess each node in seconds.
 
-- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a username-voting status line, and an identity status dot with a text label.
+- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voting-key presence ("Voting key loaded" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a username-voting status line, and an identity status dot with a text label.
 - An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
 - The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
 

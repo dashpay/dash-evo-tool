@@ -9468,7 +9468,7 @@ async fn clearing_the_network_database_removes_search_notices() {
         ctx.connection_status().set_spv_status(SpvStatus::Syncing);
         unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
         let backend = ctx.wallet_backend().expect("backend wired");
-        backend.set_clear_shielded_test_failure(partial_failure);
+        backend.set_forget_wallet_local_state_test_failure(partial_failure);
 
         let result = ctx.clear_network_database().await;
 

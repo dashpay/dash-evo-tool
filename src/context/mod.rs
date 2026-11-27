@@ -1388,7 +1388,7 @@ impl AppContext {
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         // A lookup that fails tells nothing, so the proof error stands.
-        if let Ok(Some(contract)) = self
+        if let Ok((Some(contract), _)) = self
             .refetch_contract_after_unread_result(sdk, contract_id, sender)
             .await
         {
@@ -1401,14 +1401,14 @@ impl AppContext {
 
     /// Notifies the UI that a contract transition's result is being checked,
     /// waits for the block to propagate, then fetches the contract by id:
-    /// `None` when Platform has no such contract, an error when the fetch
-    /// fails.
+    /// returns the contract (or `None`) with the proof's read height, or an
+    /// error when the fetch fails.
     pub(crate) async fn refetch_contract_after_unread_result(
         &self,
         sdk: &Sdk,
         contract_id: Identifier,
         sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
-    ) -> Result<Option<DataContract>, TaskError> {
+    ) -> Result<(Option<DataContract>, u64), TaskError> {
         use crate::backend_task::BackendTaskSuccessResult;
         use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
@@ -1431,7 +1431,9 @@ impl AppContext {
         };
         tokio::time::sleep(delay).await;
 
-        Ok(DataContract::fetch(sdk, contract_id).await?)
+        let (contract, metadata) =
+            DataContract::fetch_with_metadata(sdk, contract_id, None).await?;
+        Ok((contract, metadata.height))
     }
 
     /// Lazily build the wallet seam, idempotently.

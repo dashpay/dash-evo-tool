@@ -2452,13 +2452,11 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// The identity nonce a registration was sent with was used by another
-    /// operation, and no contract was found under the ID it gives. No attempt
-    /// of the registration can run any more, so it is settled, but a node
-    /// that lags may not show it yet: the user checks the ID before
-    /// registering again.
+    /// The registration's nonce is consumed and its contract is proved absent
+    /// at or above that height. It is settled without attributing the nonce
+    /// consumption to a particular operation.
     #[error(
-        "Identity {identity_id} was changed by another operation while your contract was being registered, so the result cannot be confirmed yet. Check again later: open Contracts, choose Load Contracts and enter contract ID {contract_id} on {}. If the contract is not there, register it again.",
+        "The app could not confirm your contract registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Contracts, choose Load Contracts and enter that contract ID on {}. If the contract is not there, register it again.",
         crate::ui::theme::network_label(*network)
     )]
     ContractRegistrationIdentityChanged {
@@ -2471,7 +2469,7 @@ pub enum TaskError {
 
     /// [`Self::ContractRegistrationIdentityChanged`] for a token's contract.
     #[error(
-        "Identity {identity_id} was changed by another operation while your token was being created, so the result cannot be confirmed yet. Check again later: open Tokens, choose Import Token and enter contract ID {contract_id} on {}. If the token is not there, create it again.",
+        "The app could not confirm your token registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Tokens, choose Import Token and enter that contract ID on {}. If the token is not there, create it again.",
         crate::ui::theme::network_label(*network)
     )]
     TokenRegistrationIdentityChanged {
@@ -6558,12 +6556,10 @@ mod tests {
         }
     }
 
-    /// A registration sent while its identity was changed by another
-    /// operation says the result is not confirmed yet and how to check it
-    /// (contract ID, identity, network, where to look) before registering
-    /// again.
+    /// Recovery names the registration and where to check it without claiming
+    /// which operation consumed the nonce.
     #[test]
-    fn a_registration_sent_while_its_identity_changed_says_how_to_check_it() {
+    fn a_registration_with_a_consumed_nonce_says_how_to_check_it() {
         let contract_id = Identifier::from([0x42; 32]);
         let identity_id = Identifier::from([0x21; 32]);
         let source_error = || Box::new(SdkError::Generic("nonce already used".to_string()));
@@ -6583,13 +6579,13 @@ mod tests {
         assert_eq!(
             contract.to_string(),
             format!(
-                "Identity {identity_id} was changed by another operation while your contract was being registered, so the result cannot be confirmed yet. Check again later: open Contracts, choose Load Contracts and enter contract ID {contract_id} on Testnet. If the contract is not there, register it again."
+                "The app could not confirm your contract registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Contracts, choose Load Contracts and enter that contract ID on Testnet. If the contract is not there, register it again."
             )
         );
         assert_eq!(
             token.to_string(),
             format!(
-                "Identity {identity_id} was changed by another operation while your token was being created, so the result cannot be confirmed yet. Check again later: open Tokens, choose Import Token and enter contract ID {contract_id} on Mainnet. If the token is not there, create it again."
+                "The app could not confirm your token registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Tokens, choose Import Token and enter that contract ID on Mainnet. If the token is not there, create it again."
             )
         );
         for message in [contract.to_string(), token.to_string()] {

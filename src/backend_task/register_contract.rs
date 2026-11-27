@@ -16,6 +16,7 @@ use dash_sdk::dpp::state_transition::data_contract_create_transition::DataContra
 use dash_sdk::dpp::state_transition::data_contract_create_transition::methods::DataContractCreateTransitionMethodsV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::transition::outcome::{OutcomeEvidence, TransitionOutcome};
 use dash_sdk::platform::transition::put_contract::ensure_private_document_entries_fit;
 use dash_sdk::{
     Error as SdkError, Sdk,
@@ -280,6 +281,10 @@ impl AppContext {
                     .await
             },
             |contract_id| self.refetch_contract_after_unread_result(sdk, contract_id, &sender),
+            |transition| async move {
+                sdk.state_transition_outcome(&transition, OutcomeEvidence::default())
+                    .await
+            },
         )
         .await
     }
@@ -289,13 +294,14 @@ impl AppContext {
     /// validates the signing key and builds the transition, `submit` sends
     /// the signed transition and waits for its result, and `find` looks a
     /// registration whose result could not be read up under its
-    /// Platform-assigned ID. While the owner has a registration pending, its
+    /// Platform-assigned ID with its read height. `check_outcome` proves
+    /// whether its nonce has been consumed. While a registration is pending, its
     /// nonce is reused instead of a fresh one, so at most one attempt executes.
     #[expect(
         clippy::too_many_arguments,
         reason = "the registration's inputs plus preparation and network steps"
     )]
-    async fn register_signed_contract<Nonce, Prepared, Submitted, Found>(
+    async fn register_signed_contract<Nonce, Prepared, Submitted, Found, Checked>(
         &self,
         data_contract: DataContract,
         fresh_nonce: impl FnOnce() -> Nonce,
@@ -305,12 +311,14 @@ impl AppContext {
         kind: RegistrationKind,
         submit: impl FnOnce(StateTransition) -> Submitted,
         find: impl FnOnce(Identifier) -> Found,
+        check_outcome: impl FnOnce(StateTransition) -> Checked,
     ) -> Result<BackendTaskSuccessResult, TaskError>
     where
         Nonce: Future<Output = Result<IdentityNonce, SdkError>>,
         Prepared: Future<Output = Result<(StateTransition, Identifier), TaskError>>,
         Submitted: Future<Output = Result<DataContract, SdkError>>,
-        Found: Future<Output = Result<Option<DataContract>, TaskError>>,
+        Found: Future<Output = Result<(Option<DataContract>, u64), TaskError>>,
+        Checked: Future<Output = Result<TransitionOutcome, SdkError>>,
     {
         let fee_result =
             FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
@@ -349,7 +357,7 @@ impl AppContext {
             .sent
             .push(attempt.clone());
 
-        let error = match submit(transition).await {
+        let error = match submit(transition.clone()).await {
             Ok(contract) => {
                 self.settle_pending_contract_registration(owner_id, pending);
                 return Ok(self
@@ -370,7 +378,9 @@ impl AppContext {
                 // comes from the owner and the nonce, so the nonce is used and
                 // no attempt with it can run: the registration is settled,
                 // without saving that contract as this request's.
-                Ok(Some(registered)) if registered.version() != INITIAL_DATA_CONTRACT_VERSION => {
+                Ok((Some(registered), _))
+                    if registered.version() != INITIAL_DATA_CONTRACT_VERSION =>
+                {
                     tracing::warn!(
                         %contract_id,
                         version = registered.version(),
@@ -379,7 +389,7 @@ impl AppContext {
                     self.settle_pending_contract_registration(owner_id, pending);
                     return Err(kind.modified_since(contract_id, error));
                 }
-                Ok(Some(registered)) => {
+                Ok((Some(registered), _)) => {
                     let found =
                         self.whose_registration(owner_id, &registered, &attempt, platform_version);
                     self.settle_pending_contract_registration(owner_id, pending);
@@ -421,7 +431,27 @@ impl AppContext {
                         }
                     };
                 }
-                Ok(None) => {}
+                Ok((None, read_height)) if refusal == Some(NonceRefusal::AlreadyUsed) => {
+                    match check_outcome(transition).await {
+                        Ok(TransitionOutcome::ExecutedOrSuperseded { consumed_by_height })
+                            if read_height >= consumed_by_height =>
+                        {
+                            self.settle_pending_contract_registration(owner_id, pending);
+                            return Err(kind.identity_changed(
+                                contract_id,
+                                owner_id,
+                                self.network(),
+                                error,
+                            ));
+                        }
+                        Err(outcome_error) => tracing::warn!(
+                            ?outcome_error, %contract_id,
+                            "Could not prove nonce consumption for an absent contract registration"
+                        ),
+                        _ => {}
+                    }
+                }
+                Ok((None, _)) => {}
                 // A failed lookup tells nothing, so the registration stays pending.
                 Err(lookup_error) => {
                     tracing::warn!(
@@ -443,21 +473,8 @@ impl AppContext {
                     source_error: Box::new(error),
                 })
             }
-            // The nonce is used and no attempt carrying it can run, yet its
-            // contract was not found: another operation, such as a paid
-            // rejection, consumed it, or a lagging node does not show it yet.
-            // Keeping the registration pending would block the identity's
-            // registrations until restart, so it is settled and the user is
-            // told to check the contract ID before registering again.
-            // Trade-off: registering again without that check, while a node
-            // still misses a created contract, pays for a second one.
-            // TODO: switch to generic handling of unknown state-transition
-            // outcomes once https://github.com/dashpay/platform/issues/6308
-            // provides it.
-            Some(NonceRefusal::AlreadyUsed) if look_up => {
-                self.settle_pending_contract_registration(owner_id, pending);
-                Err(kind.identity_changed(contract_id, owner_id, self.network(), error))
-            }
+            // An absent contract stays pending until its absence is proved
+            // at or above the height where the nonce was consumed.
             _ if look_up => Err(kind.unconfirmed(contract_id, error)),
             // Refused, with no attempt left that may run: nothing is pending.
             Some(_) => Err(TaskError::RegistrationNonceRefused {
@@ -926,6 +943,38 @@ mod tests {
         submitted: Result<DataContract, SdkError>,
         lookup: Result<Option<DataContract>, TaskError>,
     ) -> Attempt {
+        attempt_registering_with_evidence(
+            ctx,
+            contract,
+            alias,
+            kind,
+            fresh_nonce,
+            submitted,
+            lookup,
+            (
+                10,
+                Ok(TransitionOutcome::ExecutedOrSuperseded {
+                    consumed_by_height: 10,
+                }),
+            ),
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "registration inputs plus recovery evidence"
+    )]
+    async fn attempt_registering_with_evidence(
+        ctx: &AppContext,
+        contract: DataContract,
+        alias: Option<&str>,
+        kind: RegistrationKind,
+        fresh_nonce: IdentityNonce,
+        submitted: Result<DataContract, SdkError>,
+        lookup: Result<Option<DataContract>, TaskError>,
+        evidence: (u64, Result<TransitionOutcome, SdkError>),
+    ) -> Attempt {
         let asked = std::cell::Cell::new(None);
         let sent_nonce = std::cell::Cell::new(None);
         let fresh_nonce_read = std::cell::Cell::new(false);
@@ -956,8 +1005,9 @@ mod tests {
                 },
                 |contract_id| {
                     asked.set(Some(contract_id));
-                    std::future::ready(lookup)
+                    std::future::ready(lookup.map(|found| (found, evidence.0)))
                 },
+                |_| std::future::ready(evidence.1),
             )
             .await;
         Attempt {
@@ -1097,10 +1147,8 @@ mod tests {
         );
     }
 
-    /// A used nonce whose contract is not found can carry no attempt that may
-    /// still run, so the registration is settled and reported with the IDs and
-    /// network to check, and the next attempt reads a fresh nonce instead of
-    /// being blocked.
+    /// Absence proved at the nonce consumption height settles a registration
+    /// and lets the next attempt read a fresh nonce.
     #[tokio::test]
     async fn a_used_nonce_without_its_contract_is_settled() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1158,6 +1206,108 @@ mod tests {
         let next = attempt(&ctx, RegistrationKind::Contract, 9, Err(unread()), None).await;
         assert!(next.fresh_nonce_read);
         assert_eq!(next.sent_nonce, Some(9));
+    }
+
+    async fn assert_absent_registration_reservation(
+        read_height: u64,
+        outcome: impl Fn() -> Result<TransitionOutcome, Box<SdkError>>,
+        keeps_reservation: bool,
+    ) {
+        for kind in [RegistrationKind::Contract, RegistrationKind::Token] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = test_app_context(dir.path());
+            let owner = ctx.dpns_contract().owner_id();
+            attempt(&ctx, kind, 5, Err(unread()), None).await;
+            let retry = attempt_registering_with_evidence(
+                &ctx,
+                as_created(&ctx.dpns_contract()),
+                None,
+                kind,
+                6,
+                Err(nonce_refused(
+                    MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+                )),
+                Ok(None),
+                (read_height, outcome().map_err(|error| *error)),
+            )
+            .await;
+            assert_eq!(retry.sent_nonce, Some(5));
+            assert_eq!(retry.asked, Some(assigned_id(&ctx, 5)));
+            assert_eq!(
+                ctx.pending_contract_registration(&owner).is_some(),
+                keeps_reservation,
+                "{kind:?}: {:?}",
+                retry.outcome
+            );
+            assert!(
+                matches!(
+                    (&retry.outcome, keeps_reservation),
+                    (
+                        Err(TaskError::ContractRegistrationUnconfirmed { .. }
+                            | TaskError::TokenRegistrationUnconfirmed { .. }),
+                        true
+                    ) | (
+                        Err(TaskError::ContractRegistrationIdentityChanged { .. }
+                            | TaskError::TokenRegistrationIdentityChanged { .. }),
+                        false
+                    )
+                ),
+                "{kind:?}: {:?}",
+                retry.outcome
+            );
+            let next = attempt(&ctx, kind, 6, Err(unread()), None).await;
+            assert_eq!(next.fresh_nonce_read, !keeps_reservation);
+            assert_eq!(next.sent_nonce, Some(if keeps_reservation { 5 } else { 6 }));
+        }
+    }
+
+    #[tokio::test]
+    async fn absent_registration_at_an_older_height_keeps_the_nonce() {
+        assert_absent_registration_reservation(
+            9,
+            || {
+                Ok(TransitionOutcome::ExecutedOrSuperseded {
+                    consumed_by_height: 10,
+                })
+            },
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn absent_registration_at_consumption_height_releases_the_nonce() {
+        assert_absent_registration_reservation(
+            10,
+            || {
+                Ok(TransitionOutcome::ExecutedOrSuperseded {
+                    consumed_by_height: 10,
+                })
+            },
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn absent_registration_with_a_failed_outcome_check_keeps_the_nonce() {
+        assert_absent_registration_reservation(10, || Err(Box::new(proof_error())), true).await;
+    }
+
+    #[tokio::test]
+    async fn absent_registration_with_an_unresolved_outcome_keeps_the_nonce() {
+        assert_absent_registration_reservation(
+            10,
+            || {
+                Ok(TransitionOutcome::StillPossible {
+                    checked_at_height: 10,
+                    anchors_recorded_at: None,
+                    until_height: None,
+                })
+            },
+            true,
+        )
+        .await;
     }
 
     /// A retry refused because Platform can no longer accept its nonce looks
@@ -1714,7 +1864,8 @@ mod tests {
                 let _ = release_rx.await;
                 Err(unread())
             },
-            |_contract_id| std::future::ready(Ok(None)),
+            |_contract_id| std::future::ready(Ok((None, 0))),
+            |_| std::future::ready(Err(unread())),
         );
         let second = async {
             reached_rx.await.expect("the first registration is sent");

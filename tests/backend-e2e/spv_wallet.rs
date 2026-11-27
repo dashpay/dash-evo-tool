@@ -1,8 +1,7 @@
 //! Test: SPV sync and wallet creation using shared context.
 
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use bip39::{Language, Mnemonic};
-use dash_sdk::dpp::dashcore::Network;
 
 /// Verify SPV is running and can register a new wallet.
 ///
@@ -20,7 +19,7 @@ async fn test_spv_sync_and_create_wallet() {
 
     let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
         seed,
-        Network::Testnet,
+        e2e_network(),
         Some("SPV E2E Test Wallet".to_string()),
         None,
     )
@@ -54,7 +53,7 @@ async fn test_spv_sync_and_create_wallet() {
     // persistor plus the wallet-meta/seed-envelope sidecars own wallet state.
     {
         let meta = dash_evo_tool::wallet_backend::WalletMetaView::new(&app_context.app_kv())
-            .get(Network::Testnet, &seed_hash);
+            .get(e2e_network(), &seed_hash);
         assert!(
             meta.is_some(),
             "Wallet should be persisted in the wallet-meta sidecar"

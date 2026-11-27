@@ -1,8 +1,4 @@
-//! Shared support for tests across the library crate.
-//!
-//! Compiled only for unit tests and the `testing` / `bench` features, never
-//! into release builds. [`keys`] is public so integration tests and benches
-//! can reach it; everything else is unit-test only.
+//! Shared support for unit tests and builds with the `testing` or `bench` features.
 
 pub mod keys;
 
@@ -31,8 +27,8 @@ const CHILD_MARKER: &str = "DET_ISOLATED_TEST_CHILD";
 /// Whether file modes keep this process out. Not for one that bypasses them
 /// (root, or `CAP_DAC_OVERRIDE` in a container): a test that denies access
 /// through a mode cannot fail the way it means to there, so it returns early.
-#[cfg(all(test, unix))]
-pub(crate) fn file_modes_deny_access() -> bool {
+#[cfg(all(unix, any(test, feature = "testing")))]
+pub fn file_modes_deny_access() -> bool {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))

@@ -16,6 +16,8 @@ use dash_evo_tool::backend_task::identity::{
 };
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::context::AppContext;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use platform_wallet::AssetLockFundingType;
 use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
@@ -24,10 +26,15 @@ use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
 /// `wallet_id` — the exact corruption shape a cross-wallet top-up must never
 /// produce. Mirrors `orphaned_identity_key_rows` in
 /// `src/context/wallet_lifecycle/tests.rs`, but points at the real wallet
-/// persister this live e2e run actually wrote (`<workdir>/det-testnet.sqlite`),
+/// persister this live e2e run actually wrote (`<workdir>/det-<network>.sqlite`),
 /// not an offline fixture.
-fn orphaned_identity_key_rows(data_dir: &std::path::Path) -> i64 {
-    let path = data_dir.join("det-testnet.sqlite");
+fn orphaned_identity_key_rows(app_context: &AppContext) -> i64 {
+    let file = match app_context.network() {
+        Network::Devnet => "det-devnet.sqlite",
+        Network::Testnet => "det-testnet.sqlite",
+        Network::Mainnet | Network::Regtest => panic!("Unsupported backend E2E network"),
+    };
+    let path = app_context.data_dir().join(file);
     let connection =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("open the live wallet persister read-only");
@@ -97,7 +104,7 @@ async fn cross_wallet_topup_e2e() {
     let balance_after_registration = qualified_identity.identity.balance();
 
     assert_eq!(
-        orphaned_identity_key_rows(&ctx._workdir),
+        orphaned_identity_key_rows(&ctx.app_context),
         0,
         "baseline must be clean before any cross-wallet activity"
     );
@@ -167,7 +174,7 @@ async fn cross_wallet_topup_e2e() {
 
     // The payer's own identity/persister state must be untouched.
     assert_eq!(
-        orphaned_identity_key_rows(&ctx._workdir),
+        orphaned_identity_key_rows(&ctx.app_context),
         0,
         "a cross-wallet top-up must not leave identity_keys rows the payer's \
          next wallet load cannot resolve"
@@ -273,7 +280,7 @@ async fn cross_wallet_topup_e2e() {
     // Whatever the outcome, the payer's state must still be clean and both
     // wallets must still reload.
     assert_eq!(
-        orphaned_identity_key_rows(&ctx._workdir),
+        orphaned_identity_key_rows(&ctx.app_context),
         0,
         "attempting to resume a spent lock must not corrupt the payer's identity state"
     );

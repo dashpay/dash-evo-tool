@@ -2126,6 +2126,10 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("only on this device"), "{message}");
+        assert!(
+            message.contains("private keys of any identities you added with their keys"),
+            "{message}"
+        );
         assert!(crate::backend_task::is_terminal_storage_open_error(&error));
         assert_eq!(std::fs::read(&store).unwrap(), b"not a database");
         assert_eq!(app_database_state(dir.path()), before);

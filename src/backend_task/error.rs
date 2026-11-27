@@ -900,7 +900,7 @@ pub enum TaskError {
     #[error(
         "The wallet data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
          If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
-         If you have no working backup, first wait until recent payments are confirmed and any unfinished wallet funding is resolved. If you accept losing records kept only on this device, such as saved identities and pending payments, delete the damaged file manually along with its matching files, then start the app again. \
+         If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have copies of the private keys of any identities you added with their keys, because you need those keys to add those identities again. Identities that belong to your wallets can be found again with their recovery phrases. If you accept losing records kept only on this device, such as pending payments, delete the damaged file manually along with its matching files, then start the app again. \
          Dash Evo Tool creates an empty file when you open that network. You may need to restore your wallets and sync again. Syncing cannot bring back records saved only on this device.",
         database = .database.display()
     )]
@@ -914,7 +914,7 @@ pub enum TaskError {
     #[error(
         "The app data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
          If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
-         If you have no working backup, first wait until recent payments are confirmed and any unfinished wallet funding is resolved. Before deleting this file, make sure you have the recovery phrases for your wallets and copies of any private keys you imported. You may need them to regain access to your funds. \
+         If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have the recovery phrases for your wallets and copies of any private keys you imported. You may need them to regain access to your funds. \
          If you accept losing app settings, wallet names and other details that the network cannot restore, delete the damaged file manually along with its matching files, then start the app again. Dash Evo Tool creates a new file, and you may need to add your wallets and keys again.",
         database = .database.display()
     )]

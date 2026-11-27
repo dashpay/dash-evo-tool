@@ -24,9 +24,7 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{
-    ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, UnreadableContactInfoPolicy, validate_contact_note,
-};
+use crate::model::dashpay::{ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -56,12 +54,21 @@ pub const DETAIL_HEADING: &str = "Contact details";
 pub const NO_SELECTION: &str = "Select a contact to see their details.";
 pub const NOTE_HEADING: &str = "Private note";
 pub const NOTE_HINT: &str = "Only you can see this note. It is stored encrypted on Dash Platform.";
+/// [`NOTE_HINT`] while DIP-0015 keeps contact details on this device.
+pub const NOTE_HINT_ON_THIS_DEVICE: &str = "Only you can see this note. Until this identity has two contacts, it is stored on this device only.";
 pub const NOTE_PLACEHOLDER: &str = "Add a note that only you can see";
 pub const SAVE_NOTE_LABEL: &str = "Save note";
 pub const SAVING_NOTE_LABEL: &str = "Saving…";
 pub const NOTE_UNCHANGED_TOOLTIP: &str = "There are no changes to save.";
 pub const NOTE_SAVE_TOOLTIP: &str = "Save this note on Dash Platform. Saving costs a small fee.";
+/// [`NOTE_SAVE_TOOLTIP`] while DIP-0015 keeps contact details on this device.
+pub const NOTE_SAVE_ON_THIS_DEVICE_TOOLTIP: &str =
+    "Save this note on this device. Saving is free until this identity has two contacts.";
 pub const NOTE_SAVED: &str = "Your note is saved.";
+/// Shown when contact details are kept on this device only: DIP-0015 holds
+/// them back until the identity has two contacts, and nothing publishes them
+/// later on its own.
+pub const DETAILS_SAVED_ON_THIS_DEVICE: &str = "Your contact details are saved on this device only. After this identity has two contacts, edit and save these details again to sync them to your other devices.";
 const NOTE_SAVING_TOOLTIP: &str = "This contact's details are being saved.";
 pub const RECEIVED_HEADING: &str = "Received requests";
 pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";
@@ -87,19 +94,17 @@ pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
 /// Shown under a hidden contact whose saved details could not be read: its
 /// hidden flag is unknown, so it stays hidden until the user unhides it.
 pub const UNREADABLE_DETAILS_NOTE: &str = "The details you saved for this contact could not be read, so it stays \
-     hidden. Unhide it to show it in your list again.";
+     hidden. Unhide it to show it in your list again; this clears the unreadable details.";
 
-/// Why a contact the user never hid by hand can still be in this section:
-/// declining or cancelling a request hides that person, and a contact that is
-/// later established with them stays hidden until it is unhidden here.
-pub const HIDDEN_EXPLAINER: &str = "Hidden contacts are kept out of your list. Declining or cancelling a request also hides that \
-     person. Unhide anyone you want back.";
+/// Hidden-section caption. Only an explicit hide puts a contact here;
+/// declining or cancelling a request writes no contact details.
+pub const HIDDEN_EXPLAINER: &str =
+    "Hidden contacts are kept out of your list. Unhide anyone you want back.";
 
 /// Sent-section caption. A DashPay contact request cannot be deleted from the
-/// network once sent, so the copy states plainly what Cancel really does
-/// instead of promising a withdrawal the protocol cannot deliver.
-pub const CANCEL_EXPLAINER: &str = "Cancelling a request hides it and tells the other person you are no longer waiting. The \
-     original request stays on the network.";
+/// network once sent, and Cancel publishes nothing, so the copy states plainly
+/// that it only hides the request on this device.
+pub const CANCEL_EXPLAINER: &str = "Cancelling a request hides it on this device only. The other person is not notified, and the original request stays on the network.";
 
 /// Below this tab width the detail pane stacks under the contact list. Home
 /// and Profile switch to one column at the same width.
@@ -292,23 +297,17 @@ pub fn request_task(
         RequestAction::Declined => DashPayTask::RejectContactRequest {
             identity,
             request_id,
-            unreadable: UnreadableContactInfoPolicy::Abort,
         },
         RequestAction::Cancelled => DashPayTask::CancelContactRequest {
             identity,
             request_id,
-            unreadable: UnreadableContactInfoPolicy::Abort,
         },
     }
 }
 
-/// Backend task that makes a hidden contact visible again.
-///
-/// Unhiding is a `contactInfo` broadcast with `display_hidden` cleared — the
-/// same document the decline / cancel paths set it on. The whole document is
-/// rewritten, so everything unhiding has no opinion about rides along untouched:
-/// the nickname and note are carried over, and the accepted accounts are
-/// preserved rather than replaced with an empty list.
+/// Backend task that makes a hidden contact visible again, keeping its
+/// nickname and note. Details that could not be read cannot be kept: the
+/// backend replaces them when it reads them so, as the hidden list says.
 pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPayTask {
     DashPayTask::UpdateContactInfo {
         identity,
@@ -741,6 +740,8 @@ fn note_editor(
     dark_mode: bool,
 ) -> bool {
     let contact_id = contact.identity_id;
+    // With fewer than two contacts the save stays on this device: no fee.
+    let publishes = state.details_save_publishes();
     let saving = state
         .detail()
         .is_writing(&identity.identity.id(), &contact_id);
@@ -755,9 +756,13 @@ fn note_editor(
             .color(DashColors::text_primary(dark_mode)),
     );
     ui.label(
-        RichText::new(NOTE_HINT)
-            .small()
-            .color(DashColors::text_secondary(dark_mode)),
+        RichText::new(if publishes {
+            NOTE_HINT
+        } else {
+            NOTE_HINT_ON_THIS_DEVICE
+        })
+        .small()
+        .color(DashColors::text_secondary(dark_mode)),
     );
     ui.add_space(6.0);
     ui.add_enabled(
@@ -779,13 +784,15 @@ fn note_editor(
     }
 
     ui.add_space(8.0);
-    let fee = app_context.fee_estimator().estimate_contact_info_write();
-    ui.label(
-        RichText::new(note_fee_text(&format_credits_as_dash(fee)))
-            .small()
-            .color(DashColors::text_secondary(dark_mode)),
-    );
-    ui.add_space(6.0);
+    if publishes {
+        let fee = app_context.fee_estimator().estimate_contact_info_write();
+        ui.label(
+            RichText::new(note_fee_text(&format_credits_as_dash(fee)))
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(6.0);
+    }
 
     let dirty = detail.is_dirty(&contact_id);
     let can_save = dirty && invalid.is_none() && !saving;
@@ -796,7 +803,11 @@ fn note_editor(
     };
     let save = ComponentStyles::add_primary_button_enabled(ui, can_save, label);
     let save = if can_save {
-        save.clickable_tooltip(NOTE_SAVE_TOOLTIP)
+        save.clickable_tooltip(if publishes {
+            NOTE_SAVE_TOOLTIP
+        } else {
+            NOTE_SAVE_ON_THIS_DEVICE_TOOLTIP
+        })
     } else if saving {
         save.disabled_tooltip(NOTE_SAVING_TOOLTIP)
     } else if let Some(error) = invalid {
@@ -1603,7 +1614,7 @@ mod tests {
             "the note save must wait for the unhide"
         );
 
-        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(5)));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(5), true));
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
             None,
@@ -1663,8 +1674,10 @@ mod tests {
         for line in [
             NO_SELECTION,
             NOTE_HINT,
+            NOTE_HINT_ON_THIS_DEVICE,
             NOTE_UNCHANGED_TOOLTIP,
             NOTE_SAVE_TOOLTIP,
+            NOTE_SAVE_ON_THIS_DEVICE_TOOLTIP,
             NOTE_SAVED,
             SELECT_CONTACT_TOOLTIP,
             NO_RECEIVED_EMPTY,
@@ -1846,22 +1859,6 @@ mod tests {
                     crate::model::dashpay::ContactInfoField::Preserve
                 );
             }
-            other => panic!("expected UpdateContactInfo, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unhide_leaves_the_accepted_accounts_alone() {
-        // The write replaces the whole contactInfo document. Unhiding says
-        // nothing about which accounts the user accepted, so it must not
-        // volunteer an empty list — that would erase every one of them.
-        let task = unhide_task(qualified_identity(id(1)), &hidden_contact(None, None));
-        match task {
-            DashPayTask::UpdateContactInfo { update, .. } => assert_eq!(
-                update.accepted_accounts,
-                crate::model::dashpay::AcceptedAccounts::Preserve,
-                "unhiding must preserve the contact's accepted accounts, not overwrite them"
-            ),
             other => panic!("expected UpdateContactInfo, got {other:?}"),
         }
     }

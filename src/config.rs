@@ -1129,6 +1129,19 @@ mod tests {
         let error = config.save(tmp.path()).expect_err("invalid RPC port");
 
         assert!(
+            matches!(
+                error,
+                ConfigError::InvalidNetworkConfig {
+                    network: "Testnet",
+                    source: NetworkSettingError::InvalidNumber {
+                        field: "core_rpc_port",
+                        kind: std::num::IntErrorKind::InvalidDigit,
+                    },
+                }
+            ),
+            "Expected an invalid Testnet RPC port error"
+        );
+        assert!(
             !error.to_string().contains(&marker),
             "Display leaks the value"
         );

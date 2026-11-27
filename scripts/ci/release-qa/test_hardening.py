@@ -1,5 +1,6 @@
 """Regression cases for input, exports, funding and draft lifecycle; offline only."""
 
+import fnmatch
 import json
 import hashlib
 import os
@@ -305,7 +306,12 @@ class HardeningTests(unittest.TestCase):
             "steps.resume.outcome == 'success' && steps.wallet.outcome == 'success'",
         )
         tests = workflow("tests.yml")
-        self.assertIn(".github/workflows/release-qa.yml", tests["on"]["push"]["paths"])
+        self.assertFalse(
+            any(
+                fnmatch.fnmatchcase(".github/workflows/release-qa.yml", pattern)
+                for pattern in tests["on"]["push"]["paths-ignore"]
+            )
+        )
         qa_tests = workflow("release-qa-tests.yml")
         scripts = "\n".join(
             s.get("run", "") for s in qa_tests["jobs"]["release-qa-tests"]["steps"]
@@ -316,7 +322,8 @@ class HardeningTests(unittest.TestCase):
         self.assertIn(".claude/skills/visual-diff/**", qa_tests["on"]["push"]["paths"])
         pin = tests["jobs"]["pin-ancestry"]
         self.assertNotIn("apt-get", "\n".join(s.get("run", "") for s in pin["steps"]))
-        self.assertNotIn("needs", pin)
+        self.assertEqual(pin["needs"], ["scope"])
+        self.assertIn("!cancelled()", pin["if"])
         self.assertNotIn("schedule", qa_tests["on"])
 
     def test_release_notes_match_event(self):

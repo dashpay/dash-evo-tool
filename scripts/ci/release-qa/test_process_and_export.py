@@ -40,18 +40,22 @@ class ProcessAndExportTests(unittest.TestCase):
             self.assertNotIn(outcome, cleanup["needs"])
             self.assertNotIn(f"needs.{outcome}.", cleanup["if"])
         self.assertIn("needs.tag.outputs.created == 'true'", cleanup["if"])
-        script = cleanup["steps"][0]["run"]
+        script = next(
+            s["run"]
+            for s in cleanup["steps"]
+            if s.get("name") == "Delete orphaned weekly tag"
+        )
         for exists in (True, False):
             with self.subTest(exists=exists), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                stub = 'gh() { printf "%s\\n" "$*" >> calls; if [[ "$1 $2" == "release view" ]]; then [[ "$EXISTS" == true ]]; else return 0; fi; }; '
+                stub = 'gh() { printf "%s\\n" "$*" >> calls; }; '
                 subprocess.run(
                     ["bash", "-euc", stub + script],
                     cwd=root,
                     check=True,
                     env=dict(
                         os.environ,
-                        EXISTS=str(exists).lower(),
+                        DELETE_RELEASE=str(exists).lower(),
                         TAG="weekly",
                         VERSION="1.0",
                         GITHUB_REPOSITORY="test/repo",

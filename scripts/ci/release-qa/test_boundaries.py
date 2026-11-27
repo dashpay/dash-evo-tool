@@ -383,27 +383,34 @@ class WorkflowTests(unittest.TestCase):
         step_minutes = sum(int(s.get("timeout-minutes", 0)) for s in steps)
         self.assertGreaterEqual(int(review["timeout-minutes"]) - step_minutes, 10)
 
-    def test_skill_changes_only_trigger_qa_script_workflow(self):
+    def test_skill_prose_skips_rust_suite_and_skill_changes_trigger_qa_scripts(self):
         import fnmatch
+        import importlib.util
         import yaml
 
-        workflows = Path(__file__).resolve().parents[3] / ".github/workflows"
+        root = Path(__file__).resolve().parents[3]
+        workflows = root / ".github/workflows"
         rust = yaml.load((workflows / "tests.yml").read_text(), Loader=yaml.BaseLoader)
-        skills = (
+        spec = importlib.util.spec_from_file_location(
+            "pr_scope", root / "scripts/ci/pr_scope.py"
+        )
+        pr_scope = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pr_scope)
+        ignored = rust["on"]["push"]["paths-ignore"]
+        prose = (
             ".claude/skills/release-review/ci-prompt.md",
             ".claude/skills/release-review/SKILL.md",
             ".claude/skills/visual-diff/SKILL.md",
-            ".claude/skills/visual-diff/scripts/gallery.py",
         )
-        for event in ("push", "pull_request"):
-            for path in skills:
-                with self.subTest(event=event, path=path):
-                    self.assertFalse(
-                        any(
-                            fnmatch.fnmatchcase(path, pattern)
-                            for pattern in rust["on"][event]["paths"]
-                        )
-                    )
+        script = ".claude/skills/visual-diff/scripts/gallery.py"
+        skills = (*prose, script)
+        for path in prose:
+            with self.subTest(path=path):
+                self.assertTrue(any(fnmatch.fnmatchcase(path, p) for p in ignored))
+                self.assertFalse(pr_scope.is_relevant([path], "tests"))
+        # Only documentation skips the Rust suite; skill scripts still run it.
+        self.assertFalse(any(fnmatch.fnmatchcase(script, p) for p in ignored))
+        self.assertTrue(pr_scope.is_relevant([script], "tests"))
         qa = yaml.load(
             (workflows / "release-qa-tests.yml").read_text(), Loader=yaml.BaseLoader
         )

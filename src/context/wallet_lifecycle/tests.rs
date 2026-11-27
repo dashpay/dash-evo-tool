@@ -179,16 +179,17 @@ async fn shielded_store_startup_failure_explains_manual_recovery() {
     for step in [
         "Your wallets and keys are still saved",
         "free space",
-        "every shielded payment, transfer, unshield and withdrawal",
+        "wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal",
         "including those to your own wallets",
-        "Do not send any of them again until the new file has synced",
         "close the app",
         "back up the file together with any matching files ending in -wal, -shm, or -journal",
         "Delete the file and those matching files manually",
         "Reopen the app",
         "create a new file",
         "Wait for the sync to finish",
-        "check your shielded balances",
+        "check your shielded balances to confirm the rebuild",
+        "Do not repeat a payment that arrived",
+        "do not resend one you are unsure about based on the balance alone",
     ] {
         remaining = remaining
             .split_once(step)

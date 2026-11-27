@@ -714,7 +714,7 @@ fn shielded_store_startup_failure_shows_recovery_advice_and_both_actions() {
         let path = path.display().to_string();
         assert!(harness.query_by_label_contains(path.as_str()).is_some());
         for step in [
-            "every shielded payment, transfer, unshield and withdrawal",
+            "wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal",
             "matching files ending in -wal, -shm, or -journal",
             "Delete the file and those matching files manually",
         ] {

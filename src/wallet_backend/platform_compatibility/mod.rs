@@ -420,8 +420,9 @@ mod tests {
     #[test]
     fn a_pinned_store_is_reported_before_an_unchecked_one() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pinned = super::super::wallet_database_path(dir.path(), Network::Mainnet);
-        let unchecked = super::super::wallet_database_path(dir.path(), Network::Testnet);
+        // The scan must continue from the unchecked Mainnet store to Testnet.
+        let unchecked = super::super::wallet_database_path(dir.path(), Network::Mainnet);
+        let pinned = super::super::wallet_database_path(dir.path(), Network::Testnet);
         seed_pinned_pr_history(&pinned).expect("seed the pinned store");
         std::fs::write(&unchecked, b"not a database").expect("write the store");
 
@@ -429,7 +430,7 @@ mod tests {
             refuse_stores_needing_upgrade_release(dir.path()).expect_err("a pinned store refuses");
         assert!(
             matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks }
-                if networks.0 == [Network::Mainnet]),
+                if networks.0 == [Network::Testnet]),
             "{error:?}"
         );
     }

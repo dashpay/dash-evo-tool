@@ -1504,7 +1504,7 @@ mod tests {
             exit_code: Some(1),
             stdout: String::new(),
             stderr: format!(
-                "Error: app k/v open: Your wallet data was created by an older test version of \
+                "Error: Your wallet data was created by an older test version of \
                  Dash Evo Tool and must be upgraded before this version can open it. Install \
                  Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/\
                  dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that \

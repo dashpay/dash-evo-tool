@@ -74,8 +74,7 @@ pub enum TokenTask {
         prepared: Box<crate::model::token_creator::registration::PreparedRegistration>,
     },
     CheckTokenCreation,
-    /// Save the receipt of a creation Platform already confirmed, from that
-    /// proven record and without reading the network.
+    /// Save the receipt from the proven record without looking up the contract again.
     SaveConfirmedTokenCreation {
         record: Box<crate::model::token_creator::registration::RegistrationRecord>,
     },
@@ -279,11 +278,16 @@ impl AppContext {
                     .await
             }
             TokenTask::SubmitTokenCreation { prepared } => {
-                self.submit_token_creation(sdk, *prepared).await
+                let result = self.submit_token_creation(sdk, *prepared).await;
+                self.finish_token_creation(result, sender)
             }
-            TokenTask::CheckTokenCreation => self.check_token_creation(sdk).await,
+            TokenTask::CheckTokenCreation => {
+                let result = self.check_token_creation(sdk).await;
+                self.finish_token_creation(result, sender)
+            }
             TokenTask::SaveConfirmedTokenCreation { record } => {
-                self.save_confirmed_token_creation(*record)
+                let result = self.save_confirmed_token_creation(*record);
+                self.finish_token_creation(result, sender)
             }
             TokenTask::RegisterTokenContract {
                 identity,
@@ -311,7 +315,7 @@ impl AppContext {
                 .await
                 .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
             }
-            TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
+            TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sender).await,
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,

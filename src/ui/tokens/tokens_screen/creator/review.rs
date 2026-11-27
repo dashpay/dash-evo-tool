@@ -152,17 +152,28 @@ impl TokensScreen {
                 "readiness",
                 &mut self.creator_workspace.help,
             );
+            let mut issuers = self
+                .identities
+                .values()
+                .filter(|identity| super::super::offered_by_token_creator(identity))
+                .peekable();
+            let no_issuers = issuers.peek().is_none();
+            let previous_issuer = self.selected_identity.as_ref().map(|qi| qi.identity.id());
             ui.add_enabled_ui(!pending, |ui| {
                 action |= crate::ui::helpers::add_identity_key_chooser(
                     ui,
                     &self.app_context,
-                    self.identities.values(),
+                    issuers,
                     &mut self.selected_identity,
                     &mut self.selected_key,
                     crate::ui::helpers::TransactionType::RegisterContract,
                 );
             });
-            if self.identities.is_empty() && ui.button("Load identity").clicked() {
+            let issuer = self.selected_identity.as_ref().map(|qi| qi.identity.id());
+            if issuer != previous_issuer {
+                self.app_context.set_selected_identity(issuer);
+            }
+            if no_issuers && ui.button("Load identity").clicked() {
                 action = AppAction::AddScreen(
                     crate::ui::ScreenType::AddExistingIdentity.create_screen(&self.app_context),
                 );

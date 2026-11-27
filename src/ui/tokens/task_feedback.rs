@@ -21,7 +21,9 @@ impl DomainFeedback for TokensFeedback {
                 MessageType::Info,
             );
         }
-        if let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result {
+        if let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result
+            && outcome.record.network == feedback.active_network
+        {
             use crate::model::token_creator::registration::RegistrationStatus;
             let (text, kind) = if outcome.record.status == RegistrationStatus::Confirmed {
                 (
@@ -63,6 +65,7 @@ mod tests {
         let contexts = std::collections::BTreeMap::new();
         let feedback = Feedback {
             ctx,
+            active_network: dash_sdk::dpp::dashcore::Network::Testnet,
             contexts: &contexts,
             delivery: ResultDelivery {
                 sender_in_view: !sender_gone,

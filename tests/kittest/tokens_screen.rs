@@ -10,12 +10,7 @@
 //! a structural note and a spot-check that `TokensScreen` (Token Creator) does
 //! NOT accidentally apply syncing_global to the N/A sites when rendering.
 //!
-//! Write-back: `syncing_global` component-level write-back is verified by
-//! `identity_selector::tests::syncing_global_writes_selection_to_app_context`.
-//!
-//! # TODO(WalletFixture / private-key fixture)
-//! Add screen-level write-back assertions (ComboBox click → `resolve_selected_identity()`
-//! moves) once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
+//! The workspace's issuer picker also writes the choice back to AppContext.
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
@@ -180,19 +175,6 @@ fn creator_workspace_help_has_context_and_restores_keyboard_focus() {
     });
 }
 
-fn build_ctx() -> (
-    Harness<'static, dash_evo_tool::app::AppState>,
-    Arc<AppContext>,
-) {
-    let mut h = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-            .expect("AppState builds")
-            .with_animations(false)
-    });
-    let ctx = crate::support::wait_for_wallet_backend(&mut h);
-    (h, ctx)
-}
-
 /// Stores a user identity holding one private key, as the Token Creator offers
 /// only identities with keys.
 fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
@@ -241,13 +223,17 @@ fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> 
 /// from the app-scoped selection, not always the first loaded identity.
 #[test]
 fn token_creator_defaults_to_app_scoped_identity() {
+    use egui::accesskit::Role;
+
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
 
-        let (_h, ctx) = build_ctx();
+        let root = RootScreenType::RootScreenTokenCreator;
+        let mut h = mount_app(root);
+        let ctx = h.state().current_app_context().clone();
 
-        let _first = seed_token_identity(&ctx, 0xA1, "Token Alpha");
+        let first = seed_token_identity(&ctx, 0xA1, "Token Alpha");
         let second = seed_token_identity(&ctx, 0xB2, "Token Beta");
 
         ctx.set_selected_identity(Some(second));
@@ -259,6 +245,36 @@ fn token_creator_defaults_to_app_scoped_identity() {
             Some(second),
             "TokensScreen (TokenCreator) must default to the app-scoped selected identity"
         );
+
+        h.state_mut()
+            .main_screens
+            .insert(root, Screen::TokensScreen(Box::new(screen)));
+        h.set_size(egui::vec2(1260.0, 900.0));
+        h.run_steps(5);
+        h.get_by_label("7  Review").scroll_to_me();
+        h.run_steps(5);
+        h.get_by_label("7  Review").click();
+        h.run_steps(5);
+        let identity_label = |id| {
+            let identity = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            ctx.identity_display_label(&identity)
+        };
+        let issuer = h.get_by_role_and_label(Role::ComboBox, "Identity:");
+        assert_eq!(
+            issuer.value().as_deref(),
+            Some(identity_label(second).as_str())
+        );
+        issuer.click();
+        h.run_steps(3);
+        h.get_by_label(&identity_label(first)).click();
+        h.run_steps(3);
+        assert_eq!(
+            h.get_by_role_and_label(Role::ComboBox, "Identity:")
+                .value()
+                .as_deref(),
+            Some(identity_label(first).as_str())
+        );
+        assert_eq!(ctx.selected_identity_id(), Some(first));
     });
 }
 

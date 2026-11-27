@@ -482,18 +482,18 @@ fn render_no_eligible_key_group(
     action
 }
 
-/// Renders a ComboBox listing `identity`'s loaded private keys eligible for the transaction.
+/// Renders a ComboBox of the supplied keys eligible for the transaction.
 ///
-/// With `identity` `None`, prompts the user to pick an identity first. Developer mode also
+/// When no identity is selected, pass `None` to prompt the user to pick one. Developer mode also
 /// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`]. `label_id` is the
 /// label that names the combo box.
 #[allow(clippy::too_many_arguments)]
-fn render_key_combo(
+fn render_key_combo<'a>(
     ui: &mut Ui,
     label_id: egui::Id,
     combo_id: &str,
     width: f32,
-    identity: Option<&QualifiedIdentity>,
+    keys: Option<impl IntoIterator<Item = &'a IdentityPublicKey>>,
     selected_key: &mut Option<IdentityPublicKey>,
     allowed_purposes: &[Purpose],
     allowed_security_levels: &[SecurityLevel],
@@ -508,13 +508,11 @@ fn render_key_combo(
                 .unwrap_or_else(|| "Select Key…".into()),
         )
         .show_ui(ui, |kui| {
-            let Some(qi) = identity else {
+            let Some(keys) = keys else {
                 kui.label("Pick an identity first");
                 return;
             };
-            for key_ref in qi.private_keys.identity_public_keys() {
-                let key = &key_ref.1.identity_public_key;
-
+            for key in keys {
                 // Platform rejects signing with a disabled key, so never offer one
                 // — not even in dev mode, where the override only relaxes purpose and
                 // security-level filters, not signability.
@@ -632,7 +630,13 @@ pub fn add_key_chooser_with_doc_type(
                 label.id,
                 "key_chooser_combo",
                 300.0,
-                Some(identity),
+                Some(
+                    identity
+                        .private_keys
+                        .identity_public_keys()
+                        .into_iter()
+                        .map(|(_, key)| &key.identity_public_key),
+                ),
                 selected_key,
                 &allowed_purposes,
                 &allowed_security_levels,
@@ -723,37 +727,50 @@ where
                 let allowed_security_levels =
                     compute_allowed_security_levels(transaction_type, document_type);
 
-                // Show the "no eligible key" notice instead of the combo when the selected
-                // identity has no loaded eligible key (outside developer mode).
-                let mut show_combo = true;
-                if let Some(qi) = selected_identity.as_ref() {
-                    let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
-                        key_eligibility(qi, &allowed_purposes, &allowed_security_levels);
-                    if !is_dev_mode && !has_suitable_keys_with_private {
-                        show_combo = false;
-                        action = render_no_eligible_key_group(
-                            ui,
-                            app_context,
-                            qi,
-                            transaction_type,
-                            has_eligible_public_keys_without_private,
-                        );
-                    }
-                }
-
-                if show_combo {
-                    render_key_combo(
+                let eligible = |key: &IdentityPublicKey| {
+                    allowed_purposes.contains(&key.purpose())
+                        && allowed_security_levels.contains(&key.security_level())
+                };
+                let identity = selected_identity.as_ref();
+                let keys = identity.map(|qi| {
+                    qi.identity
+                        .public_keys()
+                        .values()
+                        .filter(|key| {
+                            !key.is_disabled() && qi.private_keys.candidates(key).next().is_some()
+                        })
+                        .collect::<Vec<_>>()
+                });
+                if !is_dev_mode
+                    && let Some(qi) = identity
+                    && let Some(keys) = &keys
+                    && !keys.iter().copied().any(eligible)
+                {
+                    let can_load_key = qi
+                        .identity
+                        .public_keys()
+                        .values()
+                        .any(|key| !key.is_disabled() && eligible(key));
+                    action = render_no_eligible_key_group(
                         ui,
-                        key_label.id,
-                        "key_combo",
-                        220.0,
-                        selected_identity.as_ref(),
-                        selected_key,
-                        &allowed_purposes,
-                        &allowed_security_levels,
-                        is_dev_mode,
+                        app_context,
+                        qi,
+                        transaction_type,
+                        can_load_key,
                     );
+                    return;
                 }
+                render_key_combo(
+                    ui,
+                    key_label.id,
+                    "key_combo",
+                    220.0,
+                    keys,
+                    selected_key,
+                    &allowed_purposes,
+                    &allowed_security_levels,
+                    is_dev_mode,
+                );
             });
             ui.end_row();
         });

@@ -867,11 +867,56 @@ fn switch_network(harness: &mut App) {
 /// sender.
 #[test]
 fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alone() {
+    use dash_evo_tool::model::token_creator::TokenDraft;
+    use dash_evo_tool::model::token_creator::contract::canonical_contract;
+    use dash_evo_tool::model::token_creator::registration::{
+        RegistrationOutcome, RegistrationRecord, RegistrationStatus,
+    };
     use dash_evo_tool::ui::components::message_banner::MessageBanner;
     use dash_evo_tool::ui::tokens::tokens_screen::TokenCreatorStatus;
+    use dash_sdk::dpp::data_contract::accessors::{
+        v0::DataContractV0Getters, v1::DataContractV1Getters,
+    };
+    use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    let confirmed = |context, network| {
+        let version = PlatformVersion::latest();
+        let owner = Identifier::from([0x61; 32]);
+        let params = TokenDraft::example(false)
+            .parse(owner, network, version, 0)
+            .unwrap();
+        let contract = canonical_contract(owner, 7, params, version).unwrap();
+        TaskResult::Success {
+            context,
+            result: Box::new(BackendTaskSuccessResult::TokenCreationOutcome(Box::new(
+                RegistrationOutcome {
+                    record: RegistrationRecord {
+                        attempt_id: [0x62; 32],
+                        network,
+                        owner,
+                        contract_id: contract.id(),
+                        token_id: contract.token_id(0).unwrap(),
+                        nonce: 7,
+                        key_id: 1,
+                        protocol_version: version.protocol_version,
+                        contract_bytes: contract
+                            .serialize_to_bytes_with_platform_version(version)
+                            .unwrap(),
+                        alias: "Fixture".into(),
+                        status: RegistrationStatus::Confirmed,
+                    },
+                    local_cache_saved: true,
+                    journal_saved: true,
+                },
+            ))),
+        }
+    };
+
     for fails in [false, true] {
         in_app(|| {
             let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+            let previous_network = harness.state().current_app_context().network();
             let previous = token_creator(&mut harness).begin_token_registration_for_test();
             harness.state_mut().test_record_visible_dispatch(&previous);
 
@@ -880,6 +925,11 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
             harness.run_steps(3);
             let ctx = harness.ctx.clone();
             MessageBanner::clear_all_global(&ctx);
+            let current_network = harness.state().current_app_context().network();
+            let other_dispatch = token_creator(&mut harness).begin_token_registration_for_test();
+            harness
+                .state_mut()
+                .test_record_visible_dispatch(&other_dispatch);
             let current = token_creator(&mut harness).begin_token_registration_for_test();
             harness.state_mut().test_record_visible_dispatch(&current);
             harness.run_steps(3);
@@ -890,10 +940,7 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
                     error: TaskError::TaskManagerShuttingDown,
                 }
             } else {
-                TaskResult::Success {
-                    context: previous,
-                    result: Box::new(BackendTaskSuccessResult::RegisteredTokenContract),
-                }
+                confirmed(previous, previous_network)
             };
             deliver(&mut harness, late);
 
@@ -915,6 +962,19 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
                 failure_reported, fails,
                 "only the failure raises a banner, as for a closed sender"
             );
+            let receipt_prompt = "Open Token Creator to view the saved receipt.";
+            assert!(harness.query_by_label_contains(receipt_prompt).is_none());
+
+            deliver(&mut harness, confirmed(other_dispatch, current_network));
+            assert!(token_creator(&mut harness).token_registration_pending_for_test());
+
+            MessageBanner::clear_all_global(&ctx);
+            deliver(&mut harness, confirmed(current, current_network));
+            assert_eq!(
+                token_creator(&mut harness).token_creator_status_for_test(),
+                TokenCreatorStatus::Complete
+            );
+            assert!(harness.query_by_label_contains(receipt_prompt).is_some());
         });
     }
 }

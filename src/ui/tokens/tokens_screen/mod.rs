@@ -802,16 +802,11 @@ impl TokensScreen {
         };
         self.selected_key = self.selected_key.take().and_then(|selected| {
             let published = fresh.identity.public_keys().get(&selected.id())?;
-            if published.data() != selected.data() || published.disabled_at().is_some() {
-                return None;
-            }
-            fresh
-                .private_keys
-                .identity_public_keys()
-                .iter()
-                .map(|key_ref| &key_ref.1.identity_public_key)
-                .find(|key| key.id() == selected.id() && key.data() == selected.data())
-                .cloned()
+            (crate::model::qualified_identity::encrypted_key_storage::same_key(
+                &selected, published,
+            ) && published.disabled_at().is_none()
+                && fresh.private_keys.candidates(published).next().is_some())
+            .then(|| published.clone())
         });
         self.selected_identity = Some(fresh.clone());
     }
@@ -2180,8 +2175,25 @@ mod tests {
         );
     }
 
+    fn token_creator_review_harness(
+        mut screen: TokensScreen,
+    ) -> egui_kittest::Harness<'static, TokensScreen> {
+        screen.creator_workspace.section = crate::model::token_creator::Section::Review;
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1260.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let _ = screen.render_token_workspace(&ui.ctx().clone(), ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_never_keeps_an_identity_it_does_not_offer() {
+        use egui_kittest::kittest::Queryable;
         let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
         for (case, ineligible) in [
             ("masternode", IdentityType::Masternode),
@@ -2202,8 +2214,10 @@ mod tests {
             context.set_selected_identity(Some(ineligible_id));
 
             // Opened before any identity it offers exists: nothing is selected.
-            let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
-            assert!(screen.selected_identity.is_none(), "{case}: seed");
+            let screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            let mut harness = token_creator_review_harness(screen);
+            assert!(harness.state().selected_identity.is_none(), "{case}: seed");
+            let offers_load_identity = harness.query_by_label("Load identity").is_some();
 
             // A selection made from an older roster is dropped on return, so the
             // selector picks an identity it offers.
@@ -2211,9 +2225,30 @@ mod tests {
             context
                 .insert_local_qualified_identity(&eligible, &None)
                 .expect("store eligible identity");
-            screen.selected_identity = Some(ineligible.clone());
-            screen.refresh_on_arrival();
-            assert!(screen.selected_identity.is_none(), "{case}: arrival");
+            harness.state_mut().selected_identity = Some(ineligible.clone());
+            harness.state_mut().refresh_on_arrival();
+            assert!(
+                harness.state().selected_identity.is_none(),
+                "{case}: arrival"
+            );
+            harness.run();
+            assert!(
+                harness.query_by_label("Load identity").is_none(),
+                "{case}: eligible roster"
+            );
+            harness.get_by_value("Select Identity…").click();
+            harness.run();
+            harness.get_by_label(&context.identity_display_label(&eligible));
+            assert!(
+                harness
+                    .query_by_label(&context.identity_display_label(&ineligible))
+                    .is_none(),
+                "{case}: ineligible identity must stay out of the picker"
+            );
+            assert!(
+                offers_load_identity,
+                "{case}: an empty eligible roster offers Load identity"
+            );
 
             // A creator opened now starts from an identity it offers.
             let screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
@@ -2352,20 +2387,31 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_drops_a_selected_key_disabled_on_platform() {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use egui_kittest::kittest::Queryable;
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
         let stored = creator_identity(
             &context,
-            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+            &[
+                (1, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+                (2, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+            ],
         );
         context
             .insert_local_qualified_identity(&stored, &None)
             .expect("store identity");
         let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
         screen.selected_identity = Some(stored.clone());
-        screen.selected_key = stored.identity.public_keys().get(&1).cloned();
-        screen.refresh_on_arrival();
-        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        let label = |id| crate::ui::helpers::format_key_label(&stored.identity.public_keys()[&id]);
+        let mut harness = token_creator_review_harness(screen);
+        harness.get_by_value("Select Key…").click();
+        harness.run();
+        harness.get_by_label(&label(1)).click();
+        harness.run();
+        assert_eq!(
+            harness.state().selected_key.as_ref().map(|key| key.id()),
+            Some(1)
+        );
 
         let mut disabled = stored.clone();
         disabled
@@ -2377,9 +2423,14 @@ mod tests {
         context
             .update_local_qualified_identity(&disabled)
             .expect("disable key");
-        screen.refresh_on_arrival();
+        harness.state_mut().refresh_on_arrival();
 
-        assert!(screen.selected_key.is_none());
+        assert!(harness.state().selected_key.is_none());
+        harness.run();
+        harness.get_by_value("Select Key…").click();
+        harness.run();
+        harness.get_by_label(&label(2));
+        assert!(harness.query_by_label(&label(1)).is_none());
         context.wallet_backend().unwrap().shutdown().await;
     }
 }

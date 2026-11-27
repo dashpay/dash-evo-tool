@@ -65,6 +65,21 @@ async fn reserve_reviewed_nonce(
 }
 
 impl AppContext {
+    /// Schedule a balance refresh after confirmation and local token caching.
+    pub(super) fn finish_token_creation(
+        self: &Arc<Self>,
+        result: Result<BackendTaskSuccessResult, TaskError>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        if let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) = &result
+            && outcome.record.status == RegistrationStatus::Confirmed
+            && outcome.local_cache_saved
+        {
+            self.spawn_token_creation_balance_refresh(sender);
+        }
+        result
+    }
+
     async fn creator_current_owner(
         &self,
         sdk: &Sdk,
@@ -623,6 +638,121 @@ mod tests {
                 .blocks_registration()
         );
     }
+    #[tokio::test]
+    async fn token_creator_confirmed_status_starts_a_separate_balance_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (record, accepted) = fixture(&context);
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record)
+            .unwrap();
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(record.contract_id, Some(accepted))
+            .await
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let result = context
+            .run_token_task(TokenTask::CheckTokenCreation, &sdk, sender)
+            .await
+            .unwrap();
+        let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result else {
+            panic!("expected a confirmed receipt");
+        };
+        assert_eq!(outcome.record.status, RegistrationStatus::Confirmed);
+        assert!(outcome.local_cache_saved);
+        assert!(context.subtasks.is_active("token_creation_balance_refresh"));
+
+        // With no local identities, the refresh fails. Its result is independent of the receipt.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while context.subtasks.is_active("token_creation_balance_refresh") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("refresh completes");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            context.token_registration_record().unwrap().unwrap().status,
+            RegistrationStatus::Confirmed
+        );
+    }
+
+    #[tokio::test]
+    async fn token_creator_confirmed_status_populates_the_local_token_balance() {
+        use dash_sdk::platform::tokens::identity_token_balances::{
+            IdentityTokenBalances, IdentityTokenBalancesQuery,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (record, accepted) = fixture(&context);
+        let pair = IdentityTokenIdentifier {
+            identity_id: record.owner,
+            token_id: record.token_id,
+        };
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record)
+            .unwrap();
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(record.contract_id, Some(accepted))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, TokenAmount, _, IdentityTokenBalances>(
+                IdentityTokenBalancesQuery {
+                    identity_id: pair.identity_id,
+                    token_ids: vec![pair.token_id],
+                },
+                Some([(pair.token_id, Some(1000))].into_iter().collect()),
+            )
+            .await
+            .unwrap();
+        context.sdk.store(Arc::new(sdk.clone()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        context.ensure_wallet_backend(sender.clone()).await.unwrap();
+        let owner =
+            crate::context::test_support::bare_user_identity(pair.identity_id, context.network);
+        context
+            .insert_local_qualified_identity(&owner, &None)
+            .unwrap();
+
+        let result = context
+            .run_token_task(TokenTask::CheckTokenCreation, &sdk, sender)
+            .await
+            .unwrap();
+        let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result else {
+            panic!("expected a confirmed receipt");
+        };
+        assert_eq!(outcome.record.status, RegistrationStatus::Confirmed);
+        let balances = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(balance) = context.identity_token_balances().unwrap().get(&pair) {
+                    break balance.balance;
+                }
+                rx.recv()
+                    .await
+                    .expect("the context still has an open channel");
+            }
+        })
+        .await
+        .expect("the balance refresh publishes the new token balance");
+        assert_eq!(balances, 1000);
+    }
+
     #[tokio::test]
     async fn token_registration_status_query_does_not_confirm_a_different_contract() {
         let dir = tempfile::tempdir().unwrap();

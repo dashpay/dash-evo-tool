@@ -77,8 +77,9 @@ prototype to make the native application pass.
    current parameters; initial supply is separate from cumulative allocation.
    Check time/block/epoch intervals and the EvoNode recipient's epoch constraint.
    Add a scheduled allocation with an explicit local date and time. Leave and
-   return: the displayed instant must stay fixed. Inspect once-per-identity
-   allocation and the selected network's support notice.
+   return and verify the displayed instant stays fixed. Before selecting an
+   issuer, toggle the once-per-identity allocation and edit its amount while
+   the allocation is enabled.
 6. In **Groups**, add two members with public fixture identity IDs and powers,
    set a reachable threshold and assign a rule to the group. A referenced group
    cannot disappear silently. Duplicate members and unreachable thresholds must

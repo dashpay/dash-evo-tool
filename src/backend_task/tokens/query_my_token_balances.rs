@@ -57,11 +57,48 @@ impl Drop for TokenBalanceRefreshGuard {
 }
 
 impl AppContext {
+    /// Refresh the newly cached token in the background without delaying the receipt.
+    pub(super) fn spawn_token_creation_balance_refresh(
+        self: &Arc<Self>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) {
+        let context = Arc::clone(self);
+        let shutdown = self.subtasks.cancellation_token.clone();
+        let refresh = async move {
+            // A refresh already running may have taken its watch sets before the token was cached.
+            let deadline = tokio::time::Instant::now() + TOKEN_BALANCE_REFRESH_MAX_LIFETIME;
+            loop {
+                match context.query_my_token_balances(sender.clone()).await {
+                    Err(TaskError::TokenBalanceRefreshInProgress)
+                    | Ok(BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight)
+                        if tokio::time::Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Err(error) => {
+                        tracing::debug!(?error, "Could not refresh balances after token creation");
+                        break;
+                    }
+                    Ok(_) => break,
+                }
+            }
+        };
+        let _ = self
+            .subtasks
+            .spawn_sync("token_creation_balance_refresh", async move {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {}
+                    () = refresh => {}
+                }
+            });
+    }
+
     pub async fn query_my_token_balances(
         self: &std::sync::Arc<Self>,
-        _sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let refresh_guard = self.begin_token_balance_refresh()?;
         let identities = self.load_local_qualified_identities()?;
 
         if identities.is_empty() {
@@ -71,7 +108,6 @@ impl AppContext {
         let identity_ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
         let watch_sets = self.token_watch_sets(identity_ids)?;
 
-        let refresh_guard = self.begin_token_balance_refresh()?;
         let context = Arc::clone(self);
         let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),
@@ -105,8 +141,8 @@ impl AppContext {
 
         // The upstream watch list is per-identity and replaced wholesale, so
         // register the identity's whole watch set rather than a single pair.
-        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
         let refresh_guard = self.begin_token_balance_refresh()?;
+        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
         let context = Arc::clone(self);
         let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),

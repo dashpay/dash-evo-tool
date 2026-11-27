@@ -64,6 +64,7 @@ mod tests {
         let contexts = std::collections::BTreeMap::new();
         let feedback = Feedback {
             ctx,
+            active_network: dash_sdk::dpp::dashcore::Network::Testnet,
             contexts: &contexts,
             delivery: crate::ui::task_feedback::ResultDelivery {
                 sender_in_view: !sender_gone,

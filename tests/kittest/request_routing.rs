@@ -1766,7 +1766,7 @@ fn an_older_refreshs_failed_step_leaves_the_newer_refreshs_banner_up() {
 
 /// A wallet identity search refused because the network was not ready keeps
 /// its banner while that state lasts, and loses it once readiness moves on,
-/// so "Network sync is stopped" does not outlive a reconnect.
+/// so a refusal for stopped sync does not outlive a reconnect.
 #[test]
 fn a_wallet_search_refusal_banner_goes_once_readiness_moves_on() {
     use dash_evo_tool::backend_task::identity::IdentityTask;

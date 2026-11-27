@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_limits::{
     KeyLimitsError, KeyLimitsRaise, ReviewedSignerUnusable, reviewed_key_limits_signer,
 };
@@ -141,8 +142,9 @@ impl AppContext {
         // The update paid a fee, but its proof holds only the rewritten key:
         // read the balance after it, proved, so the stored identity does not
         // overstate what later fees can draw on.
-        let balance = IdentityBalance::fetch(sdk, identity_id)
+        let balance = IdentityBalance::fetch_with_metadata(sdk, identity_id, None)
             .await
+            .map(|(balance, metadata)| balance.map(|credits| (credits, metadata.height)))
             .map_err(TaskError::from);
         self.finish_raise(identity_id, updated, balance)
     }
@@ -150,12 +152,12 @@ impl AppContext {
 
 impl AppContext {
     /// Store the outcome of a raise the network accepted: `key` as rewritten,
-    /// and `balance`, the identity's balance read after the update.
+    /// and `balance`, the identity's balance and block height read after the update.
     fn finish_raise(
         &self,
         identity_id: Identifier,
         key: dash_sdk::dpp::identity::IdentityPublicKey,
-        balance: Result<Option<Credits>, TaskError>,
+        balance: Result<Option<(Credits, u64)>, TaskError>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let (balance, balance_error) = match balance {
             Ok(Some(balance)) => (Some(balance), None),
@@ -178,11 +180,14 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
         key: dash_sdk::dpp::identity::IdentityPublicKey,
-        balance: Option<Credits>,
+        balance: Option<(Credits, u64)>,
     ) -> Result<(), TaskError> {
-        self.edit_local_qualified_identity(identity_id, move |fresh| {
+        let provenance = balance.map_or(BalanceProvenance::Unobserved, |(_, height)| {
+            BalanceProvenance::ObservedAt(height)
+        });
+        self.edit_local_qualified_identity_observed(identity_id, provenance, move |fresh| {
             fresh.identity.add_public_key(key);
-            if let Some(balance) = balance {
+            if let Some((balance, _)) = balance {
                 fresh.identity.set_balance(balance);
             }
             Ok(())
@@ -258,6 +263,15 @@ mod tests {
 
         let staged = stage_identity_with_vaulted_keys([0xA1; 32], [0xB1; 32]).await;
         let ctx = &staged.ctx;
+        ctx.edit_local_qualified_identity_observed(
+            &staged.id,
+            BalanceProvenance::ObservedAt(10),
+            |fresh| {
+                fresh.identity.set_balance(5_000);
+                Ok(())
+            },
+        )
+        .expect("seed the pre-raise balance watermark");
         let stored = ctx
             .get_local_qualified_identity(&staged.id)
             .expect("read")
@@ -270,7 +284,7 @@ mod tests {
         .with_limits(Some(9_000), None);
         let before = stored.identity.balance();
 
-        let result = ctx.finish_raise(staged.id, key.clone(), Ok(Some(before + 1_234)));
+        let result = ctx.finish_raise(staged.id, key.clone(), Ok(Some((before - 1_234, 11))));
 
         assert!(
             matches!(
@@ -283,7 +297,7 @@ mod tests {
             .get_local_qualified_identity(&staged.id)
             .expect("read")
             .expect("staged");
-        assert_eq!(after.identity.balance(), before + 1_234);
+        assert_eq!(after.identity.balance(), before - 1_234);
         assert_eq!(
             after
                 .identity
@@ -292,6 +306,21 @@ mod tests {
                 .and_then(|k| k.total_budget()),
             Some(9_000)
         );
+
+        // Older and same-height replies cannot replace the post-fee observation.
+        for height in [10, 11] {
+            ctx.finish_raise(staged.id, key.clone(), Ok(Some((before, height))))
+                .expect("store the raised key while keeping the newer balance");
+        }
+        ctx.set_identity_alias(&staged.id, Some("after raise"))
+            .expect("an unobserved edit must keep the new balance");
+        let after = ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.identity.balance(), before - 1_234);
+        assert_eq!(after.alias.as_deref(), Some("after raise"));
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     /// A balance that cannot be read after an accepted raise does not make the
@@ -354,7 +383,7 @@ mod tests {
         );
 
         // Nothing is stored for this identity, so the write fails.
-        let result = ctx.persist_raised_key(&identity.identity.id(), key, Some(1));
+        let result = ctx.persist_raised_key(&identity.identity.id(), key, Some((1, 11)));
 
         assert!(
             matches!(result, Err(TaskError::KeyLimitsRaisedButNotSaved { .. })),

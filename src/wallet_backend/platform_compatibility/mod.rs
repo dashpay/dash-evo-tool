@@ -11,12 +11,14 @@ pub(crate) use engine::{
 };
 pub(crate) use storage_failure::StorageFailure;
 
+use std::fs::Metadata;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
-use crate::backend_task::error::{TaskError, UpgradeReleaseNetworks};
+use crate::backend_task::error::{TaskError, UpgradeReleaseNetworks, WalletDataCheckError};
 
 /// Refinery history (version, name, checksum) of a database written at the
 /// pinned Platform PR revision 67d4ef3 (DET v1.0.0-weekly.20260901 and
@@ -125,15 +127,12 @@ enum Lineage {
     /// Absent, or on any other lineage.
     NotPinned,
     /// The history could not be read, so the lineage is not known.
-    Unknown(rusqlite::Error),
+    Unknown(WalletDataCheckError),
 }
 
 /// The lineage of the database at `path`, from its migration history read
 /// through a read-only connection, before anything else opens the file.
 fn probe_lineage(path: &Path) -> Lineage {
-    if !path.exists() {
-        return Lineage::NotPinned;
-    }
     match read_history(path) {
         Ok(history) => {
             let pinned = history.is_some_and(|history| {
@@ -163,11 +162,41 @@ fn needs_upgrade_release(path: &Path) -> bool {
     matches!(probe_lineage(path), Lineage::Pinned)
 }
 
-/// At most one row more than [`PINNED_PR_HISTORY`]; `None` without a history table.
-fn read_history(path: &Path) -> rusqlite::Result<Option<Vec<(i64, String, String)>>> {
-    let conn = open_for_history(path)?;
+type MigrationHistory = Vec<(i64, String, String)>;
+
+/// At most one row more than [`PINNED_PR_HISTORY`]; `None` for an absent database
+/// or history table.
+fn read_history(path: &Path) -> Result<Option<MigrationHistory>, WalletDataCheckError> {
+    let Some(before) = probe_metadata(path)? else {
+        return Ok(None);
+    };
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+
+    // Avoid creating WAL sidecars for a quiescent store. If recovery files
+    // exist or the database changes during the read, let SQLite take locks.
+    if !has_recovery_sidecars(path)?
+        && let Some(uri) = immutable_uri(path)
+    {
+        let history = query_history(Connection::open_with_flags(
+            uri,
+            flags | OpenFlags::SQLITE_OPEN_URI,
+        )?)?;
+        if !has_recovery_sidecars(path)?
+            && let Some(after) = probe_metadata(path)?
+            && before.len() == after.len()
+            && let Ok(modified) = before.modified()
+            && after.modified().ok() == Some(modified)
+        {
+            return Ok(history);
+        }
+    }
+    Ok(query_history(Connection::open_with_flags(path, flags)?)?)
+}
+
+fn query_history(mut conn: Connection) -> rusqlite::Result<Option<MigrationHistory>> {
     conn.busy_timeout(HISTORY_READ_BUSY_TIMEOUT)?;
-    let has_history = conn
+    let transaction = conn.transaction()?;
+    let has_history = transaction
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
             [],
@@ -178,30 +207,35 @@ fn read_history(path: &Path) -> rusqlite::Result<Option<Vec<(i64, String, String
     if !has_history {
         return Ok(None);
     }
-    conn.prepare(
-        "SELECT version, name, checksum FROM refinery_schema_history ORDER BY version LIMIT ?1",
-    )?
-    .query_map([PINNED_PR_HISTORY.len() + 1], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?
-    .collect::<rusqlite::Result<Vec<_>>>()
-    .map(Some)
+    transaction
+        .prepare(
+            "SELECT version, name, checksum FROM refinery_schema_history ORDER BY version LIMIT ?1",
+        )?
+        .query_map([PINNED_PR_HISTORY.len() + 1], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map(Some)
 }
 
-/// A read-only connection to `path`. Without a `-wal` file no commit waits in
-/// one, so the file is opened immutable, which keeps SQLite from creating
-/// `-wal` and `-shm` files beside it. A writer starting in between can only
-/// make the read stale, and the normal open then handles the file.
-fn open_for_history(path: &Path) -> rusqlite::Result<Connection> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let mut wal = path.as_os_str().to_owned();
-    wal.push("-wal");
-    if Path::new(&wal).exists() {
-        return Connection::open_with_flags(path, flags);
+fn has_recovery_sidecars(path: &Path) -> Result<bool, WalletDataCheckError> {
+    let mut found = false;
+    for suffix in ["-wal", "-journal"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        found |= probe_metadata(Path::new(&sidecar))?.is_some();
     }
-    match immutable_uri(path) {
-        Some(uri) => Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI),
-        None => Connection::open_with_flags(path, flags),
+    Ok(found)
+}
+
+fn probe_metadata(path: &Path) -> Result<Option<Metadata>, WalletDataCheckError> {
+    match path.metadata() {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(WalletDataCheckError::Metadata {
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 
@@ -339,8 +373,7 @@ mod tests {
         );
     }
 
-    /// A store known to be pinned is reported before one that cannot be
-    /// checked; with no pinned store, the unchecked one is named.
+    /// A store known to be pinned is reported before one that cannot be checked.
     #[test]
     fn a_pinned_store_is_reported_before_an_unchecked_one() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -354,16 +387,6 @@ mod tests {
         assert!(
             matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks }
                 if networks.0 == [Network::Mainnet]),
-            "{error:?}"
-        );
-
-        let alone = tempfile::tempdir().expect("tempdir");
-        let unchecked = super::super::wallet_database_path(alone.path(), Network::Testnet);
-        std::fs::write(&unchecked, b"not a database").expect("write the store");
-        let error = refuse_stores_needing_upgrade_release(alone.path())
-            .expect_err("an unchecked store refuses");
-        assert!(
-            matches!(&error, TaskError::WalletDataCheckFailed { database, .. } if *database == unchecked),
             "{error:?}"
         );
     }

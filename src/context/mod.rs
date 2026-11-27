@@ -2011,76 +2011,232 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet_backend::{
+        app_database_path, platform_compatibility::seed_pinned_pr_history, wallet_database_path,
+    };
+    use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
+    use std::path::Path;
 
     /// A file's bytes and modification time, `None` when it does not exist.
     type FileState = Option<(Vec<u8>, std::time::SystemTime)>;
 
     /// The app database's file and its sidecars, as they are on disk.
-    fn app_database_state(data_dir: &std::path::Path) -> Vec<(String, FileState)> {
-        let app_database = crate::wallet_backend::app_database_path(data_dir);
-        ["", "-wal", "-shm", "-journal"]
-            .into_iter()
-            .map(|suffix| {
-                let mut path = app_database.as_os_str().to_owned();
-                path.push(suffix);
-                let path = std::path::PathBuf::from(path);
-                let state = std::fs::read(&path).ok().map(|bytes| {
+    fn app_database_state(data_dir: &Path) -> [FileState; 4] {
+        let app_database = app_database_path(data_dir);
+        ["", "-wal", "-shm", "-journal"].map(|suffix| {
+            let mut path = app_database.as_os_str().to_owned();
+            path.push(suffix);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
                     let modified = std::fs::metadata(&path)
                         .and_then(|metadata| metadata.modified())
                         .expect("modification time");
-                    (bytes, modified)
-                });
-                (suffix.to_owned(), state)
-            })
-            .collect()
+                    Some((bytes, modified))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!("could not snapshot {path:?}: {error}"),
+            }
+        })
+    }
+
+    fn seed_app_database_with_pending_migration(data_dir: &Path) {
+        drop(AppContext::open_app_kv(data_dir).expect("create the app database"));
+        // Rewind the additive Platform V023 migration to leave a valid V022 schema.
+        rusqlite::Connection::open(app_database_path(data_dir))
+            .expect("open the app database")
+            .execute_batch(
+                "DROP TABLE core_locked_outpoints;
+                 DELETE FROM refinery_schema_history WHERE version = 23;",
+            )
+            .expect("rewind migration V023");
+    }
+
+    fn seed_current_network_store(store: &Path) {
+        drop(
+            SqlitePersister::open(SqlitePersisterConfig::new(store))
+                .expect("create a current network store"),
+        );
     }
 
     /// Startup refuses when the pinned-lineage check cannot read a network
     /// store, naming that store, and leaves the app database untouched:
     /// opening it migrates it past what the upgrade release can read, which
     /// would strand that store if it is on the pinned lineage.
-    fn assert_unreadable_store_stops_startup(make_unreadable: impl FnOnce(&std::path::Path)) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        drop(AppContext::open_app_kv(dir.path()).expect("create the app database"));
-        let store = crate::wallet_backend::wallet_database_path(dir.path(), Network::Testnet);
-        make_unreadable(&store);
-        let before = app_database_state(dir.path());
+    fn assert_unreadable_store_stops_startup(data_dir: &Path, store: &Path) -> TaskError {
+        let before = app_database_state(data_dir);
 
-        let Err(error) = AppContext::open_app_kv(dir.path()) else {
+        let Err(error) = AppContext::open_app_kv(data_dir) else {
             panic!("an unreadable store must stop startup");
         };
 
         assert!(
-            matches!(&error, TaskError::WalletDataCheckFailed { database, .. } if *database == store),
+            matches!(&error, TaskError::WalletDataCheckFailed { database, .. } if database == store),
             "{error:?}"
         );
-        assert_eq!(app_database_state(dir.path()), before);
+        assert_eq!(app_database_state(data_dir), before);
+        error
+    }
+
+    #[test]
+    fn an_unblocked_startup_migrates_the_app_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_app_database_with_pending_migration(dir.path());
+        seed_current_network_store(&wallet_database_path(dir.path(), Network::Testnet));
+        let before = app_database_state(dir.path());
+
+        drop(AppContext::open_app_kv(dir.path()).expect("migrate the app database"));
+
+        assert_ne!(app_database_state(dir.path()), before);
+        let version: i64 = rusqlite::Connection::open(app_database_path(dir.path()))
+            .expect("open the migrated database")
+            .query_row(
+                "SELECT version FROM refinery_schema_history WHERE version = 23",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration V023 was applied");
+        assert_eq!(version, 23);
     }
 
     #[test]
     fn a_store_that_is_not_a_database_stops_startup() {
-        assert_unreadable_store_stops_startup(|store| {
-            std::fs::write(store, b"not a database").expect("write the store");
-        });
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_app_database_with_pending_migration(dir.path());
+        let store = wallet_database_path(dir.path(), Network::Testnet);
+        std::fs::write(&store, b"not a database").expect("write the store");
+        assert_unreadable_store_stops_startup(dir.path(), &store);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_store_the_app_may_not_read_stops_startup() {
+        use std::io::ErrorKind;
         use std::os::unix::fs::PermissionsExt;
-        if !crate::test_support::file_modes_deny_access() {
-            eprintln!("skipped: file modes do not deny this process access");
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_app_database_with_pending_migration(dir.path());
+        let store = wallet_database_path(dir.path(), Network::Testnet);
+        seed_pinned_pr_history(&store).expect("create a pinned network store");
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o000))
+            .expect("deny reading the store");
+        let Err(error) = std::fs::File::open(&store) else {
+            eprintln!("skipped: file modes do not deny reads for this process");
             return;
-        }
-        assert_unreadable_store_stops_startup(|store| {
-            let connection = rusqlite::Connection::open(store).expect("create the store");
-            connection
-                .execute_batch("CREATE TABLE refinery_schema_history (version INTEGER)")
-                .expect("write the store");
-            drop(connection);
-            std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o000))
-                .expect("deny reading the store");
-        });
+        };
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_unreadable_store_stops_startup(dir.path(), &store);
+    }
+
+    #[cfg(unix)]
+    fn assert_inaccessible_store_metadata_stops_startup(sidecar: Option<&str>) {
+        use crate::backend_task::error::WalletDataCheckError;
+        use std::io::ErrorKind;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_app_database_with_pending_migration(dir.path());
+        let store = wallet_database_path(dir.path(), Network::Testnet);
+        let hidden = dir.path().join("hidden");
+        std::fs::create_dir(&hidden).expect("create the store's parent");
+        let target = hidden.join("inaccessible");
+        let inaccessible_path = if let Some(extension) = sidecar {
+            seed_current_network_store(&store);
+            std::fs::write(&target, []).expect("create the sidecar");
+            store.with_extension(extension)
+        } else {
+            seed_pinned_pr_history(&target).expect("create a pinned network store");
+            store.clone()
+        };
+        symlink(target, &inaccessible_path).expect("link through an inaccessible directory");
+        let before = app_database_state(dir.path());
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o600))
+            .expect("deny traversal to the store");
+        let metadata = std::fs::metadata(&inaccessible_path);
+        let result = metadata
+            .is_err()
+            .then(|| AppContext::open_app_kv(dir.path()));
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o700))
+            .expect("restore traversal");
+        let Err(error) = metadata else {
+            eprintln!("skipped: directory modes do not deny traversal for this process");
+            return;
+        };
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        let error = result
+            .expect("startup was attempted")
+            .expect_err("a store with inaccessible metadata must stop startup");
+        assert!(
+            matches!(&error, TaskError::WalletDataCheckFailed {
+                database,
+                source: WalletDataCheckError::Metadata { path, source },
+            } if *database == store && *path == inaccessible_path && source.kind() == ErrorKind::PermissionDenied),
+            "{error:?}"
+        );
+        assert_eq!(app_database_state(dir.path()), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_pinned_store_metadata_stops_startup() {
+        assert_inaccessible_store_metadata_stops_startup(None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_wal_metadata_stops_startup() {
+        assert_inaccessible_store_metadata_stops_startup(Some("sqlite-wal"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_rollback_journal_metadata_stops_startup() {
+        assert_inaccessible_store_metadata_stops_startup(Some("sqlite-journal"));
+    }
+
+    #[test]
+    fn a_hot_rollback_journal_stops_startup() {
+        use crate::backend_task::error::WalletDataCheckError;
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_app_database_with_pending_migration(dir.path());
+        let source = dir.path().join("source.sqlite");
+        seed_pinned_pr_history(&source).expect("create a pinned network store");
+        let writer = rusqlite::Connection::open(&source).expect("open the pinned store");
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = DELETE;
+                 PRAGMA synchronous = FULL;
+                 BEGIN EXCLUSIVE;
+                 DELETE FROM refinery_schema_history WHERE version = 14;",
+            )
+            .expect("change the pinned history in an uncommitted transaction");
+        writer.cache_flush().expect("spill the change to disk");
+
+        // Copy the transaction's files to simulate an interrupted writer with no locks.
+        let store = wallet_database_path(dir.path(), Network::Testnet);
+        let journal = store.with_extension("sqlite-journal");
+        std::fs::copy(&source, &store).expect("copy the store with spilled pages");
+        std::fs::copy(source.with_extension("sqlite-journal"), &journal)
+            .expect("copy the rollback journal");
+        writer
+            .execute_batch("ROLLBACK")
+            .expect("clean up the source transaction");
+
+        let error = assert_unreadable_store_stops_startup(dir.path(), &store);
+        assert!(
+            matches!(&error, TaskError::WalletDataCheckFailed {
+                source: WalletDataCheckError::Sqlite(rusqlite::Error::SqliteFailure(sqlite, _)),
+                ..
+            } if sqlite.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK),
+            "{error:?}"
+        );
+
+        let restored = rusqlite::Connection::open(&store)
+            .expect("open writable so SQLite can roll back")
+            .query_row(
+                "SELECT max(version) FROM refinery_schema_history",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("read the restored history");
+        assert_eq!(restored, 14);
     }
 
     #[cfg(unix)]

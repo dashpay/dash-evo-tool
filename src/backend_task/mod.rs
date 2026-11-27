@@ -3741,7 +3741,7 @@ mod tests {
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataCheckFailed {
                 database: std::path::PathBuf::from("det-testnet.sqlite"),
-                source: rusqlite::Error::InvalidQuery,
+                source: rusqlite::Error::InvalidQuery.into(),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

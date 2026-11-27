@@ -328,6 +328,21 @@ impl fmt::Display for UpgradeReleaseNetworks {
     }
 }
 
+/// Why the startup probe could not determine a database's lineage.
+#[derive(Debug, Error)]
+pub enum WalletDataCheckError {
+    /// The database or one of its recovery files could not be inspected.
+    #[error("Could not read metadata for {path:?}.")]
+    Metadata {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// SQLite could not open the database or read its migration history.
+    #[error("Could not read the database migration history.")]
+    Sqlite(#[from] rusqlite::Error),
+}
+
 /// Lets `?` on a joined task keep the panic message out of the error.
 impl From<tokio::task::JoinError> for TaskError {
     fn from(source: tokio::task::JoinError) -> Self {
@@ -875,7 +890,7 @@ pub enum TaskError {
     WalletDataCheckFailed {
         database: std::path::PathBuf,
         #[source]
-        source: rusqlite::Error,
+        source: WalletDataCheckError,
     },
 
     /// Persisted Core transaction rows could not be read through the upstream

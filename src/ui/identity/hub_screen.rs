@@ -2147,6 +2147,7 @@ mod tests {
                         public_message: None,
                         avatar_hash: None,
                         avatar_fingerprint: None,
+                        ..Default::default()
                     },
                 ),
             )

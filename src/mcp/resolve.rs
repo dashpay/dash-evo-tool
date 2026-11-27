@@ -255,10 +255,6 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 /// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while a
 /// storage update is mid-flight.
 ///
-/// Once synced, an unpopulated Platform protocol cache is refreshed so
-/// headless feature gates evaluate the connected network rather than boot state.
-/// Refresh failures remain best-effort here so Core-only tools can proceed.
-///
 /// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
 ///
 /// `OverallConnectionState::Synced` requires both SPV running **and**
@@ -270,26 +266,6 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 /// proof-verifying SDK calls only require a synced chain, not a live DAPI
 /// counter at the `ensure_spv_synced` callsite.
 pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
-    ensure_spv_ready(ctx, ProtocolRefresh::BestEffortIfUnpopulated).await
-}
-
-/// Require synced SPV and fresh epoch metadata before a shielded fund movement.
-pub(crate) async fn ensure_shielded_operations_ready(
-    ctx: &Arc<AppContext>,
-) -> Result<(), McpToolError> {
-    ensure_spv_ready(ctx, ProtocolRefresh::Required).await
-}
-
-#[derive(Clone, Copy)]
-enum ProtocolRefresh {
-    BestEffortIfUnpopulated,
-    Required,
-}
-
-async fn ensure_spv_ready(
-    ctx: &Arc<AppContext>,
-    protocol_refresh: ProtocolRefresh,
-) -> Result<(), McpToolError> {
     // The context's own frame loop: the GUI's when the server is embedded,
     // a sink in a headless process. The backend wired here keeps the sender
     // for good, so it is never one made for this call. Mirrors
@@ -310,13 +286,10 @@ async fn ensure_spv_ready(
     // run another process or the embedded GUI started concurrently.
     ensure_storage_ready(ctx).await?;
 
-    wait_for_spv_and_refresh_platform_info(ctx, protocol_refresh).await
+    wait_for_spv(ctx).await
 }
 
-async fn wait_for_spv_and_refresh_platform_info(
-    ctx: &Arc<AppContext>,
-    protocol_refresh: ProtocolRefresh,
-) -> Result<(), McpToolError> {
+async fn wait_for_spv(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
     // Subscribe before reading the current value so no transition is lost.
     // `borrow_and_update` keeps later iterations asleep until a real change.
     let mut rx = ctx.connection_status().subscribe_spv_status();
@@ -350,39 +323,6 @@ async fn wait_for_spv_and_refresh_platform_info(
         }
     }
 
-    match protocol_refresh {
-        ProtocolRefresh::BestEffortIfUnpopulated
-            if ctx.protocol_version_info().verified_version.is_none() =>
-        {
-            let _ = refresh_platform_protocol_version(ctx).await;
-            Ok(())
-        }
-        ProtocolRefresh::BestEffortIfUnpopulated => Ok(()),
-        ProtocolRefresh::Required => refresh_platform_protocol_version(ctx).await,
-    }
-}
-
-async fn refresh_platform_protocol_version(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
-    tracing::trace!("Refreshing Platform epoch information for headless feature gating");
-    crate::mcp::dispatch::dispatch_task(
-        ctx,
-        crate::backend_task::BackendTask::PlatformInfo(
-            crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
-        ),
-    )
-    .await
-    .map_err(|error| {
-        tracing::warn!(
-            error = ?error,
-            "Platform epoch information refresh failed for headless feature gating"
-        );
-        McpToolError::TaskFailed(error)
-    })?;
-
-    tracing::trace!(
-        protocol_version = ?ctx.protocol_version_info().verified_version,
-        "Platform epoch information refreshed for headless feature gating"
-    );
     Ok(())
 }
 
@@ -447,95 +387,15 @@ pub(crate) fn qualified_identity(
 mod tests {
     use super::*;
     use dash_sdk::Sdk;
-    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-    use dash_sdk::dpp::version::LATEST_VERSION;
-    use dash_sdk::platform::DataContract;
-
-    /// Install a mock SDK on `ctx` that answers the DPNS-contract fetch driving
-    /// the protocol-version ratchet, the epoch task's fallback when the current
-    /// epoch cannot be read (the mock has no epoch response). The app reads the
-    /// version the SDK verified, and a mock expectation is made up, never
-    /// verified, so the test declares `LATEST_VERSION` proven for that SDK, as
-    /// a live network's quorum-signed response would prove it.
-    async fn install_mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) {
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_unproved_dpns_contract(ctx).await));
-        crate::context::test_support::prove_protocol_version(ctx, LATEST_VERSION);
-    }
-
-    /// The DPNS-contract fetch alone: its expectation proves nothing about the
-    /// network's protocol version.
-    async fn mock_sdk_with_unproved_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let contract = DataContract::clone(&ctx.dpns_contract());
-        let mut sdk = Sdk::new_mock();
-        sdk.mock()
-            .expect_fetch(contract.id(), Some(contract))
-            .await
-            .expect("register DPNS contract response");
-        sdk
-    }
-
-    /// A DPNS fetch whose response the SDK never verified does not confirm
-    /// the network's protocol version: features stay gated off.
-    #[tokio::test]
-    async fn an_unproved_response_leaves_the_protocol_version_unconfirmed() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_unproved_dpns_contract(&ctx).await));
-
-        refresh_platform_protocol_version(&ctx)
-            .await
-            .expect("refresh platform metadata");
-
-        assert_eq!(ctx.protocol_version_info().verified_version, None);
-    }
-
-    /// Once SPV runs, the headless sync completes and reads the protocol
-    /// version the current SDK has proven; the fee multiplier stays at the
-    /// default without a proved epoch.
-    #[tokio::test]
-    async fn headless_sync_reads_the_proven_protocol_version_after_spv_is_running() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        install_mock_sdk_with_dpns_contract(&ctx).await;
-        ctx.connection_status().set_spv_status(SpvStatus::Running);
-
-        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
-            .await
-            .expect("headless sync completion");
-
-        assert_eq!(
-            ctx.protocol_version_info().verified_version,
-            Some(LATEST_VERSION)
-        );
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
-    }
 
     #[tokio::test]
-    async fn best_effort_protocol_refresh_retries_without_blocking_spv_readiness() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
+    async fn headless_spv_readiness_does_not_require_a_verified_protocol() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
         ctx.sdk.store(Arc::new(Sdk::new_mock()));
         ctx.connection_status().set_spv_status(SpvStatus::Running);
-
-        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
-            .await
-            .expect("SPV readiness survives a Platform metadata failure");
+        wait_for_spv(&ctx).await.unwrap();
         assert_eq!(ctx.protocol_version_info().verified_version, None);
-
-        install_mock_sdk_with_dpns_contract(&ctx).await;
-        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
-            .await
-            .expect("SPV readiness retries Platform metadata");
-
-        assert_eq!(
-            ctx.protocol_version_info().verified_version,
-            Some(LATEST_VERSION)
-        );
     }
 
     /// Insert a wallet straight into the in-memory map, bypassing registration

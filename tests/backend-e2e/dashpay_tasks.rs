@@ -1030,7 +1030,7 @@ async fn tc_043_reject_contact_request() {
         )
         .await;
 
-        if matches!(search, Ok(BackendTaskSuccessResult::LoadedIdentity(_))) {
+        if matches!(search, Ok(BackendTaskSuccessResult::LoadedIdentity { .. })) {
             tracing::info!(
                 "TC-043: DPNS name '{}' propagated after {:?}",
                 username_c,

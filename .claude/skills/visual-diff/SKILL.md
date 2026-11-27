@@ -5,6 +5,30 @@ description: "Use to produce a visual diff of dash-evo-tool: annotated screensho
 
 # Visual diff
 
+## CI inputs and runtime wallet
+
+Under `release-qa.yml`, read `release-review`'s CI section first; it overrides
+local setup below. OLD is the supplied published baseline SHA for static evidence
+only. NEW is the verified release zip, already launched by the controller.
+`context/inputs.json` pins both SHAs; use the supplied output directory. No Cargo,
+OLD launch, user-level `desktop-gui` skill or shared mnemonic fixture is needed.
+
+The controller attempts wallet import with the same zip's `det-cli`; a wallet
+may be absent if provisioning failed. Read `wallet-status.json`, never `.env`,
+vaults or credentials. If funding or sync is unavailable, capture reachable layouts and record affected shots as not reached;
+do not import another wallet, request funds, or broadcast. Keep the existing
+NEW-only spotlight style and coverage table. Driver: `/usr/local/bin/qa-ui`
+(`release-review/ci-prompt.md` documents its commands and AT-SPI tree). Write
+`spec.json` and `meta.json`, then use `qa-ui gallery` to run the existing render
+and gallery scripts. Verdict/publication rules are in release-review's CI contract.
+Every line of `context/commits.txt` (non-merge candidates) needs a `meta.json`
+coverage row; internal-only commits use `images: []` and `note: "no user-visible change"`.
+In `report.json.not_reached`, classify NEW-only and other limits as objects with
+`id`, `category` and `reason` per that contract. `meta.json.not_reached` uses
+plain-text strings for gallery rendering.
+The controller owns shutdown, refund and profile disposal;
+do not delete its runtime directories. These overrides apply only in CI.
+
 A commit range in, a gallery out: one annotated image per changed screen of the NEW build, a
 clean variant of each, and an `index.html` that maps every commit to an image or says why none
 exists. Scripts live in `scripts/` beside this file; all take paths as arguments. Do not
@@ -30,7 +54,7 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
   commit. Read the changed UI code to know what each screen should show.
 
 ## 2. History first
-- `git log --no-merges --format='%h %s' OLD..NEW`; map every user-visible commit to the screen that shows it. That is the shot list and the coverage table.
+- `git log --no-merges --format='%h %s' OLD..NEW`; map every listed commit to its screen or an explicit no-user-visible-change note. That is the shot list and the coverage table.
 - NEW-only has no `diff.py` discovery of UI changes the history does not name, so the changelog and coverage table drive the selection. To catch unannounced UI changes, also scan `git diff OLD..NEW -- src/ui` for user-visible edits that no commit subject mentions.
 - *(pair)* Also walk every reachable screen in both builds and run `scripts/diff.py`: it finds changes the history does not name, including screens present in one build only. Clocks, sync progress, banners, scroll offsets, panel widths and the title-bar version are noise.
 
@@ -69,6 +93,6 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 - Then READ every labelled image: each outline encloses exactly what its label names; no pill clipped or covering content; the screen is the intended state (no banner, data present).
 
 ## 7. Gallery and report
-- Write `meta.json` (see `scripts/example-meta.json`), run `scripts/gallery.py --root OUT --meta meta.json --title "Visual diff <date>"`; `spec.json`, `meta.json`, `new/`, `old/` (empty in NEW-only), `annotated/` under OUT. The coverage table lists every user-visible commit of the range: an image, or a note saying why none (backend only, timing behaviour, needs state that was not reachable). In NEW-only mode the intro names both builds and says images mark what the diff says changed; `not_reached` states that OLD screenshots were not taken (NEW-only mode).
+- Write `meta.json` (see `scripts/example-meta.json`), run `scripts/gallery.py --root OUT --meta meta.json --title "Visual diff <date>"`; `spec.json`, `meta.json`, `new/`, `old/` (empty in NEW-only), `annotated/` under OUT. The coverage table lists every non-merge commit of the range: an image, or a note saying why none (backend only, timing behaviour, needs state that was not reachable). In NEW-only mode the intro names both builds and says images mark what the diff says changed; `meta.json.not_reached` is a list of plain-text strings stating that OLD screenshots were not taken (NEW-only mode) and describing other coverage gaps. The separate CI `report.json.not_reached` uses categorized objects.
 - Report: what was not reached and why (e.g. no open contests on testnet; do not create one); presenter notes: real faces in profile pictures, error banners, data that differs between shots (balances change during a session: data, not UI).
 - Captures, generated images and data dirs never go into the repository.

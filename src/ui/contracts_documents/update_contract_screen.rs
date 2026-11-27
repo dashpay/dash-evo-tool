@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::CacheUpdate;
 use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
@@ -369,6 +370,42 @@ impl UpdateDataContractScreen {
 }
 
 impl ScreenLike for UpdateDataContractScreen {
+    fn cached_data_changed(&mut self, update: CacheUpdate) {
+        if super::signing_identities_changed(&self.app_context, update) {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        let Some((identities, selected)) =
+            super::reload_signing_identities(&self.app_context, &mut self.selected_identity_string)
+        else {
+            return;
+        };
+        self.qualified_identities = identities;
+        self.selected_qualified_identity = selected;
+
+        if let Some(identity) = &self.selected_qualified_identity
+            && let BroadcastStatus::ValidContract(contract) = &mut self.broadcast_status
+        {
+            contract.set_owner_id(identity.identity.id());
+        }
+        crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_qualified_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::CRITICAL],
+        );
+        if crate::ui::identity::sync_signing_wallet(
+            self.selected_qualified_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.wallet_unlock_popup.close();
+        }
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
@@ -654,6 +691,90 @@ impl ScreenLike for UpdateDataContractScreen {
 mod tests {
     use super::*;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    async fn assert_update_contract_recovers_signer_and_keeps_draft(
+        reload: impl FnOnce(&mut UpdateDataContractScreen),
+    ) {
+        use crate::context::test_support::{auth_key, identity_holding, wired_test_app_context};
+        use dash_sdk::platform::Identifier;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let master = auth_key(1, SecurityLevel::MASTER);
+        let identity = identity_holding(std::slice::from_ref(&master));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        let draft = serde_json::json!({
+            "$formatVersion": "1",
+            "id": Identifier::new([7; 32]).to_string(Encoding::Base58),
+            "ownerId": identity.identity.id().to_string(Encoding::Base58),
+            "version": 2,
+            "documentSchemas": { "note": {
+                "type": "object",
+                "properties": { "text": { "type": "string", "maxLength": 20, "position": 0 } },
+                "additionalProperties": false
+            } }
+        })
+        .to_string();
+        let mut screen = UpdateDataContractScreen::new(&ctx);
+        screen.contract_json_input = draft.clone();
+        screen.selected_contract = Some("Draft contract".to_string());
+        screen.show_advanced_options = true;
+        screen.parse_contract();
+        assert!(matches!(
+            screen.broadcast_status,
+            BroadcastStatus::ValidContract(_)
+        ));
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1100.0))
+            .build_ui_state(
+                |ui, (screen, submitted): &mut (UpdateDataContractScreen, Option<u32>)| {
+                    if let AppAction::BackendTask(BackendTask::ContractTask(task)) = screen.ui(ui)
+                        && let ContractTask::UpdateDataContract(_, _, key) = *task
+                    {
+                        *submitted = Some(key.id());
+                    }
+                },
+                (screen, None),
+            );
+        harness.run();
+        harness.get_by_label("Update Contract").click();
+        harness.run();
+        assert_eq!(harness.state().1, None);
+
+        let signing_key = auth_key(2, SecurityLevel::CRITICAL);
+        ctx.insert_local_qualified_identity(&identity_holding(&[master, signing_key]), &None)
+            .expect("store the added signing key");
+        reload(&mut harness.state_mut().0);
+        harness.run();
+        let screen = &harness.state().0;
+        assert_eq!(screen.contract_json_input, draft);
+        assert_eq!(screen.selected_contract.as_deref(), Some("Draft contract"));
+        assert!(screen.show_advanced_options);
+        harness.get_by_label("Update Contract").click();
+        harness.step();
+        assert_eq!(harness.state().1, Some(2), "Update must use the new key");
+    }
+
+    #[tokio::test]
+    async fn update_contract_recovers_signer_and_keeps_draft_on_return() {
+        assert_update_contract_recovers_signer_and_keeps_draft(ScreenLike::refresh).await;
+    }
+
+    #[tokio::test]
+    async fn update_contract_recovers_signer_and_keeps_draft_on_cache_update() {
+        use crate::backend_task::CacheDomain;
+
+        assert_update_contract_recovers_signer_and_keeps_draft(|screen| {
+            screen.cached_data_changed(CacheUpdate {
+                network: screen.app_context.network(),
+                domain: CacheDomain::Identities,
+            });
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn interop_protocol14_contract_update_selects_limited_key() {

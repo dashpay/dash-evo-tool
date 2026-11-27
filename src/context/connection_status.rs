@@ -57,17 +57,11 @@ pub struct ConnectionStatus {
     /// are broadcast here, including atomic stop claims and network resets.
     spv_status_tx: watch::Sender<SpvStatus>,
     overall_state: AtomicU8,
-    /// `true` once the SPV masternode list has finished syncing, so quorum
-    /// public keys are resolvable. Platform/identity sync must wait on this:
-    /// firing proof-verifying DAPI calls before quorums exist makes every
-    /// queried node fail locally and get banned by the SDK. Push-based from
-    /// the wallet-backend `EventBridge` `on_progress` callback. Reset by
-    /// [`Self::reset`] on disconnect / network switch.
-    ///
-    /// ADVISORY MIRROR: read only by the `get_quorum_public_key` defense
-    /// backstop. `Relaxed` is sufficient because it guards no other memory —
-    /// the authoritative coordinator-start ordering lives in `CoordinatorGate`,
-    /// whose own `masternodes_ready`/`fired` swap is `SeqCst`.
+    /// UI mirror of masternode-list readiness, pushed by `EventBridge` and
+    /// reset on disconnect or network switch. This status is shared between
+    /// GUI networks: proof admission and coordinator starts use each backend's
+    /// own `CoordinatorGate`. `Relaxed` guards no other memory; the gate's own
+    /// readiness and start ordering use `SeqCst`.
     masternodes_ready: AtomicBool,
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.

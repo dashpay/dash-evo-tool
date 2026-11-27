@@ -23,6 +23,222 @@ instead — it's faster, deterministic, and runs in CI on every PR. Reach for
 this tier only when the thing under test genuinely needs a real display, real
 network timing, or a flow `kittest` can't simulate.
 
+## Release GUI QA in GitHub Actions
+
+`release-qa.yml` runs on GitHub-hosted `ubuntu-26.04`, called after the weekly
+build legs, fixture capture and draft sealing. It verifies the Linux release zip's
+attestation against `release.yml`
+and the NEW tag's source SHA, then runs the zip's GUI and `det-cli`. There is no
+local build, OLD-build A/B or code review. The baseline is the newest older
+published pre-release that is an ancestor of NEW, or an explicitly selected older
+published ancestor pre-release.
+A selected `run_id` must come from a `release.yml` run invoked at the tag's commit
+(as weekly builds are). `--source-digest` refuses builds dispatched from another
+commit, even when `release.yml` checked out the requested tag.
+
+Before merging workflow changes, an allowlisted maintainer can add the
+**`release-qa`** label to a PR from this repository. Remove and re-add the label
+to rerun. The first job checks the label event's `github.event.sender.login`
+against the repository variable **`RELEASE_QA_LABEL_ACTORS`**, a comma- or
+space-separated list of logins (for example, `lklimek, other-maintainer`).
+An unset or empty variable defaults to `lklimek`; a nonempty list replaces that
+default. Entries must match whole logins, case-insensitively. Repository-variable
+changes require administrator access. Other senders (including
+`Claudius-Maginificent` and `github-actions[bot]` under the default list), GitHub
+Bot accounts, forks, other labels and other PR actions do not run QA.
+Unrelated label events use separate concurrency groups and cannot displace a
+queued QA run.
+
+Label rehearsals use the newest published weekly; builds older than #1173 lack `--mnemonic-stdin`, so those rehearsals run unfunded and end NOTE.
+
+Only label a PR whose exact head has been reviewed and trusted: this path checks
+out the event's PR head SHA and executes its controller and skills with access
+to the maintainer's OAuth token during the agent step. It reviews the newest
+**published weekly pre-release** as NEW and selects the baseline automatically
+as described above. It is report-only: no sealing, finalization, release edits or
+publication; the burner may be funded and refunded normally. Every job reachable
+from the label path has read-only repository permissions. Its `prepare_pr` job
+reads only published assets. The mutually exclusive `prepare` job for weekly or
+manual runs alone has `contents: write` to read draft assets; it never executes
+release binaries. Normal weekly runs reuse their build artifact.
+Once the workflow exists on the default branch, `workflow_dispatch` can override
+`tag`, `baseline` and `run_id`.
+
+For stronger protection, an administrator may move
+`CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK` into a protected GitHub Environment, remove the
+repository/organization secret accessible to this repository, require a
+maintainer's approval, and attach that Environment to the `review` job. This is
+optional, not required by the workflow. Unlike a guard in PR-controlled workflow
+code, Environment approval protects the secret even if a PR changes that guard.
+
+The review job has `contents: read`, the `CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK`
+secret only on the Claude step, and no Slack/write secret. A separate report job
+publishes a fixed verdict and artifact link. The existing weekly Slack job
+includes that result. Neither the agent nor the standalone QA workflow publishes
+or deletes a release.
+
+The [release-review CI contract](../../.claude/skills/release-review/SKILL.md#ci-mode-gui-only)
+defines scope limits, report categories, verdicts and publication eligibility.
+
+Build or migration-fixture failure on a newly created tag deletes that tag and
+its broken draft. Failed recuts retain their existing draft marked DO NOT PUBLISH.
+QA, seal and finalize outcomes never trigger deletion. Retained drafts are never
+pruned by later weekly runs; **a human must clean them up**.
+A normal run skips an existing tag or unchanged source. To rebuild a retained
+weekly, dispatch `weekly-build.yml` with `force=true` and its version: the tag
+may move only if the existing release is still a draft bearing our weekly marker.
+Before moving a recut tag, automation marks the existing draft **DO NOT PUBLISH**
+while retaining its ownership marker. Successful build legs replace their assets;
+a failed recut retains the draft and
+may leave mixed old/new assets, so inspect a complete successful rebuild before
+publishing. Published releases and unrelated tags cannot be recut. The seal job
+writes the current weekly marker and a **DO NOT PUBLISH: QA pending**
+notice before QA starts. Failed, cancelled or interrupted QA therefore retains an
+owned, visibly unsafe draft. Finalization clears that notice only on PASS.
+Cancellation before sealing still needs human inspection.
+Use standalone QA to retest unchanged assets without recutting the tag.
+The `<!-- weekly-version: … -->` marker remains unchanged.
+
+### Burner wallet and boundaries
+
+PRE generates one BIP39 phrase with Ubuntu's `python3-mnemonic` and pipes it
+directly into the same release's `det-cli core-wallet-import --mnemonic-stdin`.
+No phrase/env file is created; generated app `.env` files are removed before
+Claude starts. Binaries run with an emptied environment, isolated HOME/data and BROWSER=/bin/true
+to make external browser launches inert. Setup converts sudoers NOPASSWD grants to
+PASSWD, invalidates cached authorization and refuses QA if passwordless sudo still
+works. No later stage needs sudo. TODO: verify this on the first hosted dispatch;
+the local offline checks do not exercise hosted sudoers policy.
+The keyless wallet remains burnable and must never be used beyond this run.
+The GUI can reveal a derived WIF or spend funds if the agent ignores its
+instructions. Text/tree scanning blocks WIF exports, but screenshots have no
+independent OCR scan. This residual is accepted for the low-value, at-most-1-tDASH
+burner; never use mainnet or an operator wallet here.
+
+Smoke launches an empty Testnet profile first and requires a graceful window close
+with exit code 0. A timeout, forced termination or non-zero exit fails smoke.
+The controller keeps the GUI stopped for PRE (wallet import and SPV-dependent receiving address), resumes it even if PRE
+fails, and attempts HTTP-only funding when an address is available. Standalone
+`det-cli` never runs against a live GUI.
+Funding uses only `https://faucet.thepasta.org`: live `/api/status`, CAP PoW,
+at most one payout/address/day, no faucet/IP rotation. Only the soft CAP tier is
+automated; requiresHardCaptcha stops funding. The hard tier is browser-only.
+Solving has a shared
+540-second deadline measured before challenge retrieval, leaving a minute for
+redemption within the 10-minute lifetime; expired solutions are never redeemed.
+The testnet P2PKH refund
+address comes from `depositAddress`, with optional repository variable
+`QA_FAUCET_REFUND_ADDRESS` taking precedence when valid; an invalid override
+falls back to a valid `depositAddress`. If neither is valid, POST is skipped
+with a warning in the report and step summary. Funds are then abandoned with
+the disposable testnet wallet. Funding is capped at 1 tDASH. Known funding refusal
+is recorded while other reachable screens are still tested. An ambiguous payout is
+never retried; it requires a refund attempt and can leave the result incomplete.
+
+POST runs with `if: always()` after stopping the GUI. It validates testnet addresses,
+then observes only Insight's UTXO list. Sending requires exactly one output with
+the recorded faucet transaction ID, burner address, exact payout amount, a valid
+output index and at least one confirmation. An empty list or matching unconfirmed
+output is polled every 30 seconds for up to 12 minutes. If a funding timeout left
+no transaction ID, the single output to the fresh burner address is accepted within
+`refund_amount`'s bounds (at most the payout); its observed transaction ID is saved
+before sending. Transient HTTP or parse errors are retried within that same window.
+Each read is capped at five seconds
+and the remaining observation budget. Extra or unrelated outputs, mismatched
+amounts or transaction IDs for a known payout, and malformed fields stop POST
+immediately.
+After confirmation,
+`det-cli` is used solely for one Testnet send of the observed output minus 226 duffs back
+to the faucet. It receives the remaining 25-minute step budget minus 15 seconds
+for the final state write: about 12 minutes 45 seconds after a full observation
+window, allowing up to ten minutes for SPV sync. The existing 25-minute step and
+220-minute job limits are unchanged. The refund state is saved as `unknown`
+before sending, and nothing is retried after the send starts. This allowance
+covers the current one-input P2PKH builder at 1 duff/byte; the sub-dust remainder
+is miner fee. Unexpected inputs, fee/API drift, funds still unconfirmed after the
+window or an uncertain broadcast produce INCOMPLETE without speculative sends. Refunds depend on testnet/SPV and
+the Insight explorer; a lost runner or forced cancellation can prevent POST.
+The ephemeral wallet is not uploaded and cannot be recovered after runner disposal.
+
+Claude uses pinned CLI `2.1.331`, `--permission-mode default`, 600 turns and a
+130-minute process timeout inside a 132-minute agent step and a 220-minute review
+job. Setup (15 min), smoke (6), PRE (12), resume (5), funding (15), agent (132)
+and POST (25) total 210 minutes, leaving 10 minutes for checkout/download,
+initialization, pause/stop, finish and artifact upload. Graceful GUI close waits
+70 seconds, beyond DET's 55-second shutdown deadline, with up to 10 seconds to
+request close and 5 seconds to observe the SIGTERM fallback before SIGKILL.
+A close timeout is INCOMPLETE, including a later exit caused by that fallback;
+an observed crash or nonzero exit before fallback remains FAIL. The smoke step
+has six minutes to accommodate startup and this longer close wait.
+600 turns allow roughly 180 action/capture/read loops plus 60 turns for changelog
+and reporting. The 130-minute timeout is the primary bound, not an expectation
+that every turn will be used; reserve the final 20 minutes for evidence/reporting.
+Measure actual turn usage in the first hosted dispatch before tuning this cap.
+The mutually exclusive prepare jobs each have a 15-minute limit; report has
+five minutes. Each QA path therefore totals at most four hours of job execution
+(queue time excluded).
+`--restricted` and an explicit PreToolUse hook permit public-input reads, report
+writes and the fixed `qa-ui` helper only. The hook uses `onFailure: block`;
+controller receipts, wallet status and smoke evidence are not agent-writable.
+An empty working directory and explicit context/report/source directories avoid
+repository startup instructions. Do not add `--bare`: it disables explicit hooks
+and OAuth ([Claude automation documentation](https://code.claude.com/docs/en/headless)). No general shell, WebFetch, MCP servers or subagents.
+Xvfb/lavapipe follow the render-spike setup; the helper provides xdotool/scrot
+and AT-SPI labels/rectangles. Its fixed `insight addr ADDRESS` / `insight tx TXID`
+commands allow read-only UI cross-checks against testnet Insight (GET only, no
+redirects, five seconds, 1 MB); response text is untrusted data. Any well-formed
+address or transaction ID is accepted, so the agent could encode up to 32 bytes in a
+request URL; the maintainer accepts this, since the only reachable secret is the
+disposable testnet burner, already treated as exposed. Keyboard commands
+activate the recorded DET window
+then use XTEST (`key`/`type` without `--window`). GUI scenarios stop before any
+broadcast or secret
+export. These controls reduce exposure; they do not make public on-chain text
+or an LLM verdict trustworthy by themselves.
+
+### Reruns and verification
+
+Dispatch `release-qa.yml` from `v1.0-dev` with `tag`, optional `baseline`, and
+optional `run_id` of the build whose Linux zip should be reviewed. Without a
+run ID, it downloads the release asset, including drafts. Other refs are skipped
+and reported INCOMPLETE. **Re-run failed jobs** reuses stable input/report artifact names; successful
+uploads replace the previous artifact for this run. A weekly rerun still obeys its tag/no-commits gate;
+use a new forced manual dispatch when rebuilding an existing draft. Standalone reruns never publish; a maintainer can
+publish the retained draft after inspecting the new report.
+
+Download `release-qa-report` for `report.json`, Markdown, verified
+changelog, scenarios/checklist, spotlight gallery, embedded visual changelog,
+screenshots and GUI logs. `result.json` is the controller's effective verdict;
+`report.json.summary` also records it. The controller validates report fields, gallery images and coverage of every
+supplied non-merge commit. The report job also requires a successful finish step
+and a complete export manifest whose file hashes match the downloaded artifacts.
+Credential-like text (BIP39, extended private keys, Dash/Bitcoin mainnet/testnet
+WIFs and Anthropic tokens) suppresses export; screenshots are checked by the agent.
+Agent HTML writes are denied. All HTML is sanitized again at export: only passive
+markup, local gallery image/anchor links and embedded PNGs survive. The controller
+restores only the gallery's fixed CSS and UTF-8 declaration; agent CSS, scripts,
+event handlers, frames and external links are removed. All text is scanned before
+any file is copied, and a staged export becomes public only after completion.
+Profiles, vaults, env files and raw Claude transcripts are never uploaded.
+
+CI runs the Python suite in `release-qa-tests.yml` on release-QA script/workflow
+changes and visual-diff/release-review skill changes, on pull requests and pushes
+to `v*-dev`; it has no schedule. The same job runs the visual-diff selftest. Install Ubuntu `python3-yaml`, `python3-pil`,
+`python3-numpy`, `python3-mnemonic` and `fonts-dejavu-core` for local checks; the secret tests use the real BIP39 library.
+Offline checks (no faucet payouts or Claude usage):
+
+```bash
+python3 -m unittest discover -s scripts/ci/release-qa
+bash scripts/ci/test-weekly-jobs.sh
+actionlint .github/workflows/release-qa.yml .github/workflows/release-qa-tests.yml .github/workflows/weekly-build.yml .github/workflows/tests.yml
+shellcheck scripts/ci/release-qa/setup.sh
+```
+
+The first hosted dispatch remains required to validate OAuth, AT-SPI, typed-input
+delivery, turn usage, live sync,
+funding/refund and artifact delivery together. The prior render spike validated
+rendering only.
+
 ## How to run a scenario
 
 Use a graphical session whose `DISPLAY` already points at the desktop you want

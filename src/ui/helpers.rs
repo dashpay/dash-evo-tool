@@ -457,24 +457,24 @@ pub(crate) fn refresh_contract_signing_key(
     security_levels: &[SecurityLevel],
 ) -> bool {
     let scope = app_context.contract_signing_scope();
-    if let (Some(identity), Some(key)) = (identity, selected_key.as_ref())
-        && signable_key_now(identity, key, scope).is_some()
-    {
+    let next = identity.and_then(|identity| {
+        selected_key
+            .as_ref()
+            .and_then(|key| signable_key_now(identity, key, scope))
+            .or_else(|| {
+                identity.signing_key_now(
+                    crate::model::identity_key_usability::KeyRequirements::new(
+                        Purpose::AUTHENTICATION,
+                        security_levels,
+                        scope,
+                    ),
+                )
+            })
+    });
+    if selected_key.as_ref() == next {
         return false;
     }
-    let next = identity
-        .and_then(|identity| {
-            identity.signing_key_now(crate::model::identity_key_usability::KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                security_levels,
-                scope,
-            ))
-        })
-        .cloned();
-    if *selected_key == next {
-        return false;
-    }
-    *selected_key = next;
+    *selected_key = next.cloned();
     true
 }
 

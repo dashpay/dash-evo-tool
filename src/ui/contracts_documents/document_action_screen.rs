@@ -1028,6 +1028,20 @@ impl DocumentActionScreen {
             DocumentActionType::Transfer => doc_type.document_transfer_token_cost(),
         };
         if let Some(token_creation_cost) = cost {
+            // Protocol version 14: an optional token cost may be left out, the
+            // action then paying its gas in credits with no sponsorship.
+            if token_creation_cost.optional {
+                ui.checkbox(&mut self.pay_optional_token_cost, "Pay the token cost")
+                    .on_hover_text(
+                        "Paying the token cost is optional for this action. Without it, you pay the network fee yourself in credits.",
+                    );
+            }
+            if self.token_payment_for(cost).is_none() {
+                ui.label(
+                    "The optional token cost will not be paid.\nYou will pay the network fee in credits.",
+                );
+                return;
+            }
             let token_amount = token_creation_cost.token_amount;
             let token_name = if let Some(contract) = &self.selected_contract {
                 let contract_id = contract.contract.id();
@@ -1074,14 +1088,6 @@ impl DocumentActionScreen {
                 ))
                 .color(Color32::DARK_RED),
             );
-            // Protocol version 14: an optional token cost may be left out, the
-            // action then paying its gas in credits with no sponsorship.
-            if token_creation_cost.optional {
-                ui.checkbox(&mut self.pay_optional_token_cost, "Pay the token cost")
-                    .on_hover_text(
-                        "Paying the token cost is optional for this action. Without it, you pay the network fee yourself in credits.",
-                    );
-            }
         } else {
             self.pay_optional_token_cost = true;
         }
@@ -3217,6 +3223,61 @@ mod tests {
         assert_eq!(token_payment(Some(required), false), paid(required));
         assert_eq!(token_payment(Some(optional), true), paid(optional));
         assert_eq!(token_payment(Some(optional), false), None);
+    }
+
+    #[test]
+    fn optional_token_cost_summary_follows_payment_choice() {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Setters;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        for gas_fees_paid_by in [
+            GasFeesPaidBy::DocumentOwner,
+            GasFeesPaidBy::ContractOwner,
+            GasFeesPaidBy::PreferContractOwner,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+            let cost = DocumentActionTokenCost {
+                optional: true,
+                token_amount: 40,
+                gas_fees_paid_by,
+                ..Default::default()
+            };
+            let mut doc_type = editor_document_type(false);
+            doc_type.set_document_creation_token_cost(Some(cost));
+            let mut harness = Harness::builder().build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    screen.render_token_cost_info(ui, &doc_type);
+                },
+                screen,
+            );
+            harness.run();
+            assert!(harness.query_by_label_contains("Tokens will be").is_some());
+
+            harness.get_by_label("Pay the token cost").click();
+            harness.run();
+            assert_eq!(harness.state().token_payment_for(Some(cost)), None);
+            assert!(
+                harness.query_by_label_contains("Tokens will be").is_none(),
+                "Skipping the optional cost must not claim a token payment or sponsored gas"
+            );
+            assert!(
+                harness
+                    .query_by_label("The optional token cost will not be paid.\nYou will pay the network fee in credits.")
+                    .is_some()
+            );
+
+            harness.get_by_label("Pay the token cost").click();
+            harness.run();
+            assert!(harness.state().token_payment_for(Some(cost)).is_some());
+            assert!(harness.query_by_label_contains("Tokens will be").is_some());
+            assert!(
+                harness
+                    .query_by_label_contains("The optional token cost will not be paid.")
+                    .is_none()
+            );
+        }
     }
 
     #[test]

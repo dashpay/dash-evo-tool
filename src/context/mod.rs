@@ -2127,7 +2127,22 @@ mod tests {
         );
         assert!(message.contains("only on this device"), "{message}");
         assert!(
-            message.contains("private keys of any identities you added with their keys"),
+            message.contains("every identity private key you entered or generated yourself"),
+            "{message}"
+        );
+        assert!(
+            message
+                .contains("including keys you added later to identities created from your wallets"),
+            "{message}"
+        );
+        assert!(
+            message.contains(
+                "Such a copy may be out of date or unusable. If you have no working backup"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("in the backups/auto folder of the data folder or next to the file"),
             "{message}"
         );
         assert!(crate::backend_task::is_terminal_storage_open_error(&error));
@@ -2159,6 +2174,16 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("the network cannot restore"), "{message}");
+        assert!(
+            message.contains(
+                "Such a copy may be out of date or unusable. If you have no working backup"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("in the backups/auto folder of the data folder or next to the file"),
+            "{message}"
+        );
         assert_eq!(std::fs::read(&store).unwrap(), b"not a database");
     }
 
@@ -2178,7 +2203,15 @@ mod tests {
             return;
         };
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
-        assert_unreadable_store_stops_startup(dir.path(), &store);
+        let message = assert_unreadable_store_stops_startup(dir.path(), &store).to_string();
+        assert!(
+            message.contains("permission to open this file"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("then start Dash Evo Tool again."),
+            "{message}"
+        );
     }
 
     #[cfg(unix)]

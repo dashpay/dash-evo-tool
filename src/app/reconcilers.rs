@@ -1042,10 +1042,17 @@ impl StoragePrepGate {
             } else {
                 config = config.with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
             }
-            let message = if failure.retryable && !failure.error.is_wallet_data_check_in_use() {
-                STORAGE_PREP_FAILED_MESSAGE.to_string()
-            } else {
+            let message = if !failure.retryable {
                 failure.error.to_string()
+            } else if let TaskError::WalletDataCheckFailed { database, .. } = &failure.error
+                && failure.error.is_wallet_data_check_in_use()
+            {
+                format!(
+                    "Another program is using the file at {database}. Close the other program, such as another copy of Dash Evo Tool, then choose Try again.",
+                    database = database.display()
+                )
+            } else {
+                STORAGE_PREP_FAILED_MESSAGE.to_string()
             };
             config = config
                 .with_description(message)

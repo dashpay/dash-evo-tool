@@ -690,6 +690,35 @@ fn a_retryable_failure_offers_try_again_and_close() {
     });
 }
 
+#[test]
+fn pinned_lineage_locked_store_at_storage_prep_offers_try_again() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_with_raised_gate();
+        harness
+            .state_mut()
+            .test_fail_storage_prep_gate(TaskError::WalletDataCheckFailed {
+                database: "det-testnet.sqlite".into(),
+                source: rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    None,
+                )
+                .into(),
+            });
+        harness.run_steps(5);
+
+        assert!(harness.query_by_label("Try again").is_some());
+        assert!(harness.query_by_label("Close the app").is_some());
+        assert!(
+            harness
+                .query_by_label_contains("Close the other program, such as another copy of Dash Evo Tool, then choose Try again.")
+                .is_some()
+        );
+    });
+}
+
 /// The retry button's *behaviour*, not its label: clicking "Try again" must
 /// clear the stale terminal status and dispatch a real preparation.
 ///

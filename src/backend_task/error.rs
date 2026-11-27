@@ -346,6 +346,28 @@ pub enum WalletDataCheckError {
     JournalRecovery(#[source] rusqlite::Error),
 }
 
+impl WalletDataCheckError {
+    fn startup_recovery_advice(&self) -> &'static str {
+        match StorageFailure::in_chain(self) {
+            Some(StorageFailure::InUse) => {
+                "Another program is using the file. Close the other program, such as another copy of Dash Evo Tool, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::Full) => {
+                "Free up space on the disk that contains the file, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::Unavailable) => {
+                "Make sure the drive that contains the file is connected and available, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::OutOfMemory) => {
+                "Close other programs to free up memory, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::AccessDenied) | None => {
+                "Make sure your account has permission to open this file, then start Dash Evo Tool again."
+            }
+        }
+    }
+}
+
 /// Lets `?` on a joined task keep the panic message out of the error.
 impl From<tokio::task::JoinError> for TaskError {
     fn from(source: tokio::task::JoinError) -> Self {
@@ -887,8 +909,9 @@ pub enum TaskError {
     /// this database, so nothing is opened: if it is on that layout, opening
     /// the app database would leave it unconvertible.
     #[error(
-        "Dash Evo Tool could not read your saved data in {database} before starting. Close any other open copies of Dash Evo Tool, make sure your account has permission to open this file, then try again.",
-        database = .database.display()
+        "Dash Evo Tool could not read your saved data in {database}. {advice}",
+        database = .database.display(),
+        advice = .source.startup_recovery_advice()
     )]
     WalletDataCheckFailed {
         database: std::path::PathBuf,
@@ -900,7 +923,8 @@ pub enum TaskError {
     #[error(
         "The wallet data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
          If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
-         If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have copies of the private keys of any identities you added with their keys, because you need those keys to add those identities again. Identities that belong to your wallets can be found again with their recovery phrases. If you accept losing records kept only on this device, such as pending payments, delete the damaged file manually along with its matching files, then start the app again. \
+         Dash Evo Tool may also have saved older copies of this file before an upgrade, in the backups/auto folder of the data folder or next to the file with names that start with the file's name. Such a copy may be out of date or unusable. \
+         If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have copies of every identity private key you entered or generated yourself, including keys you added later to identities created from your wallets. Identities that belong to your wallets can be found again with their recovery phrases, but keys you entered or generated yourself must be added again from your copies. If you accept losing records kept only on this device, such as pending payments, delete the damaged file manually along with its matching files, then start the app again. \
          Dash Evo Tool creates an empty file when you open that network. You may need to restore your wallets and sync again. Syncing cannot bring back records saved only on this device.",
         database = .database.display()
     )]
@@ -914,6 +938,7 @@ pub enum TaskError {
     #[error(
         "The app data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
          If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
+         Dash Evo Tool may also have saved older copies of this file before an upgrade, in the backups/auto folder of the data folder or next to the file with names that start with the file's name. Such a copy may be out of date or unusable. \
          If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have the recovery phrases for your wallets and copies of any private keys you imported. You may need them to regain access to your funds. \
          If you accept losing app settings, wallet names and other details that the network cannot restore, delete the damaged file manually along with its matching files, then start the app again. Dash Evo Tool creates a new file, and you may need to add your wallets and keys again.",
         database = .database.display()

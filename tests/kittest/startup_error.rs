@@ -7,7 +7,7 @@ use dash_evo_tool::ui::components::startup_error_dialog::{
     STARTUP_ERROR_TITLE, StartupErrorDialog, StartupErrorDialogAction,
 };
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -310,7 +310,7 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
 }
 
 #[test]
-fn pinned_lineage_locked_store_offers_a_startup_retry() {
+fn pinned_lineage_locked_store_shows_quit_only_startup_failure() {
     with_isolated_data_dir(|| {
         let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
         dash_evo_tool::app_dir::ensure_data_dir_exists(&data_dir).expect("data dir");
@@ -340,31 +340,29 @@ fn pinned_lineage_locked_store_offers_a_startup_retry() {
             !app_db.exists(),
             "the blocked boot must not open det-app.sqlite"
         );
-        let message = outcome
-            .shown_failure()
-            .expect("startup failure")
-            .to_string();
+        assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
+        assert!(harness.query_by_label("Quit").is_some());
+        assert!(harness.query_by_label("Copy details").is_some());
+        assert!(
+            !harness
+                .query_all_by_role(egui::accesskit::Role::Button)
+                .filter_map(|button| button.accesskit_node().label())
+                .any(|label| label.eq_ignore_ascii_case("try again")),
+            "startup must offer no retry button"
+        );
+        let BootApp::Failed(failure) = harness.state() else {
+            panic!("a locked store must fail the boot");
+        };
+        let message = failure.report().message();
         assert!(message.contains(store.to_str().expect("UTF-8 store path")));
-        assert!(harness.query_by_label(&message).is_some());
-        assert!(harness.query_by_label("Try again").is_some());
-
-        harness.get_by_label("Try again").click();
-        harness.run_steps(3);
-        assert!(outcome.failed(), "the store is still locked");
-        assert!(!app_db.exists());
-
-        writer.execute_batch("ROLLBACK").expect("release the lock");
-        harness.get_by_label("Try again").click();
-        harness.run_steps(3);
-
-        assert!(matches!(harness.state(), BootApp::Running(_)));
         assert!(
-            !outcome.failed(),
-            "a successful retry clears the failed exit status"
+            message.contains("Another program is using the file."),
+            "{message}"
         );
         assert!(
-            app_db.exists(),
-            "the retry may open det-app.sqlite once the probe succeeds"
+            message.contains("Close the other program, such as another copy of Dash Evo Tool, then start Dash Evo Tool again."),
+            "{message}"
         );
+        assert!(harness.query_by_label(message).is_some());
     });
 }

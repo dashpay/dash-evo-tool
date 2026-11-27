@@ -45,11 +45,11 @@ pub fn balance_label(credits: u64) -> String {
     format_credits_as_dash(credits)
 }
 
-/// Voter-readiness label. Green + `Voting ready` when a voting key is loaded,
+/// Voting-key presence label. Green + `Voting key loaded` when a voting key is loaded,
 /// warning + `No voting key` otherwise (§7 copy).
 pub fn voter_readiness_label(voting_present: bool) -> &'static str {
     if voting_present {
-        "Voting ready"
+        "Voting key loaded"
     } else {
         "No voting key"
     }
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn tc_fr3_06_07_voter_readiness_copy() {
-        assert_eq!(voter_readiness_label(true), "Voting ready");
+        assert_eq!(voter_readiness_label(true), "Voting key loaded");
         assert_eq!(voter_readiness_label(false), "No voting key");
     }
 

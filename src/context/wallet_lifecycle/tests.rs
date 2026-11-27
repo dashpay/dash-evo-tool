@@ -150,6 +150,54 @@ async fn wiring_does_not_start_chain_sync() {
     backend.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_store_startup_failure_explains_manual_recovery() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let path = ctx.data_dir().join("det-testnet-shielded.sqlite");
+    let corrupt = b"not a SQLite database";
+    std::fs::write(&path, corrupt).expect("write corrupt shielded store");
+
+    let error = ctx
+        .prepare_storage(sender)
+        .await
+        .expect_err("storage preparation must fail");
+    let TaskError::ShieldedStoreOpenFailed {
+        path: failed_path,
+        source,
+    } = &error
+    else {
+        panic!("expected a shielded store open failure, got {error:?}");
+    };
+    assert_eq!(failed_path, &path);
+    assert!(matches!(
+        source.as_ref(),
+        platform_wallet::error::PlatformWalletError::ShieldedStoreError(_)
+    ));
+    let message = error.to_string();
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    let mut remaining = message.as_str();
+    for step in [
+        "Your wallets and keys are still saved",
+        "free space",
+        "every shielded payment, transfer, unshield and withdrawal",
+        "including those to your own wallets",
+        "Do not send any of them again until the new file has synced",
+        "close the app",
+        "back up the file together with any matching files ending in -wal, -shm, or -journal",
+        "Delete the file and those matching files manually",
+        "Reopen the app",
+        "create a new file",
+        "Wait for the sync to finish",
+        "check your shielded balances",
+    ] {
+        remaining = remaining
+            .split_once(step)
+            .unwrap_or_else(|| panic!("missing or out of order: {step:?} in {message}"))
+            .1;
+    }
+    assert_eq!(std::fs::read(&path).expect("read shielded store"), corrupt);
+}
+
 /// Once a context has completed storage preparation, later chokepoint calls
 /// return without replaying the drain or overwriting another migration status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2506,6 +2554,10 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
 
+    if !crate::test_support::file_modes_deny_access() {
+        eprintln!("skipped: file modes do not deny this process access");
+        return;
+    }
     let (ctx, sender, tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
@@ -2538,7 +2590,7 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
             (target, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key),
-                PrivateKeyData::Clear([0x70 + key_id as u8; 32]),
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             ),
         );
     }
@@ -8109,6 +8161,638 @@ async fn update_backup_retention_prunes_only_after_wallet_backend_opens() {
     );
     assert!(!backup.exists());
     ctx.wallet_backend().unwrap().shutdown().await;
+}
+
+/// Where the user searches a wallet for identities again.
+const IDENTITY_SEARCH_ROUTE: &str =
+    "Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities";
+
+/// A registered, locked password-protected wallet named "Savings" on a wired
+/// offline backend, with no session-cached seed.
+async fn context_with_locked_protected_wallet(
+    seed: [u8; 64],
+    password: &str,
+    prompt: Option<Arc<dyn crate::wallet_backend::SecretPrompt>>,
+) -> (
+    Arc<AppContext>,
+    tempfile::TempDir,
+    WalletSeedHash,
+    Arc<RwLock<Wallet>>,
+) {
+    let (ctx, sender, tmp) = offline_testnet_context();
+    if let Some(prompt) = prompt {
+        // The backend captures this host when it constructs SecretAccess.
+        ctx.install_secret_prompt(prompt);
+    }
+    let wallet = Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("Savings".to_string()),
+        Some(&Secret::new(password)),
+    )
+    .expect("build protected wallet");
+    let (seed_hash, wallet) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register protected wallet");
+    wallet.write_recover().wallet_seed.close();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    ctx.handle_wallet_locked(&wallet);
+    ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+    (ctx, tmp, seed_hash, wallet)
+}
+
+#[test]
+fn only_an_operation_scoped_unlock_before_readiness_gets_a_search_notice() {
+    use super::unlock::unlock_discovery_notice;
+    use crate::model::identity_discovery::DiscoveryReadiness;
+
+    for readiness in [
+        DiscoveryReadiness::Ready,
+        DiscoveryReadiness::Syncing,
+        DiscoveryReadiness::SyncStopped,
+    ] {
+        for retention in [
+            WalletUnlockRetention::UntilAppClose,
+            WalletUnlockRetention::UntilStorageUpdateComplete,
+        ] {
+            assert_eq!(
+                unlock_discovery_notice(retention, readiness, "Savings"),
+                None,
+                "{retention:?} leaves the seed to a later search, so it needs no notice",
+            );
+        }
+    }
+    assert_eq!(
+        unlock_discovery_notice(
+            WalletUnlockRetention::OperationOnly,
+            DiscoveryReadiness::Ready,
+            "Savings"
+        ),
+        None,
+        "a ready network searches during the unlock itself",
+    );
+
+    let syncing = unlock_discovery_notice(
+        WalletUnlockRetention::OperationOnly,
+        DiscoveryReadiness::Syncing,
+        "Savings",
+    )
+    .expect("an operation-scoped unlock while syncing must explain the skipped search");
+    assert!(syncing.contains("“Savings”"), "{syncing}");
+    assert!(
+        syncing.contains("Connect to the wallet's network if needed"),
+        "{syncing}"
+    );
+    assert!(syncing.contains("Once sync finishes"), "{syncing}");
+    let stopped = unlock_discovery_notice(
+        WalletUnlockRetention::OperationOnly,
+        DiscoveryReadiness::SyncStopped,
+        "Savings",
+    )
+    .expect("an operation-scoped unlock while sync is stopped must explain the skipped search");
+    assert!(stopped.contains("“Savings”"), "{stopped}");
+    assert!(
+        stopped.contains("Make sure you are connected to the wallet's network"),
+        "{stopped}"
+    );
+    assert!(stopped.contains("Once sync finishes"), "{stopped}");
+    for text in [&syncing, &stopped] {
+        assert!(text.contains(IDENTITY_SEARCH_ROUTE), "{text}");
+        assert!(!text.contains("minute"), "no time promise: {text}");
+    }
+}
+
+/// D37: an unlock for one operation forgets the seed when its own work ends,
+/// so a search it cannot run yet is never made up by the later sweep. The
+/// user must hear that right away; other retentions keep the seed for the
+/// sweep, and a storage update unlock is no request to search.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operation_scoped_unlock_before_readiness_tells_the_user_at_once() {
+    let password = "correct-wallet-password";
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_locked_protected_wallet(crate::test_support::keys::seed(), password, None)
+            .await;
+    ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+    let notices = || search_notices(&ctx);
+
+    for retention in [
+        WalletUnlockRetention::UntilStorageUpdateComplete,
+        WalletUnlockRetention::UntilAppClose,
+    ] {
+        wallet
+            .write_recover()
+            .wallet_seed
+            .open(password)
+            .expect("the correct password opens the wallet");
+        ctx.handle_wallet_unlocked(&wallet, password, retention)
+            .expect("the correct password must unlock the wallet");
+        assert!(
+            notices().is_empty(),
+            "{retention:?} must not raise the notice"
+        );
+        ctx.handle_wallet_locked(&wallet);
+        wallet.write_recover().wallet_seed.close();
+    }
+
+    wallet
+        .write_recover()
+        .wallet_seed
+        .open(password)
+        .expect("the correct password opens the wallet");
+    ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly)
+        .expect("the correct password must unlock the wallet");
+    let shown = notices();
+    assert_eq!(shown.len(), 1, "exactly one notice: {shown:?}");
+    assert!(
+        shown[0].starts_with("Identities in wallet “Savings” cannot be searched yet."),
+        "{}",
+        shown[0]
+    );
+    assert!(shown[0].contains(IDENTITY_SEARCH_ROUTE), "{}", shown[0]);
+
+    ctx.clear_wallet_search_notices();
+    assert!(
+        notices().is_empty(),
+        "leaving the network removes its notices"
+    );
+    ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly)
+        .expect("the correct password must unlock the wallet");
+    assert_eq!(notices().len(), 1, "a new unlock raises the notice again");
+    ctx.remove_wallet(&seed_hash).expect("remove the wallet");
+    assert!(
+        notices().is_empty(),
+        "removing the wallet removes its notice"
+    );
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// The "cannot be searched" notices currently shown.
+fn search_notices(ctx: &Arc<AppContext>) -> Vec<String> {
+    crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx())
+        .into_iter()
+        .filter(|text| text.contains("cannot be searched"))
+        .collect()
+}
+
+/// A mock SDK answering every lookup of a first discovery window over `wallet`
+/// with "no identity", so a full pass completes offline.
+async fn sdk_finding_no_wallet_identities(seed: &[u8; 64], wallet: &Wallet) -> dash_sdk::Sdk {
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
+
+    // The scan probes this many auth keys per identity index.
+    const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
+    let mut queries = Vec::new();
+    for identity_index in 0..crate::model::identity_discovery::IDENTITY_GAP_LIMIT {
+        for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
+            let key = wallet
+                .identity_authentication_ecdsa_public_key_from_seed(
+                    seed,
+                    Network::Testnet,
+                    identity_index,
+                    key_index,
+                )
+                .expect("derive an identity auth key");
+            queries.push(NonUniquePublicKeyHashQuery {
+                key_hash: key.pubkey_hash().into(),
+                after: None,
+            });
+        }
+    }
+    let mut sdk = dash_sdk::Sdk::new_mock();
+    for query in queries {
+        sdk.mock()
+            .expect_fetch(query, None::<Identity>)
+            .await
+            .expect("register the lookup");
+    }
+    sdk
+}
+
+/// The notice an unlock raised before sync must go once the wallet is in fact
+/// searched later, not linger next to the search's results.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_search_notice_goes_once_the_wallet_is_searched_after_sync() {
+    let password = "correct-wallet-password";
+    let seed = crate::test_support::keys::seed();
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_locked_protected_wallet(seed, password, None).await;
+    let snapshot = wallet.read_recover().clone();
+    ctx.sdk.store(Arc::new(
+        sdk_finding_no_wallet_identities(&seed, &snapshot).await,
+    ));
+    ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
+
+    backend.mark_quorum_keys_ready_for_test();
+    ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::UntilAppClose)
+        .expect("the correct password must unlock the wallet");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !search_notices(&ctx).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a completed search must remove the notice: {:?}",
+            search_notices(&ctx)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    backend.shutdown().await;
+}
+
+/// Unlock `wallet` for one operation while the network is not ready, then
+/// wait until that unlock's own pass has ended, skipping the search and
+/// forgetting the seed, with the notice still up.
+async fn unlock_for_one_operation_before_sync(
+    ctx: &Arc<AppContext>,
+    seed_hash: &WalletSeedHash,
+    wallet: &Arc<RwLock<Wallet>>,
+    password: &str,
+) {
+    wallet
+        .write_recover()
+        .wallet_seed
+        .open(password)
+        .expect("the correct password opens the wallet");
+    ctx.handle_wallet_unlocked(wallet, password, WalletUnlockRetention::OperationOnly)
+        .expect("the correct password must unlock the wallet");
+    assert_eq!(search_notices(ctx).len(), 1, "precondition: notice shown");
+    // The pass ends by releasing its claim on the seed, which forgets it.
+    let secrets = ctx.wallet_backend().expect("backend wired").secret_access();
+    let scope = crate::wallet_backend::SecretScope::HdSeed {
+        seed_hash: *seed_hash,
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while secrets.can_resolve_without_prompt(&scope) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unlock's own pass never ended"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        search_notices(ctx).len(),
+        1,
+        "a skipped search leaves the notice up"
+    );
+}
+
+/// An explicit search the network can answer is the retry the notice asks
+/// for, in either search mode and whatever its outcome, so it removes the
+/// notice; a search refused because the network is not ready keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_explicit_search_removes_the_notice_and_a_refused_one_keeps_it() {
+    use crate::backend_task::identity::IdentityTask;
+    use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+
+    let password = "correct-wallet-password";
+    for specific_index in [true, false] {
+        let prompt = Arc::new(TestPrompt::new((0..128).map(|_| ScriptedAnswer::Cancel)));
+        let (ctx, _tmp, seed_hash, wallet) = context_with_locked_protected_wallet(
+            crate::test_support::keys::seed(),
+            password,
+            Some(prompt.clone()),
+        )
+        .await;
+        ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+        unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(256);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let task = || {
+            if specific_index {
+                IdentityTask::SearchIdentityFromWallet(Arc::clone(&wallet).into(), 0)
+            } else {
+                IdentityTask::SearchIdentitiesUpToIndex(Arc::clone(&wallet).into(), 5)
+            }
+        };
+
+        let refused = ctx
+            .run_identity_task(task(), &ctx.sdk(), sender.clone())
+            .await;
+        assert!(
+            matches!(refused, Err(TaskError::WalletIdentityDiscoveryNotReady)),
+            "{refused:?}"
+        );
+        assert_eq!(prompt.ask_count(), 0, "refusal must precede any prompt");
+        assert_eq!(
+            search_notices(&ctx).len(),
+            1,
+            "a search refused for readiness keeps the notice (specific index: {specific_index})"
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .mark_quorum_keys_ready_for_test();
+        let error = ctx
+            .run_identity_task(task(), &ctx.sdk(), sender)
+            .await
+            .expect_err("the user cancelled the first password prompt");
+        assert_eq!(prompt.ask_count(), 1, "cancelling must end the search");
+        if specific_index {
+            assert!(
+                matches!(error, TaskError::SecretPromptCancelled),
+                "{error:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    error,
+                    TaskError::WalletIdentityDiscoveryCancelled {
+                        stored: 0,
+                        unconfirmed_saves: false,
+                    }
+                ),
+                "{error:?}"
+            );
+            assert_eq!(
+                error.to_string(),
+                "Wallet identity search was cancelled. No identities were saved. Search again when you are ready.",
+            );
+        }
+        assert!(
+            search_notices(&ctx).is_empty(),
+            "an admitted search removes the notice (specific index: {specific_index})"
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
+}
+
+/// An explicit search the network cannot verify yet is refused before it
+/// prompts or looks anything up, with recovery advice valid after a switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_explicit_wallet_identity_search_before_readiness_is_refused_before_any_lookup() {
+    use crate::backend_task::identity::IdentityTask;
+
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_imported_wallet(crate::test_support::keys::seed()).await;
+    let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+    let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+    let search = |task: IdentityTask| {
+        let ctx = Arc::clone(&ctx);
+        let sender = sender.clone();
+        async move { ctx.run_identity_task(task, &ctx.sdk(), sender).await }
+    };
+
+    for (status, refusal) in [
+        (
+            SpvStatus::Syncing,
+            "Identities in this wallet cannot be searched yet. Connect to the wallet's network if needed, then search again once sync finishes.",
+        ),
+        (
+            SpvStatus::Stopped,
+            "Identities in this wallet cannot be searched yet. Make sure you are connected to the wallet's network, then search again once sync finishes.",
+        ),
+    ] {
+        ctx.connection_status().set_spv_status(status);
+        for task in [
+            IdentityTask::SearchIdentitiesUpToIndex(Arc::clone(&wallet).into(), 5),
+            IdentityTask::SearchIdentityFromWallet(Arc::clone(&wallet).into(), 0),
+        ] {
+            let error = search(task)
+                .await
+                .expect_err("a search the network cannot verify must not succeed");
+            assert_eq!(error.to_string(), refusal, "{status:?}: {error:?}");
+        }
+    }
+    assert!(
+        !identity_lookups_started(&ctx, &seed_hash),
+        "a refused search must not derive lookup keys"
+    );
+    assert!(matches!(
+        search(IdentityTask::SearchIdentityFromWallet(wallet.into(), 0)).await,
+        Err(TaskError::WalletIdentityDiscoverySyncStopped)
+    ));
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_discovery_reports_saved_identity_and_stops_after_the_matching_key() {
+    let error = cancel_discovery_after_saving_an_identity(false).await;
+    assert!(
+        matches!(
+            error,
+            TaskError::WalletIdentityDiscoveryCancelled {
+                stored: 1,
+                unconfirmed_saves: false,
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "Wallet identity search was cancelled. One identity was saved. Search again when you are ready.",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_discovery_reports_an_unconfirmed_save() {
+    let error = cancel_discovery_after_saving_an_identity(true).await;
+    assert!(
+        matches!(
+            error,
+            TaskError::WalletIdentityDiscoveryCancelled {
+                stored: 0,
+                unconfirmed_saves: true,
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "Wallet identity search was cancelled. A save could not be confirmed. Check your identities before searching again.",
+    );
+}
+
+async fn cancel_discovery_after_saving_an_identity(fail_balance_watermark: bool) -> TaskError {
+    use crate::backend_task::identity::IdentityTask;
+    use crate::model::derived_identity_key::recovery_scan_bound;
+    use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+    use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
+    use dash_sdk::platform::{Identifier, Identity};
+
+    let seed = crate::test_support::keys::seed();
+    let password = rand::random::<u128>().to_string();
+    let prompt = Arc::new(TestPrompt::new((0..128).map(|_| ScriptedAnswer::Cancel)));
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_locked_protected_wallet(seed, &password, Some(prompt.clone())).await;
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let cache = backend.auth_pubkey_cache();
+    let mut sdk = dash_sdk::Sdk::new_mock();
+    let saved_id = Identifier::from([41; 32]);
+    let cancelled_id = Identifier::from([42; 32]);
+
+    // Warm the first identity's full key map, but only the next identity's
+    // lookup key. Its match prompts when the scan tries to build the key map.
+    for (index, id, cached_key_count) in [
+        (0, saved_id, recovery_scan_bound(0) + 1),
+        (1, cancelled_id, 1),
+    ] {
+        for key_index in 0..cached_key_count {
+            let key = wallet
+                .read_recover()
+                .identity_authentication_ecdsa_public_key_from_seed(
+                    &seed,
+                    Network::Testnet,
+                    index,
+                    key_index,
+                )
+                .expect("derive wallet auth key");
+            cache
+                .update(Network::Testnet, &seed_hash, |cache| {
+                    cache.insert(Network::Testnet, index, key_index, &key);
+                })
+                .expect("cache public key");
+            if key_index == 0 {
+                let identity = Identity::create_basic_identity(id, ctx.platform_version())
+                    .expect("basic identity");
+                let query = NonUniquePublicKeyHashQuery {
+                    key_hash: key.pubkey_hash().into(),
+                    after: None,
+                };
+                sdk.mock()
+                    .expect_fetch(query, Some(identity))
+                    .await
+                    .expect("mock identity lookup");
+            }
+        }
+    }
+    ctx.sdk.store(Arc::new(sdk));
+    backend.mark_quorum_keys_ready_for_test();
+    if fail_balance_watermark {
+        // The identity record is already saved when the separate watermark write fails.
+        let store = ctx.det_kv().expect("kv handle").failing_store();
+        store.fail_next_puts_containing("det:identity_balance_watermark:v1", 1);
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store));
+    }
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(32);
+    let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+    let task = IdentityTask::SearchIdentitiesUpToIndex(Arc::clone(&wallet).into(), 0);
+    let error = ctx
+        .run_identity_task(task, &ctx.sdk(), sender)
+        .await
+        .expect_err("cancellation ends an incomplete search");
+    assert!(
+        ctx.get_identity_by_id(&saved_id)
+            .expect("read saved identity")
+            .is_some()
+    );
+    assert!(
+        ctx.get_identity_by_id(&cancelled_id)
+            .expect("read cancelled identity")
+            .is_none()
+    );
+    assert_eq!(
+        prompt.ask_count(),
+        1,
+        "no later index may prompt after cancel"
+    );
+    backend.shutdown().await;
+    error
+}
+
+/// A pass whose lookups failed has not shown the wallet holds no identities,
+/// so it must not end with a clean, empty result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_whose_lookups_fail_does_not_report_a_clean_result() {
+    use crate::model::identity_discovery::DiscoveryIntent;
+
+    let (ctx, _tmp, _seed_hash, wallet) =
+        context_with_imported_wallet(crate::test_support::keys::seed()).await;
+
+    let outcome = ctx
+        .discover_identities_gap_limited(&wallet, 0, true, DiscoveryIntent::UserRequested, None)
+        .await;
+
+    assert!(
+        outcome.is_err(),
+        "failed lookups must surface instead of an empty summary: {outcome:?}"
+    );
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// A background pass that cannot search a wallet without its password has not
+/// searched it, so it reports that rather than an empty, completed pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_that_skips_a_wallet_needing_unlock_says_so() {
+    use crate::model::identity_discovery::DiscoveryIntent;
+
+    let password = "correct-wallet-password";
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_locked_protected_wallet(crate::test_support::keys::seed(), password, None)
+            .await;
+    ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+    unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .mark_quorum_keys_ready_for_test();
+
+    let outcome = ctx
+        .discover_identities_gap_limited(&wallet, 0, false, DiscoveryIntent::Automatic, None)
+        .await;
+
+    assert!(
+        matches!(outcome, Err(TaskError::AuthKeyUnlockRequired)),
+        "a skipped wallet must be reported as needing unlock: {outcome:?}"
+    );
+    assert_eq!(
+        search_notices(&ctx).len(),
+        1,
+        "a pass that skipped the wallet has not searched it, so the notice stays"
+    );
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// Clearing the network's data removes every wallet, so no notice may keep
+/// naming one, even when part of the clear fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_the_network_database_removes_search_notices() {
+    let password = "correct-wallet-password";
+    for partial_failure in [false, true] {
+        let (ctx, _tmp, seed_hash, wallet) =
+            context_with_locked_protected_wallet(crate::test_support::keys::seed(), password, None)
+                .await;
+        ctx.connection_status().set_spv_status(SpvStatus::Syncing);
+        unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        backend.set_clear_shielded_test_failure(partial_failure);
+
+        let result = ctx.clear_network_database().await;
+
+        assert_eq!(
+            result.is_err(),
+            partial_failure,
+            "only the forced failure makes the clear incomplete: {result:?}"
+        );
+        assert!(
+            search_notices(&ctx).is_empty(),
+            "a cleared network keeps no notice (partial failure: {partial_failure})"
+        );
+        backend.shutdown().await;
+    }
 }
 
 mod deletion_sentinel;

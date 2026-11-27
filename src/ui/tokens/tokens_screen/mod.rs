@@ -1174,8 +1174,7 @@ pub struct TokensScreen {
     /// needs a network that accepts version 1 token configurations.
     transferable_input: bool,
     main_control_group_input: String,
-    show_token_creator_confirmation_popup: bool,
-    token_creator_confirmation_dialog: Option<ConfirmationDialog>,
+    pending_token_registration: Option<token_creator::PendingTokenRegistration>,
     token_creator_status: TokenCreatorStatus,
     /// The dispatch of the registration the creator waits for; only its own
     /// failure ends the wait.
@@ -1183,7 +1182,6 @@ pub struct TokensScreen {
     show_advanced_keeps_history: bool,
     token_advanced_keeps_history: TokenKeepsHistoryRulesV0,
     groups_ui: Vec<GroupConfigUI>,
-    cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
     json_popup_text: String,
     json_popup_opening_guard: ModalOpeningGuard,
@@ -1577,8 +1575,7 @@ impl TokensScreen {
             selected_wallet: None,
             wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            show_token_creator_confirmation_popup: false,
-            token_creator_confirmation_dialog: None,
+            pending_token_registration: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_registration_context: None,
             token_names_input: vec![(
@@ -1603,7 +1600,6 @@ impl TokensScreen {
             ),
             main_control_group_input: String::new(),
             groups_ui: Vec::new(),
-            cached_build_args: None,
             show_json_popup: false,
             json_popup_text: String::new(),
             json_popup_opening_guard: ModalOpeningGuard::default(),
@@ -2401,6 +2397,7 @@ impl TokensScreen {
     /// picks one it offers.
     fn refresh_token_creator_identity(&mut self) {
         let Some(id) = self.selected_identity.as_ref().map(|qi| qi.identity.id()) else {
+            self.pending_token_registration = None;
             return;
         };
         let Some(fresh) = self
@@ -2411,10 +2408,7 @@ impl TokensScreen {
             self.identity_id_string.clear();
             self.selected_identity = None;
             self.selected_key = None;
-            // The registration being confirmed was built for this identity.
-            self.cached_build_args = None;
-            self.show_token_creator_confirmation_popup = false;
-            self.token_creator_confirmation_dialog = None;
+            self.pending_token_registration = None;
             return;
         };
         self.selected_key = self.selected_key.take().and_then(|selected| {
@@ -2431,6 +2425,7 @@ impl TokensScreen {
                 .cloned()
         });
         self.selected_identity = Some(fresh.clone());
+        self.cancel_invalid_token_registration();
     }
 
     /// Whether this creator sent a registration it has not heard back about. A
@@ -2582,10 +2577,7 @@ impl TokensScreen {
 
         // The rules above are back to their defaults, so no preset applies any more.
         self.selected_token_preset = TokenPresetSelection::Unselected;
-        self.cached_build_args = None;
-        self.show_token_creator_confirmation_popup = false;
-        // The dialog caches its summary text; drop it so it is rebuilt from the new form.
-        self.token_creator_confirmation_dialog = None;
+        self.pending_token_registration = None;
         // The "View JSON" popup shows the contract built from the old form.
         self.show_json_popup = false;
         self.json_popup_text.clear();
@@ -2837,10 +2829,11 @@ impl TokensScreen {
     }
 }
 
-/// Whether the Token Creator offers `identity` as the contract owner: a user
-/// identity with private keys stored here.
+/// Whether the Token Creator offers `identity` as the contract owner: any user
+/// identity. One with no key here that can sign is still offered, so its
+/// contract can be previewed; the form says which key is missing.
 pub(super) fn offered_by_token_creator(identity: &QualifiedIdentity) -> bool {
-    identity.identity_type == IdentityType::User && !identity.private_keys.is_empty()
+    identity.identity_type == IdentityType::User
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -4638,6 +4631,103 @@ mod tests {
         screen.base_supply_amount = Some(Amount::new(1_000, 8));
     }
 
+    fn open_creator_confirmation(screen: &mut TokensScreen, app_context: &Arc<AppContext>) {
+        use crate::context::test_support::{auth_key, identity_holding};
+
+        fill_minimal_creator_inputs(screen, app_context);
+        let key = auth_key(1, SecurityLevel::HIGH);
+        screen.selected_identity = Some(identity_holding(std::slice::from_ref(&key)));
+        screen.selected_key = Some(key);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.open_token_registration_confirmation(app_context.egui_ctx());
+        assert!(screen.pending_token_registration.is_some());
+    }
+
+    /// Advanced mode's disabled "Register Token Contract" says why when the
+    /// identity has no key that can sign the registration.
+    #[test]
+    fn advanced_creator_explains_a_missing_signing_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, dash_sdk::dpp::identity::SecurityLevel::MEDIUM)]);
+        crate::ui::tokens::tests::store_identity_with_wallet_key(&ctx, identity.clone(), 1);
+        let mut screen = TokensScreen::new(&ctx, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &ctx);
+        screen.selected_identity = Some(identity);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::MostRestrictive,
+        ));
+        screen.base_supply_input = Some(AmountInput::new(Amount::new(1_000, 8)));
+        screen.show_advanced_token_creator = true;
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1600.0, 4000.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let context = ui.ctx().clone();
+                    screen.render_token_creator(&context, ui);
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        assert!(harness.state().selected_key.is_none());
+        assert!(
+            harness
+                .query_by_label(crate::ui::tokens::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_token_creator_keeps_json_preview_for_a_watch_only_identity() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = TokensScreen::new(&ctx, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &ctx);
+        ctx.insert_local_qualified_identity(screen.selected_identity.as_ref().unwrap(), &None)
+            .unwrap();
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::MostRestrictive,
+        ));
+        screen.base_supply_input = Some(AmountInput::new(Amount::new(1_000, 8)));
+        screen.show_advanced_token_creator = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1600.0, 4000.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let context = ui.ctx().clone();
+                    screen.render_token_creator(&context, ui);
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        assert!(harness.query_by_label("No Identities Loaded").is_none());
+        let args = harness
+            .state_mut()
+            .parse_token_build_args()
+            .expect("valid preview inputs");
+        ctx.build_data_contract_v1_with_one_token(args.identity_id, args.into_contract_params())
+            .expect("valid preview contract");
+        harness.get_by_label("View JSON").click();
+        harness.run_steps(4);
+        assert!(harness.state().show_json_popup);
+        assert!(harness.state().json_popup_text.contains("PresetCoin"));
+        assert!(
+            !harness
+                .get_by_label("Register Token Contract")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// Asserts that every rule in `args` equals what `features` defines, computed
     /// straight from the Platform preset rather than through the creator.
     fn assert_build_args_match_preset(
@@ -4776,26 +4866,13 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
-        screen.show_token_creator_confirmation_popup = true;
-        screen.token_creator_confirmation_dialog = Some(
-            crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
-                "Confirm Token Contract Registration",
-                "summary",
-            ),
-        );
+        open_creator_confirmation(&mut screen, &app_context);
 
         // The identity is no longer stored.
         screen.refresh_token_creator_identity();
 
         assert!(screen.selected_identity.is_none());
-        assert!(!screen.show_token_creator_confirmation_popup);
-        assert!(screen.token_creator_confirmation_dialog.is_none());
-        assert!(screen.cached_build_args.is_none());
+        assert!(screen.pending_token_registration.is_none());
     }
 
     /// After a successful creation, leaving the success screen gives a fresh
@@ -4805,17 +4882,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
+        open_creator_confirmation(&mut screen, &app_context);
         screen.allow_transfers_to_frozen_identities = false;
-        screen.token_creator_confirmation_dialog = Some(
-            crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
-                "Confirm Token Contract Registration",
-                "stale summary",
-            ),
-        );
         let registration = screen.begin_token_registration_for_test();
         screen.display_backend_task_result(
             &registration,
@@ -4830,7 +4898,7 @@ mod tests {
             screen.selected_token_preset,
             TokenPresetSelection::Unselected
         );
-        assert!(screen.token_creator_confirmation_dialog.is_none());
+        assert!(screen.pending_token_registration.is_none());
         assert!(screen.allow_transfers_to_frozen_identities);
 
         // Even with the other required fields filled in again, a preset is needed.
@@ -5071,25 +5139,15 @@ mod tests {
         assert!(!screen.identity_id_string.is_empty());
     }
 
-    /// The creator offers only user identities with private keys. An identity it
-    /// does not offer (a masternode one, or one without keys) is never its
-    /// selection: the selector would show "No identities found" next to a list
-    /// of identities, and Simple mode would report a missing key.
+    /// The creator offers user identities, including watch-only identities.
+    /// It skips masternode identities on open and clears stale masternode selections on return.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_never_keeps_an_identity_it_does_not_offer() {
         let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
-        for (case, ineligible) in [
-            ("masternode", IdentityType::Masternode),
-            ("keyless user", IdentityType::User),
-        ] {
+        for (case, ineligible) in [("masternode", IdentityType::Masternode)] {
             let tmp = tempfile::tempdir().expect("test tmpdir");
             let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
-            let ineligible_keys: &[_] = if ineligible == IdentityType::User {
-                &[]
-            } else {
-                &key
-            };
-            let ineligible = identity_holding(&context, 0x01, ineligible, ineligible_keys);
+            let ineligible = identity_holding(&context, 0x01, ineligible, &key);
             let ineligible_id = ineligible.identity.id();
             context
                 .insert_local_qualified_identity(&ineligible, &None)
@@ -5122,6 +5180,56 @@ mod tests {
             );
             context.wallet_backend().unwrap().shutdown().await;
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_signer_keeps_a_watch_only_identity_on_open_and_return() {
+        use crate::context::test_support::{auth_key, bare_user_identity, wired_test_app_context};
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = wired_test_app_context(tmp.path()).await;
+        let id = Identifier::from([0x42; 32]);
+        let mut watch_only = bare_user_identity(id, context.network);
+        watch_only
+            .identity
+            .add_public_key(auth_key(1, SecurityLevel::HIGH));
+        context
+            .insert_local_qualified_identity(&watch_only, &None)
+            .unwrap();
+        let signer = creator_identity(
+            &context,
+            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        context
+            .insert_local_qualified_identity(&signer, &None)
+            .unwrap();
+        context.set_selected_identity(Some(id));
+
+        let mut screen = registration_ready_creator(&context);
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(id),
+            "on open"
+        );
+        screen.refresh_on_arrival();
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(id),
+            "on return"
+        );
+
+        let mut harness = token_creator_registration_harness(screen);
+        harness.run();
+        assert!(harness.state().0.selected_key.is_none());
+        assert!(
+            !harness
+                .get_by_label("Register Token Contract")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        );
+        context.wallet_backend().unwrap().shutdown().await;
     }
 
     /// Every preset picked in a freshly opened creator is built exactly as defined.
@@ -5447,16 +5555,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.selected_key = Some(IdentityPublicKey::random_key(
-            0,
-            None,
-            app_context.platform_version(),
-        ));
-        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
+        open_creator_confirmation(&mut screen, &app_context);
         let mut harness = Harness::builder().build_ui_state(
             |ui, (screen, action): &mut (TokensScreen, AppAction)| {
                 let next = screen.render_token_creator_confirmation_popup(ui);
@@ -5616,6 +5715,273 @@ mod tests {
             )
     }
 
+    fn registration_ready_creator(context: &Arc<AppContext>) -> TokensScreen {
+        let mut screen = TokensScreen::new(context, TokensSubscreen::TokenCreator);
+        screen.token_names_input[0].0 = "PresetCoin".to_owned();
+        screen.token_names_input[0].1 = "PresetCoins".to_owned();
+        screen.decimals_input = "0".to_owned();
+        screen.base_supply_input = Some(AmountInput::new(Amount::new(1_000, 0)));
+        screen.show_advanced_token_creator = true;
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::MostRestrictive,
+        ));
+        screen
+    }
+
+    fn token_creator_registration_harness(
+        screen: TokensScreen,
+    ) -> egui_kittest::Harness<'static, (TokensScreen, AppAction)> {
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1600.0, 4000.0))
+            .build_ui_state(
+                |ui, (screen, dispatched): &mut (TokensScreen, AppAction)| {
+                    let next = screen.render_token_creator(&ui.ctx().clone(), ui);
+                    if !matches!(next, AppAction::None) {
+                        *dispatched = next;
+                    }
+                },
+                (screen, AppAction::None),
+            )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_signer_closes_confirmation_when_its_wallet_changes() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::{
+            auth_key, hold_as_wallet_reference, identity_holding, wired_test_app_context,
+        };
+        use crate::model::wallet::test_support::{open_wallet, open_wallet_on};
+        use egui_kittest::kittest::Queryable;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = wired_test_app_context(tmp.path()).await;
+        let key = auth_key(1, SecurityLevel::HIGH);
+        let mut identity = identity_holding(std::slice::from_ref(&key));
+        let old_wallet = open_wallet();
+        let old_hash = old_wallet.seed_hash();
+        context
+            .wallet_context()
+            .insert_test_wallet(old_hash, Arc::new(RwLock::new(old_wallet)));
+        hold_as_wallet_reference(&mut identity, key.id(), old_hash);
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+
+        let mut harness = token_creator_registration_harness(registration_ready_creator(&context));
+        harness.run();
+        assert_eq!(harness.state().0.selected_key.as_ref(), Some(&key));
+        assert_eq!(
+            harness
+                .state()
+                .0
+                .selected_wallet
+                .as_ref()
+                .unwrap()
+                .read()
+                .unwrap()
+                .seed_hash(),
+            old_hash
+        );
+        harness.get_by_label("Register Token Contract").click();
+        harness.run();
+        assert!(harness.state().0.pending_token_registration.is_some());
+        harness.get_by_label("Confirm");
+
+        let new_wallet = open_wallet_on(crate::test_support::keys::labelled_seed(
+            "token creator replacement wallet",
+            0,
+        ));
+        let new_hash = new_wallet.seed_hash();
+        context
+            .wallet_context()
+            .insert_test_wallet(new_hash, Arc::new(RwLock::new(new_wallet)));
+        hold_as_wallet_reference(&mut identity, key.id(), new_hash);
+        context.update_local_qualified_identity(&identity).unwrap();
+        harness.state_mut().0.cached_data_changed(CacheUpdate {
+            network: context.network,
+            domain: CacheDomain::Identities,
+        });
+        harness.run();
+
+        let (screen, action) = harness.state();
+        assert_eq!(screen.selected_key.as_ref(), Some(&key));
+        assert_eq!(
+            screen
+                .selected_wallet
+                .as_ref()
+                .unwrap()
+                .read()
+                .unwrap()
+                .seed_hash(),
+            new_hash
+        );
+        assert!(screen.pending_token_registration.is_none());
+        assert!(harness.query_by_label("Confirm").is_none());
+        assert!(matches!(action, AppAction::None));
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_signer_closes_confirmation_on_switch_between_usable_keys() {
+        use crate::context::test_support::wired_test_app_context;
+        use egui_kittest::kittest::Queryable;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = wired_test_app_context(tmp.path()).await;
+        let identity = creator_identity(
+            &context,
+            &[
+                (1, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+                (2, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+            ],
+        );
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+
+        let first = &identity.identity.public_keys()[&1];
+        let second = &identity.identity.public_keys()[&2];
+        let mut screen = registration_ready_creator(&context);
+        screen.selected_key = Some(first.clone());
+        let mut harness = token_creator_registration_harness(screen);
+        harness.run();
+        assert_eq!(harness.state().0.selected_key.as_ref(), Some(first));
+        harness.get_by_label("Register Token Contract").click();
+        harness.run();
+        assert!(harness.state().0.pending_token_registration.is_some());
+        harness.get_by_label("Confirm");
+
+        harness.state_mut().0.selected_key = Some(second.clone());
+        harness.run();
+
+        let (screen, action) = harness.state();
+        assert_eq!(screen.selected_key.as_ref(), Some(second));
+        assert!(screen.pending_token_registration.is_none());
+        assert!(harness.query_by_label("Confirm").is_none());
+        assert!(matches!(action, AppAction::None));
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_confirmation_stays_closed_after_signing_key_expires() {
+        use crate::context::test_support::{self, auth_key, identity_holding};
+        use egui_kittest::kittest::Queryable;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = test_support::wired_test_app_context(tmp.path()).await;
+        test_support::set_sdk_protocol_version(&context, 14);
+        test_support::prove_protocol_version(&context, 14);
+
+        let expiring_key = auth_key(1, SecurityLevel::HIGH);
+        let mut alpha = identity_holding(&[expiring_key.clone().with_limits(None, Some(u64::MAX))]);
+        alpha.alias = Some("Alpha".to_owned());
+        context
+            .insert_local_qualified_identity(&alpha, &None)
+            .unwrap();
+        let beta = named_creator_identity(
+            &context,
+            0x42,
+            "Beta",
+            &[(2, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        let alpha_label = context.identity_display_label(&alpha);
+        let beta_label = context.identity_display_label(&beta);
+        context.set_selected_identity(Some(alpha.identity.id()));
+
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &context);
+        screen.selected_identity = Some(alpha);
+        screen.decimals_input = "0".to_owned();
+        screen.base_supply_input = Some(AmountInput::new(Amount::new(1_000, 0)));
+        screen.show_advanced_token_creator = true;
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::MostRestrictive,
+        ));
+
+        let mut harness = token_creator_registration_harness(screen);
+        harness.run();
+        harness.get_by_label("Register Token Contract").click();
+        harness.run();
+        harness.get_by_label_contains("Base Supply: 1000");
+
+        // Move the published expiry into the past while the dialog is open.
+        // Keep the selected key and private-key entry as they were at opening.
+        let screen = &mut harness.state_mut().0;
+        *screen
+            .selected_identity
+            .as_mut()
+            .unwrap()
+            .identity
+            .public_keys_mut()
+            .get_mut(&1)
+            .unwrap() = expiring_key.with_limits(None, Some(1));
+        harness.run();
+        assert!(harness.state().0.selected_key.is_none());
+        assert!(harness.state().0.pending_token_registration.is_none());
+        assert!(harness.query_by_label("Confirm").is_none());
+
+        harness.state_mut().0.base_supply_input = Some(AmountInput::new(Amount::new(2_000, 0)));
+        harness.run();
+        harness.get_by_label("View JSON").click();
+        harness.run();
+        assert!(harness.state().0.show_json_popup);
+        assert!(harness.state().0.json_popup_text.contains("2000"));
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+
+        harness.get_by_value(&alpha_label).click();
+        harness.run();
+        harness.get_by_label(&beta_label).click();
+        harness.run();
+        assert_eq!(
+            harness.state().0.selected_key.as_ref().map(|key| key.id()),
+            Some(2)
+        );
+        assert!(
+            harness.query_by_label("Confirm").is_none(),
+            "selecting another signer revived the expired confirmation"
+        );
+        assert!(matches!(harness.state().1, AppAction::None));
+
+        harness.get_by_label("Register Token Contract").click();
+        harness.run();
+        harness.get_by_label_contains("Base Supply: 2000");
+        harness.state_mut().0.base_supply_input = Some(AmountInput::new(Amount::new(3_000, 0)));
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .0
+                .base_supply_amount
+                .as_ref()
+                .unwrap()
+                .value(),
+            3_000
+        );
+        harness.get_by_label_contains("Base Supply: 2000");
+        harness.get_by_label("Confirm").click();
+        harness.run();
+        let AppAction::BackendTasksWithContexts(tasks, _) = &harness.state().1 else {
+            panic!("expected the newly confirmed registration to dispatch");
+        };
+        let BackendTask::TokenTask(task) = &tasks[0].0 else {
+            panic!("expected a token task");
+        };
+        let TokenTask::RegisterTokenContract {
+            identity,
+            signing_key,
+            params,
+        } = task.as_ref()
+        else {
+            panic!("expected a token registration");
+        };
+        assert_eq!(identity.identity.id(), beta.identity.id());
+        assert_eq!(signing_key.id(), 2);
+        assert_eq!(params.base_supply, 2_000);
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// Regression: an identity chosen under Advanced Options did not reach Simple
     /// mode's selector, which kept showing the previous identity while the form
     /// signed with the new one. Both modes show and sign with the same identity.
@@ -5747,11 +6113,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
+        open_creator_confirmation(&mut screen, &app_context);
         let mut harness = Harness::builder().build_ui_state(
             |ui, screen: &mut TokensScreen| {
                 let _ = screen.render_token_creator_confirmation_popup(ui);
@@ -5762,10 +6124,10 @@ mod tests {
 
         let dialog = harness
             .state()
-            .token_creator_confirmation_dialog
+            .pending_token_registration
             .as_ref()
             .expect("confirmation shown");
-        assert!(dialog.is_input_blocking());
+        assert!(dialog.dialog.is_input_blocking());
     }
 
     /// A registration's success completes only the wait it belongs to: one sent

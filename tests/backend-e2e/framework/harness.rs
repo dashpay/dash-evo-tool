@@ -1132,6 +1132,11 @@ mod workdir_tests {
     fn an_unwritable_parent_reports_io_rather_than_busy_slots() {
         use std::os::unix::fs::PermissionsExt;
 
+        if !dash_evo_tool::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+
         let scratch = tempfile::tempdir().expect("scratch dir");
         let readonly = scratch.path().join("readonly");
         std::fs::create_dir(&readonly).expect("create parent");

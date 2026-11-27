@@ -2542,7 +2542,7 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
             (target, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key),
-                PrivateKeyData::Clear([0x70 + key_id as u8; 32]),
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             ),
         );
     }

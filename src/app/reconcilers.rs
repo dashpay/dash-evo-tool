@@ -23,6 +23,7 @@ use crate::context::connection_status::{
     OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step, spv_progress_token,
 };
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::model::identity_discovery::DiscoveryReadiness;
 use crate::model::wallet::{TransactionConfirmation, TransactionStatus, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::wallet_unlock_popup::{
@@ -611,6 +612,9 @@ pub(super) struct ConnectionBanner {
     handle: Option<BannerHandle>,
     /// Startup proof error cleared once quorum keys become available.
     quorum_startup_error: TransientBanner,
+    /// A wallet identity search refused for readiness, with the readiness it
+    /// was refused at; cleared once readiness moves on from it.
+    wallet_search_refusal: Option<(BannerHandle, DiscoveryReadiness)>,
     protocol_error: Option<BannerHandle>,
     protocol_error_version: Option<u32>,
 }
@@ -621,8 +625,30 @@ impl ConnectionBanner {
             previous_state: None,
             handle: None,
             quorum_startup_error: TransientBanner::default(),
+            wallet_search_refusal: None,
             protocol_error: None,
             protocol_error_version: None,
+        }
+    }
+
+    /// Adopt the banner of a wallet identity search refused at `refused_at`.
+    pub(super) fn track_wallet_search_refusal(
+        &mut self,
+        handle: BannerHandle,
+        refused_at: DiscoveryReadiness,
+    ) {
+        // A refusal at the same readiness shares the earlier one's banner.
+        if let Some((earlier, earlier_at)) =
+            self.wallet_search_refusal.replace((handle, refused_at))
+            && earlier_at != refused_at
+        {
+            earlier.clear();
+        }
+    }
+
+    fn clear_wallet_search_refusal(&mut self) {
+        if let Some((handle, _)) = self.wallet_search_refusal.take() {
+            handle.clear();
         }
     }
 
@@ -637,6 +663,7 @@ impl ConnectionBanner {
             handle.clear();
         }
         self.quorum_startup_error.reset();
+        self.clear_wallet_search_refusal();
         self.protocol_error.take_and_clear();
         self.protocol_error_version = None;
         self.previous_state = None;
@@ -682,6 +709,15 @@ impl ConnectionBanner {
         let connection_status = app_context.connection_status();
         self.quorum_startup_error
             .clear_if(connection_status.masternodes_ready());
+        if self
+            .wallet_search_refusal
+            .as_ref()
+            .is_some_and(|(_, refused_at)| {
+                app_context.wallet_identity_discovery_readiness() != *refused_at
+            })
+        {
+            self.clear_wallet_search_refusal();
+        }
         let current_state = connection_status.overall_state();
         let state_changed = self.previous_state != Some(current_state);
 

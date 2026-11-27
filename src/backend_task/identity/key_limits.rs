@@ -224,6 +224,7 @@ mod tests {
     use super::*;
     use crate::backend_task::identity::IdentityTask;
     use crate::backend_task::{BackendTask, BackendTaskContext};
+    use crate::test_support::keys::secret_bytes;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::version::PlatformVersion;
 
@@ -261,7 +262,7 @@ mod tests {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 
-        let staged = stage_identity_with_vaulted_keys([0xA1; 32], [0xB1; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_bytes(), secret_bytes()).await;
         let ctx = &staged.ctx;
         ctx.edit_local_qualified_identity_observed(
             &staged.id,
@@ -331,7 +332,7 @@ mod tests {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 
-        let staged = stage_identity_with_vaulted_keys([0xA2; 32], [0xB2; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_bytes(), secret_bytes()).await;
         let ctx = &staged.ctx;
         let stored = ctx
             .get_local_qualified_identity(&staged.id)

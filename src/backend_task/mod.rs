@@ -17,6 +17,7 @@ use crate::model::dpns_voting::{
 use crate::model::grovestark_prover::ProofDataOutput;
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token_creator::registration::RegistrationStatus;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
@@ -1617,6 +1618,13 @@ impl AppContext {
         let result = self
             .run_backend_task_inner(task, sender.clone(), task_sdk.as_ref())
             .await;
+        // Recovery confirms the payment even when the local token cache cannot be saved.
+        let fee_payer = match &result {
+            Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) => (outcome.record.status
+                == RegistrationStatus::Confirmed)
+                .then_some(outcome.record.owner),
+            _ => fee_payer,
+        };
         // The inner run has dropped every guard and claim the task held, so the
         // balance read below delays neither the result nor a retry of the action.
         if let (Ok(_), Some(payer)) = (&result, fee_payer) {

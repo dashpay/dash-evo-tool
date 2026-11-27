@@ -528,6 +528,125 @@ mod tests {
     }
     use dash_sdk::dpp::version::PlatformVersion;
 
+    async fn dispatch_recovers_payer_balance(local_cache_available: bool) {
+        use crate::backend_task::{BackendTask, CacheDomain, CacheUpdate};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::query_types::IdentityBalance;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = if local_cache_available {
+            crate::context::test_support::wired_test_app_context(dir.path()).await
+        } else {
+            let context = crate::context::test_support::test_app_context(dir.path());
+            // Identity storage works, but the token cache requires a ready wallet backend.
+            context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+                Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+            ));
+            context
+        };
+        let (record, accepted) = fixture(&context);
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record)
+            .unwrap();
+        let mut payer =
+            crate::context::test_support::bare_user_identity(record.owner, context.network);
+        payer.identity.set_balance(10_000_000_000);
+        context.update_local_qualified_identity(&payer).unwrap();
+        let stored_balance = || {
+            context
+                .get_local_qualified_identity(&record.owner)
+                .unwrap()
+                .unwrap()
+                .identity
+                .balance()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        let task = || BackendTask::TokenTask(Box::new(TokenTask::CheckTokenCreation));
+        let mut sdk = mock_sdk();
+        sdk.mock()
+            .expect_fetch::<DataContract, _>(record.contract_id, None)
+            .await
+            .unwrap();
+        context.sdk.store(Arc::new(sdk));
+
+        // A successful status query with no confirmation must not read credits.
+        let gate = context.test_fee_payer_refresh_gate.lock().await;
+        let result = context
+            .run_backend_task(task(), sender.clone())
+            .await
+            .unwrap();
+        let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result else {
+            panic!("expected unresolved receipt");
+        };
+        assert_eq!(outcome.record.status, RegistrationStatus::Unknown);
+        assert!(!context.subtasks.is_active("fee_payer_balance_refresh"));
+        assert_eq!(stored_balance(), 10_000_000_000);
+        assert!(
+            rx.try_recv().is_err(),
+            "unresolved outcome announced a cache change"
+        );
+
+        let mut sdk = mock_sdk();
+        sdk.mock()
+            .expect_fetch(record.contract_id, Some(accepted))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch::<IdentityBalance, _>(record.owner, Some(9_000_000_000))
+            .await
+            .unwrap();
+        context.sdk.store(Arc::new(sdk));
+        let result = context.run_backend_task(task(), sender).await.unwrap();
+        let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result else {
+            panic!("expected confirmed receipt");
+        };
+        assert_eq!(outcome.record.status, RegistrationStatus::Confirmed);
+        assert_eq!(outcome.local_cache_saved, local_cache_available);
+        assert_eq!(
+            stored_balance(),
+            10_000_000_000,
+            "balance read delayed the receipt"
+        );
+        drop(gate);
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await {
+                    Some(TaskResult::CacheUpdated(update))
+                        if update.domain == CacheDomain::Identities =>
+                    {
+                        assert_eq!(
+                            update,
+                            CacheUpdate {
+                                network: context.network,
+                                domain: CacheDomain::Identities
+                            }
+                        );
+                        break;
+                    }
+                    Some(_) => continue,
+                    None => panic!("channel closed before the payer balance was announced"),
+                }
+            }
+        })
+        .await
+        .expect("recovered confirmation must announce the payer balance refresh");
+        assert_eq!(stored_balance(), 9_000_000_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creation_recovery_dispatch_refreshes_owner_credits() {
+        dispatch_recovers_payer_balance(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creation_recovery_dispatch_refreshes_credits_when_token_cache_fails() {
+        dispatch_recovers_payer_balance(false).await;
+    }
+
     #[test]
     fn token_registration_transport_or_retry_exhaustion_remains_unknown() {
         for source in [

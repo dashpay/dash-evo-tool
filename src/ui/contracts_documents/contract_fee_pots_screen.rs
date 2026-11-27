@@ -7,7 +7,6 @@ use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::contract_fee_pots::{SeatedModerators, pot_claimants};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -393,13 +392,6 @@ impl ScreenLike for ContractFeePotsScreen {
                 ui.add_space(10.0);
             }
 
-            if !FeatureGate::ContractFeePots.is_available(&self.app_context) {
-                ui.label(
-                    "This network does not support contract fees yet. Connect to a network that supports them to see fee pots.",
-                );
-                return inner_action;
-            }
-
             ui.heading("1. Select a contract:");
             ui.add_space(6.0);
             let visible: Vec<&QualifiedContract> = self
@@ -500,6 +492,46 @@ impl ScreenLike for ContractFeePotsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fee_pots_remain_available_without_a_known_protocol_version() {
+        use egui_kittest::kittest::Queryable;
+
+        for version in [None, Some(dash_sdk::dpp::version::LATEST_VERSION + 1)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = crate::context::test_support::test_app_context(dir.path());
+            if let Some(version) = version {
+                crate::context::test_support::prove_protocol_version(&ctx, version);
+                assert!(ctx.protocol_version_info().newer_protocol_available);
+            } else {
+                assert_eq!(ctx.protocol_version_info().verified_version, None);
+            }
+            let mut screen = ContractFeePotsScreen::new(&ctx);
+            screen.apply_local_data(Ok(vec![]), Ok(vec![]));
+            let mut harness = egui_kittest::Harness::builder()
+                .with_context_setup(|ctx| {
+                    ctx.set_fonts(crate::bundled::fonts().expect("bundled fonts load"));
+                })
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut ContractFeePotsScreen| {
+                        screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            assert!(
+                harness.query_by_label("This network does not support contract fees yet. Connect to a network that supports them to see fee pots.").is_none(),
+                "protocol {version:?}: the network must not be reported as lacking fee pots"
+            );
+            assert!(harness.query_by_label("1. Select a contract:").is_some());
+            assert!(
+                harness
+                    .query_by_label("2. Select the identity that claims:")
+                    .is_some()
+            );
+        }
+    }
 
     /// A storage failure must not pass for an empty device: the screen says
     /// what failed, keeps a retry on screen, and a successful retry settles it.

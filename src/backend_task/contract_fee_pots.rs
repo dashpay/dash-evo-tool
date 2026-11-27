@@ -8,7 +8,6 @@ use std::sync::Arc;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::contract_fee_pots::{SeatedModerators, has_elected_moderation};
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
@@ -41,9 +40,6 @@ impl AppContext {
         sdk: &Sdk,
         contract_id: Identifier,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        if !FeatureGate::ContractFeePots.is_available(self) {
-            return Err(TaskError::ContractFeePotsNotSupported);
-        }
         // A contract saved here without elected moderation has no seated
         // team, so its team is not read. One not saved here is read anyway.
         let elected = self
@@ -77,9 +73,6 @@ impl AppContext {
         pot: ContractFeePot,
         qualified_identity: QualifiedIdentity,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        if !FeatureGate::ContractFeePots.is_available(self) {
-            return Err(TaskError::ContractFeePotsNotSupported);
-        }
         let identity_id = qualified_identity.identity.id();
         let signing_key = qualified_identity
             .signing_key_now(fee_claim_key_requirements())
@@ -245,38 +238,30 @@ mod tests {
         );
     }
 
-    /// Before protocol version 14 is confirmed nothing is read or claimed:
-    /// an older network has no fee pots.
     #[tokio::test]
-    async fn fee_pots_need_a_network_that_keeps_them() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = Sdk::new_mock();
-
-        // Not proven yet (0), and mainnet's 13. Proving only ever raises, so
-        // the unproven case runs first.
-        for version in [0, 13] {
-            if version != 0 {
+    async fn fee_claim_validates_the_key_without_a_known_protocol_version() {
+        for version in [None, Some(dash_sdk::dpp::version::LATEST_VERSION + 1)] {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+            if let Some(version) = version {
                 crate::context::test_support::prove_protocol_version(&ctx, version);
+                assert!(ctx.protocol_version_info().newer_protocol_available);
+            } else {
+                assert_eq!(ctx.protocol_version_info().verified_version, None);
             }
-            let fetched = ctx
-                .fetch_contract_fee_pots(&sdk, Identifier::random())
-                .await;
-            assert!(
-                matches!(fetched, Err(TaskError::ContractFeePotsNotSupported)),
-                "protocol {version}: got {fetched:?}"
-            );
-
-            let identity = crate::context::test_support::bare_user_identity(
-                Identifier::random(),
-                dash_sdk::dpp::dashcore::Network::Testnet,
-            );
+            let identity =
+                crate::context::test_support::bare_user_identity(Identifier::random(), ctx.network);
             let claimed = ctx
-                .claim_contract_fees(&sdk, Identifier::random(), ContractFeePot::Owner, identity)
+                .claim_contract_fees(
+                    &Sdk::new_mock(),
+                    Identifier::random(),
+                    ContractFeePot::Owner,
+                    identity,
+                )
                 .await;
             assert!(
-                matches!(claimed, Err(TaskError::ContractFeePotsNotSupported)),
-                "protocol {version}: got {claimed:?}"
+                matches!(claimed, Err(TaskError::NoFeeClaimSigningKey)),
+                "protocol {version:?}: got {claimed:?}"
             );
         }
     }

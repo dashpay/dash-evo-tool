@@ -3140,12 +3140,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Contract fee pots (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
-    /// The network does not keep contract fee pots yet.
-    #[error(
-        "This network does not support contract fees yet. Try again after the network upgrades."
-    )]
-    ContractFeePotsNotSupported,
-
     /// The claiming identity has no key allowed to sign a fee claim.
     #[error(
         "Claiming contract fees needs a critical authentication key that is not limited to a contract. Add such a key to this identity, then try again."

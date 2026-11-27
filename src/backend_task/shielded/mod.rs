@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::{Check, FeatureGate};
 use crate::model::amount::validate_nonzero_amount;
 use crate::model::fee_estimation::ShieldFromCoreFunding;
 use crate::model::wallet::WalletSeedHash;
@@ -65,8 +65,12 @@ pub enum ShieldedTask {
 const POST_SHIELD_ADDRESS_SYNC_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub(super) fn shielded_operations_unavailable_error(ctx: &AppContext) -> Option<TaskError> {
-    (!FeatureGate::ShieldedOperations.is_available(ctx))
-        .then_some(TaskError::ShieldedOperationsRoleUnavailable)
+    match FeatureGate::ShieldedOperations.first_unmet_check(ctx) {
+        None => None,
+        Some(Check::MinRole(_) | Check::Experimental(_)) => {
+            Some(TaskError::ShieldedOperationsRoleUnavailable)
+        }
+    }
 }
 
 impl AppContext {

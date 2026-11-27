@@ -4,7 +4,6 @@ use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // 
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -733,12 +732,10 @@ impl ScreenLike for DocumentQueryScreen {
             "Group Actions",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::GroupActions)),
         );
-        let fee_pots_button = FeatureGate::ContractFeePots
-            .is_available(&self.app_context)
-            .then_some((
-                "Fee Pots",
-                DesiredAppAction::AddScreenType(Box::new(ScreenType::ContractFeePots)),
-            ));
+        let fee_pots_button = [(
+            "Fee Pots",
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::ContractFeePots)),
+        )];
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
             action |= add_top_panel_with_global_nav(
@@ -904,6 +901,35 @@ mod tests {
     use dash_sdk::dpp::data_contracts::SystemDataContract;
     use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
     use dash_sdk::dpp::version::PlatformVersion;
+
+    #[test]
+    fn fee_pots_entry_is_available_without_a_known_protocol_version() {
+        use egui_kittest::kittest::Queryable;
+
+        for version in [None, Some(dash_sdk::dpp::version::LATEST_VERSION + 1)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = crate::context::test_support::test_app_context(dir.path());
+            if let Some(version) = version {
+                crate::context::test_support::prove_protocol_version(&ctx, version);
+            }
+            let mut harness = egui_kittest::Harness::builder()
+                .with_context_setup(|ctx| {
+                    ctx.set_fonts(crate::bundled::fonts().expect("bundled fonts load"));
+                })
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut DocumentQueryScreen| {
+                        screen.ui(ui);
+                    },
+                    DocumentQueryScreen::new(&ctx),
+                );
+            harness.run();
+            assert!(
+                harness.query_by_label("Fee Pots").is_some(),
+                "protocol {version:?}: the entry to fee pots must stay available"
+            );
+        }
+    }
 
     fn query(limit: u32) -> DocumentQuery {
         let contract =

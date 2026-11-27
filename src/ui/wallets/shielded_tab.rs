@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::{Check, FeatureGate};
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::address::truncate_address;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -724,7 +724,7 @@ impl ShieldedTabView {
                     });
                 }
             }
-            Some(_) => {
+            Some(Check::MinRole(_) | Check::Experimental(_)) => {
                 ui.label(
                     RichText::new(SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL)
                         .size(12.0)

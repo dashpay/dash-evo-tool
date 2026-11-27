@@ -3673,8 +3673,10 @@ pub enum TaskError {
         "The app could not open the shielded balance file at \"{path}\". \
         Your wallets and keys are still saved. \
         Check that your disk has free space and that the app can write to its data folder, then try again. \
-        If it keeps failing and the file exists, first wait until the recipients of shielded payments you sent recently have confirmed that they arrived, because this file also keeps the records of shielded payments that are still pending. \
-        Then close the app, back up the file, then delete it manually. \
+        If it keeps failing and the file exists, first wait until every shielded payment, transfer and withdrawal you made recently has arrived, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
+        Do not send any of them again until the new file has synced and you have checked your shielded balances. \
+        Then close the app and back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
+        Delete the file and those matching files manually. \
         Reopen the app, connect to the network and unlock your wallets if needed. \
         The app will create a new file and sync your shielded balances again. \
         Wait for the sync to finish, then check your shielded balances.",

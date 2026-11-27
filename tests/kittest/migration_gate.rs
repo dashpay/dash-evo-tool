@@ -713,11 +713,13 @@ fn shielded_store_startup_failure_shows_recovery_advice_and_both_actions() {
 
         let path = path.display().to_string();
         assert!(harness.query_by_label_contains(path.as_str()).is_some());
-        assert!(
-            harness
-                .query_by_label_contains("back up the file, then delete it manually")
-                .is_some()
-        );
+        for step in [
+            "every shielded payment, transfer and withdrawal",
+            "matching files ending in -wal, -shm, or -journal",
+            "Delete the file and those matching files manually",
+        ] {
+            assert!(harness.query_by_label_contains(step).is_some(), "{step}");
+        }
         assert!(harness.query_by_label("Close the app").is_some());
     });
 }

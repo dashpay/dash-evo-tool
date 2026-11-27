@@ -31,8 +31,12 @@ const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
 
 /// The wallet whose recovery phrase derives `identity`'s contact QR code key,
 /// for the unlock prompt.
-fn qr_wallet(identity: &QualifiedIdentity) -> Option<Arc<RwLock<Wallet>>> {
-    identity.dashpay_wallet().map(|(_, wallet)| wallet.clone())
+fn qr_wallet(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let seed_hash = app_context.contact_qr_wallet_seed_hash(identity).ok()?;
+    identity.associated_wallets.get(&seed_hash).cloned()
 }
 
 pub struct QRCodeGeneratorScreen {
@@ -80,7 +84,7 @@ impl QRCodeGeneratorScreen {
             new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet = qr_wallet(&preferred);
+            new_self.selected_wallet = qr_wallet(&new_self.app_context, &preferred);
         }
 
         new_self
@@ -89,7 +93,10 @@ impl QRCodeGeneratorScreen {
     /// React to a new `selected_identity`: follow its wallet and drop the QR
     /// code shown for the previous one.
     fn identity_changed(&mut self) {
-        self.selected_wallet = self.selected_identity.as_ref().and_then(qr_wallet);
+        self.selected_wallet = self
+            .selected_identity
+            .as_ref()
+            .and_then(|identity| qr_wallet(&self.app_context, identity));
         self.wallet_open_attempted = false;
         self.generated_qr_data = None;
         self.qr_request.clear();
@@ -108,6 +115,8 @@ impl QRCodeGeneratorScreen {
         };
 
         let identity_id = identity.identity.id();
+        // The code shown may no longer be valid; only the new one is shown.
+        self.generated_qr_data = None;
         self.qr_request.dispatch_with(
             BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
                 identity: identity.clone(),
@@ -272,14 +281,14 @@ impl QRCodeGeneratorScreen {
 
                     ui.label(
                         RichText::new(
-                            "Share this QR code with someone to establish a mutual contact",
+                            "People who scan this QR code send you a contact request. Accept it to add them as a contact.",
                         )
                         .small()
                         .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(
-                            "WARNING: Anyone with this QR code can automatically become your contact",
+                            "WARNING: Anyone who has this QR code before it expires can send you a contact request that DashPay wallets can accept automatically. Share it only with people you want as contacts.",
                         )
                         .small()
                         .color(DashColors::warning_color(dark_mode)),
@@ -346,7 +355,7 @@ impl ScreenLike for QRCodeGeneratorScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("dashpay_contact_qr_code_info_popup"),
+                        egui::Id::unique("dashpay_contact_qr_code_info_popup"),
                         "About Contact QR Codes",
                         QR_CODE_INFO_TEXT,
                     );
@@ -410,6 +419,63 @@ mod tests {
         BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr.to_string())
     }
 
+    /// Regression: the labels under a generated code promised that sharing
+    /// it establishes a mutual contact and that anyone holding it becomes a
+    /// contact automatically, while DET only receives a contact request the
+    /// user accepts by hand.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_generated_code_promises_no_automatic_contact() {
+        use egui_kittest::kittest::{By, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let identity = bare_user_identity(Identifier::new([1; 32]), context.network);
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        let mut screen = QRCodeGeneratorScreen::new(context.clone());
+        screen.selected_identity = Some(identity);
+        screen.generated_qr_data = Some("dash:contact".to_string());
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui_state(
+                |ui, screen: &mut QRCodeGeneratorScreen| {
+                    screen.render(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Generated QR Code")
+                .is_some()
+        );
+        for promise in ["mutual contact", "automatically become"] {
+            assert!(
+                harness
+                    .query_all(By::new().label_contains(promise))
+                    .next()
+                    .is_none(),
+                "{promise}"
+            );
+        }
+        assert!(
+            harness
+                .query_all(By::new().label_contains("contact request"))
+                .next()
+                .is_some(),
+            "the labels say what scanning the code does"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Share it only with people you want as contacts.")
+                .is_some(),
+            "the warning names the risk and what to do"
+        );
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// Regression: a QR code generated for one identity arrived after the user
     /// had picked another and was shown under it, handing out the first
     /// identity's contact code as if it were the second's.
@@ -434,5 +500,80 @@ mod tests {
         assert_eq!(screen.generated_qr_data, None, "a superseded request");
         screen.display_backend_task_result(&for_second, qr_result("second"));
         assert_eq!(screen.generated_qr_data.as_deref(), Some("second"));
+    }
+
+    /// Regression: a regeneration that failed left the previous code and its
+    /// Copy control on screen, although the code may no longer be valid (for
+    /// example, its name was transferred since).
+    #[test]
+    fn a_failed_regeneration_leaves_no_earlier_code_on_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = QRCodeGeneratorScreen::new(context);
+        screen.selected_identity = Some(bare_user_identity(
+            Identifier::new([1; 32]),
+            Network::Testnet,
+        ));
+        let first = dispatch_context(screen.generate_qr_code());
+        screen.display_backend_task_result(&first, qr_result("first"));
+        assert_eq!(screen.generated_qr_data.as_deref(), Some("first"));
+
+        let again = dispatch_context(screen.generate_qr_code());
+        let refused = TaskError::ContactQrBuildFailed {
+            source: Arc::new(
+                platform_wallet::error::PlatformWalletError::InvalidIdentityData(
+                    "no DPNS name".to_string(),
+                ),
+            ),
+        };
+        screen.display_backend_task_error(&again, &refused);
+
+        assert_eq!(screen.generated_qr_data, None);
+    }
+
+    /// Regression: hydration lists every loaded wallet with an identity, and
+    /// the contact QR code took the lowest-sorting one, so an unrelated
+    /// wallet could derive the code's key. It now comes from the wallet the
+    /// identity's record names as its owner, and none without that record.
+    #[test]
+    fn the_contact_qr_key_comes_from_the_identitys_own_wallet() {
+        use crate::model::wallet::test_support::open_wallet_on;
+        use crate::wallet_backend::DetKv;
+        use crate::wallet_backend::kv_test_support::InMemoryKv;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(DetKv::from_store(Arc::new(InMemoryKv::default())));
+        let mut wallets = [
+            open_wallet_on(crate::test_support::keys::seed()),
+            open_wallet_on(crate::test_support::keys::seed()),
+        ];
+        wallets.sort_by_key(|wallet| wallet.seed_hash());
+        let [unrelated, owner] = wallets.map(|wallet| (wallet.seed_hash(), wallet));
+
+        let mut identity = bare_user_identity(Identifier::new([1; 32]), Network::Testnet);
+        for (hash, wallet) in [unrelated, owner.clone()] {
+            identity
+                .associated_wallets
+                .insert(hash, Arc::new(RwLock::new(wallet)));
+        }
+        ctx.insert_local_qualified_identity(&identity, &Some((owner.0, 0)))
+            .expect("store identity");
+        assert_ne!(identity.dashpay_wallet_seed_hash(), Some(owner.0));
+        assert_eq!(
+            ctx.contact_qr_wallet_seed_hash(&identity).ok(),
+            Some(owner.0)
+        );
+        let unlock = qr_wallet(&ctx, &identity).expect("the owner's wallet");
+        assert_eq!(unlock.read().expect("wallet").seed_hash(), owner.0);
+
+        // No record, so no owner on file.
+        let mut unlinked = identity.clone();
+        unlinked.identity.set_id(Identifier::new([2; 32]));
+        assert!(matches!(
+            ctx.contact_qr_wallet_seed_hash(&unlinked),
+            Err(TaskError::ContactQrWalletMissing)
+        ));
+        assert!(qr_wallet(&ctx, &unlinked).is_none());
     }
 }

@@ -83,7 +83,11 @@ impl U256EntropyGrid {
                             let button = Button::new("").fill(color).min_size(button_size); // Adjust size dynamically.
 
                             // Render the button and handle interactions.
-                            let response = ui.add(button);
+                            let number = usize::from(bit_position) + 1;
+                            let total = rows * columns;
+                            let response = ui
+                                .add(button)
+                                .accessible_name(format!("Randomness square {number} of {total}"));
 
                             if response.hovered() && self.was_bit_different(bit_position)
                                 || response.clicked()

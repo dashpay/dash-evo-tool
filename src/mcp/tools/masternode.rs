@@ -99,6 +99,9 @@ pub struct MasternodeIdentityLoadOutput {
     /// any.
     payout_address: Option<String>,
     dpns_names: Vec<String>,
+    /// Set when the identity was saved but the wallet store could not
+    /// confirm it as belonging to no wallet; says what to do next.
+    warning: Option<String>,
 }
 
 impl ToolBase for MasternodeIdentityLoad {
@@ -198,7 +201,11 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             .await
             .map_err(McpToolError::TaskFailed)?;
 
-        let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+        let BackendTaskSuccessResult::LoadedIdentity {
+            identity: qi,
+            warning,
+        } = result
+        else {
             return Err(McpToolError::Internal(format!(
                 "Unexpected task result: {result:?}"
             )));
@@ -239,6 +246,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
                 .masternode_payout_address(ctx.network())
                 .map(|addr| addr.to_string()),
             dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
+            warning: warning.map(|warning| warning.to_string()),
         })
     }
 }
@@ -701,8 +709,9 @@ mod tests {
     fn sample_core_address() -> String {
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
+        let secret_7 = crate::test_support::keys::secret_bytes();
 
-        let sk = SecretKey::from_secret_bytes([7u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(secret_7).expect("valid secret key");
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
@@ -857,8 +866,9 @@ mod tests {
     fn testnet_core_address() -> String {
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
+        let secret_9 = crate::test_support::keys::secret_bytes();
 
-        let sk = SecretKey::from_secret_bytes([9u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(secret_9).expect("valid secret key");
         let pk = PublicKey::from_private_key(
             &PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
                 .expect("valid secret key"),
@@ -938,8 +948,9 @@ mod tests {
     fn transfer_mode_cross_network_address_rejected() {
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
+        let secret_3 = crate::test_support::keys::secret_bytes();
 
-        let sk = SecretKey::from_secret_bytes([3u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(secret_3).expect("valid secret key");
         let pk = PublicKey::from_private_key(
             &PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Mainnet)
                 .expect("valid secret key"),

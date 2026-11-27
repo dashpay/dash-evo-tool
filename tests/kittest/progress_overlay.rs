@@ -62,6 +62,14 @@ fn overlay_harness() -> Harness<'static> {
         })
 }
 
+/// Step past the invisible sizing pass of a newly shown overlay card: egui
+/// keeps invisible widgets out of the accessibility tree, so the card's text and
+/// spinner are queryable from the second frame on.
+fn step_into_view<State>(harness: &mut Harness<'_, State>) {
+    harness.step();
+    harness.step();
+}
+
 // ── Group A — Idle Path ────────────────────────────────────────────────────
 
 /// TC-OVL-001 — nothing renders, and `has_global` is false, when idle.
@@ -85,7 +93,7 @@ fn tc_ovl_002_overlay_appears_after_show() {
         "Registering your identity.",
         OverlayConfig::default(),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(ProgressOverlay::has_global(&harness.ctx));
     assert!(
         harness
@@ -93,6 +101,31 @@ fn tc_ovl_002_overlay_appears_after_show() {
             .is_some()
     );
     assert!(harness.query_by_role(SPINNER_ROLE).is_some());
+}
+
+/// The full-window plane that swallows pointer input behind the card is not
+/// content: assistive technology must not see it as an unnamed widget.
+#[test]
+fn overlay_input_sink_is_hidden_from_assistive_technology() {
+    let mut harness = overlay_harness();
+    let _handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Registering your identity.",
+        OverlayConfig::default(),
+    );
+    step_into_view(&mut harness);
+    let window = harness.ctx.content_rect();
+    let exposed_planes = harness
+        .query_all(egui_kittest::kittest::by().predicate(|node| {
+            node.role() == egui::accesskit::Role::Unknown
+                && !node.is_hidden()
+                && node.bounding_box().is_some_and(|bounds| {
+                    bounds.width() >= f64::from(window.width())
+                        && bounds.height() >= f64::from(window.height())
+                })
+        }))
+        .count();
+    assert_eq!(exposed_planes, 0, "the input sink must be hidden");
 }
 
 /// TC-OVL-003 — show returns a usable handle (ctx.data level).
@@ -116,7 +149,7 @@ fn tc_ovl_005_description_update_keeps_spinner() {
         "Preparing the funding lock.",
         OverlayConfig::default(),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(
         harness
             .query_by_label("Preparing the funding lock.")
@@ -149,7 +182,7 @@ fn tc_ovl_006_counter_update_changes_only_counter() {
         "Processing.",
         OverlayConfig::new().with_step(2, 5),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label("Step 2 of 5").is_some());
 
     handle.set_step(3, 5);
@@ -183,7 +216,7 @@ fn tc_ovl_007_stale_handle_updates_are_none() {
 fn tc_ovl_008_programmatic_dismiss_removes_overlay() {
     let mut harness = overlay_harness();
     let handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
     assert!(ProgressOverlay::has_global(&harness.ctx));
 
     handle.clear();
@@ -235,7 +268,7 @@ fn tc_ovl_011_spinner_present_in_all_configs() {
     for config in configs {
         let mut harness = overlay_harness();
         let _handle = ProgressOverlay::set_global(&harness.ctx, "Busy.", config);
-        harness.step();
+        step_into_view(&mut harness);
         assert!(
             harness.query_by_role(SPINNER_ROLE).is_some(),
             "spinner must render in every configuration"
@@ -253,7 +286,7 @@ fn tc_ovl_012_no_eta_or_percentage() {
         "Building the shielded transaction.",
         OverlayConfig::new().with_step(2, 5),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label("Step 2 of 5").is_some());
     assert!(harness.query_by_role(SPINNER_ROLE).is_some());
     assert!(harness.query_by_label_contains("%").is_none());
@@ -266,7 +299,7 @@ fn tc_ovl_012_no_eta_or_percentage() {
 fn tc_ovl_013a_elapsed_off_by_default() {
     let mut harness = overlay_harness();
     let _handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
 }
 
@@ -283,7 +316,7 @@ fn tc_ovl_013b_elapsed_on_counts_up() {
         "Slow operation.",
         OverlayConfig::new().with_elapsed(),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label("Elapsed: 0s").is_some());
 
     // Shift this entry's clock 2s into the past via the test seam, then re-render:
@@ -312,7 +345,7 @@ fn tc_ovl_014_valid_counter_renders() {
         "Working.",
         OverlayConfig::new().with_step(3, 5),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label("Step 3 of 5").is_some());
 }
 
@@ -326,7 +359,7 @@ fn tc_ovl_015_017_invalid_counter_hidden() {
             "Working.",
             OverlayConfig::new().with_step(current, total),
         );
-        harness.step();
+        step_into_view(&mut harness);
         assert!(
             harness.query_by_label_contains("Step").is_none(),
             "counter ({current},{total}) must be hidden"
@@ -344,7 +377,7 @@ fn tc_ovl_019_no_counter_when_unset() {
         "Sending your transaction to the network.",
         OverlayConfig::default(),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label_contains("Step").is_none());
     assert!(
         harness
@@ -365,7 +398,7 @@ fn tc_ovl_020_description_full_sentence() {
         "Registering your identity on the network.",
         OverlayConfig::default(),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(
         harness
             .query_by_label("Registering your identity on the network.")
@@ -383,7 +416,7 @@ fn tc_ovl_021_long_description_within_bounds() {
             ProgressOverlay::render_global(ui.ctx(), false);
         });
     let _handle = ProgressOverlay::set_global(&harness.ctx, long, OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
 
     let node = harness.query_by_label(long);
     assert!(
@@ -407,7 +440,7 @@ fn tc_ovl_021_long_description_within_bounds() {
 fn tc_ovl_022_spinner_only_valid() {
     let mut harness = overlay_harness();
     let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
-    harness.step();
+    step_into_view(&mut harness);
     assert!(ProgressOverlay::has_global(&harness.ctx));
     assert!(harness.query_by_role(SPINNER_ROLE).is_some());
     assert!(harness.query_by_label_contains("Step").is_none());
@@ -421,7 +454,7 @@ fn tc_ovl_022_spinner_only_valid() {
 fn tc_ovl_023_no_buttons_pure_block() {
     let mut harness = overlay_harness();
     let handle = ProgressOverlay::set_global(&harness.ctx, "Hard block.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label("Cancel").is_none());
     assert!(handle.take_actions().is_empty());
     assert!(ProgressOverlay::has_global(&harness.ctx));
@@ -497,7 +530,7 @@ fn tc_ovl_027_secondary_left_primary_right() {
             .with_action("Primary action", "primary")
             .with_secondary_action("Secondary action", "secondary"),
     );
-    harness.step();
+    step_into_view(&mut harness);
 
     let second_x = harness.get_by_label("Secondary action").rect().center().x;
     let first_x = harness.get_by_label("Primary action").rect().center().x;
@@ -523,7 +556,7 @@ fn tc_ovl_028_pointer_click_beneath_blocked() {
             ProgressOverlay::render_global(ui.ctx(), false);
         });
     let handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
-    harness.step();
+    step_into_view(&mut harness);
 
     harness.get_by_label("Increment").click();
     harness.step();
@@ -592,7 +625,8 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
         .build_ui(move |ui| {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
-            ui.text_edit_singleline(&mut *buffer);
+            ui.text_edit_singleline(&mut *buffer)
+                .accessible_name("Field beneath the overlay");
             ProgressOverlay::render_global(ui.ctx(), false);
         });
     let _handle = ProgressOverlay::set_global(
@@ -600,7 +634,7 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
         "Working.",
         OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
-    harness.step();
+    step_into_view(&mut harness);
 
     harness
         .input_mut()
@@ -618,7 +652,7 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
 fn tc_ovl_030_backdrop_click_does_not_dismiss() {
     let mut harness = overlay_harness();
     let handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
-    harness.step();
+    step_into_view(&mut harness);
     assert!(ProgressOverlay::has_global(&harness.ctx));
 
     let corner = egui::pos2(10.0, 10.0);
@@ -676,7 +710,7 @@ fn tc_ovl_036_topmost_entry_rendered() {
     let mut harness = overlay_harness();
     let a = ProgressOverlay::set_global(&harness.ctx, "Operation A.", OverlayConfig::default());
     let b = ProgressOverlay::set_global(&harness.ctx, "Operation B.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
 
     assert!(ProgressOverlay::has_global(&harness.ctx));
     assert!(harness.query_by_label("Operation B.").is_some());
@@ -744,7 +778,8 @@ fn tc_ovl_041_tab_focus_trap() {
         .build_ui(move |ui| {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
-            ui.text_edit_singleline(&mut *buffer);
+            ui.text_edit_singleline(&mut *buffer)
+                .accessible_name("Field beneath the overlay");
             ProgressOverlay::render_global(ui.ctx(), false);
         });
     let _handle = ProgressOverlay::set_global(
@@ -752,7 +787,7 @@ fn tc_ovl_041_tab_focus_trap() {
         "Working.",
         OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
-    harness.step();
+    step_into_view(&mut harness);
     harness.step();
     assert!(
         harness.get_by_label("Cancel").is_focused(),
@@ -778,7 +813,7 @@ fn tc_ovl_042_esc_swallowed_with_button() {
         "Working.",
         OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
-    harness.step();
+    step_into_view(&mut harness);
 
     harness.key_press(egui::Key::Escape);
     harness.step();
@@ -794,7 +829,7 @@ fn tc_ovl_042_esc_swallowed_with_button() {
 fn tc_ovl_043_esc_swallowed_without_button() {
     let mut harness = overlay_harness();
     let handle = ProgressOverlay::set_global(&harness.ctx, "Hard block.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
 
     harness.key_press(egui::Key::Escape);
     harness.step();
@@ -815,7 +850,7 @@ fn tc_ovl_044_enter_and_space_do_not_activate_button() {
         "Working.",
         OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
-    harness.step();
+    step_into_view(&mut harness);
     harness.step();
 
     harness.key_press(egui::Key::Enter);
@@ -878,7 +913,7 @@ fn tc_ovl_052_designated_escape_activates_on_space() {
             .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
-    harness.step();
+    step_into_view(&mut harness);
     harness.step();
     harness.step();
     assert!(harness.get_by_label("Cancel").is_focused());
@@ -906,7 +941,8 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
         .build_ui(move |ui| {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
-            ui.text_edit_singleline(&mut *buffer);
+            ui.text_edit_singleline(&mut *buffer)
+                .accessible_name("Field beneath the overlay");
             ProgressOverlay::render_global(ui.ctx(), false);
         });
     let handle = ProgressOverlay::set_global(
@@ -916,7 +952,7 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
             .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
-    harness.step();
+    step_into_view(&mut harness);
     harness.step();
     harness.step();
     assert!(
@@ -986,7 +1022,7 @@ fn sec002_escape_block_strips_enter_from_focus_independent_handler_beneath() {
             .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
-    harness.step();
+    step_into_view(&mut harness);
     harness.step();
     harness.step();
 
@@ -1058,7 +1094,7 @@ fn tc_ovl_046_theme_switch_mid_overlay() {
         "Switching networks.",
         OverlayConfig::default(),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label("Switching networks.").is_some());
 
     harness.ctx.set_visuals(egui::Visuals::light());
@@ -1078,7 +1114,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
         .build_ui(|ui| {
             ProgressOverlay::render_global(ui.ctx(), false);
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("test_progress_overlay_passphrase"),
+                state_id: egui::Id::unique("test_progress_overlay_passphrase"),
                 window_title: "Unlock to continue",
                 body: "Enter your passphrase to continue.",
                 hint: None,
@@ -1092,7 +1128,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
             passphrase_modal(ui.ctx(), &config, |_| {});
         });
     let _handle = ProgressOverlay::set_global(&harness.ctx, "Signing.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
     harness.step();
 
     assert!(ProgressOverlay::has_global(&harness.ctx));
@@ -1130,7 +1166,7 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
     // reassurance line — the reveal is purely time-driven and benign.
     let mut harness = overlay_harness();
     let _handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
     assert!(
         harness
@@ -1147,7 +1183,7 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
 fn tc_ovl_047b_threshold_reveals_via_clock_seam() {
     let mut harness = overlay_harness();
     let handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
-    harness.step();
+    step_into_view(&mut harness);
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
     assert!(
         harness
@@ -1279,7 +1315,8 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
             // Mirrors AppState::update: claim input at frame start, before panels.
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
-            ui.text_edit_singleline(&mut *buffer);
+            ui.text_edit_singleline(&mut *buffer)
+                .accessible_name("Field beneath the overlay");
             ProgressOverlay::render_global(ui.ctx(), false);
         });
 
@@ -1292,7 +1329,7 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
 
     // Raise a pure (button-less) block over the already-focused field.
     let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
-    harness.step();
+    step_into_view(&mut harness);
 
     // Type. AC-8.2: keyboard input must not reach widgets beneath the overlay.
     harness
@@ -1339,7 +1376,8 @@ fn qa_buttonless_overlay_strips_edit_and_clipboard_events() {
             });
             survived_ui.set(leaked);
             let mut buffer = text_ui.borrow_mut();
-            ui.text_edit_singleline(&mut *buffer);
+            ui.text_edit_singleline(&mut *buffer)
+                .accessible_name("Field beneath the overlay");
             ProgressOverlay::render_global(ui.ctx(), false);
         });
 
@@ -1363,7 +1401,7 @@ fn qa_buttonless_overlay_strips_edit_and_clipboard_events() {
 
     // Raise a button-less block over the focused, populated field.
     let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
-    harness.step();
+    step_into_view(&mut harness);
 
     // Inject edit + clipboard events; claim_input must strip them all.
     for key in [egui::Key::Backspace, egui::Key::Delete] {
@@ -1424,7 +1462,7 @@ fn reconciliation_render_global_keeps_keyboard_for_prompt() {
             saw_keys_ui.set(survived);
         });
     let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
-    harness.step();
+    step_into_view(&mut harness);
     assert!(!saw_keys.get(), "no keys injected yet");
 
     // Inject the prompt's navigation/confirm keys; after render_global they must
@@ -1463,7 +1501,8 @@ fn reconciliation_instance_show_leaves_host_focus_navigable() {
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(move |ui| {
             let mut buffer = text_ui.borrow_mut();
-            ui.text_edit_singleline(&mut *buffer);
+            ui.text_edit_singleline(&mut *buffer)
+                .accessible_name("Field beneath the overlay");
             overlay_ui.borrow_mut().show(ui);
         });
     harness.step();
@@ -1570,7 +1609,7 @@ fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
         // it finds unlocked, and for a protected one that asks for the
         // password, which nothing here would answer.
         let password = Secret::new("correct password");
-        let seed = [0xA7; 64];
+        let seed = dash_evo_tool::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(
             seed,
             app_context.network(),
@@ -1650,7 +1689,7 @@ fn migration_password_prompt_blocks_underlying_clicks() {
                 underlying_clicked_ui.set(true);
             }
             let config = PassphraseModalConfig {
-                state_id: egui::Id::new("migration_click_barrier"),
+                state_id: egui::Id::unique("migration_click_barrier"),
                 window_title: "Continue the storage update",
                 body: "Enter the password for this wallet to continue.",
                 hint: None,
@@ -2139,7 +2178,7 @@ fn item_b_advancing_progress_token_resets_watchdog() {
         "Syncing with the Dash network.",
         OverlayConfig::new().with_progress_token(100),
     );
-    harness.step();
+    step_into_view(&mut harness);
     assert!(
         harness
             .query_by_label_contains("much longer than expected")

@@ -78,10 +78,9 @@ impl AppContext {
         // fee only after the funds have left the wallet.
         ensure_funding_covers_network_fee(
             amount,
-            Ok(self.fee_estimator().address_funding_min_amount_duffs(
-                fee_deduct_from_output,
-                self.sdk_platform_version(),
-            )),
+            Ok(self
+                .fee_estimator()
+                .address_funding_min_amount_duffs(fee_deduct_from_output)),
         )?;
         let backend = self.wallet_backend()?;
         let destination_in_pool = backend

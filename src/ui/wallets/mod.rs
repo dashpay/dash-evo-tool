@@ -7,4 +7,5 @@ pub mod restore_single_key;
 pub mod send_screen;
 pub mod shielded_tab;
 pub mod single_key_send_screen;
+pub(crate) mod task_feedback;
 pub mod wallets_screen;

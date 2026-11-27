@@ -179,7 +179,10 @@ fn hovering_the_closed_selector_breaks_the_chosen_wallets_balance_down() {
 
     assert!(
         harness
-            .query_by_label("Core: 0.5000 DASH\nPlatform: 0.1000 DASH")
+            .query_by_role_and_label(
+                egui::accesskit::Role::Label,
+                "Core: 0.5000 DASH\nPlatform: 0.1000 DASH"
+            )
             .is_some(),
         "the chosen wallet's breakdown must be reachable without reopening the list"
     );

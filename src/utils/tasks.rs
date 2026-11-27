@@ -241,7 +241,7 @@ impl TaskManager {
     /// Test seam: whether a subtask spawned under `name` has not finished yet.
     /// A name is listed by the call that spawns it, so a task that has not run
     /// yet already counts.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub fn is_active(&self, name: &str) -> bool {
         self.active_names
             .lock()

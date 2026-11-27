@@ -71,8 +71,8 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
    in a row (fund an identity via deposit two or three times). Record whether
    the app crashes, then check the logs for a panic marker even if the UI
    appeared fine. Confirm the log targets exist first — `ls -l "$LOG"` and
-   `ls -l "$DATADIR"`, which is where the app writes `det.log` /
-   `det-stderr.log` — then search them:
+   `ls -l "$DATADIR"`, which is where the app writes `det.log` (older builds also
+   `det-stderr.log`) — then search them:
 
    ```bash
    grep -R -e 'panicked' -e 'location=' "$LOG" "$DATADIR"

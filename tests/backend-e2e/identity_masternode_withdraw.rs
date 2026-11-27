@@ -3,7 +3,7 @@
 //! Mirrors `identity_withdraw.rs` but exercises the masternode path the new
 //! `masternode_identity_load` / `masternode_credits_withdraw` MCP tools
 //! dispatch: a real load by ProTxHash + keys, then a real withdraw in both key
-//! modes against testnet.
+//! modes on the selected E2E network.
 //!
 //! TC-MN-050 and TC-MN-051 go through the full tool `invoke()` path
 //! (`MasternodeCreditsWithdraw::invoke`), exercising key-mode resolution, the
@@ -11,19 +11,19 @@
 //! the underlying BackendTask. All other tests drive the BackendTask directly
 //! because they test backend-level behaviour that the tool is transparent to.
 //!
-//! All cases are `#[ignore]` (a real testnet masternode with funded credits
+//! All cases are `#[ignore]` (a real masternode with funded credits
 //! and its private keys cannot live in CI). A case whose `E2E_MN_*` input is
 //! unset FAILS with setup instructions rather than passing without running;
 //! skip the module explicitly with `--skip identity_masternode_withdraw::`.
 //!
 //! Env vars (canonical names; see `tests/backend-e2e/README.md`):
-//! - `E2E_MN_PROTX_HASH` — testnet evonode/masternode ProTxHash (hex).
+//! - `E2E_MN_PROTX_HASH` — evonode/masternode ProTxHash on the selected network (hex).
 //! - `E2E_MN_OWNER_KEY`  — owner private key (WIF or 64-hex).
 //! - `E2E_MN_PAYOUT_KEY` — payout/transfer private key (WIF or 64-hex).
 //! - `E2E_MN_VOTING_KEY` — voting private key (WIF or 64-hex); TC-MN-019 only.
 //! - `E2E_MN_NODE_TYPE`  — "masternode" or "evonode" (optional, default "evonode").
 
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network, load_project_env};
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{
@@ -71,12 +71,11 @@ fn legacy_env_name(name: &str) -> Option<&'static str> {
 /// does) so the check runs before the costly harness init. The value is never
 /// logged.
 fn required_mn_env(name: &str) -> String {
-    if let Err(e) = dotenvy::dotenv() {
-        tracing::debug!(".env not loaded ({e}), relying on environment");
-    }
+    load_project_env();
     match std::env::var(name) {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
+            let network = e2e_network();
             let rename_hint = legacy_env_name(name)
                 .filter(|old| std::env::var_os(old).is_some())
                 .map(|old| {
@@ -85,7 +84,7 @@ fn required_mn_env(name: &str) -> String {
                 .unwrap_or_default();
             panic!(
                 "{name} is not set.\n\
-                 The masternode backend E2E tests need a testnet masternode or evonode and its keys.\n\
+                 The masternode backend E2E tests need a masternode or evonode on {network} and its keys.\n\
                  Set {name} in your environment or in the project root .env file \
                  (see \"Masternode tests\" in tests/backend-e2e/README.md).\n\
                  To run the other backend E2E tests without a masternode, \
@@ -314,12 +313,10 @@ async fn test_mn020_load_wrong_key_rejected() {
     // A valid-format WIF that is (overwhelmingly) NOT a key on the identity.
     // Capture the actual WIF value BEFORE moving it into the task so we can
     // check for key-material leakage in TC-MN-061 below.
-    let wrong_key_wif = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
-        &secret_11,
-        dash_sdk::dpp::dashcore::Network::Testnet,
-    )
-    .expect("valid private key")
-    .to_wif();
+    let wrong_key_wif =
+        dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(&secret_11, e2e_network())
+            .expect("valid private key")
+            .to_wif();
 
     let task = load_task(
         pro_tx_hash,
@@ -496,7 +493,7 @@ async fn test_mn051_transfer_withdraw_to_address() {
     let identity_id_b58 = qi.identity.id().to_string(Encoding::Base58);
     let network_str = network_name(ctx.app_context.network()).to_owned();
 
-    // A fresh testnet Core address from the framework wallet.
+    // A fresh Core address from the framework wallet.
     let framework_wallet = ctx
         .app_context
         .wallet_context()

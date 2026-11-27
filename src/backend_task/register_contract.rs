@@ -2403,6 +2403,188 @@ mod signing_tests {
             .expect("dump saved");
     }
 
+    /// Recovering an earlier paid registration keeps the current form's error,
+    /// but dispatch still refreshes the payer's credits and announces them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dispatch_refreshes_the_payer_after_recovering_an_earlier_registration() {
+        use crate::backend_task::{BackendTask, CacheDomain, CacheUpdate, contract::ContractTask};
+        use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+        use dash_sdk::query_types::IdentityBalance;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .ensure_wallet_backend(sender.clone())
+            .await
+            .expect("wire wallet backend");
+        let mut key = auth_key(1, SecurityLevel::CRITICAL);
+        let secret = crate::test_support::keys::labelled_secret(
+            "context::test_support::identity_holding",
+            1,
+        );
+        key.set_data(
+            dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1
+                .public_key_data_from_private_key_data(&secret, context.network())
+                .expect("generated key")
+                .into(),
+        );
+        let mut identity = identity_holding(std::slice::from_ref(&key));
+        identity.identity.set_balance(43_600_388_314);
+        context
+            .update_local_qualified_identity(&identity)
+            .expect("store payer");
+        let owner = identity.identity.id();
+        let contract = |max_length| {
+            DataContract::from_value(
+            platform_value!({
+                "$formatVersion": "1",
+                "id": Identifier::from([7; 32]).to_string(Encoding::Base58),
+                "ownerId": owner.to_string(Encoding::Base58),
+                "version": 1,
+                "documentSchemas": { "note": {
+                    "type": "object",
+                    "properties": { "text": { "type": "string", "maxLength": max_length, "position": 0 } },
+                    "additionalProperties": false
+                } }
+            }), true, PlatformVersion::latest(),
+        ).expect("a contract")
+        };
+        let earlier = contract(20);
+        let nonce = sdk_with_nonce(owner)
+            .await
+            .get_identity_nonce(owner, true, None)
+            .await
+            .expect("identity nonce");
+        let contract_id = DataContract::generate_data_contract_id_v0(owner, nonce);
+        let mut registered = earlier.clone();
+        registered.set_id(contract_id);
+        let stored_balance = || {
+            context
+                .get_local_qualified_identity(&owner)
+                .expect("read payer")
+                .expect("payer stored")
+                .identity
+                .balance()
+        };
+
+        for (recover, submitted, alias) in
+            [(false, earlier, "earlier"), (true, contract(30), "current")]
+        {
+            let (transition, _) = contract_create_transition(
+                submitted.clone(),
+                nonce,
+                key.clone(),
+                &identity,
+                PlatformVersion::latest(),
+            )
+            .await
+            .expect("signed transition");
+            let dumps = tempfile::tempdir().expect("tempdir");
+            let broadcast: BroadcastStateTransitionRequest = transition
+                .broadcast_request_for_state_transition()
+                .expect("broadcast request");
+            save(
+                dumps.path(),
+                &broadcast,
+                &Err(ExecutionError {
+                    possibly_accepted: false,
+                    inner: DapiClientError::Transport(TransportError::Grpc(
+                        Status::already_exists("tx already exists in cache"),
+                    )),
+                    address: None,
+                    retries: 0,
+                }),
+            );
+            let wait: WaitForStateTransitionResultRequest = transition
+                .wait_for_state_transition_result_request()
+                .expect("wait request");
+            save(
+                dumps.path(),
+                &wait,
+                &Ok(ExecutionResponse {
+                    inner: Default::default(),
+                    retries: 0,
+                    address: "http://127.0.0.1".parse().expect("address"),
+                }),
+            );
+            let mut sdk = sdk_with_nonce(owner).await;
+            sdk.mock()
+                .load_expectations_sync(dumps.path())
+                .expect("submission expectations");
+            sdk.mock()
+                .expect_fetch::<DataContract, _>(contract_id, recover.then(|| registered.clone()))
+                .await
+                .expect("contract lookup expectation");
+            sdk.mock()
+                .expect_fetch::<IdentityBalance, _>(owner, Some(3_400_000_000))
+                .await
+                .expect("balance expectation");
+            context.sdk.store(Arc::new(sdk));
+            let result = context
+                .run_backend_task(
+                    BackendTask::ContractTask(Box::new(ContractTask::RegisterDataContract(
+                        submitted,
+                        alias.to_string(),
+                        identity.clone(),
+                        key.clone(),
+                    ))),
+                    sender.clone(),
+                )
+                .await;
+            if recover {
+                assert!(
+                    matches!(&result,
+                    Err(TaskError::ContractRegistrationReplacedByEarlier { contract_id: id, unsaved: None })
+                        if *id == contract_id),
+                    "{result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(&result,
+                    Err(TaskError::ContractRegistrationUnconfirmed { contract_id: id, .. })
+                        if *id == contract_id),
+                    "{result:?}"
+                );
+                assert_eq!(stored_balance(), 43_600_388_314);
+                assert!(!context.subtasks.is_active("fee_payer_balance_refresh"));
+            }
+        }
+        let saved = context
+            .get_contract_by_id(&contract_id)
+            .expect("read recovered contract")
+            .expect("earlier contract saved");
+        assert_eq!(saved.alias.as_deref(), Some("earlier"));
+        assert_eq!(context.pending_contract_registration(&owner), None);
+        let announced = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Some(TaskResult::CacheUpdated(update))
+                        if update.domain == CacheDomain::Identities =>
+                    {
+                        break update;
+                    }
+                    Some(_) => continue,
+                    None => panic!("channel closed before the balance was announced"),
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            stored_balance(),
+            3_400_000_000,
+            "the confirmed registration's fee must be reflected"
+        );
+        assert_eq!(
+            announced.expect("identity cache notification"),
+            CacheUpdate {
+                network: context.network,
+                domain: CacheDomain::Identities,
+            }
+        );
+    }
+
     /// A registration whose broadcast may have reached Platform, and whose
     /// result cannot be read, may already be paid for: the user is told to
     /// check before trying again, never just to retry.

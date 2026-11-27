@@ -1625,7 +1625,15 @@ impl AppContext {
             .await;
         // The inner run has dropped every guard and claim the task held, so the
         // balance read below delays neither the result nor a retry of the action.
-        if let (Ok(_), Some(payer)) = (&result, fee_payer) {
+        // Recovering an earlier paid registration still fails the current form.
+        if let Some(payer) = fee_payer
+            && matches!(
+                &result,
+                Ok(_)
+                    | Err(TaskError::ContractRegistrationReplacedByEarlier { .. }
+                        | TaskError::TokenRegistrationReplacedByEarlier { .. })
+            )
+        {
             self.spawn_fee_payer_balance_refresh(Arc::clone(&task_sdk), payer, sender);
         }
 

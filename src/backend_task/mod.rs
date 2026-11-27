@@ -386,6 +386,10 @@ impl BackendTask {
                 | ContractTask::FetchActiveGroupActions(..)
                 | ContractTask::RemoveContract(_)
                 | ContractTask::SaveDataContract(..) => return None,
+                // Claims persist all paid balances from their proof themselves.
+                ContractTask::FetchContractFeePots(_) | ContractTask::ClaimContractFees { .. } => {
+                    return None;
+                }
             },
             Self::DocumentTask(task) => match task.as_ref() {
                 DocumentTask::BroadcastDocument {
@@ -3306,6 +3310,14 @@ mod tests {
         let free = [
             token(TokenTask::QueryMyTokenBalances),
             contract_task(ContractTask::FetchContracts(vec![contract.id()])),
+            contract_task(ContractTask::FetchContractFeePots(contract.id())),
+            // Fee claims already persist the balances proved by the payout.
+            contract_task(ContractTask::ClaimContractFees {
+                contract_id: contract.id(),
+                pot:
+                    dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot::Owner,
+                identity: Box::new(payer.clone()),
+            }),
             contract_task(ContractTask::FetchActiveGroupActions(
                 QualifiedContract {
                     contract: contract.as_ref().clone(),

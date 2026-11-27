@@ -8,8 +8,10 @@ mod dpns_vote_operations;
 mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
+mod network_context_error;
 pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
+pub use network_context_error::NetworkContextError;
 pub mod feature_gate;
 mod identity_db;
 mod identity_names;
@@ -31,6 +33,7 @@ pub use wallet_lifecycle::PrepareGateGuard;
 pub use wallet_lifecycle::WalletUnlockRetention;
 
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::ExperimentalFeature;
@@ -43,6 +46,7 @@ use crate::model::request_type::RequestType;
 use crate::model::wallet::single_key::SingleKeyHash;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::wallet_context::WalletContext;
 use crate::wallet_backend::{
@@ -52,6 +56,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -69,14 +74,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use system_contracts::{SystemContracts, SystemContractsCache};
 
 use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
-pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
+/// Stack budget for SDK proof verification on worker and blocking threads.
+pub const SDK_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
 type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
@@ -176,6 +182,11 @@ pub struct AppContext {
     user_role: UserRoleCell,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
+    /// TEST SEAM (compiled only into `cargo test` builds): the protocol
+    /// version tests declare proven for the current SDK. See
+    /// [`test_support::ProvenProtocolVersionOverride`].
+    #[cfg(test)]
+    pub(crate) proven_protocol_version_for_tests: test_support::ProvenProtocolVersionOverride,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
@@ -274,6 +285,13 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: pause and observe the wallet backend build of this context.
+    #[cfg(test)]
+    pub(crate) test_wallet_backend_hooks: crate::wallet_backend::BuildTestHooks,
+    /// Test seam: a paid task's background balance read waits here before
+    /// it starts, so a test can hold it and observe the task finishing first.
+    #[cfg(test)]
+    pub(crate) test_fee_payer_refresh_gate: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -312,9 +330,10 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
-    /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
-    /// Updated when epoch info is fetched from Platform
-    fee_multiplier_permille: AtomicU64,
+    /// Cached fee multiplier permille (1000 = 1x, 2000 = 2x) with the index of
+    /// the proved epoch it came from (`None` until one arrives); kept together
+    /// so an older epoch never replaces a newer one's multiplier.
+    fee_multiplier: Mutex<(Option<EpochIndex>, u64)>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -398,6 +417,14 @@ pub struct AppContext {
     /// after `AppContext::new` but before the backend reads it; contention is
     /// nil (touched only at install and backend construction).
     secret_prompt: SecretPromptSlot,
+    /// The frame loop that takes this context's task reports: progress,
+    /// cache notifications and the backend's requests. The wallet backend
+    /// keeps the sender it is built with for the life of the context, so it
+    /// is never a per-request one: the GUI installs its sender through
+    /// [`Self::install_frame_loop`] before any request can reach the context,
+    /// and a headless process gets one sink per context from
+    /// [`Self::frame_loop_sender`].
+    frame_loop: ArcSwapOption<SenderAsync<TaskResult>>,
     /// Whether the preserved legacy `data.db` holds any identity of this
     /// network — the gate on the stranded-key recovery offer, probed at most
     /// once per context by [`Self::has_legacy_identities`]. The legacy file is
@@ -502,16 +529,19 @@ impl AppContext {
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
         user_role: UserRoleCell,
-    ) -> Option<Arc<Self>> {
-        let config = match Config::load_from(&data_dir) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::error!("Failed to load config: {e}");
-                return None;
-            }
-        };
+    ) -> Result<Arc<Self>, NetworkContextError> {
+        let config = Config::load_from(&data_dir)?;
+        if let Some(source) = config.network_settings_error(network) {
+            return Err(NetworkContextError::InvalidSettings {
+                network,
+                source: source.clone(),
+            });
+        }
 
-        let network_config = config.config_for_network(network).clone()?;
+        let network_config = config
+            .config_for_network(network)
+            .clone()
+            .ok_or(NetworkContextError::NotConfigured { network })?;
         let config_lock = Arc::new(RwLock::new(network_config.clone()));
 
         // Create the SDK context provider; bind to app context later
@@ -520,59 +550,34 @@ impl AppContext {
 
         // Parse configured DAPI addresses directly (no auto-discovery at startup)
         let address_list = match &network_config.dapi_addresses {
-            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
-                Ok(list) => list,
-                Err(e) => {
-                    tracing::error!(
-                        ?network,
-                        error = %e,
-                        "Failed to parse configured DAPI addresses"
-                    );
-                    return None;
-                }
-            },
-            _ => {
-                tracing::error!(
-                    ?network,
-                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
-                );
-                return None;
-            }
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(|source| NetworkContextError::InvalidDapiAddresses { network, source })?,
+            _ => return Err(NetworkContextError::NoDapiAddresses { network }),
         };
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
-            Ok(sdk) => sdk,
-            Err(e) => {
-                tracing::error!("Failed to initialize SDK: {e}");
-                return None;
-            }
-        };
-        let system_contracts = match SystemContracts::load(sdk.version()) {
-            Ok(contracts) => SystemContractsCache::new(contracts),
-            Err(e) => {
-                tracing::error!(?network, "Failed to load the system contracts: {e}");
-                return None;
-            }
-        };
+        let sdk = initialize_sdk(address_list, network, spv_provider.clone())
+            .map_err(|source| NetworkContextError::Sdk { network, source })?;
+        let system_contracts = SystemContractsCache::new(
+            SystemContracts::load(sdk.version())
+                .map_err(|source| NetworkContextError::SystemContracts { source })?,
+        );
 
         let addr = format!(
             "http://{}:{}",
             network_config.rpc_host(),
             network_config.rpc_port(network)
         );
-        let core_client = match Self::create_core_rpc_client(
+        let core_client = Self::create_core_rpc_client(
             &addr,
             network,
             &network_config.devnet_name,
             &network_config,
-        ) {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::error!(?network, "Failed to create CoreClient: {e}");
-                return None;
-            }
-        };
+        )
+        .map_err(|source| NetworkContextError::CoreClient {
+            network,
+            source: Box::new(source),
+        })?;
 
         // T-W-01 / T-W-01b: both HD and single-key wallets are now
         // rehydrated from the upstream `SecretStore` + DET k/v sidecars
@@ -595,6 +600,8 @@ impl AppContext {
             user_role,
             db,
             sdk: ArcSwap::from_pointee(sdk),
+            #[cfg(test)]
+            proven_protocol_version_for_tests: Default::default(),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
             system_contracts,
@@ -628,6 +635,10 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_wallet_backend_hooks: Default::default(),
+            #[cfg(test)]
+            test_fee_payer_refresh_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             contact_info_writes: Default::default(),
             dpns_vote_operation_guard: Mutex::new(()),
@@ -644,9 +655,10 @@ impl AppContext {
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
-            fee_multiplier_permille: AtomicU64::new(
+            fee_multiplier: Mutex::new((
+                None,
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
-            ),
+            )),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -658,6 +670,7 @@ impl AppContext {
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
+            frame_loop: ArcSwapOption::const_empty(),
             legacy_identities_present: std::sync::OnceLock::new(),
         };
 
@@ -665,15 +678,13 @@ impl AppContext {
         // Bind the SDK context provider. Chain sync is SPV-only (owned by
         // upstream platform-wallet); the SPV provider is the sole SDK
         // quorum/context provider.
-        match app_context.spv_context_provider.read() {
-            Ok(provider) => provider.bind_app_context(app_context.clone()),
-            Err(e) => {
-                tracing::error!("Failed to bind SPV provider: {}", e);
-                return None;
-            }
-        }
+        app_context
+            .spv_context_provider
+            .read()
+            .map_err(|_| NetworkContextError::ContextProviderUnavailable { network })?
+            .bind_app_context(app_context.clone());
 
-        Some(app_context)
+        Ok(app_context)
     }
 
     /// Force UI animations off for this context, whatever the role — the switch
@@ -772,6 +783,9 @@ impl AppContext {
         use platform_wallet_storage::SqlitePersisterConfig;
         crate::app_dir::ensure_data_dir_exists(data_dir)
             .map_err(|source| TaskError::FileSystem { source })?;
+        crate::wallet_backend::platform_compatibility::refuse_stores_needing_upgrade_release(
+            data_dir,
+        )?;
         let path = crate::wallet_backend::app_database_path(data_dir);
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(crate::wallet_backend::platform_compatibility::open(config)?);
@@ -786,12 +800,20 @@ impl AppContext {
     /// of the same vault would fail with `AlreadyLocked`. The vault is
     /// cross-network: seeds and imported keys are scoped by hash, not chain.
     pub fn open_secret_store(data_dir: &std::path::Path) -> Result<Arc<SecretStore>, TaskError> {
-        crate::app_dir::ensure_data_dir_exists(data_dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        crate::app_dir::ensure_data_dir_exists(data_dir).map_err(|source| {
+            TaskError::from_prepare_environment_error(
+                crate::boot::PrepareEnvironmentError::CreateDataFolder {
+                    path: data_dir.to_path_buf(),
+                    source,
+                },
+            )
+        })?;
         crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
+            .map_err(|source| {
+                crate::backend_task::error::vault_error(source, |source| TaskError::SecretStore {
+                    source,
+                })
             })
     }
 
@@ -807,8 +829,14 @@ impl AppContext {
         data_dir: &std::path::Path,
         passphrase: platform_wallet_storage::secrets::SecretString,
     ) -> Result<Arc<SecretStore>, TaskError> {
-        crate::app_dir::ensure_data_dir_exists(data_dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        crate::app_dir::ensure_data_dir_exists(data_dir).map_err(|source| {
+            TaskError::from_prepare_environment_error(
+                crate::boot::PrepareEnvironmentError::CreateDataFolder {
+                    path: data_dir.to_path_buf(),
+                    source,
+                },
+            )
+        })?;
         crate::wallet_backend::single_key::open_secret_store_with_passphrase(
             &Self::secret_store_path(data_dir),
             passphrase,
@@ -843,13 +871,38 @@ impl AppContext {
 
     /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
     pub fn fee_multiplier_permille(&self) -> u64 {
-        self.fee_multiplier_permille.load(Ordering::Relaxed)
+        self.fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
     }
 
-    /// Update the cached fee multiplier from epoch info
-    pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
-        self.fee_multiplier_permille
-            .store(multiplier, Ordering::Relaxed);
+    /// Set the cached fee multiplier without an epoch; the next proved epoch replaces it.
+    #[cfg(test)]
+    pub(crate) fn set_fee_multiplier_permille(&self, multiplier: u64) {
+        *self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (None, multiplier);
+    }
+
+    /// Cache the fee multiplier of proved epoch `epoch_index` unless a newer
+    /// epoch's multiplier is already cached.
+    pub(crate) fn set_epoch_fee_multiplier_permille(
+        &self,
+        epoch_index: EpochIndex,
+        multiplier: u64,
+    ) {
+        let mut cached = self
+            .fee_multiplier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .0
+            .is_none_or(|cached_index| epoch_index >= cached_index)
+        {
+            *cached = (Some(epoch_index), multiplier);
+        }
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
@@ -1056,11 +1109,10 @@ impl AppContext {
         }
     }
 
-    /// Get a fee estimator configured with the cached fee multiplier.
-    /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
-    /// that reflect the current network fee multiplier.
+    /// A fee estimator for the protocol version the SDK speaks, at the cached
+    /// epoch fee multiplier. Use it for every fee estimate.
     pub fn fee_estimator(&self) -> PlatformFeeEstimator {
-        PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
+        PlatformFeeEstimator::new(self.platform_version(), self.fee_multiplier_permille())
     }
 
     /// A handle on the shared app-global role, for wiring a newly-created
@@ -1079,8 +1131,8 @@ impl AppContext {
         }
     }
 
-    /// The platform version the SDK builds, validates and signs with: the
-    /// network's minimum until a proven response ratchets it to the version
+    /// The platform version the SDK builds, validates and signs with:
+    /// DET's minimum until a proven response ratchets it to the version
     /// the network runs.
     pub fn platform_version(&self) -> &'static PlatformVersion {
         self.sdk.load().version()
@@ -1132,7 +1184,24 @@ impl AppContext {
     /// version transitions are built at, and whether the proven version is
     /// newer than any this build defines.
     pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
-        self.sdk.load().protocol_version_info()
+        let sdk = self.sdk.load();
+        let info = sdk.protocol_version_info();
+        // TEST SEAM: compiled only into `cargo test` builds; every other build
+        // returns the SDK's answer unchanged.
+        // TODO(upstream): drop once the SDK offers a mock seam for a verified
+        // version (https://github.com/dashpay/platform/issues/5622).
+        #[cfg(test)]
+        let info = self.proven_protocol_version_for_tests.apply(&sdk, info);
+        info
+    }
+
+    /// Contract signing rules from this network's verified SDK response.
+    pub fn contract_signing_scope(
+        &self,
+    ) -> crate::model::identity_key_usability::SigningScope<'static> {
+        crate::model::identity_key_usability::SigningScope::DataContract {
+            protocol_version: self.protocol_version_info().verified_version,
+        }
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -1156,22 +1225,10 @@ impl AppContext {
         }
     }
 
-    /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
-    /// the new connection's epoch. The new SDK has proven no protocol version,
-    /// so protocol capabilities stay closed until a proved response carries
-    /// one; the epoch read is that response, and it refreshes the fee
-    /// multiplier too. A failed read only leaves the version unproven until
-    /// the next proved response; it does not fail the rebuild.
+    /// Rebuild the clients immediately and queue a quorum-ready metadata probe.
     pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
         Arc::clone(self).reinit_core_client_and_sdk()?;
-        let sdk = self.sdk.load_full();
-        if let Err(error) = self.refresh_current_epoch(&sdk).await {
-            tracing::warn!(
-                %error,
-                "Could not read the current epoch after rebuilding the connection; \
-                 protocol features stay closed until the next read"
-            );
-        }
+        self.queue_platform_protocol_refresh();
         Ok(())
     }
 
@@ -1235,11 +1292,11 @@ impl AppContext {
         // while the list still holds them; it shares the list, so it follows
         // the move below.
         let provider = self.spv_context_provider.read()?.clone();
-        // Like a cold start: the network minimum, raised by the new
+        // Like a cold start: DET's minimum (`MIN_PLATFORM_VERSION`), raised by the new
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
         let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
-            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+            .map_err(|source| TaskError::SdkInitializationFailed { source })?;
         let mut client_lock = self.core_client.write()?;
 
         // 4. Nothing below can fail: move the list, swap in the new client
@@ -1249,10 +1306,9 @@ impl AppContext {
         drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK. The
+        // Rebind the provider to hold the new AppContext reference. The
         // clone shares the provider's state, so binding it binds the one the
-        // context holds.
+        // context and the new SDK hold.
         provider.bind_app_context(self.clone());
 
         Ok(())
@@ -1296,27 +1352,7 @@ impl AppContext {
         e: dash_sdk::Error,
         request_type: RequestType,
     ) -> TaskError {
-        match e {
-            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                tracing::error!(
-                    target: "proof_log",
-                    request_type = ?request_type,
-                    height = block_info.height,
-                    time_ms = block_info.time_ms,
-                    proof_bytes_len = proof_bytes.len(),
-                    %proof_error,
-                    "drive proof verification failed",
-                );
-                TaskError::ProofError {
-                    source_error: Box::new(dash_sdk::Error::DriveProofError(
-                        proof_error,
-                        proof_bytes,
-                        block_info,
-                    )),
-                }
-            }
-            e => TaskError::from(e),
-        }
+        TaskError::from_broadcast_sdk_error(e, request_type)
     }
 
     /// Recovers from a Drive proof error on a contract put/update.
@@ -1346,7 +1382,8 @@ impl AppContext {
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::ProofErrorLogged,
             ))
             .await
@@ -1393,7 +1430,8 @@ impl AppContext {
             self,
             sdk,
             Arc::clone(&self.connection_status),
-            task_result_sender,
+            // The backend reports for the life of the context, whoever wired it.
+            task_result_sender.unfiltered(),
             self.secret_prompt(),
         )
         .await?;
@@ -1504,6 +1542,52 @@ impl AppContext {
             .unwrap_or_else(|_| Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>)
     }
 
+    /// Install the frame loop that takes this context's task reports. The GUI
+    /// calls this on every context it holds before any request can reach it:
+    /// at boot, and in the network switch that creates a context. A later
+    /// install replaces the sender for later callers only; the wallet backend
+    /// keeps the one it was built with.
+    pub fn install_frame_loop(&self, sender: SenderAsync<TaskResult>) {
+        self.frame_loop.store(Some(Arc::new(sender.unfiltered())));
+    }
+
+    /// The sender to this context's frame loop. Headless callers (MCP, CLI)
+    /// pass it to work that reports to a frame loop, such as
+    /// [`Self::run_backend_task`]: a context with no frame loop installed gets
+    /// a sink that reads and drops reports until shutdown, one per context,
+    /// tracked by the task manager so a report never stalls on a full channel
+    /// and the sink ends with the process. Must run inside a Tokio runtime.
+    pub fn frame_loop_sender(&self) -> SenderAsync<TaskResult> {
+        if let Some(sender) = self.frame_loop.load_full() {
+            return (*sender).clone();
+        }
+        let (tx, mut reports) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, self.egui_ctx.clone());
+        let cancelled = self.subtasks.cancellation_token.clone();
+        let sink = async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.cancelled() => break,
+                    report = reports.recv() => if report.is_none() { break },
+                }
+            }
+        };
+        if self.subtasks.spawn_sync("frame-loop-sink", sink).is_err() {
+            tracing::debug!("No frame-loop sink after shutdown began; reports will be refused");
+        }
+        // Another caller may have installed a frame loop meanwhile: the first
+        // one wins, as it is the one a backend may already hold. A losing
+        // sink ends when its sender drops here.
+        let previous = self
+            .frame_loop
+            .compare_and_swap(&None::<Arc<_>>, Some(Arc::new(sender.clone())));
+        match previous.as_ref() {
+            Some(installed) => (**installed).clone(),
+            None => sender,
+        }
+    }
+
     /// Whether this context has a host that can render a human password prompt.
     /// The GUI installs that capability during boot; standalone MCP/CLI contexts
     /// retain the non-interactive default.
@@ -1587,14 +1671,30 @@ impl AppContext {
         }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None)
+        self.legacy_owner_wallet_hash(&qi)
+    }
+
+    /// The wallet that owns a loaded identity: its stored owner, else (legacy
+    /// records) the wallet of its username signing key, then the loaded wallet
+    /// that derives any of its keys. Not `associated_wallets`, which lists
+    /// every loaded wallet.
+    pub(crate) fn identity_owner_wallet(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
+        if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&qi.identity.id()) {
+            return Some(hash);
+        }
+        self.legacy_owner_wallet_hash(qi)
+    }
+
+    /// Owner of a legacy record without a stored wallet link.
+    fn legacy_owner_wallet_hash(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
+        let wallet = crate::ui::identity::get_selected_wallet(qi, Some(self), None)
             .ok()
             .flatten()
             .or_else(|| {
                 qi.identity
                     .public_keys()
                     .values()
-                    .find_map(|key| crate::ui::identity::wallet_for_signing_key(&qi, Some(key)))
+                    .find_map(|key| crate::ui::identity::wallet_for_signing_key(qi, Some(key)))
             })?;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
@@ -1798,14 +1898,75 @@ impl AppContext {
             .unwrap_or_default()
     }
 
-    /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
-    /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
+    /// The revision a Core send Max quote is made against; see
+    /// [`crate::wallet_backend::WalletBackend::core_send_quote_revision`].
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.core_send_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// The shield-in-flight part of a shield-from-Platform Max quote key; see
+    /// [`crate::wallet_backend::WalletBackend::platform_shield_quote_revision`].
+    pub fn platform_shield_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.platform_shield_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Number of UTXOs in the wallet's display snapshot, in every account.
+    /// Sizes the Core fee a wallet deposit is asked to bring on top.
     ///
     /// DISPLAY-ONLY: like the other snapshot reads, this never drives coin
-    /// selection — it only sizes the fee reserved off the displayed balance.
+    /// selection or a Max amount — those come from the backend builder.
     pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
             .map(|wb| wb.utxo_count(seed_hash))
+            .unwrap_or(0)
+    }
+
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` to a
+    /// `destination` script, never below what the build charges. `quote` is
+    /// the quoted Max for the same destination and what it was proven
+    /// against; without it, the coins the snapshot counts stand in.
+    pub fn snapshot_core_payment_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        destination: crate::model::spend_limit::CoreDestinationScript,
+        amount_duffs: u64,
+        quote: Option<(u64, crate::model::spend_limit::CoreSendQuoteFee)>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_payment_fee_duffs(
+            destination,
+            amount_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
+        )
+    }
+
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` in
+    /// total to `output_count` recipients, never below what the build charges.
+    /// Without a `quote`, the coins the snapshot counts stand in.
+    pub fn snapshot_core_several_outputs_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        output_count: usize,
+        amount_duffs: u64,
+        quote: Option<crate::model::spend_limit::CoreSendQuoteFee>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_several_outputs_fee_duffs(
+            output_count,
+            amount_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
+        )
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, from
+    /// the wallet's snapshot.
+    pub fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.wallet_backend()
+            .map(|wb| wb.core_send_input_count(seed_hash))
             .unwrap_or(0)
     }
 
@@ -1866,6 +2027,239 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_access_denied_keeps_permission_advice_for_both_open_modes() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+        use platform_wallet_storage::secrets::{SecretStoreError, SecretString};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        drop(AppContext::open_secret_store(dir.path()).expect("create vault"));
+        let path = AppContext::secret_store_path(dir.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("deny read");
+        let keyless = AppContext::open_secret_store(dir.path()).err();
+        let keyed = AppContext::open_secret_store_with_passphrase(
+            dir.path(),
+            SecretString::new(hex::encode(crate::test_support::keys::secret_bytes())),
+        )
+        .err();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("restore");
+        for error in [keyless, keyed] {
+            let error = error.expect("opening a denied vault must fail");
+            assert!(
+                matches!(&error, TaskError::SecretStoreAccessDenied { source }
+                if matches!(source.as_ref(), SecretStoreError::Io(io)
+                    if io.source.kind() == std::io::ErrorKind::PermissionDenied)),
+                "{error:?}"
+            );
+            assert!(
+                error.to_string().contains("permission to change"),
+                "{error}"
+            );
+            assert!(!error.to_string().contains("other copy"), "{error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_open_reports_denied_data_folder_before_vault_preparation() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+        use platform_wallet_storage::secrets::SecretString;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000))
+            .expect("deny traversal");
+        let data_dir = parent.join("data");
+        let keyless = AppContext::open_secret_store(&data_dir).err();
+        let keyed = AppContext::open_secret_store_with_passphrase(
+            &data_dir,
+            SecretString::new(hex::encode(crate::test_support::keys::secret_bytes())),
+        )
+        .err();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).expect("restore");
+        for error in [keyless, keyed] {
+            let error = error.expect("denied data folder");
+            assert!(
+                matches!(error, TaskError::DataFolderAccessDenied { .. }),
+                "{error:?}"
+            );
+            assert!(
+                error.to_string().contains("permission to change"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_contention_and_wrong_passphrase_keep_their_handling() {
+        use platform_wallet_storage::secrets::{SecretStoreError, SecretString};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let passphrase = hex::encode(crate::test_support::keys::secret_bytes());
+        let store = AppContext::open_secret_store_with_passphrase(
+            dir.path(),
+            SecretString::new(passphrase),
+        )
+        .expect("create protected vault");
+        let held = AppContext::open_secret_store(dir.path()).expect_err("held vault");
+        assert!(
+            matches!(&held, TaskError::SecretStore { source }
+            if matches!(source.as_ref(), SecretStoreError::AlreadyLocked)),
+            "{held:?}"
+        );
+        assert!(held.to_string().contains("no other copy"), "{held}");
+        drop(store);
+        let wrong = AppContext::open_secret_store(dir.path()).expect_err("protected vault");
+        assert!(wrong.is_secret_store_wrong_passphrase(), "{wrong:?}");
+        assert!(wrong.is_recoverable_secret_store_passphrase_error());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_under_a_sticky_shared_parent_can_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure ancestor");
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).expect("shared parent");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).expect("sticky");
+        AppContext::open_secret_store(&shared.join("data")).expect("sticky parent is allowed");
+    }
+
+    /// `AppContext::new`'s error for `network` over a data folder whose
+    /// `.env` holds `env`.
+    fn app_context_error(env: &str, network: Network) -> NetworkContextError {
+        use crate::database::test_helpers::create_database_at_path;
+
+        assert!(crate::test_support::is_test_child(), "isolate .env loading");
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        std::fs::write(data_dir.join(".env"), env).expect("write .env");
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+
+        let result = AppContext::new(
+            data_dir,
+            network,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        );
+        let Err(error) = result else {
+            panic!("the settings must be refused");
+        };
+        error
+    }
+
+    /// A network whose saved node addresses cannot be parsed reports that
+    /// reason instead of an unexplained failure.
+    #[test]
+    fn app_context_reports_invalid_node_addresses() {
+        // Loading the .env sets process variables, so run in a child process.
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_node_addresses",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error(
+            "TESTNET_dapi_addresses=http://[bad\nTESTNET_core_host=127.0.0.1\n",
+            Network::Testnet,
+        );
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidDapiAddresses {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A network whose saved setting has an unusable value is reported as
+    /// invalid, not as missing.
+    #[test]
+    fn app_context_reports_invalid_network_settings() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_network_settings",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error(
+            "MAINNET_core_host=127.0.0.1\nTESTNET_core_rpc_port=invalid\n",
+            Network::Testnet,
+        );
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidSettings {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn app_context_reports_invalid_settings_when_no_network_is_valid() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_reports_invalid_settings_when_no_network_is_valid",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error("TESTNET_core_rpc_port=invalid\n", Network::Testnet);
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::InvalidSettings {
+                    network: Network::Testnet,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn app_context_keeps_missing_settings_distinct() {
+        if crate::test_support::run_test_in_child(
+            "context::tests::app_context_keeps_missing_settings_distinct",
+            &[],
+        ) {
+            return;
+        }
+        let error = app_context_error("MAINNET_core_host=127.0.0.1\n", Network::Testnet);
+        assert!(
+            matches!(
+                error,
+                NetworkContextError::NotConfigured {
+                    network: Network::Testnet
+                }
+            ),
+            "{error:?}"
+        );
+    }
 
     /// Regression: a connection rebuild gave the app a new SDK while the
     /// wallet backend kept the one it was built with, so wallet operations
@@ -1970,48 +2364,10 @@ mod tests {
         assert!(uris[0].contains("10.0.0.9"), "{uris:?}");
     }
 
+    /// Every network starts at DET's minimum, without claiming it was verified.
     #[test]
-    fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {
-        use crate::wallet_backend::DetScope;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("det-app.sqlite");
-        let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute_batch(include_str!(
-            "../wallet_backend/platform_compatibility/fixtures/67d4ef3.sql"
-        ))
-        .unwrap();
-        let preference = "saved preference".to_owned();
-        let mut encoded = vec![1];
-        encoded.extend(
-            bincode::serde::encode_to_vec(&preference, bincode::config::standard()).unwrap(),
-        );
-        db.execute(
-            "INSERT INTO meta_global (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["det:test:preference", encoded],
-        )
-        .unwrap();
-        drop(db);
-
-        for _ in 0..2 {
-            let kv = AppContext::open_app_kv(dir.path()).unwrap();
-            assert_eq!(
-                kv.get::<String>(DetScope::Global, "det:test:preference")
-                    .unwrap(),
-                Some(preference.clone())
-            );
-        }
-    }
-
-    /// Before any proven response, a context builds, validates and signs at
-    /// the lowest protocol version its network still runs (upstream's
-    /// per-network minimum): 13 on mainnet, not an older table.
-    #[test]
-    fn platform_version_starts_at_the_network_minimum() {
+    fn minimum_protocol_14_seeds_every_network() {
         use crate::context::test_support::test_app_context_for_network;
-        use dash_sdk::sdk::min_protocol_version;
-
-        assert_eq!(min_protocol_version(Network::Mainnet), 13);
         for network in [
             Network::Mainnet,
             Network::Testnet,
@@ -2020,16 +2376,13 @@ mod tests {
         ] {
             let tmp = tempfile::tempdir().expect("tempdir");
             let ctx = test_app_context_for_network(tmp.path(), network);
-            assert_eq!(
-                ctx.platform_version().protocol_version,
-                min_protocol_version(network),
-                "{network:?}"
-            );
+            assert_eq!(ctx.platform_version().protocol_version, 14, "{network:?}");
+            assert_eq!(ctx.protocol_version_info().verified_version, None);
         }
     }
 
-    /// Once the SDK runs at protocol 14, the context builds with 14 and serves
-    /// the system contracts protocol 14 defines — not the ones loaded at boot.
+    /// Once the SDK runs at protocol 15, the context builds with 15 and serves
+    /// the system contracts protocol 15 defines — not the ones loaded at boot.
     #[test]
     fn platform_version_and_system_contracts_follow_the_sdk() {
         use crate::context::test_support::test_app_context_for_network;
@@ -2037,17 +2390,21 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
-        let v14 = PlatformVersion::get(14).expect("protocol 14");
+        let v15 = PlatformVersion::get(15).expect("protocol 15");
         let boot_dashpay = ctx.dashpay_contract();
-        assert_ne!(
+        assert_eq!(
             *boot_dashpay,
-            load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap(),
-            "precondition: protocol 14 redefines the DashPay contract"
+            load_system_data_contract(
+                SystemDataContract::Dashpay,
+                crate::sdk_wrapper::MIN_PLATFORM_VERSION
+            )
+            .unwrap(),
+            "boot uses DET minimum"
         );
 
-        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
 
-        assert_eq!(ctx.platform_version().protocol_version, 14);
+        assert_eq!(ctx.platform_version().protocol_version, 15);
         for (served, contract) in [
             (ctx.dashpay_contract(), SystemDataContract::Dashpay),
             (ctx.withdraws_contract(), SystemDataContract::Withdrawals),
@@ -2061,7 +2418,7 @@ mod tests {
                 SystemDataContract::KeywordSearch,
             ),
         ] {
-            assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
+            assert_eq!(*served, load_system_data_contract(contract, v15).unwrap());
         }
         assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
     }
@@ -2076,9 +2433,9 @@ mod tests {
         let ctx = test_app_context(temp_dir.path());
         assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
-        prove_protocol_version(&ctx, 13);
+        prove_protocol_version(&ctx, 14);
         let info = ctx.protocol_version_info();
-        assert_eq!(info.verified_version, Some(13));
+        assert_eq!(info.verified_version, Some(14));
         assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
@@ -2106,18 +2463,18 @@ mod tests {
         assert!(info.newer_protocol_available);
     }
 
-    /// Contest windows stay consistent as the SDK ratchets upward from each
-    /// network minimum to a newer supported protocol.
+    /// Contest windows stay consistent as the SDK ratchets upward from DET's
+    /// minimum (`MIN_PLATFORM_VERSION`) to a newer supported protocol.
     #[test]
-    fn contest_durations_match_the_network_minimum_for_every_supported_version() {
+    fn contest_durations_match_the_minimum_for_every_supported_version() {
         use crate::model::dpns::contest_durations;
 
         let newest = PlatformVersion::latest().protocol_version;
         for network in [Network::Mainnet, Network::Testnet] {
-            let minimum = dash_sdk::sdk::min_protocol_version(network);
+            let minimum = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version;
             let pinned = contest_durations(
                 network,
-                PlatformVersion::get(minimum).expect("network minimum"),
+                PlatformVersion::get(minimum).expect("minimum supported version"),
             );
             for protocol_version in minimum..=newest {
                 let live = PlatformVersion::get(protocol_version).expect("known version");
@@ -2176,7 +2533,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2201,6 +2558,49 @@ mod tests {
         (temp_dir, ctx)
     }
 
+    /// A context with no frame loop installed, as in a headless process,
+    /// sinks every report it is handed through one sender for its life, and
+    /// the sink ends with the task manager's shutdown.
+    #[tokio::test]
+    async fn a_headless_context_sinks_frame_loop_reports_until_shutdown() {
+        use crate::utils::tasks::TaskShutdownOutcome;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sender = ctx.frame_loop_sender();
+        for _ in 0..100 {
+            sender
+                .send(TaskResult::Repaint)
+                .await
+                .expect("the sink reads reports past the channel's capacity");
+        }
+        ctx.frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("later callers share the sink");
+        assert_eq!(
+            ctx.subtasks
+                .shutdown_async()
+                .await
+                .expect("shutdown outcome"),
+            TaskShutdownOutcome::Complete,
+            "the sink ends on shutdown although the context still holds its sender"
+        );
+    }
+
+    /// An installed frame loop is what every later caller gets.
+    #[tokio::test]
+    async fn an_installed_frame_loop_takes_every_report() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(SenderAsync::new(tx, ctx.egui_ctx().clone()));
+        ctx.frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("send to the installed frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+    }
+
     /// Regression (mn-live-qa Bug 1): the user role is a single app-global value
     /// shared by every per-network `AppContext`. Setting it on the context for
     /// one network must be observable from the context for another — otherwise
@@ -2218,7 +2618,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2290,7 +2690,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2380,7 +2780,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db =
             std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -2655,7 +3055,8 @@ mod tests {
                 id: ctx.dashpay_contract().id(),
             },
         );
-        let wallet_b = crate::model::wallet::test_support::open_wallet_on([7; 64]);
+        let wallet_b =
+            crate::model::wallet::test_support::open_wallet_on(crate::test_support::keys::seed());
         let hash_a = wallet_a.read().expect("wallet").seed_hash();
         let hash_b = wallet_b.seed_hash();
         assert_ne!(hash_a, hash_b);

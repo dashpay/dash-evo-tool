@@ -18,7 +18,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::voting::vote_polls::VotePoll;
 
 /// The immediate result of submitting a DPNS registration document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +38,21 @@ pub fn classify_dpns_registration_outcome(
     label: &str,
     platform_version: &PlatformVersion,
 ) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
+    let properties = dpns_name_fields(label);
+    match document_type
+        .contested_vote_poll_for_document_properties(&properties, platform_version)
+        .map_err(Box::new)?
+    {
+        Some(_) => Ok(DpnsRegistrationOutcome::PendingCommunityVote),
+        None => Ok(DpnsRegistrationOutcome::Registered),
+    }
+}
+
+/// The name fields a `domain` document for `label` carries: the ones a
+/// contest on the name is decided by.
+fn dpns_name_fields(label: &str) -> BTreeMap<String, Value> {
     let text = |value: &str| Value::Text(value.to_string());
-    let properties = BTreeMap::from([
+    BTreeMap::from([
         ("label".to_string(), text(strip_dash_suffix(label))),
         (
             "normalizedLabel".to_string(),
@@ -48,16 +60,12 @@ pub fn classify_dpns_registration_outcome(
         ),
         ("parentDomainName".to_string(), text("dash")),
         ("normalizedParentDomainName".to_string(), text("dash")),
-    ]);
-    match document_type
-        .contested_vote_poll_for_document_properties(&properties, platform_version)
-        .map_err(Box::new)?
-    {
-        Some(VotePoll::ContestedDocumentResourceVotePoll(_)) => {
-            Ok(DpnsRegistrationOutcome::PendingCommunityVote)
-        }
-        None => Ok(DpnsRegistrationOutcome::Registered),
-    }
+    ])
+}
+
+/// The maximum number of requests a username vote accepts.
+pub fn username_contest_max_contenders(platform_version: &PlatformVersion) -> u16 {
+    platform_version.system_limits.max_contenders_per_contest
 }
 
 /// How long a DPNS name contest runs and how long others may join it.
@@ -71,7 +79,7 @@ pub struct ContestDurations {
 
 /// Contest timing on `network` at `platform_version`.
 ///
-/// Mainnet uses the production windows (14 days / 7 days at PV13); every other
+/// Mainnet uses the production windows (14 days / 7 days); every other
 /// network uses the testing windows (90 / 45 minutes). Values come from the
 /// platform version tables, never from literals.
 pub fn contest_durations(network: Network, platform_version: &PlatformVersion) -> ContestDurations {
@@ -342,6 +350,17 @@ mod tests {
     }
 
     #[test]
+    fn username_contest_cap_follows_supported_version_limits() {
+        for version in [14, PlatformVersion::latest().protocol_version] {
+            let pv = PlatformVersion::get(version).expect("version");
+            assert_eq!(
+                username_contest_max_contenders(pv),
+                pv.system_limits.max_contenders_per_contest
+            );
+        }
+    }
+
+    #[test]
     fn contested_rule_matches_contract() {
         // USR-TC-001
         assert!(is_contested_label("alice"));
@@ -357,7 +376,7 @@ mod tests {
     #[test]
     fn contest_durations_per_network() {
         // USR-TC-003
-        let pv = PlatformVersion::get(13).expect("PV13");
+        let pv = PlatformVersion::get(14).expect("PV14");
         let day = Duration::from_secs(24 * 60 * 60);
         let minute = Duration::from_secs(60);
         assert_eq!(

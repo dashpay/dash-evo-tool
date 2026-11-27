@@ -436,7 +436,7 @@ async fn tc_027_load_identity() {
     .expect("TC-027: LoadIdentity should succeed");
 
     match result {
-        BackendTaskSuccessResult::LoadedIdentity(qi) => {
+        BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } => {
             tracing::info!(
                 "TC-027: loaded identity {:?}, keys={}",
                 qi.identity.id(),

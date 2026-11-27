@@ -85,13 +85,13 @@ pub fn derivation_wallet(
         else {
             continue;
         };
-        if path.derivation_path
-            != DerivationPath::identity_authentication_path(
-                network,
-                KeyDerivationType::ECDSA,
-                *identity_index,
-                *key_index,
-            )
+        if !DerivationPath::identity_authentication_path(
+            network,
+            KeyDerivationType::ECDSA,
+            *identity_index,
+            *key_index,
+        )
+        .is_ok_and(|expected| expected == path.derivation_path)
         {
             continue;
         }
@@ -123,13 +123,13 @@ pub fn occupied_indices(
         if let Some(path) = &key.in_wallet_at_derivation_path
             && path.wallet_seed_hash == seed_hash
             && let Some(ChildNumber::Hardened { index }) = path.derivation_path.as_ref().last()
-            && path.derivation_path
-                == DerivationPath::identity_authentication_path(
-                    network,
-                    KeyDerivationType::ECDSA,
-                    identity_index,
-                    *index,
-                )
+            && DerivationPath::identity_authentication_path(
+                network,
+                KeyDerivationType::ECDSA,
+                identity_index,
+                *index,
+            )
+            .is_ok_and(|expected| expected == path.derivation_path)
         {
             occupied.insert(*index);
         }
@@ -167,7 +167,7 @@ pub(crate) mod test_support {
     use std::sync::{Arc, RwLock};
 
     pub(crate) fn fixture() -> (QualifiedIdentity, AuthPubkeyCache, WalletSeedHash, [u8; 64]) {
-        let seed = [42; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).unwrap();
         let seed_hash = wallet.seed_hash();
         let mut cache = AuthPubkeyCache::default();
@@ -217,7 +217,8 @@ pub(crate) mod test_support {
                 KeyDerivationType::ECDSA,
                 0,
                 0,
-            ),
+            )
+            .unwrap(),
         };
         identity.private_keys.insert_if_absent(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),

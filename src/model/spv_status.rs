@@ -5,7 +5,7 @@
 //! `SpvRuntime`; P1 introduces an `EventBridge` that feeds these values from
 //! upstream sync events. Until then they default to `Idle`/empty.
 
-use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
+use dash_sdk::dash_spv::SyncProgress as SpvSyncProgress;
 
 /// High-level status of the SPV client runtime, for UI display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

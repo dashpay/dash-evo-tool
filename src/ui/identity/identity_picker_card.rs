@@ -30,8 +30,8 @@ use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::state::AvatarCache;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
-    self, Color32, CornerRadius, FontId, Frame, Margin, Response, RichText, Sense, Stroke, Ui,
-    Vec2, WidgetInfo, WidgetType,
+    self, Color32, CornerRadius, FontId, Frame, Margin, Response, RichText, Role, Sense, Stroke,
+    Ui, Vec2, WidgetInfo,
 };
 
 /// Minimum outer card width used by the grid layout. Matches the design-spec
@@ -352,7 +352,7 @@ impl IdentityPickerCard {
         // surface, per §B.14.
         let rect = inner.response.rect;
         let id = ui
-            .id()
+            .scope_id()
             .with(("identity-picker-card", &self.identity_id_base58));
         let response: Response = ui
             .interact(rect, id, Sense::click())
@@ -373,7 +373,7 @@ impl IdentityPickerCard {
             );
         }
         response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, true, format!("Open {heading_for_a11y}"))
+            WidgetInfo::labeled(Role::Button, true, format!("Open {heading_for_a11y}"))
         });
 
         let mut result =

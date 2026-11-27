@@ -158,9 +158,14 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
 
-    /// Deterministic test public key from a one-byte seed.
+    /// A test public key, distinct per `seed` and stable within the test
+    /// process.
     fn pubkey(seed: u8) -> PublicKey {
-        let sk = SecretKey::from_secret_bytes([seed.max(1); 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(crate::test_support::keys::labelled_secret(
+            "model::wallet::auth_pubkey_cache::pubkey",
+            seed.into(),
+        ))
+        .expect("valid secret key");
         let inner = Secp256k1PublicKey::from_secret_key(&sk);
         PublicKey::new(inner)
     }

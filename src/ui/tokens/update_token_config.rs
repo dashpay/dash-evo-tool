@@ -1,12 +1,14 @@
+use super::TokenSigningKey;
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::SigningKeyStatus;
+use crate::model::token::ConfigUpdateOutcome;
 use crate::model::token::{
     TokenConfigInputError, parse_max_supply_input, parse_new_tokens_destination_input,
     token_change_item_is_supported,
@@ -21,12 +23,11 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{
-    TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
-};
+use crate::ui::helpers::{TransactionType, check_token_authorization, render_group_action_text};
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -43,7 +44,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DataContract, Identifier};
 use eframe::egui::{self, Color32, Ui};
 use egui::RichText;
 use std::collections::HashSet;
@@ -60,6 +61,7 @@ pub struct UpdateTokenConfigScreen {
     pub identity_token_info: IdentityTokenInfo,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     pub change_item: TokenConfigurationChangeItem,
     update_text: String,
     text_input_error: String,
@@ -68,7 +70,7 @@ pub struct UpdateTokenConfigScreen {
     field_text: Option<String>,
     /// Why `field_text` does not parse; blocks the update until fixed.
     field_error: Option<TokenConfigInputError>,
-    signing_key: Option<IdentityPublicKey>,
+    signing_key: TokenSigningKey,
     show_advanced_options: bool,
     identity: QualifiedIdentity,
     pub public_note: Option<String>,
@@ -85,8 +87,13 @@ pub struct UpdateTokenConfigScreen {
     wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    /// What Platform did with the completed update; the success screen
+    /// follows it, not the form, which may have changed since.
+    completed_outcome: Option<ConfigUpdateOutcome>,
     // Banner handle for elapsed time display
     refresh_banner: Option<crate::ui::components::BannerHandle>,
+    /// The update in flight; only its own result or error ends the wait.
+    update_request: PendingRequest,
 }
 
 impl UpdateTokenConfigScreen {
@@ -103,21 +110,29 @@ impl UpdateTokenConfigScreen {
         let is_unilateral_group_member = false;
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+        let selected_wallet = possible_key
+            .as_ref()
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
         Self {
             identity_token_info: identity_token_info.clone(),
             update_status: UpdateTokenConfigStatus::NotUpdating,
+            token_action_availability,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
             update_text: "".to_string(),
             text_input_error: "".to_string(),
             field_text: None,
             field_error: None,
-            signing_key: possible_key,
+            signing_key: TokenSigningKey::automatic(possible_key),
             show_advanced_options: false,
             public_note: None,
 
@@ -133,7 +148,9 @@ impl UpdateTokenConfigScreen {
             is_unilateral_group_member,
             group_action_id: None,
             completed_fee_result: None,
+            completed_outcome: None,
             refresh_banner: None,
+            update_request: PendingRequest::default(),
         }
     }
 
@@ -155,12 +172,12 @@ impl UpdateTokenConfigScreen {
         self.is_unilateral_group_member = auth.is_unilateral_group_member;
     }
 
-    fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_token_config_updater(&mut self, ui: &mut Ui, signing_available: bool) -> AppAction {
         let mut action = AppAction::None;
         // Step 1 (choosing the signing key) only shows in advanced mode.
         let first_step = if self.show_advanced_options { 2 } else { 1 };
 
-        ui.heading(format!("{first_step}. Select the item to update"));
+        let item_heading = ui.heading(format!("{first_step}. Select the item to update"));
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -497,7 +514,9 @@ impl UpdateTokenConfigScreen {
                     {
                         self.update_group_based_on_change_item();
                     }
-                });
+                })
+                .response
+                .labelled_by(item_heading.id);
 
 
         if self.change_item != item_before_selection {
@@ -711,7 +730,14 @@ impl UpdateTokenConfigScreen {
             &self.group_action_id,
         );
 
-        if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
+        if signing_available
+            && self.signing_key.as_ref().is_some()
+            && self
+                .selected_wallet
+                .as_ref()
+                .is_none_or(|wallet| !wallet_needs_unlock(wallet))
+            && (self.app_context.user_role().at_least(UserRole::Power)
+                || !button_text.contains("Test"))
             && change_item_can_be_submitted(
                 &self.change_item,
                 &self.text_input_error,
@@ -719,7 +745,12 @@ impl UpdateTokenConfigScreen {
             )
         {
             ui.add_space(20.0);
-            if ComponentStyles::add_primary_button(ui, &button_text).clicked() {
+            let in_flight = self.update_request.is_pending();
+            if ComponentStyles::add_primary_button_enabled(ui, !in_flight, &button_text)
+                .disabled_tooltip("Wait for the current update to finish.")
+                .clicked()
+                && !in_flight
+            {
                 let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
@@ -747,19 +778,20 @@ impl UpdateTokenConfigScreen {
                     );
                     handle.with_elapsed();
                     self.refresh_banner = Some(handle);
-                    action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::UpdateTokenConfig {
-                            identity_token_info: Box::new(self.identity_token_info.clone()),
-                            change_item: self.change_item.clone(),
-                            signing_key,
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
-                            },
-                            group_info,
+                    let update = BackendTask::TokenTask(Box::new(TokenTask::UpdateTokenConfig {
+                        identity_token_info: Box::new(self.identity_token_info.clone()),
+                        change_item: self.change_item.clone(),
+                        signing_key,
+                        public_note: if self.group_action_id.is_some() {
+                            None
+                        } else {
+                            self.public_note.clone()
                         },
-                    )));
+                        group_info,
+                    }));
+                    action |= self
+                        .update_request
+                        .dispatch_on(update, self.app_context.network);
                 }
             }
         }
@@ -884,32 +916,84 @@ impl UpdateTokenConfigScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
+        let (is_unilateral_group_member, has_group) = match self.completed_outcome {
+            Some(ConfigUpdateOutcome::ProposalRecorded) => (false, true),
+            Some(ConfigUpdateOutcome::Applied) => (true, false),
+            None => (self.is_unilateral_group_member, self.group.is_some()),
+        };
         crate::ui::helpers::show_group_token_success_screen(
             ui,
             "Config Update",
             self.group_action_id.is_some(),
-            self.is_unilateral_group_member,
-            self.group.is_some(),
+            is_unilateral_group_member,
+            has_group,
             &self.app_context,
         )
     }
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_info.identity.identity.id(),
+        );
+        if let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Some(updated) = identities
+                .into_iter()
+                .find(|identity| identity.identity.id() == self.identity.identity.id())
+        {
+            self.identity_token_info.identity = updated.clone();
+            self.identity = updated;
+        }
+
+        self.signing_key.refresh(
+            &self.app_context,
+            &self.identity,
+            TransactionType::TokenAction,
+            self.identity_token_info.data_contract.contract.id(),
+        );
+        crate::ui::identity::sync_signing_wallet(
+            Some(&self.identity),
+            self.signing_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.update_request.settle(context);
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the update's own outcome, a later error changes nothing.
+        if !self.update_request.is_pending()
+            && self.update_status != UpdateTokenConfigStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result) =
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result, outcome) =
             backend_task_success_result
         {
+            self.update_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
+            self.completed_outcome = Some(outcome);
             self.update_status = UpdateTokenConfigStatus::Complete;
         }
     }
@@ -971,14 +1055,37 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 });
                 ui.add_space(10.0);
 
-                // Open the form only when the action's key choice picks a key.
-                let key_status = super::token_action_key_status(
+                super::recheck_token_action_availability(
                     &self.app_context,
-                    &self.identity,
-                    self.identity_token_info.data_contract.contract.id(),
+                    &self.identity_token_info.identity.identity.id(),
+                    &mut self.token_action_availability,
                 );
+                if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                    return;
+                }
 
-                if key_status != SigningKeyStatus::Usable {
+                // Signing eligibility affects submission, not reads or previews.
+                // The form signs on its button, with no confirmation to reset.
+                let key_status = self
+                    .signing_key
+                    .follow_automatic_with_wallet(
+                        &self.app_context,
+                        &self.identity,
+                        TransactionType::TokenAction,
+                        self.identity_token_info.data_contract.contract.id(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
+                    )
+                    .status;
+
+                if key_status == SigningKeyStatus::ManualChoiceOnly {
+                    // Only a contract-group key can sign it: the user picks it below.
+                    self.show_advanced_options = true;
+                }
+                if !matches!(
+                    key_status,
+                    SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                ) {
                     ui.colored_label(
                         Color32::DARK_RED,
                         super::token_action_key_message(key_status, &self.identity),
@@ -1012,7 +1119,8 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             &self.app_context,
                         )));
                     }
-                } else {
+                }
+                {
                     // Possibly handle locked wallet scenario (similar to TransferTokens)
                     if let Some(wallet) = &self.selected_wallet {
                         if !self.wallet_open_attempted {
@@ -1032,7 +1140,6 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             if ui.button("Unlock Wallet").clicked() {
                                 self.wallet_unlock_popup.open();
                             }
-                            return;
                         }
                     }
 
@@ -1040,22 +1147,37 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     if self.show_advanced_options {
                         ui.heading("1. Select the key to sign the transaction with");
                         ui.add_space(10.0);
-                        add_key_chooser(
+                        if key_status == SigningKeyStatus::ManualChoiceOnly {
+                            ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                            ui.add_space(5.0);
+                        }
+                        action |= self.signing_key.show_chooser(
                             ui,
                             &self.app_context,
                             &self.identity,
-                            &mut self.signing_key,
                             TransactionType::TokenAction,
-                            SigningScope::ContractWide {
-                                contract_id: self.identity_token_info.data_contract.contract.id(),
-                            },
+                            self.identity_token_info.data_contract.contract.id(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
                         );
                         ui.add_space(10.0);
                         ui.separator();
                     }
                     ui.add_space(10.0);
 
-                    action |= self.render_token_config_updater(ui);
+                    crate::ui::identity::sync_signing_wallet(
+                        Some(&self.identity),
+                        self.signing_key.as_ref(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
+                    );
+                    action |= self.render_token_config_updater(
+                        ui,
+                        matches!(
+                            key_status,
+                            SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                        ),
+                    );
                 }
             }); // end of ScrollArea
         });
@@ -1196,6 +1318,49 @@ mod sdk_adapter_tests {
     use super::*;
 
     #[test]
+    fn interop_token_configuration_remains_visible_without_a_signing_key() {
+        use crate::model::qualified_contract::QualifiedContract;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: dash_sdk::platform::Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: crate::ui::tokens::tests::identity_with_expired_key(),
+            data_contract: QualifiedContract {
+                contract: ctx.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = UpdateTokenConfigScreen::new(info, &ctx);
+        screen.change_item = TokenConfigurationChangeItem::MaxSupply(Some(123_456));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateTokenConfigScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("1. Select the item to update")
+                .is_some()
+        );
+        assert!(harness.query_all_by_value("123456").next().is_some());
+        assert!(harness.query_all_by_label("Update Config").all(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+    }
+
+    #[test]
     fn shielded_pool_configuration_cannot_be_submitted_from_this_editor() {
         for item in [
             TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(17),
@@ -1260,5 +1425,155 @@ mod sdk_adapter_tests {
         // A deliberately empty field means "none" and can be sent.
         assert!(change_item_can_be_submitted(&max_supply, "", None));
         assert!(change_item_can_be_submitted(&destination, "", None));
+    }
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::*;
+    use crate::ui::tokens::mint_tokens_screen::tests::{signing_key, token_info};
+    use egui_kittest::kittest::Queryable;
+    use std::{cell::RefCell, rc::Rc};
+
+    /// A configuration update cannot be undone, so while one is in flight the
+    /// Update button must not send another.
+    #[test]
+    fn a_config_update_in_flight_is_never_sent_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_user_role(UserRole::Developer);
+        let mut info = token_info(&context, None, false);
+        info.identity.identity.add_public_key(signing_key());
+        let mut screen = UpdateTokenConfigScreen::new(info, &context);
+        screen.signing_key = TokenSigningKey {
+            selected: Some(signing_key()),
+            manually_selected: true,
+        };
+        screen.change_item = TokenConfigurationChangeItem::MaxSupply(Some(17));
+        use crate::ui::tokens::mint_tokens_screen::tests::{
+            report_error, sent_request, unrelated_request,
+        };
+        let updates = Rc::new(RefCell::new(Vec::new()));
+        let seen = updates.clone();
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui_state(
+                move |ui, screen: &mut UpdateTokenConfigScreen| {
+                    if let Some(request) = sent_request(&screen.ui(ui)) {
+                        seen.borrow_mut().push(request);
+                    }
+                },
+                screen,
+            );
+        let click = |harness: &mut egui_kittest::Harness<'_, UpdateTokenConfigScreen>| {
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Update Config")
+                .last()
+                .expect("the Update Config button")
+                .click();
+            harness.run_steps(3);
+        };
+        harness.run_steps(3);
+        for _ in 0..2 {
+            click(&mut harness);
+        }
+        assert_eq!(
+            updates.borrow().len(),
+            1,
+            "one update while it is in flight"
+        );
+
+        report_error(harness.state_mut(), &unrelated_request(context.network));
+        harness.run_steps(2);
+        click(&mut harness);
+        assert_eq!(
+            updates.borrow().len(),
+            1,
+            "another task's error does not end the wait"
+        );
+
+        let request = updates.borrow()[0]
+            .clone()
+            .expect("the update's own context");
+        report_error(harness.state_mut(), &request);
+        harness.run_steps(2);
+        click(&mut harness);
+        assert_eq!(
+            updates.borrow().len(),
+            2,
+            "a failed update can be sent again"
+        );
+    }
+
+    /// The success screen follows what Platform did with the update, not the
+    /// form: a recorded group proposal is reported as one even when the item
+    /// now selected needs no group, and an applied update as done.
+    #[test]
+    fn the_config_update_success_screen_follows_the_proved_outcome() {
+        use crate::model::token::ConfigUpdateOutcome;
+        for (outcome, heading, group_actions_link) in [
+            (
+                ConfigUpdateOutcome::ProposalRecorded,
+                "Group Config Update Initiated.",
+                true,
+            ),
+            (
+                ConfigUpdateOutcome::Applied,
+                "Config Update Successful.",
+                false,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen =
+                UpdateTokenConfigScreen::new(token_info(&context, None, false), &context);
+            screen.display_task_result(BackendTaskSuccessResult::UpdatedTokenConfig(
+                "Max supply".into(),
+                FeeResult {
+                    estimated_fee: 1,
+                    actual_fee: Some(1),
+                },
+                outcome,
+            ));
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut UpdateTokenConfigScreen| {
+                        screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run_steps(3);
+            assert_eq!(
+                harness.query_all_by_label(heading).count(),
+                1,
+                "{outcome:?} shows {heading:?}"
+            );
+            assert_eq!(
+                harness.query_all_by_label("Go to Group Actions").count() == 1,
+                group_actions_link,
+                "{outcome:?}: Go to Group Actions"
+            );
+        }
+    }
+
+    /// An error that arrives after the update went through, such as a
+    /// background task's, must not replace the success screen.
+    #[test]
+    fn a_completed_config_update_stays_complete_when_another_task_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = UpdateTokenConfigScreen::new(token_info(&context, None, false), &context);
+        screen.display_task_result(BackendTaskSuccessResult::UpdatedTokenConfig(
+            "Max supply".into(),
+            FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+            crate::model::token::ConfigUpdateOutcome::Applied,
+        ));
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(screen.update_status == UpdateTokenConfigStatus::Complete);
     }
 }

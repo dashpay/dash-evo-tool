@@ -1,12 +1,10 @@
 use super::AppContext;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{IdentitySaveWarning, TaskError};
 use crate::model::identity_discovery::DiscoveryIntent;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::MessageType;
-use crate::ui::components::MessageBanner;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Network;
@@ -20,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+mod balance_watermark;
 mod import_keys;
 mod migration;
 #[cfg(test)]
@@ -194,8 +193,8 @@ fn top_up_err(source: KvAdapterError) -> TaskError {
 
 /// Merge `top_ups` into the stored history of `identity_id` (read-merge-write).
 ///
-/// Callers hold a partial view of the history — the top-up flow carries the
-/// entries it hydrated plus the one it just confirmed, and the legacy-data
+/// Callers hold a partial view of the history — the top-up flow carries only
+/// the entry it just confirmed, and the legacy-data
 /// import carries only what `data.db` held — so a replacing write would drop
 /// every entry the caller never saw. On a colliding index the caller's value
 /// wins: it is the fresher of the two. Removal is not expressible here; the
@@ -499,7 +498,36 @@ fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), Ta
     let scope = DetScope::Identity(id);
     kv.delete(scope, IDENTITY_KEY).map_err(identity_err)?;
     kv.delete(scope, TOP_UPS_KEY).map_err(top_up_err)?;
+    kv.delete(scope, balance_watermark::BALANCE_WATERMARK_KEY)
+        .map_err(identity_err)?;
     Ok(())
+}
+
+/// `qualified_identity` as its record write may store it: carrying the newer
+/// stored balance when its own is only a copy read earlier (see
+/// [`balance_watermark`]). A write that observed a balance adopts it first,
+/// through [`AppContext::adopt_balance_observation_locked`].
+fn with_reconciled_balance<'a>(
+    kv: &DetKv,
+    id: &[u8; 32],
+    record_exists: bool,
+    qualified_identity: &'a QualifiedIdentity,
+) -> std::result::Result<std::borrow::Cow<'a, QualifiedIdentity>, TaskError> {
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    let carried = qualified_identity.identity.balance();
+    let kept = balance_watermark::reconcile_stored_balance(
+        kv,
+        id,
+        record_exists,
+        carried,
+        crate::model::identity_balance::BalanceProvenance::Unobserved,
+    )?;
+    if kept == carried {
+        return Ok(std::borrow::Cow::Borrowed(qualified_identity));
+    }
+    let mut pinned = qualified_identity.clone();
+    pinned.identity.set_balance(kept);
+    Ok(std::borrow::Cow::Owned(pinned))
 }
 
 #[cfg(feature = "testing")]
@@ -572,11 +600,12 @@ impl AppContext {
     /// ([`Self::stored_wallet_scope`]) already says:
     ///
     /// - **Linked to a wallet** — the link is kept against the caller's `None`
-    ///   hint, and the user is told. The outcome differs from what was asked
-    ///   for and only a retry (or loading the identity from its wallet)
-    ///   changes it, because a kept association takes the record out of the
-    ///   wallet-less set `AppContext::reconcile_unowned_identities` drives
-    ///   off, so no boot revisits it. This is at worst a **mislabel, not a
+    ///   hint, and once the write lands the user is told. The outcome differs
+    ///   from what was asked for and only a retry (or loading the identity
+    ///   from its wallet) changes it, because a kept association takes the
+    ///   record out of the wallet-less set
+    ///   `AppContext::reconcile_unowned_identities` drives off, so no boot
+    ///   revisits it. This is at worst a **mislabel, not a
     ///   loss**: if the mirror write was merely lost (upstream swallows a
     ///   persist failure into `Ok(())`, so a lost write and a refused one are
     ///   indistinguishable here) there is no upstream row for any `ON DELETE
@@ -606,6 +635,10 @@ impl AppContext {
     /// Serialized against every other whole-record writer of this identity by
     /// [`Self::identity_record_lock`].
     ///
+    /// The user is told with a banner; a request that reports to its own
+    /// requester takes the [`IdentitySaveWarning`] from
+    /// [`Self::insert_local_qualified_identity_under_lock`] instead.
+    ///
     /// # Errors
     /// The mirror's own error, when a wallet-free record cannot be shown to be
     /// durable and no earlier record stands in for the proof. Also whatever
@@ -620,19 +653,32 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.insert_local_qualified_identity_under_lock(
+        let warning = self.insert_local_qualified_identity_under_lock(
             qualified_identity,
             wallet_and_identity_id_info,
-        )
+        )?;
+        self.show_identity_save_warning(warning);
+        Ok(())
+    }
+
+    /// Tell the GUI user about a save warning no requester carries.
+    pub(crate) fn show_identity_save_warning(&self, warning: Option<IdentitySaveWarning>) {
+        if let Some(warning) = warning {
+            crate::ui::identity::task_feedback::show_identity_save_warning(
+                self.egui_ctx(),
+                &warning,
+            );
+        }
     }
 
     /// Deliberate import, including retirement of an unload marker. The caller
     /// must hold this identity's record lock across authorization and this write.
+    /// Returns what the requester needs to know about a save that landed.
     pub(crate) fn insert_local_qualified_identity_under_lock(
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
-    ) -> std::result::Result<(), TaskError> {
+    ) -> std::result::Result<Option<IdentitySaveWarning>, TaskError> {
         // Deliberate: asking for an identity is the one act that means the user
         // changed their mind about unloading it, so this is the only place the
         // unload marker is retired. Under the same guard as the write, so a
@@ -663,7 +709,7 @@ impl AppContext {
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
-    ) -> std::result::Result<(), TaskError> {
+    ) -> std::result::Result<Option<IdentitySaveWarning>, TaskError> {
         let kv = self.det_kv()?;
         let mut wallet_link = match wallet_and_identity_id_info {
             Some((seed, idx)) => Some((*seed, *idx)),
@@ -695,29 +741,26 @@ impl AppContext {
         // stranding placeholders no record points at. An orphan mirror left by
         // a failure of the writes below is withdrawn by the next boot's
         // reconcile.
-        let mut unconfirmed_wallet_free = None;
+        let mut warning = None;
         if wallet_link.is_none()
             && let Err(error) = self.mirror_identity_unowned(qualified_identity)
         {
             match self.stored_wallet_scope(&identity_id) {
                 Ok(StoredWalletScope::Linked(seed, index)) => {
                     wallet_link = Some((seed, index));
-                    // Logged here rather than left to the banner: a banner logs
-                    // only when a frame renders it, which never happens headless
-                    // (MCP/CLI) and need not happen in the GUI, where it is an
-                    // evictable toast. No boot revisits this record, so it gets
-                    // the durable record and a banner that stays put.
+                    // Logged here rather than left to the requester: a banner
+                    // logs only when a frame renders it, which never happens
+                    // headless (MCP/CLI) and need not happen in the GUI, where it
+                    // is an evictable toast. No boot revisits this record.
                     tracing::warn!(
                         identity_id = %identity_id,
                         wallet = %hex::encode(seed),
                         error = %error,
                         "Identity kept its wallet link: the wallet store could not confirm a wallet-free row for it, so a wallet-free record would not be durable. Retry, or load the identity from the wallet that holds it."
                     );
-                    let banner =
-                        MessageBanner::set_global(self.egui_ctx(), &error, MessageType::Warning);
-                    banner.with_details(error);
-                    banner.disable_auto_dismiss();
-                    self.egui_ctx().request_repaint();
+                    warning = Some(IdentitySaveWarning::WalletLinkKept {
+                        source: Arc::new(error),
+                    });
                 }
                 // The record already claims no wallet, so this write restates
                 // that claim rather than making it. Nothing is at stake in the
@@ -731,9 +774,9 @@ impl AppContext {
                         error = %error,
                         "Identity already recorded as belonging to no wallet; storing it again leaves that unchanged, but the wallet store still could not confirm a wallet-free row for it. Retry, or restart the application."
                     );
-                    // Reported once the record is on disk, not here: the writes
-                    // below can still fail.
-                    unconfirmed_wallet_free = Some(error);
+                    warning = Some(IdentitySaveWarning::WalletFreeUnconfirmed {
+                        source: Arc::new(error),
+                    });
                 }
                 // Nothing on file to restate, so a wallet-free record here
                 // would be this method's own invention. Refuse rather than
@@ -760,6 +803,11 @@ impl AppContext {
                 }
             }
         }
+        let record_exists = kv
+            .contains(DetScope::Identity(&id), IDENTITY_KEY)
+            .map_err(identity_err)?;
+        let qualified_identity =
+            &with_reconciled_balance(&kv, &id, record_exists, qualified_identity)?;
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
@@ -783,22 +831,9 @@ impl AppContext {
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .map_err(identity_err)?;
-        // Raised only now, because the writes above can still fail. Carries no
-        // identity id — the tray holds five, this banner never auto-dismisses
-        // and dedup is by exact text, so one per identity would evict whatever
-        // the user was reading. The id is in the log line above.
-        if let Some(error) = unconfirmed_wallet_free {
-            let banner = MessageBanner::set_global(
-                self.egui_ctx(),
-                "An identity was saved, but this device's wallet data does not yet confirm that \
-                 it belongs to no wallet. Restart the application to complete the update.",
-                MessageType::Warning,
-            );
-            banner.with_details(error);
-            banner.disable_auto_dismiss();
-            self.egui_ctx().request_repaint();
-        }
-        Ok(())
+        // Returned only now, because the writes above can still fail: the
+        // warning reports a record on disk.
+        Ok(warning)
     }
 
     /// Test-only: store a wallet-less sidecar without its upstream mirror,
@@ -872,6 +907,22 @@ impl AppContext {
     /// writer's read-modify-write. A caller that must keep its own read and
     /// this write atomic holds that guard itself and calls
     /// [`Self::write_local_qualified_identity_locked`] instead.
+    ///
+    /// The write carries no block height, so a balance other than the newest
+    /// one observed is replaced by that one (see `balance_watermark`). A
+    /// write that changes the balance uses
+    /// `edit_local_qualified_identity_observed`.
+    ///
+    /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
+    /// caller that read the record before a concurrent change (for example a
+    /// key removed in Key Info) writes that change away, including keys whose
+    /// vault secrets are already gone. Resolved by moving identity keys and
+    /// scalar fields onto platform-wallet's `IdentityManager`: keys persist as
+    /// per-key `IdentityKeysChangeSet` upserts and removals, scalars as an
+    /// `IdentityChangeSet` snapshot, and every mutation goes through the one
+    /// shared manager under its state lock instead of a caller's stale copy.
+    /// Until then, prefer [`Self::edit_local_qualified_identity`] for new
+    /// writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -896,8 +947,8 @@ impl AppContext {
     /// # Errors
     ///
     /// [`TaskError::IdentityNotFoundLocally`] when nothing is stored under
-    /// `identity_id`, and whatever `edit` returns — in both cases nothing is
-    /// persisted.
+    /// `identity_id` or it is off the roster (an edit never re-lists), and
+    /// whatever `edit` returns — in every case nothing is persisted.
     pub fn edit_local_qualified_identity(
         &self,
         identity_id: &Identifier,
@@ -907,12 +958,23 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut fresh = self
-            .get_local_qualified_identity(identity_id)?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let mut fresh = self.read_listed_identity_locked(identity_id)?;
         edit(&mut fresh)?;
         self.write_local_qualified_identity_locked(&fresh)?;
         Ok(fresh)
+    }
+
+    /// The stored record of a listed identity, for an edit. The caller holds
+    /// the identity's record lock.
+    pub(crate) fn read_listed_identity_locked(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<QualifiedIdentity, TaskError> {
+        if !self.is_identity_listed(identity_id)? {
+            return Err(TaskError::IdentityNotFoundLocally);
+        }
+        self.get_local_qualified_identity(identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)
     }
 
     /// The write half of [`Self::update_local_qualified_identity`], for a
@@ -981,6 +1043,8 @@ impl AppContext {
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
             .unwrap_or((None, None));
+        let qualified_identity =
+            &with_reconciled_balance(&kv, &id, existing.is_some(), qualified_identity)?;
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // an update never lands `Clear` / `AlwaysClear` key bytes on disk.
         let qi_bytes = encode_identity_blob_vault_first(
@@ -1219,6 +1283,23 @@ impl AppContext {
             .map(|stored| stored.qi_bytes))
     }
 
+    /// The wallet whose seed derives `identity`'s contact QR code key: the
+    /// owner its stored record names, if loaded with the identity.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::ContactQrWalletMissing`] when no owner is recorded or it
+    /// is not on this device; the store's error when the record cannot be read.
+    pub(crate) fn contact_qr_wallet_seed_hash(
+        &self,
+        identity: &QualifiedIdentity,
+    ) -> std::result::Result<WalletSeedHash, TaskError> {
+        self.stored_identity_wallet_link(&identity.identity.id())?
+            .map(|(seed_hash, _)| seed_hash)
+            .filter(|seed_hash| identity.associated_wallets.contains_key(seed_hash))
+            .ok_or(TaskError::ContactQrWalletMissing)
+    }
+
     /// The wallet link recorded for `id`, or `None` when the identity is not
     /// stored or was never linked to a wallet.
     ///
@@ -1325,9 +1406,9 @@ impl AppContext {
         let mut ids = load_identity_index(&kv)?;
         ids.sort_unstable();
         let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
+        for id in &ids {
             let Some(stored) = kv
-                .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
                 .map_err(identity_err)?
             else {
                 continue;
@@ -1342,7 +1423,7 @@ impl AppContext {
         // right label and hint. Display-only and best-effort — the vault scheme,
         // not this index, decides whether a prompt fires.
         if let Ok(backend) = self.wallet_backend() {
-            backend.seed_identity_prompt_index(&out);
+            backend.seed_identity_prompt_index(&out, &ids);
         }
         Ok(out)
     }
@@ -1369,7 +1450,7 @@ impl AppContext {
     /// store. A missing or unreadable entry is logged and treated as an
     /// empty map; pre-C5 SQLite data is intentionally not migrated and
     /// surfaces as empty under the "empty start" policy.
-    fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
+    pub(crate) fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
         let Ok(kv) = self.det_kv() else {
             return;
         };
@@ -1568,6 +1649,9 @@ impl AppContext {
         );
         index_remove_identity(&kv, &id)?;
         self.invalidate_identity_load(*identifier);
+        if let Ok(backend) = self.wallet_backend() {
+            backend.secret_access().forget_identity_prompt(&id);
+        }
         purge_identity_scope(&kv, &id)?;
         self.save_identity_profile_name(*identifier, None);
         let sidecar_cleanup =
@@ -1955,6 +2039,7 @@ impl AppContext {
         qualified_identity: &mut QualifiedIdentity,
         wallet: &Option<(WalletSeedHash, u32)>,
         intent: DiscoveryIntent,
+        balance_provenance: crate::model::identity_balance::BalanceProvenance,
     ) -> std::result::Result<bool, TaskError> {
         let identity_id = qualified_identity.identity.id();
         let lock = self.identity_record_lock(identity_id);
@@ -1985,6 +2070,8 @@ impl AppContext {
             );
             self.clear_identity_unloaded(&kv, &id)?;
         }
+        let pending =
+            self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
 
         let existing: Option<StoredQualifiedIdentity> = kv
             .get(DetScope::Identity(&id), IDENTITY_KEY)
@@ -2016,8 +2103,13 @@ impl AppContext {
                         other => other,
                     })?;
             }
-            None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
+            None => {
+                let warning =
+                    self.insert_local_qualified_identity_locked(qualified_identity, wallet)?;
+                self.show_identity_save_warning(warning);
+            }
         }
+        self.seed_balance_watermark_locked(pending)?;
         Ok(true)
     }
 
@@ -2217,7 +2309,7 @@ pub(crate) mod test_staging {
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -2324,7 +2416,7 @@ pub(crate) mod test_staging {
 
     /// An offline context with its wallet backend wired — `det_kv()` is only
     /// reachable once it is.
-    async fn staged_context() -> (
+    pub(crate) async fn staged_context() -> (
         Arc<AppContext>,
         Arc<platform_wallet_storage::secrets::SecretStore>,
         tempfile::TempDir,
@@ -2442,6 +2534,28 @@ pub(crate) mod test_staging {
             _dir: dir,
             _events: events,
         }
+    }
+
+    /// Drop `id` from the roster and keep its blob, with no unload marker:
+    /// the state an insert that stopped before its roster add leaves behind.
+    pub(crate) fn unlist_identity(ctx: &AppContext, id: &Identifier) {
+        index_remove_identity(&ctx.det_kv().expect("identity kv"), &id.to_buffer())
+            .expect("remove from the roster");
+    }
+
+    /// The top-up history stored for `id`, whether or not it is listed.
+    pub(crate) fn stored_top_ups(ctx: &AppContext, id: &Identifier) -> Option<BTreeMap<u32, u64>> {
+        ctx.det_kv()
+            .expect("identity kv")
+            .get(DetScope::Identity(&id.to_buffer()), TOP_UPS_KEY)
+            .expect("read the top-up history")
+    }
+
+    /// Fail the next save of a top-up history.
+    pub(crate) fn fail_next_top_up_save(ctx: &Arc<AppContext>) {
+        let store = ctx.det_kv().unwrap().failing_store();
+        store.fail_next_puts_containing(TOP_UPS_KEY, 1);
+        ctx.set_det_kv_override_for_test(DetKv::from_store(store));
     }
 
     /// Fail the top-up deletion after the identity has been delisted and its blob deleted.
@@ -2775,8 +2889,10 @@ mod tests {
 
     #[test]
     fn stored_identity_debug_redacts_qi_bytes() {
+        let qi_bytes = crate::test_support::keys::seed().to_vec();
+        let forms = crate::test_support::keys::rendered_forms(&qi_bytes);
         let s = StoredQualifiedIdentity {
-            qi_bytes: vec![0x42; 48],
+            qi_bytes,
             status: 1,
             identity_type: "User".to_string(),
             wallet_hash: Some([9u8; 32]),
@@ -2785,7 +2901,9 @@ mod tests {
         let dbg = format!("{s:?}");
         assert!(dbg.contains("[redacted]"), "expected redaction: {dbg}");
         assert!(dbg.contains("qi_bytes_len"), "expected length field: {dbg}");
-        assert!(!dbg.contains("66, 66, 66"), "leaked qi bytes: {dbg}");
+        for form in forms {
+            assert!(!dbg.contains(&form), "leaked qi bytes: {dbg}");
+        }
     }
 
     // ---------------------------------------------------------------
@@ -3156,8 +3274,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_vault(dir.path());
         let id = id(0x11);
-        let high = [0xAA; 32];
-        let medium = [0xBB; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let medium = crate::test_support::keys::secret_bytes();
         let mut qi = qi_with_plaintext_and_derived(high, medium);
 
         let view = IdentityKeyView::new(&store, id);
@@ -3230,11 +3348,13 @@ mod tests {
     async fn identity_migration_write_failures_keep_preparation_retryable() {
         use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
         use std::sync::atomic::Ordering;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         for fail_vault in [true, false] {
-            let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+            let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
             let ctx = &staged.ctx;
-            let qi = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]);
+            let qi = qi_with_plaintext_and_derived(secret_aa, secret_bb);
             let kv = ctx.det_kv().unwrap();
             let id = staged.id.to_buffer();
             let mut stored: StoredQualifiedIdentity = kv
@@ -3284,7 +3404,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_migration_skips_corrupt_blob_and_migrates_healthy_record() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         let kv = ctx.det_kv().unwrap();
         let id = staged.id.to_buffer();
@@ -3292,7 +3414,7 @@ mod tests {
             .get(DetScope::Identity(&id), IDENTITY_KEY)
             .unwrap()
             .unwrap();
-        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        stored.qi_bytes = qi_with_plaintext_and_derived(secret_aa, secret_bb).to_bytes();
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .unwrap();
         let corrupt_id = [0xFE; 32];
@@ -3326,7 +3448,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_migration_skips_corrupt_wrapper_and_migrates_healthy_record() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         let kv = ctx.det_kv().unwrap();
         let id = staged.id.to_buffer();
@@ -3334,7 +3458,7 @@ mod tests {
             .get(DetScope::Identity(&id), IDENTITY_KEY)
             .unwrap()
             .unwrap();
-        stored.qi_bytes = qi_with_plaintext_and_derived([0xAA; 32], [0xBB; 32]).to_bytes();
+        stored.qi_bytes = qi_with_plaintext_and_derived(secret_aa, secret_bb).to_bytes();
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .unwrap();
         let corrupt_id = [0xFE; 32];
@@ -3377,7 +3501,7 @@ mod tests {
         // writable vault for the explicit startup migration.
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -3401,8 +3525,8 @@ mod tests {
 
         // Stage a LEGACY blob: resident Clear/AlwaysClear keys written WITHOUT
         // the vault-first encode (bypassing `insert_local_qualified_identity`).
-        let high = [0xAA; 32];
-        let medium = [0xBB; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let medium = crate::test_support::keys::secret_bytes();
         let qi = qi_with_plaintext_and_derived(high, medium);
         let identity_id = qi.identity.id();
         let id_buf = identity_id.to_buffer();
@@ -3518,7 +3642,7 @@ mod tests {
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, added_id),
             (
                 QualifiedIdentityPublicKey::from(added),
-                PrivateKeyData::Clear([0xCC; 32]),
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             ),
         );
         let identity =
@@ -3560,7 +3684,7 @@ mod tests {
             .store_protected(
                 &PrivateKeyTarget::PrivateKeyOnMainIdentity,
                 1,
-                &[0x10; 32],
+                &crate::test_support::keys::secret_bytes(),
                 &SecretString::new("identity-password-xx"),
             )
             .expect("seal existing key");
@@ -3596,7 +3720,7 @@ mod tests {
             .store_protected(
                 &PrivateKeyTarget::PrivateKeyOnMainIdentity,
                 1,
-                &[0x10; 32],
+                &crate::test_support::keys::secret_bytes(),
                 &SecretString::new("identity-password-xx"),
             )
             .expect("seal existing key");
@@ -3635,8 +3759,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_vault(dir.path());
         let id = id(0x55);
-        let high = [0xA1; 32];
-        let medium = [0xB2; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let medium = crate::test_support::keys::secret_bytes();
         let qi = qi_with_plaintext_and_derived(high, medium);
 
         let blob = encode_identity_blob_vault_first(&store, &id, &qi, []).expect("encode");
@@ -3697,8 +3821,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_vault(dir.path());
         let id = id(0x22);
-        let high = [0xCC; 32];
-        let medium = [0xDD; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let medium = crate::test_support::keys::secret_bytes();
         let mut qi = qi_with_plaintext_and_derived(high, medium);
         let before = qi.private_keys.clone();
 
@@ -3733,6 +3857,8 @@ mod tests {
     /// drives the free `IdentityKeyView` the deletion uses.
     #[test]
     fn qa_003_identity_key_deletion_is_scoped_and_isolated() {
+        let secret_01 = crate::test_support::keys::secret_bytes();
+        let secret_02 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_vault(dir.path());
         let victim = id(0x33);
@@ -3740,10 +3866,10 @@ mod tests {
 
         // Both identities have a vaulted key under the same (target, key_id).
         IdentityKeyView::new(&store, victim)
-            .store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &[0x01; 32])
+            .store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &secret_01)
             .unwrap();
         IdentityKeyView::new(&store, bystander)
-            .store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &[0x02; 32])
+            .store(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0, &secret_02)
             .unwrap();
 
         // Delete the victim's keys the way clear_identity_vault_keys does:
@@ -3774,7 +3900,7 @@ mod tests {
                 .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
                 .unwrap()
                 .unwrap(),
-            [0x02; 32],
+            secret_02,
             "a different identity's vault key must be untouched (isolation)"
         );
     }
@@ -3786,6 +3912,8 @@ mod tests {
     /// the remove path calls it without first knowing whether the label is there.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_identity_key_secrets_drops_only_the_named_placement() {
+        let secret_01 = crate::test_support::keys::secret_bytes();
+        let secret_02 = crate::test_support::keys::secret_bytes();
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
 
         let (ctx, store, _dir) = ctx_with_vault().await;
@@ -3793,8 +3921,8 @@ mod tests {
         let bystander = Identifier::from(id(0x62));
         for owner in [victim, bystander] {
             let view = IdentityKeyView::new(&store, owner.to_buffer());
-            view.store(&MAIN, 0, &[0x01; 32]).unwrap();
-            view.store(&MAIN, 1, &[0x02; 32]).unwrap();
+            view.store(&MAIN, 0, &secret_01).unwrap();
+            view.store(&MAIN, 1, &secret_02).unwrap();
         }
 
         ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
@@ -3830,10 +3958,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_identity_delete_never_destroys_the_vault_keys() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0xAA; 32];
-        const MEDIUM: [u8; 32] = [0xBB; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let medium = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, MEDIUM).await;
+        let staged = stage_identity_with_vaulted_keys(high, medium).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
 
         // Break the Global enumeration index so the delete fails partway: the
@@ -3861,14 +3989,14 @@ mod tests {
                 .get(&MAIN, 1)
                 .unwrap()
                 .expect("the HIGH key must survive a failed delete"),
-            HIGH,
+            high,
         );
         assert_eq!(
             *view
                 .get(&MAIN, 2)
                 .unwrap()
                 .expect("the MEDIUM key must survive a failed delete"),
-            MEDIUM,
+            medium,
         );
         assert!(
             staged
@@ -3888,7 +4016,9 @@ mod tests {
     /// this distinction exists to catch (a failure strictly after delisting).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_removal_cancels_executable_journal_targets_and_preserves_uncertainty() {
-        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let secret_77 = crate::test_support::keys::secret_bytes();
+        let secret_88 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_77, secret_88).await;
         let imported = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -3977,7 +4107,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_removal_cleanup_cancels_votes_left_by_an_interrupted_removal() {
-        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let secret_77 = crate::test_support::keys::secret_bytes();
+        let secret_88 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_77, secret_88).await;
         let kv = staged.ctx.det_kv().unwrap();
         let id = staged.id.to_buffer();
         // The vote is scheduled while the identity is still loaded, so the
@@ -4016,9 +4148,36 @@ mod tests {
         );
     }
 
+    /// An edit targets a loaded identity: one off the roster with its blob
+    /// kept is refused, not put back on the roster.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_refuses_an_identity_off_the_roster() {
+        let staged = stage_identity_with_vaulted_keys(
+            crate::test_support::keys::secret_bytes(),
+            crate::test_support::keys::secret_bytes(),
+        )
+        .await;
+        unlist_identity(&staged.ctx, &staged.id);
+
+        let plain = staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |_| Ok(()));
+        let observed = staged.ctx.edit_local_qualified_identity_observed(
+            &staged.id,
+            crate::model::identity_balance::BalanceProvenance::ObservedAt(7),
+            |_| Ok(()),
+        );
+
+        assert!(matches!(plain, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(matches!(observed, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn is_identity_listed_tracks_the_index_not_the_blob() {
-        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let secret_77 = crate::test_support::keys::secret_bytes();
+        let secret_88 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_77, secret_88).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
 
         assert!(
@@ -4058,9 +4217,11 @@ mod tests {
     /// every private key in the vault. A completed removal leaves nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_successful_identity_delete_leaves_no_orphaned_vault_key() {
+        let secret_cc = crate::test_support::keys::secret_bytes();
+        let secret_dd = crate::test_support::keys::secret_bytes();
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
 
-        let staged = stage_identity_with_vaulted_keys([0xCC; 32], [0xDD; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_cc, secret_dd).await;
 
         staged
             .ctx
@@ -4101,10 +4262,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_retry_after_purge_partially_fails_still_recovers_every_key() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0xEE; 32];
-        const LOW: [u8; 32] = [0xFF; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let low = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let staged = stage_identity_with_vaulted_keys(high, low).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
 
         fail_removals_after_delisting(&staged.ctx);
@@ -4160,10 +4321,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resume_pending_vault_cleanups_recovers_a_manifest_no_ui_can_reach() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0x11; 32];
-        const LOW: [u8; 32] = [0x22; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let low = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let staged = stage_identity_with_vaulted_keys(high, low).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
         let id_buf = staged.id.to_buffer();
 
@@ -4247,10 +4408,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prepare_storage_still_runs_the_pending_vault_cleanup_sweep() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0x33; 32];
-        const LOW: [u8; 32] = [0x44; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let low = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let staged = stage_identity_with_vaulted_keys(high, low).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
         let id_buf = staged.id.to_buffer();
 
@@ -4304,10 +4465,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prepare_storage_runs_the_sweep_even_when_the_drain_fails() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0x55; 32];
-        const LOW: [u8; 32] = [0x66; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let low = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let staged = stage_identity_with_vaulted_keys(high, low).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
         let id_buf = staged.id.to_buffer();
 
@@ -4373,10 +4534,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resume_pending_vault_cleanups_spares_an_identity_still_on_the_roster() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0x33; 32];
-        const LOW: [u8; 32] = [0x44; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let low = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let staged = stage_identity_with_vaulted_keys(high, low).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
         let id_buf = staged.id.to_buffer();
 
@@ -4447,10 +4608,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resume_pending_vault_cleanups_is_serialized_against_a_concurrent_reimport() {
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-        const HIGH: [u8; 32] = [0x55; 32];
-        const LOW: [u8; 32] = [0x66; 32];
+        let high = crate::test_support::keys::secret_bytes();
+        let low = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let staged = stage_identity_with_vaulted_keys(high, low).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
         let id_buf = staged.id.to_buffer();
 
@@ -4551,6 +4712,7 @@ mod tests {
     /// asserted by `remove_identity`'s deferred-cleanup tests.
     #[test]
     fn a_manifest_clear_failure_after_the_keys_are_deleted_still_completes_the_removal() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
 
         let dir = tempfile::tempdir().unwrap();
@@ -4561,7 +4723,7 @@ mod tests {
         let manifest_key = vault_cleanup_pending_key(&id_buf);
 
         let view = IdentityKeyView::new(&store, id_buf);
-        view.store(&MAIN, 1, &[0x11; 32]).expect("vault the key");
+        view.store(&MAIN, 1, &secret_11).expect("vault the key");
         kv.put(
             DetScope::Global,
             &manifest_key,
@@ -4598,7 +4760,9 @@ mod tests {
     /// re-derives it and puts it straight back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_an_identity_records_that_it_was_unloaded() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
         let id = staged.id.to_buffer();
 
@@ -4629,7 +4793,9 @@ mod tests {
     /// identity from the still-loaded wallet.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn automatic_discovery_does_not_restore_an_unloaded_identity() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let mut rediscovered = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -4643,7 +4809,12 @@ mod tests {
 
         let stored = staged
             .ctx
-            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rediscovered,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(
@@ -4674,7 +4845,9 @@ mod tests {
     /// content of the race: read before, write after.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_discovery_that_read_the_record_first_cannot_write_it_back() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         // The in-flight pass's own snapshot, taken while the identity is still
         // stored — which is what sends it down the refresh branch.
         let mut in_flight = staged
@@ -4690,7 +4863,12 @@ mod tests {
 
         let stored = staged
             .ctx
-            .store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut in_flight,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(
@@ -4714,7 +4892,9 @@ mod tests {
     /// decided "not unloaded" before this test writes the marker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_discovery_parked_on_the_record_lock_still_sees_the_removal() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let mut in_flight = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -4731,7 +4911,12 @@ mod tests {
         let ctx = Arc::clone(&staged.ctx);
         let discovery = std::thread::spawn(move || {
             let _attached = discovery_probe.attach();
-            ctx.store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            ctx.store_discovered_identity(
+                &mut in_flight,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
         });
 
         // Unbounded on purpose: the discovery thread cannot acquire a lock this
@@ -4780,7 +4965,9 @@ mod tests {
     /// later automatic passes keep it refreshed rather than refusing it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deliberately_loading_an_identity_retires_its_unload_marker() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let mut reloaded = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -4808,7 +4995,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut reloaded, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut reloaded,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
             "with the marker retired, discovery must keep the identity refreshed again",
         );
@@ -4820,8 +5012,10 @@ mod tests {
     /// cleared.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_devnet_wipe_records_every_identity_it_clears_as_unloaded() {
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
         let staged =
-            stage_identity_with_vaulted_keys_on(Network::Devnet, [0xAA; 32], [0xBB; 32]).await;
+            stage_identity_with_vaulted_keys_on(Network::Devnet, secret_aa, secret_bb).await;
         let mut rediscovered = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -4844,7 +5038,12 @@ mod tests {
         assert!(
             !staged
                 .ctx
-                .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut rediscovered,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("a refusal is not an error"),
             "discovery must not restore what the wipe cleared",
         );
@@ -4856,7 +5055,9 @@ mod tests {
     /// finds nothing and no way to undo an unload.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_user_requested_search_loads_back_an_unloaded_identity() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let mut found = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -4871,7 +5072,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut found, &None, DiscoveryIntent::UserRequested)
+                .store_discovered_identity(
+                    &mut found,
+                    &None,
+                    DiscoveryIntent::UserRequested,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
             "a search the user started must load the identity back",
         );
@@ -4896,10 +5102,12 @@ mod tests {
         use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
         use dash_sdk::dpp::identity::KeyID;
         use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         const KEY_ID: KeyID = 9;
-        const STALE_SECRET: [u8; 32] = [0x77; 32];
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let stale_secret = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let id = staged.id.to_buffer();
         let placement = (PrivateKeyTarget::PrivateKeyOnMainIdentity, KEY_ID);
         let pv = PlatformVersion::latest();
@@ -4921,7 +5129,7 @@ mod tests {
             placement.clone(),
             (
                 QualifiedIdentityPublicKey::from(stale.clone()),
-                PrivateKeyData::Clear(STALE_SECRET),
+                PrivateKeyData::Clear(stale_secret),
             ),
         );
         record.qi_bytes = legacy.to_bytes();
@@ -4948,7 +5156,12 @@ mod tests {
 
         staged
             .ctx
-            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuild(),
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("first refresh");
         let after_first = staged
             .ctx
@@ -4965,7 +5178,12 @@ mod tests {
 
         staged
             .ctx
-            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuild(),
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("second refresh");
         let after_second = staged
             .ctx
@@ -4985,7 +5203,7 @@ mod tests {
                 .get(&placement.0, KEY_ID)
                 .expect("read the vault")
                 .map(|secret| *secret),
-            Some(STALE_SECRET),
+            Some(stale_secret),
             "the stale secret is still recoverable from the vault"
         );
     }
@@ -4999,15 +5217,17 @@ mod tests {
     async fn a_discovery_merge_with_plaintext_on_a_protected_identity_is_refused() {
         use crate::wallet_backend::secret_seam::SecretScheme;
         use platform_wallet_storage::secrets::SecretString;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let id = staged.id.to_buffer();
         // Seal one stored key Tier-2, so the identity is password-protected.
         IdentityKeyView::new(&staged.store, id)
             .store_protected(
                 &PrivateKeyTarget::PrivateKeyOnMainIdentity,
                 1,
-                &[0xAA; 32],
+                &secret_aa,
                 &SecretString::new("identity-password-xx"),
             )
             .expect("seal a stored key Tier-2");
@@ -5031,13 +5251,18 @@ mod tests {
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, plaintext.id()),
             (
                 QualifiedIdentityPublicKey::from(plaintext.clone()),
-                PrivateKeyData::Clear([0x99; 32]),
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             ),
         );
 
         let err = staged
             .ctx
-            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rediscovered,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect_err("a mixed-protection merge must fail closed");
 
         assert!(
@@ -5070,7 +5295,9 @@ mod tests {
     /// identity, listed on every screen, whose private keys are already gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_update_cannot_resurrect_an_identity_the_user_unloaded() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         // The snapshot a task in flight is holding.
         let stale = staged
             .ctx
@@ -5112,7 +5339,9 @@ mod tests {
     /// unload marker withdraws it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_update_still_creates_a_record_for_an_identity_never_unloaded() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let identity = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -5147,7 +5376,9 @@ mod tests {
     /// live, so a refresh must merge them, not replace them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_refresh_keeps_the_keys_of_an_unlisted_identity_never_unloaded() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let stored = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -5164,7 +5395,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut rebuilt,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
         );
 
@@ -5195,7 +5431,9 @@ mod tests {
     /// exactly this question. The guard has to use it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stale_update_cannot_relist_an_identity_whose_purge_did_not_finish() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         // The snapshot an in-flight task is holding across its chain round-trip.
         let stale = staged
             .ctx
@@ -5256,7 +5494,9 @@ mod tests {
     /// attempt is not a resurrection.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_marker_on_a_still_listed_identity_does_not_block_its_ordinary_writes() {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let identity = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
@@ -5296,9 +5536,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_an_identity_clears_its_dashpay_overlays() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         const ADDRESS: &str = "yTb47qEBpNmgXvYYsHEN4nh8yJwa5iC4Cs";
 
-        let staged = stage_identity_with_vaulted_keys([0x11; 32], [0x22; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_11, secret_22).await;
         let backend = staged.ctx.wallet_backend().expect("wallet backend");
         let owner = staged.id;
         let contact = Identifier::from([0x51; 32]);
@@ -5374,8 +5616,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_an_identity_forgets_its_token_list_state() {
         use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+        let secret_33 = crate::test_support::keys::secret_bytes();
+        let secret_44 = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_33, secret_44).await;
         let owner = staged.id;
         let bystander = Identifier::from([0x62; 32]);
         let token = Identifier::from([0x71; 32]);
@@ -5421,7 +5665,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removal_recovery_clears_sidecars_after_delisting_failure() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let secret_33 = crate::test_support::keys::secret_bytes();
+        let secret_44 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_33, secret_44).await;
         let backend = staged.ctx.wallet_backend().unwrap();
         let kv = backend.kv();
         let owner = staged.id;
@@ -5484,7 +5730,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn username_cleanup_failure_is_hidden_and_retried_without_skipping_vault_cleanup() {
         use crate::model::dpns_usernames::{RequestPhase, UsernameRequest};
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let secret_33 = crate::test_support::keys::secret_bytes();
+        let secret_44 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_33, secret_44).await;
         let kv = staged.ctx.det_kv().unwrap();
         let failing = kv.failing_store();
         staged
@@ -5550,7 +5798,9 @@ mod tests {
     /// journal can be read again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_removal_deletes_keys_when_the_vote_journal_is_unreadable() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let secret_33 = crate::test_support::keys::secret_bytes();
+        let secret_44 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_33, secret_44).await;
         let kv = staged.ctx.det_kv().unwrap();
         let failing = kv.failing_store();
         staged
@@ -5610,9 +5860,115 @@ mod tests {
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
+    /// Store one bare identity of `identity_type` whose id repeats `byte`.
+    fn insert_bare_identity(ctx: &AppContext, byte: u8, identity_type: IdentityType) {
+        let mut qi = crate::context::test_support::bare_user_identity(
+            Identifier::from([byte; 32]),
+            ctx.network,
+        );
+        qi.identity_type = identity_type;
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("store the identity");
+    }
+
+    /// A filtered load refreshes the prompt copy of the identities it read and
+    /// keeps every other stored identity's, so a password prompt for one of
+    /// those still shows its name and hint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_filtered_load_keeps_other_identities_prompt_copy() {
+        use crate::model::qualified_identity::identity_meta::IdentityMeta;
+
+        let (ctx, _store, _dir, _events) = staged_context().await;
+        // Insert in reverse ID order so the stored roster is not already sorted.
+        for (byte, identity_type, label, hint) in [
+            (0x72, IdentityType::Masternode, "My masternode", "node hint"),
+            (0x71, IdentityType::User, "alice.dash", "user hint"),
+        ] {
+            let mut qi = crate::context::test_support::bare_user_identity(
+                Identifier::from([byte; 32]),
+                ctx.network,
+            );
+            qi.identity_type = identity_type;
+            if identity_type == IdentityType::User {
+                qi.dpns_names.push(DPNSNameInfo {
+                    name: label.to_string(),
+                    acquired_at: 0,
+                });
+            } else {
+                qi.alias = Some(label.to_string());
+            }
+            ctx.insert_local_qualified_identity(&qi, &None)
+                .expect("store the identity");
+            ctx.wallet_backend()
+                .unwrap()
+                .identity_meta()
+                .set(
+                    ctx.network,
+                    &[byte; 32],
+                    &IdentityMeta {
+                        password_hint: Some(hint.to_string()),
+                    },
+                )
+                .expect("store the password hint");
+        }
+        let prompts = ctx.wallet_backend().unwrap().secret_access();
+
+        ctx.load_local_voting_identities()
+            .expect("masternode-only load");
+        ctx.load_local_user_identities().expect("user-only load");
+        assert!(prompts.identity_prompt_meta(&[0x71; 32]).is_some());
+        let masternode = prompts
+            .identity_prompt_meta(&[0x72; 32])
+            .expect("a user-only load must keep the masternode's prompt copy");
+        assert_eq!(masternode.alias.as_deref(), Some("My masternode"));
+        assert_eq!(masternode.password_hint.as_deref(), Some("node hint"));
+
+        ctx.load_local_voting_identities()
+            .expect("masternode-only load");
+        let user = prompts
+            .identity_prompt_meta(&[0x71; 32])
+            .expect("a masternode-only load must keep the user identity's prompt copy");
+        assert_eq!(user.alias.as_deref(), Some("alice.dash"));
+        assert_eq!(user.password_hint.as_deref(), Some("user hint"));
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity that leaves the roster leaves the prompt index too: at once
+    /// when it is removed, and at the next load when something else delisted it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removed_identity_drops_out_of_the_prompt_index() {
+        let (ctx, _store, _dir, _events) = staged_context().await;
+        for byte in [0x81, 0x82, 0x83] {
+            insert_bare_identity(&ctx, byte, IdentityType::User);
+        }
+        ctx.load_local_user_identities()
+            .expect("list every identity");
+        let prompts = ctx.wallet_backend().unwrap().secret_access();
+
+        ctx.delete_local_qualified_identity(&Identifier::from([0x81; 32]))
+            .expect("remove the identity");
+        assert!(
+            prompts.identity_prompt_meta(&[0x81; 32]).is_none(),
+            "a removed identity must leave the prompt index at once"
+        );
+
+        ctx.remove_local_qualified_identity_from_index_only(&Identifier::from([0x82; 32]))
+            .expect("delist the identity");
+        ctx.load_local_voting_identities()
+            .expect("a load of other identities");
+        assert!(
+            prompts.identity_prompt_meta(&[0x82; 32]).is_none(),
+            "a delisted identity must leave the prompt index at the next load"
+        );
+        assert!(prompts.identity_prompt_meta(&[0x83; 32]).is_some());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removal_recovery_retains_manifest_until_sidecars_succeed() {
-        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let secret_33 = crate::test_support::keys::secret_bytes();
+        let secret_44 = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_33, secret_44).await;
         let kv = staged.ctx.det_kv().unwrap();
         kv.put(DetScope::Global, "det:token_order:v1", &"invalid ordering")
             .unwrap();

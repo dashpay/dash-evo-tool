@@ -12,8 +12,8 @@ use crate::model::dpns_usernames::{
     DPNS_SIGNING_KEY_TYPES, dpns_security_levels, dpns_signing_requirement,
 };
 use crate::model::identity_key_usability::{
-    KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, document_security_levels, now_ms,
-    select_identity_signing_key,
+    KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, bounds_permit,
+    document_security_levels, now_ms, select_identity_signing_key,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
@@ -26,7 +26,6 @@ use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::dashcore::address::Payload;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -37,7 +36,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
-use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel, TimestampMillis};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -436,12 +435,8 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                     "Available key in identity"
                 );
             }
-            ProtocolError::Generic(format!(
-                "Key {} ({}) not found in identity {:?}",
-                identity_public_key.id(),
-                identity_public_key.purpose(),
-                self.identity.id().to_string(Encoding::Base58)
-            ))
+            // Marked so the caller reports a missing key, not a network failure.
+            self.signing_key_unavailable(identity_public_key, &TaskError::IdentityKeyMissing)
         })?;
 
         tracing::debug!("Successfully resolved private key, proceeding to sign");
@@ -452,7 +447,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
                     use dash_sdk::dpp::dashcore::PublicKey;
                     use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
-                    use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+                    use dash_sdk::dpp::dashcore::hashes::{ripemd160, sha256};
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
@@ -600,6 +595,10 @@ const SINGLE_TOKEN_TRANSITION_PURPOSES: [Purpose; 2] = [Purpose::AUTHENTICATION,
 pub enum SigningKeyStatus {
     /// The transition's key choice picks a key.
     Usable,
+    /// The key choice picks none, but a live key this device holds is bound
+    /// to a contract group, which only Platform can match to the contract,
+    /// so the user may choose it.
+    ManualChoiceOnly,
     /// A private key of a purpose, level and key type the transition takes
     /// is filed, but none can sign it now: each is disabled or expired, bound
     /// to another contract, or its private half is not readable on this
@@ -608,6 +607,16 @@ pub enum SigningKeyStatus {
     /// No private key of a purpose, level and key type the transition takes
     /// is filed.
     NoneHeld,
+}
+
+/// The key a token transition's automatic choice picks and the
+/// [`SigningKeyStatus`] that choice gives, from one selection at one instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigningKeySelection<'a> {
+    /// The picked key; `Some` exactly when `status` is
+    /// [`SigningKeyStatus::Usable`].
+    pub key: Option<&'a IdentityPublicKey>,
+    pub status: SigningKeyStatus,
 }
 
 /// The bincode configuration [`QualifiedIdentity::from_bytes`] decodes under.
@@ -644,12 +653,20 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
-    /// Whether a voter identity and a matching signing-key reference are loaded.
-    /// Secret availability is checked by the signer at submission time.
-    pub fn can_cast_masternode_vote(&self) -> bool {
+    /// A loaded voting key that has not been disabled on its voter identity.
+    /// A disabled key stays available for history and key management.
+    pub fn active_masternode_voting_key(&self) -> Option<&IdentityPublicKey> {
         self.associated_voter_identity
             .as_ref()
-            .is_some_and(|(_, key)| self.can_sign_with(key))
+            .map(|(_, key)| key)
+            .filter(|key| !key.is_disabled())
+    }
+
+    /// Whether an enabled voting key and its matching private-key reference are loaded.
+    /// Secret availability is checked by the signer at submission time.
+    pub fn can_cast_masternode_vote(&self) -> bool {
+        self.active_masternode_voting_key()
+            .is_some_and(|key| self.can_sign_with(key))
     }
 
     /// Which masternode/evonode key roles are loaded for this identity.
@@ -1020,7 +1037,7 @@ impl QualifiedIdentity {
         platform_key_data: &[u8],
     ) -> Result<Option<BinaryData>, ProtocolError> {
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+        use dash_sdk::dpp::dashcore::hashes::{ripemd160, sha256};
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
 
         let (Some(secret_access), Some(seed_hash)) =
@@ -1043,12 +1060,14 @@ impl QualifiedIdentity {
                         return Ok(None);
                     };
                     for identity_index in 0..10u32 {
-                        let correct_path = DP::identity_authentication_path(
+                        let Ok(correct_path) = DP::identity_authentication_path(
                             network,
                             KeyDerivationType::ECDSA,
                             identity_index,
                             key_id,
-                        );
+                        ) else {
+                            continue;
+                        };
                         let Ok(extended_key) =
                             correct_path.derive_priv_ecdsa_for_master_seed(seed, network)
                         else {
@@ -1173,6 +1192,21 @@ impl QualifiedIdentity {
             })
     }
 
+    /// The MASTER key to sign an identity update (adding or disabling keys)
+    /// with, picked as [`Self::signing_key_now`] picks, so a disabled or
+    /// expired master, or one whose private half is not here, is passed over.
+    /// Only user identities hold a master key.
+    pub fn identity_update_signing_key(&self) -> Option<&IdentityPublicKey> {
+        if self.identity_type != IdentityType::User {
+            return None;
+        }
+        self.signing_key_now(KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ))
+    }
+
     pub fn can_sign_with_master_key(&self) -> Option<&QualifiedIdentityPublicKey> {
         if self.identity_type != IdentityType::User {
             return None;
@@ -1279,11 +1313,17 @@ impl QualifiedIdentity {
     /// with key limits updates, so the snapshot may be stale. Falls back to
     /// the snapshot when the identity no longer holds the same key.
     pub fn live_public_key<'a>(&'a self, snapshot: &'a IdentityPublicKey) -> &'a IdentityPublicKey {
+        self.current_public_key(snapshot).unwrap_or(snapshot)
+    }
+
+    /// The key as the identity holds it now for `snapshot`, or `None` when
+    /// the identity no longer holds the same key, so nothing it signs can
+    /// authorize a transition.
+    pub fn current_public_key(&self, snapshot: &IdentityPublicKey) -> Option<&IdentityPublicKey> {
         self.identity
             .public_keys()
             .get(&snapshot.id())
             .filter(|live| encrypted_key_storage::same_key(snapshot, live))
-            .unwrap_or(snapshot)
     }
 
     /// The key to sign with for `requirements` now: the automatic choice of
@@ -1295,28 +1335,50 @@ impl QualifiedIdentity {
     /// then key id order, so a budgeted application key is spent only when no
     /// unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
+        self.signing_key_at(requirements, now_ms())
+    }
+
+    /// [`Self::signing_key_now`] at `now` (ms since the epoch).
+    fn signing_key_at(
+        &self,
+        requirements: KeyRequirements<'_>,
+        now: TimestampMillis,
+    ) -> Option<&IdentityPublicKey> {
+        select_identity_signing_key(&self.identity, requirements, now, |key| {
             self.holds_obtainable_key(key)
         })
     }
 
     /// The key to sign a batch of one token transfer or claim on
-    /// `contract_id` with: a CRITICAL AUTHENTICATION key, else a CRITICAL
-    /// TRANSFER key, which DPP also accepts for such a batch (and requires
-    /// CRITICAL for), each picked as [`Self::signing_key_now`] picks.
+    /// `contract_id` with: a CRITICAL AUTHENTICATION or TRANSFER key, which
+    /// DPP accepts for such a batch. Unlimited keys precede limited keys
+    /// across both purposes; within each class AUTHENTICATION comes first.
     pub fn single_token_transition_key(
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> Option<&IdentityPublicKey> {
+        self.single_token_transition_key_at(contract_id, now_ms())
+    }
+
+    /// [`Self::single_token_transition_key`] at `now` (ms since the epoch).
+    fn single_token_transition_key_at(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+        now: TimestampMillis,
+    ) -> Option<&IdentityPublicKey> {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
         let scope = SigningScope::ContractWide { contract_id };
         SINGLE_TOKEN_TRANSITION_PURPOSES
             .into_iter()
-            .find_map(|purpose| {
-                self.signing_key_now(
+            .filter_map(|purpose| {
+                self.signing_key_at(
                     KeyRequirements::new(purpose, &[SecurityLevel::CRITICAL], scope)
                         .with_key_types(PLATFORM_SIGNING_KEY_TYPES),
+                    now,
                 )
             })
+            .min_by_key(|key| (key.has_limits(), key.purpose() != Purpose::AUTHENTICATION))
     }
 
     /// Whether this device can sign a batch of one token transfer or claim on
@@ -1325,17 +1387,39 @@ impl QualifiedIdentity {
     /// [`Self::single_token_transition_key`] picks a key, so an open form can
     /// always sign; when closed, it tells a missing key apart from keys that
     /// cannot sign here, which need different guidance.
+    /// [`SigningKeyStatus::ManualChoiceOnly`] opens it onto the key chooser.
     pub fn single_token_transition_key_status(
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> SigningKeyStatus {
-        if self.single_token_transition_key(contract_id).is_some() {
+        self.single_token_transition_key_selection(contract_id)
+            .status
+    }
+
+    /// [`Self::single_token_transition_key`] together with
+    /// [`Self::single_token_transition_key_status`], from one selection.
+    pub fn single_token_transition_key_selection(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> SigningKeySelection<'_> {
+        let now = now_ms();
+        let scope = SigningScope::ContractWide { contract_id };
+        let key = self.single_token_transition_key_at(contract_id, now);
+        let status = if key.is_some() {
             SigningKeyStatus::Usable
+        } else if SINGLE_TOKEN_TRANSITION_PURPOSES.into_iter().any(|purpose| {
+            self.holds_contract_group_key_for(
+                KeyRequirements::new(purpose, &[SecurityLevel::CRITICAL], scope),
+                now,
+            )
+        }) {
+            SigningKeyStatus::ManualChoiceOnly
         } else if self.holds_single_token_transition_key() {
             SigningKeyStatus::HeldButUnusable
         } else {
             SigningKeyStatus::NoneHeld
-        }
+        };
+        SigningKeySelection { key, status }
     }
 
     /// The requirements of a token action on `contract_id` other than a
@@ -1365,14 +1449,28 @@ impl QualifiedIdentity {
     /// in front of the token action forms. It opens exactly when
     /// [`Self::token_action_key`] picks a key, so an open form can always
     /// sign; when closed, it tells a missing key apart from keys that cannot
-    /// sign here.
+    /// sign here. [`SigningKeyStatus::ManualChoiceOnly`] opens it onto the key
+    /// chooser.
     pub fn token_action_key_status(
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> SigningKeyStatus {
+        self.token_action_key_selection(contract_id).status
+    }
+
+    /// [`Self::token_action_key`] together with
+    /// [`Self::token_action_key_status`], from one selection.
+    pub fn token_action_key_selection(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> SigningKeySelection<'_> {
+        let now = now_ms();
         let requirements = Self::token_action_requirements(contract_id);
-        if self.signing_key_now(requirements).is_some() {
+        let key = self.signing_key_at(requirements, now);
+        let status = if key.is_some() {
             SigningKeyStatus::Usable
+        } else if self.holds_contract_group_key_for(requirements, now) {
+            SigningKeyStatus::ManualChoiceOnly
         } else if self
             .private_keys
             .identity_public_keys()
@@ -1382,7 +1480,27 @@ impl QualifiedIdentity {
             SigningKeyStatus::HeldButUnusable
         } else {
             SigningKeyStatus::NoneHeld
-        }
+        };
+        SigningKeySelection { key, status }
+    }
+
+    /// Whether a key matching `requirements`, live at `now`, whose private
+    /// half this device can obtain, is bound to a contract group: never
+    /// picked automatically, as only Platform can tell whether the group
+    /// covers the contract, but the user may choose it.
+    fn holds_contract_group_key_for(
+        &self,
+        requirements: KeyRequirements<'_>,
+        now: TimestampMillis,
+    ) -> bool {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+        self.identity.public_keys().values().any(|key| {
+            requirements.matches(key)
+                && !key.is_disabled()
+                && !key.is_expired_at(now)
+                && bounds_permit(key.contract_bounds(), requirements.scope).is_none()
+                && self.holds_obtainable_key(key)
+        })
     }
 
     /// Whether a private key of a purpose, level and key type
@@ -1874,7 +1992,10 @@ mod key_placement_tests {
     }
 
     fn clear(bytes: u8) -> PrivateKeyData {
-        PrivateKeyData::Clear([bytes; 32])
+        PrivateKeyData::Clear(crate::test_support::keys::labelled_secret(
+            "qualified_identity::clear",
+            bytes.into(),
+        ))
     }
 
     /// T1 — the defect. A `VOTING` key on the main identity, its private half
@@ -1931,7 +2052,7 @@ mod key_placement_tests {
         );
     }
 
-    /// `disabled_at` is the one field Platform lets move after a key is added.
+    /// `disabled_at` is the one field Platform lets move on a V0 key.
     /// The stored copy is a snapshot from when the private half was saved, so a
     /// key disabled on chain since then must still match — disabling a key does
     /// not remove its private half from this device.
@@ -2199,7 +2320,7 @@ mod key_placement_tests {
 
     /// A key disabled on chain since its private half was saved is still the
     /// same key, so its placement is still answerable — `disabled_at` is the
-    /// one field Platform lets move.
+    /// one field Platform lets move on a V0 key.
     #[test]
     fn a_key_disabled_since_it_was_saved_still_has_a_placement() {
         let saved = key(2, Purpose::AUTHENTICATION, 0xAA);
@@ -2301,6 +2422,8 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn bls_signing_preserves_the_previous_sdk_basic_signature_bytes() {
         // Generated with the previous pin's blsful Basic signer using this synthetic key.
+        // The key is fixed because the expected signature below depends on it:
+        // a golden vector, exempt from runtime key generation.
         let secret = [0x11; 32];
         let public = bls::SecretKey::from_be_bytes(&secret).unwrap().public_key();
         let key = identity_public_key(
@@ -2331,7 +2454,7 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn a_held_voting_key_on_the_main_identity_is_signable_under_either_placement() {
         let key = voting_key(3);
-        let secret = [0x11; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         for filed_under in [MAIN, VOTER] {
             let identity = masternode_with(
@@ -2358,6 +2481,52 @@ mod key_resolution_tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_held_v1_key_resolves_after_refresh_raises_its_budget() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let secret = crate::test_support::keys::secret_bytes();
+        let private_key =
+            dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(&secret, Network::Testnet)
+                .expect("valid private key");
+        let saved = identity_public_key(
+            3,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            private_key.public_key().to_bytes(),
+        )
+        .with_limits(Some(1_000), None);
+        let mut stored = masternode_with(&saved, &[(MAIN, PrivateKeyData::Clear(secret))]);
+        let held = stored.private_keys.entry_at(&(MAIN, saved.id())).cloned();
+        let mut fetched = stored.identity.clone();
+        fetched.add_public_key(saved.clone().with_limits(Some(5_000), None));
+
+        // refresh_identity replaces only the published identity, retaining the private-key snapshot.
+        stored.identity = crate::wallet_backend::fold_fetched_identity(
+            &stored.identity,
+            &fetched,
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 10,
+                ..Default::default()
+            },
+        );
+
+        let refreshed = stored.identity.get_public_key_by_id(saved.id()).unwrap();
+        assert_eq!(refreshed.total_budget(), Some(5_000));
+        assert_eq!(
+            stored.private_keys.entry_at(&(MAIN, saved.id())),
+            held.as_ref()
+        );
+        let (snapshot, resolved) = stored
+            .resolve_private_key_bytes(refreshed)
+            .await
+            .expect("resolution succeeds after refresh")
+            .expect("the held private key is still found");
+        assert_eq!(snapshot.identity_public_key.total_budget(), Some(1_000));
+        assert_eq!(*resolved, secret);
+    }
+
     /// T5 — the fallthrough rule. A vault placeholder whose secret is gone can
     /// sit beside a live entry for the same key under another store. A resolver
     /// that stopped at the first *matching* placement would report the key
@@ -2366,7 +2535,7 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn a_dead_vault_placeholder_falls_through_to_a_live_placement() {
         let key = voting_key(0);
-        let secret = [0x77; 32];
+        let secret = crate::test_support::keys::secret_bytes();
         // Main is probed first and holds an InVault placeholder with no
         // chokepoint wired, so it cannot produce bytes.
         let identity = masternode_with(
@@ -2435,7 +2604,7 @@ mod key_resolution_tests {
                 .put_secret_protected(
                     &SecretWalletId::from(identity_id),
                     &SecretScope::identity_key_label(&target, key.id()),
-                    &SecretBytes::from_slice(&[0x99; 32]),
+                    &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                     &SecretString::new("the-object-password"),
                 )
                 .expect("seal the identity key");
@@ -2498,7 +2667,7 @@ mod key_resolution_tests {
             .put_secret_protected(
                 &SecretWalletId::from(identity_id),
                 &SecretScope::identity_key_label(&VOTER, key.id()),
-                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                 &SecretString::new("the-object-password"),
             )
             .expect("seal the identity key");
@@ -2547,7 +2716,7 @@ mod key_resolution_tests {
         let key = voting_key(0);
         // The id `masternode_with` builds its identity under.
         let identity_id = [1u8; 32];
-        let secret = [0x55; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
@@ -2558,7 +2727,7 @@ mod key_resolution_tests {
             .put_secret_protected(
                 &SecretWalletId::from(identity_id),
                 &SecretScope::identity_key_label(&MAIN, key.id()),
-                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                 &SecretString::new("the-object-password"),
             )
             .expect("seal the identity key");
@@ -4000,6 +4169,38 @@ mod protocol_v14_compat_tests {
         assert!(!qi.holds_single_token_transition_key());
     }
 
+    #[test]
+    fn single_token_transition_prefers_unlimited_keys_across_purposes() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        for (auth_limited, transfer_limited, expected) in [
+            (true, false, 2),
+            (false, true, 1),
+            (false, false, 1),
+            (true, true, 1),
+        ] {
+            let mut auth = auth_key(1, SecurityLevel::CRITICAL);
+            let mut transfer = auth_key(2, SecurityLevel::CRITICAL);
+            transfer.set_purpose(Purpose::TRANSFER);
+            if auth_limited {
+                auth = auth.with_limits(Some(1_000), None);
+            }
+            if transfer_limited {
+                transfer = transfer.with_limits(Some(1_000), None);
+            }
+            let identity = identity_holding(&[auth, transfer]);
+            assert_eq!(
+                identity
+                    .single_token_transition_key(contract_id)
+                    .map(|key| key.id()),
+                Some(expected),
+                "unlimited keys precede limited keys across both purposes"
+            );
+        }
+    }
+
     /// Regression: the single token transition key took any key type, so a
     /// CRITICAL EdDSA authentication key, which Platform refuses, shadowed a
     /// usable CRITICAL TRANSFER key, and the gate counted it as usable.
@@ -4162,6 +4363,123 @@ mod protocol_v14_compat_tests {
                 SigningKeyStatus::NoneHeld,
                 "{case}: a token action signs only with an authentication key"
             );
+        }
+    }
+
+    /// Regression: an identity update signed with the first filed MASTER key,
+    /// so after a master rotation the disabled predecessor shadowed its
+    /// usable replacement and Platform refused the update.
+    #[test]
+    fn an_identity_update_signs_with_the_live_master_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let mut predecessor = auth_key(0, SecurityLevel::MASTER);
+        predecessor.set_disabled_at(1);
+        let qi = identity_holding(&[predecessor, auth_key(1, SecurityLevel::MASTER)]);
+        assert_eq!(
+            qi.identity_update_signing_key().map(|key| key.id()),
+            Some(1)
+        );
+
+        let mut node = qi.clone();
+        node.identity_type = IdentityType::Masternode;
+        assert!(node.identity_update_signing_key().is_none());
+    }
+
+    /// Regression: a key bound to a contract group, which only Platform can
+    /// match to the token's contract, is never picked automatically, and the
+    /// token gates then closed before the Advanced chooser that offers it.
+    /// Such a key leaves the choice to the user; an expired one does not.
+    #[test]
+    fn a_contract_group_key_leaves_the_token_key_to_the_user() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let group = |key| {
+            bound_to(
+                key,
+                ContractBounds::ContractGroup {
+                    id: Identifier::new([0x6A; 32]),
+                },
+            )
+        };
+        let auth = group(auth_key(1, SecurityLevel::CRITICAL));
+        let mut transfer = auth.clone();
+        transfer.set_purpose(Purpose::TRANSFER);
+
+        let qi = identity_holding(std::slice::from_ref(&auth));
+        assert!(qi.token_action_key(contract_id).is_none());
+        assert_eq!(
+            qi.token_action_key_status(contract_id),
+            SigningKeyStatus::ManualChoiceOnly
+        );
+        for (case, key) in [("authentication", auth), ("transfer", transfer)] {
+            let qi = identity_holding(std::slice::from_ref(&key));
+            assert!(qi.single_token_transition_key(contract_id).is_none());
+            assert_eq!(
+                qi.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::ManualChoiceOnly,
+                "{case}"
+            );
+            let expired = identity_holding(&[key.with_limits(None, Some(1))]);
+            assert_eq!(
+                expired.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}, expired"
+            );
+        }
+    }
+
+    /// A token form reads its gate status and its automatic key from one
+    /// selection: the status is `Usable` exactly when a key is picked, and
+    /// the key is the one the separate lookup picks.
+    #[test]
+    fn a_token_key_selection_agrees_with_its_status() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let critical = |id| auth_key(id, SecurityLevel::CRITICAL);
+        for (case, qi, expected) in [
+            (
+                "usable",
+                identity_holding(&[critical(1)]),
+                SigningKeyStatus::Usable,
+            ),
+            (
+                "group only",
+                identity_holding(&[bound_to(
+                    critical(1),
+                    ContractBounds::ContractGroup {
+                        id: Identifier::new([0x6A; 32]),
+                    },
+                )]),
+                SigningKeyStatus::ManualChoiceOnly,
+            ),
+            (
+                "expired",
+                identity_holding(&[critical(1).with_limits(None, Some(1))]),
+                SigningKeyStatus::HeldButUnusable,
+            ),
+            (
+                "none",
+                identity_holding(&[auth_key(1, SecurityLevel::HIGH)]),
+                SigningKeyStatus::NoneHeld,
+            ),
+        ] {
+            let action = qi.token_action_key_selection(contract_id);
+            assert_eq!(action.status, expected, "{case}");
+            assert_eq!(action.key, qi.token_action_key(contract_id), "{case}");
+            assert_eq!(action.key.is_some(), expected == SigningKeyStatus::Usable);
+
+            let single = qi.single_token_transition_key_selection(contract_id);
+            assert_eq!(single.status, expected, "{case}");
+            assert_eq!(
+                single.key,
+                qi.single_token_transition_key(contract_id),
+                "{case}"
+            );
+            assert_eq!(single.key.is_some(), expected == SigningKeyStatus::Usable);
         }
     }
 

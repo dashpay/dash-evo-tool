@@ -1,6 +1,6 @@
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey};
-use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
+use dash_sdk::dpp::dashcore::hashes::hmac::HmacEngine;
 use dash_sdk::dpp::dashcore::hashes::sha512;
 /// DIP-14 compliant 256-bit HD key derivation implementation
 ///
@@ -27,7 +27,7 @@ pub fn ckd_priv_256(
     let is_compatibility_mode = is_index_less_than_2_32(index);
 
     // Prepare HMAC data based on the derivation type
-    let mut hmac_engine = HmacEngine::<sha512::Hash>::new(&parent_key.chain_code.to_bytes());
+    let mut hmac_engine = HmacEngine::<sha512::HashEngine>::new(&parent_key.chain_code.to_bytes());
 
     if hardened {
         // Hardened derivation: 0x00 || ser_256(k_par) || ser(i)
@@ -55,7 +55,7 @@ pub fn ckd_priv_256(
         }
     }
 
-    let hmac_result = Hmac::<sha512::Hash>::from_engine(hmac_engine);
+    let hmac_result = hmac_engine.finalize();
     let hmac_bytes = Zeroizing::new(hmac_result.to_byte_array());
 
     // Split into I_L (first 32 bytes) and I_R (last 32 bytes)
@@ -153,7 +153,6 @@ fn index_to_child_number(
     // For compatibility with existing ChildNumber structure,
     // we need to ensure the value fits in 31 bits for normal, or set the hardened bit
     // We'll use a hash of the full 256-bit index to get a deterministic 31-bit value
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::hashes::sha256;
 
     let hash = sha256::Hash::hash(index);
@@ -219,7 +218,7 @@ mod tests {
     #[test]
     fn test_dip14_derivation_compatibility() {
         // Test that derivation with index < 2^32 matches standard BIP32
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         let master = ExtendedPrivKey::new_master(network, &seed).unwrap();
@@ -235,7 +234,6 @@ mod tests {
     #[test]
     fn test_dip14_test_vector_1() {
         // Test Vector 1 from DIP-14
-        // Mnemonic: birth kingdom trash renew flavor utility donkey gasp regular alert pave layer
         let seed_hex = "b16d3782e714da7c55a397d5f19104cfed7ffa8036ac514509bbb50807f8ac598eeb26f0797bd8cc221a6cbff2168d90a5e9ee025a5bd977977b9eccd97894bb";
         let seed = hex::decode(seed_hex).unwrap();
         let network = Network::Testnet;
@@ -260,15 +258,27 @@ mod tests {
         index2_array.copy_from_slice(&index2);
         let level2 = ckd_priv_256(&level1, &index2_array, true).unwrap();
 
-        // The test passes if we can derive without errors
-        // Full validation would require checking against expected key values
-        assert_eq!(level2.depth, 2);
+        // Third level (non-hardened), then index 0 (non-hardened).
+        let index3: [u8; 32] =
+            hex::decode("4c4592ca670c983fc43397dfd21a6f427fac9b4ac53cb4dcdc6522ec51e81e79")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let level3 = ckd_priv_256(&level2, &index3, false).unwrap();
+        let level4 = ckd_priv_256(&level3, &[0u8; 32], false).unwrap();
+
+        // The private key DIP-14 publishes for this vector.
+        assert_eq!(level4.depth, 4);
+        assert_eq!(
+            hex::encode(*level4.private_key.to_bytes()),
+            "e8781fdef72862968cd9a4d2df34edaf9dcc5b17629ec505f0d2d1a8ed6f9f09"
+        );
     }
 
     #[test]
     fn test_dashpay_identity_derivation() {
         // Test DashPay contact relationship derivation
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         // Create two test identity IDs

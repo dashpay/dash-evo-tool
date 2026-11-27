@@ -1,8 +1,10 @@
+use super::amount::Amount;
 use super::validation::{TextLengthError, validate_char_count};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v1::TokenDistributionRulesV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v1::TokenDistributionRulesV1;
@@ -12,6 +14,19 @@ use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_dist
 };
 use dash_sdk::dpp::platform_value::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+/// The entered amount in base units, when it is greater than zero.
+pub fn positive_amount(amount: &Option<Amount>) -> Option<u64> {
+    amount
+        .as_ref()
+        .map(Amount::value)
+        .filter(|value| *value > 0)
+}
+
+/// The identity ID typed into a field (Base58 or hex), when it is valid.
+pub fn parse_identity_id(input: &str) -> Option<Identifier> {
+    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex]).ok()
+}
 
 /// Minimum number of characters in a searchable contract keyword.
 pub const MIN_CONTRACT_KEYWORD_CHARS: usize = 3;
@@ -115,6 +130,96 @@ pub(crate) fn token_change_item_is_supported(
     )
 }
 
+/// Why token actions wait for the identity's wallet, and what to do about it.
+pub const TOKEN_ACTIONS_WAIT_FOR_WALLET: &str = "The wallet that holds this identity is not \
+     open yet, so it cannot send token transactions. Unlock the wallet or wait for it to load, \
+     then try again.";
+
+/// What a settings update Platform accepted did to the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigUpdateOutcome {
+    /// The new setting is in effect.
+    Applied,
+    /// A group action that stays open: the setting changes once the group
+    /// closes it, so the token's stored settings are still current.
+    ProposalRecorded,
+}
+
+/// Whether an identity can send token transactions from this app. Those of
+/// a wallet-held identity go through its wallet, which must be loaded; an
+/// identity no wallet holds signs them with its own keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenActionAvailability {
+    Available,
+    /// The identity's wallet is known but not loaded (for example, locked).
+    WalletNotOpen,
+}
+
+impl TokenActionAvailability {
+    /// Availability for an identity whose wallet link is `linked_wallet_open`:
+    /// `None` when no wallet holds it, otherwise whether that wallet is loaded.
+    pub fn from_wallet_link(linked_wallet_open: Option<bool>) -> Self {
+        match linked_wallet_open {
+            None | Some(true) => Self::Available,
+            Some(false) => Self::WalletNotOpen,
+        }
+    }
+
+    pub fn is_available(self) -> bool {
+        self == Self::Available
+    }
+
+    /// The explanation shown next to disabled token actions.
+    pub fn unavailable_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Available => None,
+            Self::WalletNotOpen => Some(TOKEN_ACTIONS_WAIT_FOR_WALLET),
+        }
+    }
+}
+
+/// Who receives newly minted tokens under a token's distribution rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MintRecipient {
+    /// The identity the minter chose; the rules allow choosing.
+    Chosen(Identifier),
+    /// The token's configured destination for new tokens.
+    ContractDestination(Identifier),
+    /// No identity was chosen (or choosing is not allowed) and the token
+    /// configures no destination, so Platform refuses the mint.
+    Missing,
+}
+
+impl MintRecipient {
+    /// The recipient of a mint under `rules` when the minter chose `chosen`.
+    /// A choice the rules do not allow is ignored, as Platform ignores it.
+    pub fn resolve(rules: &TokenDistributionRules, chosen: Option<Identifier>) -> Self {
+        let chosen = chosen.filter(|_| rules.minting_allow_choosing_destination());
+        match (chosen, rules.new_tokens_destination_identity()) {
+            (Some(id), _) => Self::Chosen(id),
+            (None, Some(destination)) => Self::ContractDestination(*destination),
+            (None, None) => Self::Missing,
+        }
+    }
+
+    /// The recipient a mint transition carries: only a chosen one, since
+    /// Platform applies the token's destination itself.
+    pub fn transition_recipient(self) -> Option<Identifier> {
+        match self {
+            Self::Chosen(id) => Some(id),
+            Self::ContractDestination(_) | Self::Missing => None,
+        }
+    }
+
+    /// The identity that receives the tokens, when there is one.
+    pub fn identity(self) -> Option<Identifier> {
+        match self {
+            Self::Chosen(id) | Self::ContractDestination(id) => Some(id),
+            Self::Missing => None,
+        }
+    }
+}
+
 /// Why a value typed into the token configuration editor is not acceptable.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TokenConfigInputError {
@@ -167,6 +272,85 @@ pub fn parse_new_tokens_destination_input(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mint_recipient_follows_the_tokens_destination_rules() {
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+        let chosen = Identifier::new([1; 32]);
+        let destination = Identifier::new([2; 32]);
+        let rules = |allow_choosing: bool, destination: Option<Identifier>| {
+            let mut rules = dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0::default_most_restrictive()
+                .distribution_rules;
+            rules.set_minting_allow_choosing_destination(allow_choosing);
+            rules.set_new_tokens_destination_identity(destination);
+            rules
+        };
+
+        for (allow, dest, pick, expected) in [
+            (true, None, Some(chosen), MintRecipient::Chosen(chosen)),
+            (
+                true,
+                Some(destination),
+                Some(chosen),
+                MintRecipient::Chosen(chosen),
+            ),
+            (
+                true,
+                Some(destination),
+                None,
+                MintRecipient::ContractDestination(destination),
+            ),
+            (true, None, None, MintRecipient::Missing),
+            (
+                false,
+                Some(destination),
+                Some(chosen),
+                MintRecipient::ContractDestination(destination),
+            ),
+            (false, None, Some(chosen), MintRecipient::Missing),
+        ] {
+            assert_eq!(
+                MintRecipient::resolve(&rules(allow, dest), pick),
+                expected,
+                "allow={allow} destination={dest:?} chosen={pick:?}"
+            );
+        }
+
+        assert_eq!(
+            MintRecipient::Chosen(chosen).transition_recipient(),
+            Some(chosen)
+        );
+        assert_eq!(
+            MintRecipient::ContractDestination(destination).transition_recipient(),
+            None,
+            "the transition leaves the destination to Platform"
+        );
+        assert_eq!(
+            MintRecipient::ContractDestination(destination).identity(),
+            Some(destination)
+        );
+        assert_eq!(MintRecipient::Missing.identity(), None);
+    }
+
+    #[test]
+    fn token_actions_wait_only_for_a_linked_wallet_to_open() {
+        use TokenActionAvailability::*;
+        assert_eq!(TokenActionAvailability::from_wallet_link(None), Available);
+        assert_eq!(
+            TokenActionAvailability::from_wallet_link(Some(false)),
+            WalletNotOpen
+        );
+        assert_eq!(
+            TokenActionAvailability::from_wallet_link(Some(true)),
+            Available
+        );
+
+        assert!(Available.is_available());
+        assert_eq!(Available.unavailable_reason(), None);
+        assert!(!WalletNotOpen.is_available());
+        let reason = WalletNotOpen.unavailable_reason().expect("a reason");
+        assert!(reason.ends_with("then try again."), "{reason}");
+    }
     use super::*;
 
     #[test]

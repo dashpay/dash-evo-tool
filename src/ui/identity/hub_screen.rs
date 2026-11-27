@@ -571,7 +571,10 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::DashPayProfileUpdated(_)
             | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
             | BackendTaskSuccessResult::DashPayContactRequests { .. }
-            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
+            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
+            // An identity removed from another screen may be the one the hub
+            // shows, in view or not.
+            | BackendTaskSuccessResult::RemovedIdentities { .. } => true,
             BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
             _ => false,
         };
@@ -649,7 +652,7 @@ impl ScreenLike for IdentityHubScreen {
         // computation AND the Picker arm (the Onboarding surface needs no list).
         // TODO(IDH-003 follow-up): also fold `landing()`'s load and the
         // breadcrumb switcher's per-frame loads into a single shared snapshot.
-        let frame_identities = if matches!(landing, HubLanding::Onboarding) {
+        let mut frame_identities = if matches!(landing, HubLanding::Onboarding) {
             Vec::new()
         } else {
             // FR-6: User identities only — the picker grid never lists MN/Evonode.
@@ -670,6 +673,17 @@ impl ScreenLike for IdentityHubScreen {
                     .unwrap_or_default(),
             }
         };
+        // A signing wallet inferred from a key is not a persisted wallet membership.
+        // Keep the explicitly selected public record visible in that case.
+        if let Some(id) = self.app_context.selected_identity_id()
+            && !frame_identities
+                .iter()
+                .any(|identity| identity.identity.id() == id)
+            && let Ok(Some(identity)) = self.app_context.get_local_qualified_identity(&id)
+            && identity.identity_type == crate::model::qualified_identity::IdentityType::User
+        {
+            frame_identities.push(identity);
+        }
         for identity in &frame_identities {
             self.profile_cache.seed_cached(&self.app_context, identity);
         }
@@ -1040,7 +1054,8 @@ impl ScreenLike for IdentityHubScreen {
                     );
                 }
             }
-            // AppState delivers removals even while this root is hidden and owns the banner.
+            // Reaches this root as its own result or as an observer of another
+            // screen's removal; the banner is the identity feedback's.
             BackendTaskSuccessResult::RemovedIdentities {
                 network,
                 identity_ids,
@@ -1561,7 +1576,7 @@ mod tests {
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
 
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
@@ -1620,7 +1635,7 @@ mod tests {
         let owner = seed_user_identity(&context, 0x5B);
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
@@ -1677,7 +1692,7 @@ mod tests {
         let owner = seed_user_identity(&context, 0x60);
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, usize, usize)| {
@@ -1710,7 +1725,7 @@ mod tests {
         let owner = seed_user_identity(&context, 0x5F);
         context.set_selected_identity(Some(owner));
         context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<&'static str>)| {
@@ -1894,7 +1909,7 @@ mod tests {
 
         let mut hub = IdentityHubScreen::new(&context);
         hub.select_tab(IdentityHubTab::Settings);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
@@ -1922,7 +1937,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authoritative_profile_refresh_rebases_seeded_settings_before_save() {
         use crate::model::dashpay::ProfileSnapshot;
-        use egui_kittest::{Harness, kittest::Queryable};
+        use egui_kittest::kittest::Queryable;
         let (_dir, context) = wired_test_context().await;
         let identity = seed_cached_profile(&context).await;
         let owner = identity.identity.id();
@@ -1935,7 +1950,7 @@ mod tests {
                 else {
                     panic!("load dispatch")
                 };
-                let mut editor = Harness::builder()
+                let mut editor = crate::test_support::harness_builder_with_app_fonts()
                     .with_size(egui::vec2(1100.0, 1100.0))
                     .build_ui_state(
                         |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
@@ -2099,21 +2114,22 @@ mod tests {
     }
 
     async fn seed_cached_profile(context: &Arc<AppContext>) -> QualifiedIdentity {
+        let seed_42 = crate::test_support::keys::seed();
         let id = seed_user_identity(context, 42);
         let identity = context.load_local_user_identities().unwrap().remove(0);
         let backend = context.wallet_backend().unwrap();
         let wallet =
-            crate::model::wallet::Wallet::new_from_seed([42; 64], Network::Testnet, None, None)
+            crate::model::wallet::Wallet::new_from_seed(seed_42, Network::Testnet, None, None)
                 .unwrap();
         let (hash, _) = context
             .register_wallet(
                 wallet,
-                &[42; 64],
+                &seed_42,
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .unwrap();
         backend
-            .register_wallet_from_seed(&hash, &[42; 64], None)
+            .register_wallet_from_seed(&hash, &seed_42, None)
             .await
             .unwrap();
         backend
@@ -2131,6 +2147,7 @@ mod tests {
                         public_message: None,
                         avatar_hash: None,
                         avatar_fingerprint: None,
+                        ..Default::default()
                     },
                 ),
             )
@@ -2144,7 +2161,7 @@ mod tests {
         let (_dir, context) = wired_test_context().await;
         let identity = seed_cached_profile(&context).await;
         let id = identity.identity.id();
-        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+        let mut harness = crate::test_support::harness_builder_with_app_fonts().build_ui_state(
             |ui, screen: &mut IdentityHubScreen| {
                 screen.ui(ui);
             },
@@ -3258,5 +3275,64 @@ mod tests {
                 contact_id: id(4),
             })
         );
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_hub_keeps_a_selected_unlinked_identity_with_a_bound_wallet_key() {
+        use crate::context::test_support::identity_with_bound_wallet_key;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+
+        let (_dir, ctx) = wired_test_context().await;
+        ctx.connection_status().set_masternodes_ready(true);
+        let (identity, wallet) = identity_with_bound_wallet_key(ContractBounds::SingleContract {
+            id: ctx.dashpay_contract().id(),
+        });
+        let id = identity.identity.id();
+        let seed_hash = wallet.read().unwrap().seed_hash();
+        ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("walletless record");
+        assert!(ctx.stored_identity_wallet_link(&id).unwrap().is_none());
+        assert!(
+            ctx.load_local_qualified_identities_for_wallet(&seed_hash)
+                .unwrap()
+                .is_empty()
+        );
+
+        ctx.set_selected_identity(Some(id));
+        assert_eq!(ctx.selected_identity_id(), Some(id));
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, state: &mut (IdentityHubScreen, Vec<Identifier>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::DashPayTask(task),
+                        ..
+                    } = state.0.ui(ui)
+                        && let DashPayTask::LoadProfile { identity } = *task
+                    {
+                        state.1.push(identity.identity.id());
+                    }
+                },
+                (IdentityHubScreen::new(&ctx), Vec::new()),
+            );
+        harness.run_steps(4);
+        assert!(
+            harness.state().1.contains(&id),
+            "Home requests the selected identity's profile"
+        );
+
+        ctx.set_selected_hd_wallet(Some(seed_hash));
+        assert_eq!(
+            ctx.selected_identity_id(),
+            None,
+            "an explicit wallet filter still reconciles"
+        );
+        assert!(
+            ctx.load_local_qualified_identities_for_wallet(&seed_hash)
+                .unwrap()
+                .is_empty()
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

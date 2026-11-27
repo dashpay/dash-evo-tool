@@ -216,7 +216,7 @@ async fn test_mn016_load_with_payout_key() {
         .await
         .expect("masternode load with payout key should succeed");
 
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } = result else {
         panic!("Expected LoadedIdentity, got: {result:?}");
     };
     assert!(
@@ -254,7 +254,7 @@ async fn test_mn017_load_with_owner_key() {
         .await
         .expect("masternode load with owner key should succeed");
 
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } = result else {
         panic!("Expected LoadedIdentity, got: {result:?}");
     };
     assert!(
@@ -284,7 +284,7 @@ async fn test_mn018_load_with_both_keys() {
         .await
         .expect("masternode load with both keys should succeed");
 
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } = result else {
         panic!("Expected LoadedIdentity, got: {result:?}");
     };
     assert!(
@@ -307,6 +307,7 @@ async fn test_mn018_load_with_both_keys() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn020_load_wrong_key_rejected() {
+    let secret_11 = dash_evo_tool::test_support::keys::secret_bytes();
     let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
     let ctx = ctx().await;
 
@@ -314,7 +315,7 @@ async fn test_mn020_load_wrong_key_rejected() {
     // Capture the actual WIF value BEFORE moving it into the task so we can
     // check for key-material leakage in TC-MN-061 below.
     let wrong_key_wif = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
-        &[0x11u8; 32],
+        &secret_11,
         dash_sdk::dpp::dashcore::Network::Testnet,
     )
     .expect("valid private key")
@@ -411,9 +412,10 @@ async fn test_mn050_owner_withdraw_to_payout() {
         None,
         None,
     );
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = run_task(&ctx.app_context, load)
-        .await
-        .expect("load should succeed")
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } =
+        run_task(&ctx.app_context, load)
+            .await
+            .expect("load should succeed")
     else {
         panic!("Expected LoadedIdentity");
     };
@@ -481,9 +483,10 @@ async fn test_mn051_transfer_withdraw_to_address() {
         Some(payout_wif),
         None,
     );
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = run_task(&ctx.app_context, load)
-        .await
-        .expect("load should succeed")
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } =
+        run_task(&ctx.app_context, load)
+            .await
+            .expect("load should succeed")
     else {
         panic!("Expected LoadedIdentity");
     };
@@ -553,9 +556,10 @@ async fn test_mn054_owner_mode_key_not_loaded() {
         Some(payout_wif),
         None,
     );
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = run_task(&ctx.app_context, load)
-        .await
-        .expect("load should succeed")
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } =
+        run_task(&ctx.app_context, load)
+            .await
+            .expect("load should succeed")
     else {
         panic!("Expected LoadedIdentity");
     };
@@ -620,9 +624,10 @@ async fn test_mn019_load_with_voting_key() {
         Some(payout_wif),
         Some(voting_wif),
     );
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = run_task(&ctx.app_context, task)
-        .await
-        .expect("load with voting key should succeed")
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } =
+        run_task(&ctx.app_context, task)
+            .await
+            .expect("load with voting key should succeed")
     else {
         panic!("Expected LoadedIdentity");
     };
@@ -653,9 +658,10 @@ async fn test_mn023_reload_idempotent() {
         Some(payout_wif.clone()),
         None,
     );
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = run_task(&ctx.app_context, first)
-        .await
-        .expect("first load should succeed")
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } =
+        run_task(&ctx.app_context, first)
+            .await
+            .expect("first load should succeed")
     else {
         panic!("Expected LoadedIdentity");
     };
@@ -705,9 +711,10 @@ async fn test_mn052_owner_mode_supplied_address_no_broadcast() {
         None,
         None,
     );
-    let BackendTaskSuccessResult::LoadedIdentity(qi) = run_task(&ctx.app_context, load)
-        .await
-        .expect("load should succeed")
+    let BackendTaskSuccessResult::LoadedIdentity { identity: qi, .. } =
+        run_task(&ctx.app_context, load)
+            .await
+            .expect("load should succeed")
     else {
         panic!("Expected LoadedIdentity");
     };
@@ -747,7 +754,9 @@ async fn test_mn053_compose_through_db() {
         Some(payout_wif),
         None,
     );
-    let BackendTaskSuccessResult::LoadedIdentity(loaded) = run_task(&ctx.app_context, load)
+    let BackendTaskSuccessResult::LoadedIdentity {
+        identity: loaded, ..
+    } = run_task(&ctx.app_context, load)
         .await
         .expect("load should succeed")
     else {

@@ -1,6 +1,7 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::BackendTask;
+use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
@@ -8,7 +9,9 @@ use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
-use dash_evo_tool::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
+use dash_evo_tool::ui::wallets::send_screen::{
+    PlatformFeeStrategy, SourceSelection, WalletSendScreen,
+};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
@@ -126,7 +129,7 @@ fn assert_route(
 
         assert!(
             harness.query_by_label(button_label).is_some(),
-            "expected send button label {button_label:?}"
+            "the send button always reads {button_label:?}"
         );
         harness.state_mut().validate_and_send_for_test()
     })
@@ -160,17 +163,28 @@ fn assert_validation_error(
     });
 }
 
+/// The display snapshot never vetoes a Core send: an empty snapshot still
+/// reaches the backend, whose pooled build refuses a real shortfall.
 #[test]
 fn routes_core_wallet_to_core_address() {
-    let error = assert_route(
+    let destination = core_address();
+    let action = assert_route(
         SourceSelection::CoreWallet,
-        ValidatedAddress::Core(core_address()),
-        "Send DASH",
+        ValidatedAddress::Core(destination.clone()),
+        "Send",
         None,
-    )
-    .expect_err("offline Core wallet has no spendable snapshot balance");
-    assert!(error.starts_with("Insufficient balance. Need "), "{error}");
-    assert!(!error.contains("including fee"), "{error}");
+    );
+    let Ok(AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
+        request,
+        ..
+    }))) = action
+    else {
+        panic!("a Core-to-Core send must reach the backend: {action:?}");
+    };
+    assert_eq!(request.recipients.len(), 1);
+    assert_eq!(request.recipients[0].address, destination.to_string());
+    assert_eq!(request.recipients[0].amount_duffs, 100_000_000);
+    assert_eq!(request.override_fee, None);
 }
 
 #[test]
@@ -182,7 +196,7 @@ fn routes_core_wallet_to_platform_address() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Fund Platform Address",
+        "Send",
         Some(0),
     )
     .expect_err("offline Core wallet has no spendable snapshot balance");
@@ -205,7 +219,7 @@ fn routes_platform_addresses_to_platform_address() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Transfer Credits",
+        "Send",
         None,
     )
     .expect("Platform transfer task");
@@ -227,7 +241,7 @@ fn routes_platform_addresses_to_core_address() {
     let action = assert_route(
         SourceSelection::PlatformAddresses(source),
         ValidatedAddress::Core(destination),
-        "Withdraw to Wallet",
+        "Send",
         None,
     )
     .expect("Platform withdrawal task");
@@ -251,7 +265,7 @@ fn routes_shielded_pool_to_shielded_address() {
     let action = assert_route(
         SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS),
         ValidatedAddress::Shielded(destination),
-        "Private Send",
+        "Send",
         None,
     )
     .expect("shielded transfer task");
@@ -278,7 +292,7 @@ fn routes_shielded_pool_to_platform_address() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Unshield Credits",
+        "Send",
         None,
     )
     .expect("unshield task");
@@ -393,11 +407,7 @@ fn press_send_expecting_confirmation(
         harness.state().has_send_confirmation_for_test(),
         "Send opens the confirmation"
     );
-    assert!(
-        harness
-            .query_by_label_contains("Confirm this send.")
-            .is_some()
-    );
+    assert!(harness.query_by_label_contains("Send 1 DASH?").is_some());
     assert!(
         harness.query_by_label("Sending...").is_none(),
         "nothing is sent before the confirmation"
@@ -430,7 +440,12 @@ fn assert_cancel_leaves_send_usable(destination: ValidatedAddress, button_label:
 
         // Send is usable again, and a confirmed send is in flight.
         press_send_expecting_confirmation(&mut harness, button_label);
-        harness.get_by_label("Confirm and Send").click();
+        // The dialog's Send renders after the form's own Send.
+        harness
+            .get_all_by_label("Send")
+            .last()
+            .expect("the confirmation's Send")
+            .click();
         harness.run();
         assert!(harness.query_by_label("Sending...").is_some());
     });
@@ -438,10 +453,7 @@ fn assert_cancel_leaves_send_usable(destination: ValidatedAddress, button_label:
 
 #[test]
 fn cancelling_a_private_send_leaves_send_usable() {
-    assert_cancel_leaves_send_usable(
-        ValidatedAddress::Shielded(shielded_address()),
-        "Private Send",
-    );
+    assert_cancel_leaves_send_usable(ValidatedAddress::Shielded(shielded_address()), "Send");
 }
 
 #[test]
@@ -452,7 +464,61 @@ fn cancelling_an_unshield_leaves_send_usable() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Unshield Credits",
+        "Send",
+    );
+}
+
+/// The confirmation of an explicit Core to Platform payment says who pays
+/// which fee: `shown` for `fee_strategy`, and none of `hidden`.
+fn assert_core_to_platform_confirmation(
+    fee_strategy: PlatformFeeStrategy,
+    shown: &[&str],
+    hidden: &[&str],
+) {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, _seed_hash) = send_screen();
+        let destination = PlatformAddress::P2pkh([8; 20]).to_bech32m_string(Network::Testnet);
+        screen.open_core_to_platform_confirmation_for_test(destination, "1", fee_strategy);
+        let harness = send_harness(screen);
+        for sentence in shown {
+            assert!(
+                harness.query_by_label_contains(sentence).is_some(),
+                "{fee_strategy}: the confirmation must say: {sentence}"
+            );
+        }
+        for sentence in hidden {
+            assert!(
+                harness.query_by_label_contains(sentence).is_none(),
+                "{fee_strategy}: the confirmation must not say: {sentence}"
+            );
+        }
+    });
+}
+
+const PLATFORM_FEE_FROM_AMOUNT: &str = "The Platform fee comes out of the amount you entered, so the recipient receives less than that amount.";
+const CORE_FEE_ON_TOP: &str = "The Core fee is charged on top, from your Core balance.";
+const CORE_PAYS_ALL: &str = "Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee.";
+const RESERVE_RETURNS: &str = "The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance.";
+
+/// "Reduce first output" takes the Platform fee from what the recipient gets,
+/// while the Core fee is still paid separately.
+#[test]
+fn core_to_platform_confirmation_states_the_charge_when_the_output_pays() {
+    assert_core_to_platform_confirmation(
+        PlatformFeeStrategy::ReduceFirstOutput,
+        &[PLATFORM_FEE_FROM_AMOUNT, CORE_FEE_ON_TOP],
+        &[CORE_PAYS_ALL, RESERVE_RETURNS],
+    );
+}
+
+/// "Deduct from first input" takes more than the amount from Core; the
+/// Platform fee reserve it does not use comes back on Platform.
+#[test]
+fn core_to_platform_confirmation_states_the_charge_when_the_inputs_pay() {
+    assert_core_to_platform_confirmation(
+        PlatformFeeStrategy::DeductFromFirstInput,
+        &[CORE_PAYS_ALL, RESERVE_RETURNS],
+        &[PLATFORM_FEE_FROM_AMOUNT, CORE_FEE_ON_TOP],
     );
 }
 
@@ -472,7 +538,7 @@ fn a_private_send_that_fails_to_build_leaves_send_usable() {
         );
         let mut harness = send_harness(screen);
 
-        harness.get_by_label("Private Send").click();
+        harness.get_by_label("Send").click();
         harness.run();
         assert!(!harness.state().has_send_confirmation_for_test());
         assert!(harness.query_by_label("Sending...").is_none());
@@ -483,6 +549,6 @@ fn a_private_send_that_fails_to_build_leaves_send_usable() {
             Some(Amount::new_dash(1.0)),
         );
         harness.run();
-        press_send_expecting_confirmation(&mut harness, "Private Send");
+        press_send_expecting_confirmation(&mut harness, "Send");
     });
 }

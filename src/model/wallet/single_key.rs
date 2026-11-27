@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_create_single_key_wallet_no_password() {
-        let private_key = [42u8; 32];
+        let private_key = crate::test_support::keys::secret_bytes();
         let wallet = SingleKeyWallet::new(
             private_key,
             Network::Testnet,
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_create_single_key_wallet_with_password() {
-        let private_key = [42u8; 32];
+        let private_key = crate::test_support::keys::secret_bytes();
         let password = "secret123";
         let wallet = SingleKeyWallet::new(
             private_key,
@@ -490,8 +490,8 @@ mod tests {
 
     #[test]
     fn test_from_hex() {
-        let hex_key = "0000000000000000000000000000000000000000000000000000000000000001";
-        let wallet = SingleKeyWallet::from_hex(hex_key, Network::Testnet, None, None)
+        let hex_key = hex::encode(crate::test_support::keys::secret_bytes());
+        let wallet = SingleKeyWallet::from_hex(&hex_key, Network::Testnet, None, None)
             .expect("Failed to create from hex");
 
         assert!(wallet.is_open());
@@ -507,7 +507,7 @@ mod tests {
 
         let mut closed = ClosedSingleKey {
             key_hash: [1; 32],
-            encrypted_private_key: vec![0x2A; 32],
+            encrypted_private_key: crate::test_support::keys::secret_bytes().to_vec(),
             salt: vec![2; 16],
             nonce: vec![3; 12],
         };

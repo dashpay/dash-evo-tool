@@ -1,6 +1,8 @@
 use crate::backend_task::TaskResult;
-use crate::backend_task::error::{DapiAddressAvailability, TaskError};
-use crate::backend_task::{BackendTaskSuccessResult, contextualize_dapi_task_result};
+use crate::backend_task::error::{BackendTaskJoinError, DapiAddressAvailability, TaskError};
+use crate::backend_task::{
+    BackendTaskSuccessResult, contextualize_dapi_task_result, in_current_request,
+};
 use crate::context::AppContext;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
@@ -79,7 +81,8 @@ async fn every_contest_query_succeeded(queries: Vec<JoinHandle<bool>>) -> bool {
         match query.await {
             Ok(refreshed) => succeeded &= refreshed,
             Err(e) => {
-                tracing::error!("Task failed: {:?}", e);
+                let error = BackendTaskJoinError::from(e);
+                tracing::error!(?error, "A contested-name query task did not finish");
                 succeeded = false;
             }
         }
@@ -115,10 +118,11 @@ where
             pace.tick().await;
         }
         let query = query(name);
-        queries.push(tokio::spawn(async move {
+        // Carried into the subtask so its failure still names the refresh.
+        queries.push(tokio::spawn(in_current_request(async move {
             let _permit = permit;
             query.await
-        }));
+        })));
     }
     queries
 }
@@ -212,13 +216,8 @@ impl AppContext {
 
             names_to_be_updated.extend(new_names_to_be_updated);
 
-            sender
-                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                    network: self.network,
-                    domain: crate::backend_task::CacheDomain::Dpns,
-                }))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                .await;
 
             if contested_resources_len < 100 {
                 break;
@@ -234,7 +233,8 @@ impl AppContext {
             let sender = sender.clone();
             let self_ref = self.clone();
 
-            tokio::spawn(async move {
+            // Carried into the subtask so its failure still names the refresh.
+            tokio::spawn(in_current_request(async move {
                 let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
                     Ok(permit) => permit,
                     Err(e) => {
@@ -248,18 +248,9 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender
-                            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                                network: self_ref.network,
-                                domain: crate::backend_task::CacheDomain::Dpns,
-                            }))
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to send refresh after dpns end times query: {}",
-                                e
-                            );
-                        }
+                        self_ref
+                            .notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                            .await;
                         true
                     }
                     Err(e) if quiet => {
@@ -269,7 +260,7 @@ impl AppContext {
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
                         let result = contextualize_dapi_task_result(
-                            TaskResult::unattributed_error(e),
+                            TaskResult::interim_error(self_ref.network, e),
                             DapiAddressAvailability::from_sdk(&sdk),
                         );
                         if let Err(send_err) = sender.send(result).await {
@@ -281,7 +272,7 @@ impl AppContext {
                         false
                     }
                 }
-            })
+            }))
         };
 
         // The end times tell which contests are still open. Those are read
@@ -301,19 +292,9 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender
-                            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                                network: self_ref.network,
-                                domain: crate::backend_task::CacheDomain::Dpns,
-                            }))
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to send refresh after vote contenders query for {}: {}",
-                                name,
-                                e
-                            );
-                        }
+                        self_ref
+                            .notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                            .await;
                         true
                     }
                     Err(e) if quiet => {
@@ -323,7 +304,7 @@ impl AppContext {
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
                         let result = contextualize_dapi_task_result(
-                            TaskResult::unattributed_error(e),
+                            TaskResult::interim_error(self_ref.network, e),
                             DapiAddressAvailability::from_sdk(&sdk),
                         );
                         if let Err(send_err) = sender.send(result).await {
@@ -355,13 +336,8 @@ impl AppContext {
             contests_refreshed &= every_contest_query_succeeded(std::mem::take(&mut handles)).await;
             self.prove_current_votes(sdk).await;
             self.recompute_dpns_vote_attention();
-            sender
-                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                    network: self.network,
-                    domain: crate::backend_task::CacheDomain::Dpns,
-                }))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                .await;
         }
         handles.extend(
             start_in_order(
@@ -391,7 +367,9 @@ impl AppContext {
 
         sender
             .send(TaskResult::unattributed_success(
-                BackendTaskSuccessResult::RefreshedDpnsContests,
+                BackendTaskSuccessResult::RefreshedDpnsContests {
+                    network: self.network,
+                },
             ))
             .await
             .map_err(|_| TaskError::InternalSendError)?;
@@ -464,6 +442,22 @@ mod tests {
         let stopped = tokio::spawn(std::future::pending::<bool>());
         stopped.abort();
         assert!(!every_contest_query_succeeded(vec![stopped, query(true)]).await);
+    }
+
+    /// A contest query that panicked fails the pass without its panic text
+    /// reaching the log.
+    #[tokio::test]
+    async fn panicked_contest_query_is_logged_without_its_panic_message() {
+        let panic_text = "synthetic-seed-words-for-a-contest-query";
+        let log = crate::test_support::CapturedLog::start();
+        let panicked = tokio::spawn(async move {
+            panic!("{panic_text}");
+        });
+
+        assert!(!every_contest_query_succeeded(vec![panicked]).await);
+        let text = log.text();
+        assert!(!text.contains(panic_text), "{text}");
+        assert!(text.contains("panicked: true"), "{text}");
     }
 
     /// A context on an in-memory store and a mock SDK that lists `names` as
@@ -738,6 +732,30 @@ mod tests {
         );
     }
 
+    /// A pass reports each change only after storing it. A frame loop gone
+    /// at shutdown or after a network switch loses those reports, but the
+    /// pass still reads every contest instead of stopping at the first lost
+    /// report.
+    #[tokio::test]
+    async fn a_pass_with_no_frame_loop_still_reads_every_contest() {
+        let names = contest_names(1);
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        answer_contenders(&context, &mut sdk, &names[0], None).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(rx);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        // Only the pass's own result, sent last, has nobody to take it.
+        let result = context
+            .query_dpns_contested_resources(&sdk, sender, true)
+            .await;
+
+        assert!(
+            was_read(&context, &names[0]),
+            "the contest was not read once a cache report was lost: {result:?}"
+        );
+    }
+
     /// Load a masternode into `context` and let the mock SDK prove that it
     /// has not voted on anything.
     async fn load_node_without_votes(context: &Arc<AppContext>, sdk: &mut Sdk) -> Identifier {
@@ -808,7 +826,8 @@ mod tests {
             .document_type_for_name("domain")
             .expect("domain document type");
         let query = ContestedDocumentVotePollDriveQuery {
-            limit: None,
+            // The SDK reads the vote state in pages of this size.
+            limit: Some(dash_sdk::drive::config::DEFAULT_QUERY_LIMIT),
             offset: None,
             start_at: None,
             vote_poll: ContestedDocumentResourceVotePoll {
@@ -836,6 +855,122 @@ mod tests {
             )
             .await
             .expect("contender expectation");
+    }
+
+    #[tokio::test]
+    async fn refresh_stores_contenders_from_the_second_page() {
+        use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
+        use dash_sdk::dpp::document::{Document, DocumentV0};
+        use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocumentV0;
+        use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
+        use std::collections::BTreeMap;
+
+        let name = "busy";
+        let (_dir, context, mut sdk) = context_listing(&[name.to_owned()]).await;
+        context.seed_dpns_contest_for_test(
+            name,
+            Some(crate::utils::time::now_ms() + 600_000),
+            false,
+        );
+        let contract = context.dpns_contract();
+        let document_type = contract
+            .document_type_for_name("domain")
+            .expect("domain type");
+        let vote_poll =
+            crate::model::dpns_voting::dpns_vote_poll(&contract, name).expect("vote poll");
+        let id = |index: u16| {
+            let mut bytes = [0; 32];
+            bytes[..2].copy_from_slice(&index.to_be_bytes());
+            Identifier::from(bytes)
+        };
+        let contender = |index| {
+            let identity_id = id(index);
+            let document = Document::V0(DocumentV0 {
+                id: id(index + 1000),
+                owner_id: identity_id,
+                created_at: Some(100),
+                updated_at: Some(100),
+                transferred_at: Some(100),
+                properties: BTreeMap::from([
+                    ("label".into(), Value::from(name)),
+                    ("normalizedLabel".into(), Value::from(name)),
+                    ("normalizedParentDomainName".into(), Value::from("dash")),
+                    ("preorderSalt".into(), Value::Bytes32([0; 32])),
+                    (
+                        "records".into(),
+                        Value::Map(vec![(
+                            Value::from("identity"),
+                            Value::Identifier(identity_id.to_buffer()),
+                        )]),
+                    ),
+                    (
+                        "subdomainRules".into(),
+                        Value::Map(vec![(Value::from("allowSubdomains"), Value::Bool(false))]),
+                    ),
+                ]),
+                ..Default::default()
+            });
+            let serialized_document = document
+                .serialize(document_type, &contract, context.platform_version())
+                .expect("serialize a valid domain document");
+            (
+                identity_id,
+                ContenderWithSerializedDocument::V0(ContenderWithSerializedDocumentV0 {
+                    identity_id,
+                    serialized_document: Some(serialized_document),
+                    vote_tally: Some(u32::from(index)),
+                }),
+            )
+        };
+        for (start_at, indices) in [
+            (None, 1..=DEFAULT_QUERY_LIMIT),
+            (
+                Some((id(DEFAULT_QUERY_LIMIT).to_buffer(), false)),
+                DEFAULT_QUERY_LIMIT + 1..=DEFAULT_QUERY_LIMIT + 1,
+            ),
+        ] {
+            sdk.mock()
+                .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
+                    ContestedDocumentVotePollDriveQuery {
+                        vote_poll: vote_poll.clone(),
+                        result_type:
+                            ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
+                        allow_include_locked_and_abstaining_vote_tally: true,
+                        start_at,
+                        limit: Some(DEFAULT_QUERY_LIMIT),
+                        offset: None,
+                    },
+                    Some(Contenders {
+                        contenders: indices.map(contender).collect(),
+                        abstain_vote_tally: start_at.is_none().then_some(7),
+                        lock_vote_tally: start_at.is_none().then_some(9),
+                        winner: None,
+                    }),
+                )
+                .await
+                .expect("contender page expectation");
+        }
+
+        run_pass(&context, &sdk).await.expect("refresh pass");
+
+        let contest = context
+            .all_contested_names()
+            .expect("stored contests")
+            .into_iter()
+            .find(|contest| contest.normalized_contested_name == name)
+            .expect("the open contest");
+        let contestants = contest.contestants.expect("stored contenders");
+        let second_page_id = id(DEFAULT_QUERY_LIMIT + 1);
+        let second = contestants
+            .iter()
+            .find(|contender| contender.id == second_page_id)
+            .expect("the second-page contender must be stored");
+        assert_eq!(second.name, name);
+        assert_eq!(second.document_id, id(DEFAULT_QUERY_LIMIT + 1001));
+        assert_eq!(second.votes, u32::from(DEFAULT_QUERY_LIMIT) + 1);
+        assert_eq!(contestants.len(), usize::from(DEFAULT_QUERY_LIMIT) + 1);
+        assert_eq!(contest.abstain_votes, Some(7));
+        assert_eq!(contest.locked_votes, Some(9));
     }
 
     /// Start a pass that hands its reports to a channel with room for one. A

@@ -10,14 +10,81 @@
 //! genesis birth-height floor for imported/recovered wallets so deposits made
 //! before registration are still found.
 //!
-//! These tests run against a live Dash testnet via SPV and require a funded
+//! These tests run against a live Dash testnet or devnet via SPV and require a funded
 //! framework wallet; they are `#[ignore]` like the rest of the backend-e2e
 //! suite. See `tests/backend-e2e/README.md`.
 
 use crate::framework::harness;
 use crate::framework::wait;
+use dash_evo_tool::app_dir::ENV_FILE;
+use dash_evo_tool::database::test_helpers::create_database_at_path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+
+const COLD_BOOT_CHILD_DIR: &str = "DET_E2E_COLD_BOOT_CHILD_DIR";
+
+fn cold_boot_workdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("dash-evo-e2e-coldboot-")
+        .tempdir()
+        .expect("create isolated cold-boot workdir")
+}
+
+fn cold_boot_child(workdir: &Path) -> Command {
+    let test_thread = std::thread::current();
+    let test = test_thread.name().expect("get cold-boot test name");
+    let mut child = Command::new(std::env::current_exe().expect("locate backend E2E test binary"));
+    child
+        .args(["--include-ignored", "--exact", test, "--nocapture"])
+        .env(COLD_BOOT_CHILD_DIR, workdir);
+    child
+}
+
+fn cold_boot_child_dir() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os(COLD_BOOT_CHILD_DIR)?);
+    assert!(
+        path.read_dir()
+            .expect("open cold-boot workdir")
+            .all(|entry| entry.is_ok_and(|file| file.file_name() == ENV_FILE)),
+        "the cold-boot subprocess needs a fresh workdir"
+    );
+    Some(path)
+}
+
+#[test]
+fn config_regression_cold_boot_workdirs_are_unique_and_cleaned_up() {
+    if let Some(workdir) = cold_boot_child_dir() {
+        // AppContext can keep SQLite open for the life of the test process.
+        let db = create_database_at_path(&workdir.join("data.db")).expect("open fixture database");
+        std::mem::forget(db);
+        panic!("simulate cold-boot child failure with an open database");
+    }
+
+    let first = cold_boot_workdir();
+    let second = cold_boot_workdir();
+    let first_path = first.path().to_path_buf();
+    let second_path = second.path().to_path_buf();
+    assert_ne!(first_path, second_path);
+    let child = cold_boot_child(&first_path)
+        .output()
+        .expect("run cold-boot fixture subprocess");
+    assert!(!child.status.success());
+    assert!(String::from_utf8_lossy(&child.stderr).contains("simulate cold-boot child failure"));
+    assert!(first_path.join("data.db").is_file());
+    std::fs::write(first_path.join(".env"), []).expect("write fixture .env");
+
+    let failure = std::panic::catch_unwind(move || {
+        let _workdir = first;
+        panic!("simulate cold-boot test failure");
+    });
+    assert!(failure.is_err());
+    assert!(!first_path.exists());
+    assert!(second_path.is_dir());
+    drop(second);
+    assert!(!second_path.exists());
+}
 
 /// W1 below-tip visibility: a freshly created+funded wallet (registered with
 /// the genesis birth-height floor via the `Imported` origin the harness uses)
@@ -124,42 +191,50 @@ async fn re_registration_is_idempotent_for_funded_wallet() {
 /// becomes visible — all without a second backend build.
 ///
 /// Fund-safe: it only reads the framework wallet's pre-existing balance; no
-/// funds move. It shares the already-synced framework backend's SPV peer set
-/// via a fresh backend over an isolated workdir, so it does not disturb the
-/// singleton harness context.
+/// funds move. The subprocess starts its own backend with the selected
+/// network's settings and closes its database handles before workdir cleanup.
 #[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
+#[test]
+fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
+    if let Some(workdir) = cold_boot_child_dir() {
+        run_cold_boot(&workdir);
+        return;
+    }
+
+    // The parent owns the directory until the child's process has released its stores.
+    let workdir = cold_boot_workdir();
+    let mut child = cold_boot_child(workdir.path());
+    harness::configure_cold_boot_child(&mut child, workdir.path())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let status = child.status().expect("run cold-boot subprocess");
+    let ran = workdir.path().join("data.db").is_file();
+    workdir.close().expect("remove cold-boot workdir");
+    assert!(
+        status.success(),
+        "cold-boot subprocess failed with {status}"
+    );
+    assert!(ran, "the cold-boot subprocess did not run the test");
+}
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 12)]
+async fn run_cold_boot(workdir: &Path) {
     use dash_evo_tool::app::TaskResult;
-    use dash_evo_tool::app_dir::ensure_env_file;
     use dash_evo_tool::context::AppContext;
     use dash_evo_tool::context::connection_status::ConnectionStatus;
-    use dash_evo_tool::database::test_helpers::{
-        create_database_at_path, seed_legacy_unprotected_hd_wallet_row,
-    };
+    use dash_evo_tool::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
     use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
     use dash_evo_tool::utils::tasks::TaskManager;
-    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::key_wallet::bip32::{
         ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
     };
 
-    // Ensure the shared framework backend is up first — it owns the funded
-    // framework wallet and a synced SPV view; reading the mnemonic from the
-    // same env guarantees the seed we migrate is the funded one.
-    let _shared = harness::ctx().await;
-    let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC")
-        .expect("E2E_WALLET_MNEMONIC must be set for E2E tests");
-    let mnemonic = bip39::Mnemonic::parse_in(bip39::Language::English, &mnemonic_phrase)
-        .expect("valid mnemonic");
-    let seed = mnemonic.to_seed("");
+    harness::init_tracing();
+    let network = harness::e2e_network();
+    let seed = harness::framework_seed();
 
     // Isolated cold-boot workdir: no sidecars, no upstream persistor — only the
     // legacy `data.db` row we seed below, exactly the migrated-on-disk shape.
-    let workdir =
-        std::env::temp_dir().join(format!("dash-evo-e2e-coldboot-{}", std::process::id()));
-    std::fs::create_dir_all(&workdir).expect("create cold-boot workdir");
-    ensure_env_file(&workdir).expect("write .env");
+    harness::write_workdir_env(workdir).unwrap_or_else(|error| panic!("{error}"));
 
     let db_path = workdir.join("data.db");
     let db = Arc::new(create_database_at_path(&db_path).expect("create cold-boot database"));
@@ -168,13 +243,12 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     // is internally consistent (the W2 fund-routing gate matches the published
     // xpub against the seed's derivation).
     let seed_hash = {
-        let w =
-            dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
-                .expect("build wallet for hash");
+        let w = dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, network, None, None)
+            .expect("build wallet for hash");
         w.seed_hash()
     };
     let epk = {
-        let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).expect("master key");
+        let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
         let path = DerivationPath::from(vec![
             ChildNumber::Hardened { index: 44 },
             ChildNumber::Hardened { index: 1 },
@@ -189,7 +263,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
         &seed,
         &epk,
         "cold-boot-migrated",
-        Network::Testnet,
+        network,
     )
     .expect("insert legacy wallet row");
 
@@ -197,11 +271,11 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     let subtasks = Arc::new(TaskManager::new());
     let connection_status = Arc::new(ConnectionStatus::new());
     let egui_ctx = egui::Context::default();
-    let app_kv = AppContext::open_app_kv(&workdir).expect("open app k/v");
-    let secret_store = AppContext::open_secret_store(&workdir).expect("open secret store");
+    let app_kv = AppContext::open_app_kv(workdir).expect("open app k/v");
+    let secret_store = AppContext::open_secret_store(workdir).expect("open secret store");
     let app_context = AppContext::new(
-        workdir.clone(),
-        Network::Testnet,
+        workdir.to_path_buf(),
+        network,
         db,
         subtasks,
         connection_status,

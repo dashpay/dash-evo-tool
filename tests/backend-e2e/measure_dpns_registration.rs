@@ -17,13 +17,12 @@
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_on_large_stack;
 use crate::register_dpns::{
-    balance_below, network_balance, platform_funded_identity, refused_for_balance,
-    returning_credits, vote_label,
+    balance_below, name_admission_reserve, network_balance, platform_funded_identity,
+    refused_for_balance, returning_credits, vote_label,
 };
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::fee_estimation::contest_fee_credits;
 use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::platform::dpns_usernames::{
@@ -121,7 +120,8 @@ fn twenty_char_label() -> String {
 /// Fund a new identity from platform address credits, register `label` for it,
 /// log the balances, and send what is left back.
 ///
-/// `funding` replaces the balance the app would require, vote fee included.
+/// `funding` replaces the balance the app would require, vote fee and name
+/// admission reserve included.
 async fn measure(label: String, needs_vote: bool, funding: Option<u64>) -> Measured {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
@@ -135,6 +135,7 @@ async fn measure(label: String, needs_vote: bool, funding: Option<u64>) -> Measu
             .fee_estimator()
             .estimate_username_registration(label.len(), needs_vote)
             .saturating_add(vote_fee)
+            .saturating_add(name_admission_reserve(app_context))
     });
 
     let funded = platform_funded_identity(ctx, funding).await;
@@ -161,11 +162,8 @@ async fn register_and_log(
     let dpns =
         load_system_data_contract(SystemDataContract::DPNS, app_context.sdk_platform_version())
             .expect("the DPNS contract should load");
-    let preorder = dpns
-        .document_type_for_name("preorder")
-        .expect("the DPNS contract should define preorder");
     let signing_key = identity
-        .document_signing_key(&preorder)
+        .username_registration_key(&dpns)
         .cloned()
         .expect("the identity should hold a key that signs name documents");
 

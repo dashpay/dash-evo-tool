@@ -5,7 +5,7 @@ use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::dashcore::Network;
 
 use crate::backend_task::error::TaskError;
-use crate::config::ConfigError;
+use crate::config::{ConfigError, NetworkSettingError};
 
 /// A failure of [`AppContext::new`](crate::context::AppContext::new).
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +19,16 @@ pub enum NetworkContextError {
         "The settings file has no entries for {network}. Add them to the .env file in the app data folder, then restart the application."
     )]
     NotConfigured { network: Network },
+
+    /// A saved setting for this network has a value that cannot be used.
+    #[error(
+        "A setting saved for {network} has a value that is not valid. Correct it in the .env file in the app data folder, then restart the application."
+    )]
+    InvalidSettings {
+        network: Network,
+        #[source]
+        source: NetworkSettingError,
+    },
 
     /// No node addresses are saved for this network.
     #[error(

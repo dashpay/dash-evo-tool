@@ -16,12 +16,11 @@
 //! ```
 
 use crate::framework::fixtures::shared_identity;
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::task_runner::{run_on_large_stack, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use dash_evo_tool::wallet_backend::IdentityKeyView;
-use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -105,7 +104,7 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
         let secret_key =
             dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
                 .expect("valid secret");
-        PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+        PrivateKey::from_byte_array(secret_key.as_secret_bytes(), e2e_network())
             .expect("valid secret key")
             .public_key()
             .to_bytes()
@@ -239,7 +238,8 @@ async fn materialize_master_key_as_clear(
 
     // Production registers the MASTER key at identity index 0, key index 0.
     let master_path =
-        DerivationPath::identity_authentication_path(network, KeyDerivationType::ECDSA, 0, 0);
+        DerivationPath::identity_authentication_path(network, KeyDerivationType::ECDSA, 0, 0)
+            .expect("identity authentication path");
 
     let master_bytes = ctx
         .app_context

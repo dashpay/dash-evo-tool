@@ -1,8 +1,4 @@
-//! Shared support for tests across the library crate.
-//!
-//! Compiled only for unit tests and the `testing` / `bench` features, never
-//! into release builds. [`keys`] is public so integration tests and benches
-//! can reach it; everything else is unit-test only.
+//! Shared support for unit tests and builds with the `testing` or `bench` features.
 
 pub mod keys;
 
@@ -23,6 +19,60 @@ pub(crate) fn harness_builder_with_app_fonts<State>() -> egui_kittest::HarnessBu
     egui_kittest::Harness::builder().with_context_setup(|ctx| {
         ctx.set_fonts(crate::bundled::fonts().expect("bundled fonts load"));
     })
+}
+
+#[cfg(test)]
+const CHILD_MARKER: &str = "DET_ISOLATED_TEST_CHILD";
+
+/// Whether file modes keep this process out. Not for one that bypasses them
+/// (root, or `CAP_DAC_OVERRIDE` in a container): a test that denies access
+/// through a mode cannot fail the way it means to there, so it returns early.
+#[cfg(all(unix, any(test, feature = "testing")))]
+pub fn file_modes_deny_access() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+        .expect("deny writes");
+    let denied = std::fs::write(dir.path().join("probe"), b"").is_err();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("restore");
+    denied
+}
+
+/// Whether this process is a child started by [`run_test_in_child`].
+#[cfg(test)]
+pub(crate) fn is_test_child() -> bool {
+    std::env::var_os(CHILD_MARKER).is_some()
+}
+
+/// Runs the unit test `test` (full path) alone in a child process with
+/// `envs` set and no inherited network settings, and asserts it passed.
+/// Returns `false` inside the child, which then runs the test body.
+#[cfg(test)]
+pub(crate) fn run_test_in_child(test: &str, envs: &[(&str, &std::path::Path)]) -> bool {
+    if is_test_child() {
+        return false;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+    command.args([test, "--exact"]).env(CHILD_MARKER, "1");
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        {
+            command.env_remove(key.as_ref());
+        }
+    }
+    command.envs(envs.iter().copied());
+    let output = command.output().expect("run isolated test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolated test failed: {stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("test result: ok. 1 passed;"), "{stdout}");
+    true
 }
 
 /// Serializes every unit test that mutates the process-global data directory.

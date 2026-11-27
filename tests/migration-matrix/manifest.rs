@@ -235,6 +235,9 @@ pub struct Expectations {
     /// Whether to derive a receive address. Needs a synced SPV chain, so a
     /// fixture captured for an offline-only check can opt out.
     pub derive_address: bool,
+    /// Whether every boot must be refused because only an earlier release can
+    /// upgrade the wallet data, leaving the wallet stores unchanged.
+    pub upgrade_release_required: bool,
 }
 
 impl Default for Expectations {
@@ -246,6 +249,7 @@ impl Default for Expectations {
             starting_db_version: None,
             finish_unwire_sentinel: true,
             derive_address: true,
+            upgrade_release_required: false,
         }
     }
 }
@@ -665,6 +669,10 @@ mod tests {
             .expect("the weekly entry");
         assert_eq!(fixture.network().expect("known network"), Network::Testnet);
         assert_eq!(fixture.expect.starting_db_version, Some(38));
+        assert!(
+            fixture.expect.upgrade_release_required,
+            "only the last release with the platform_compatibility bridge can upgrade it"
+        );
         assert!(
             fixture.contents.wallets.is_empty(),
             "this era's data.db has no wallet table to find a wallet in"

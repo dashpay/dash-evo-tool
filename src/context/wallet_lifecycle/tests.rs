@@ -150,6 +150,54 @@ async fn wiring_does_not_start_chain_sync() {
     backend.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_store_startup_failure_explains_manual_recovery() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let path = ctx.data_dir().join("det-testnet-shielded.sqlite");
+    let corrupt = b"not a SQLite database";
+    std::fs::write(&path, corrupt).expect("write corrupt shielded store");
+
+    let error = ctx
+        .prepare_storage(sender)
+        .await
+        .expect_err("storage preparation must fail");
+    let TaskError::ShieldedStoreOpenFailed {
+        path: failed_path,
+        source,
+    } = &error
+    else {
+        panic!("expected a shielded store open failure, got {error:?}");
+    };
+    assert_eq!(failed_path, &path);
+    assert!(matches!(
+        source.as_ref(),
+        platform_wallet::error::PlatformWalletError::ShieldedStoreError(_)
+    ));
+    let message = error.to_string();
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    let mut remaining = message.as_str();
+    for step in [
+        "Your wallets and keys are still saved",
+        "free space",
+        "every shielded payment, transfer, unshield and withdrawal",
+        "including those to your own wallets",
+        "Do not send any of them again until the new file has synced",
+        "close the app",
+        "back up the file together with any matching files ending in -wal, -shm, or -journal",
+        "Delete the file and those matching files manually",
+        "Reopen the app",
+        "create a new file",
+        "Wait for the sync to finish",
+        "check your shielded balances",
+    ] {
+        remaining = remaining
+            .split_once(step)
+            .unwrap_or_else(|| panic!("missing or out of order: {step:?} in {message}"))
+            .1;
+    }
+    assert_eq!(std::fs::read(&path).expect("read shielded store"), corrupt);
+}
+
 /// Once a context has completed storage preparation, later chokepoint calls
 /// return without replaying the drain or overwriting another migration status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2506,6 +2554,10 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
 
+    if !crate::test_support::file_modes_deny_access() {
+        eprintln!("skipped: file modes do not deny this process access");
+        return;
+    }
     let (ctx, sender, tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
@@ -2538,7 +2590,7 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
             (target, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key),
-                PrivateKeyData::Clear([0x70 + key_id as u8; 32]),
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             ),
         );
     }
@@ -2581,8 +2633,10 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
         }) => {
             assert!(failed >= 1, "at least one vault-key delete must fail");
             assert!(
-                matches!(*first_error, TaskError::IdentityKeyVault { .. }),
-                "the first failure must preserve the identity-vault error chain"
+                matches!(first_error.as_ref(), TaskError::SecretStoreAccessDenied { source }
+                    if matches!(source.as_ref(), platform_wallet_storage::secrets::SecretStoreError::Io(io)
+                        if io.source.kind() == std::io::ErrorKind::PermissionDenied)),
+                "the first failure must preserve the denied vault's I/O cause: {first_error:?}"
             );
         }
         other => panic!("masternode key deletion failure must make clear incomplete: {other:?}"),

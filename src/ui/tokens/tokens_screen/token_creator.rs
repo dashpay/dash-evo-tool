@@ -918,12 +918,14 @@ impl TokensScreen {
     }
 
     fn update_selected_wallet(&mut self) {
-        crate::ui::identity::sync_signing_wallet(
+        if crate::ui::identity::sync_signing_wallet(
             self.selected_identity.as_ref(),
             self.selected_key.as_ref(),
             &mut self.selected_wallet,
             &mut self.wallet_open_attempted,
-        );
+        ) {
+            self.pending_token_registration = None;
+        }
     }
 
     /// Whether the selected identity holds the selected key; no key counts as held.

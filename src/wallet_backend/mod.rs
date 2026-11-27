@@ -2038,7 +2038,9 @@ impl WalletBackend {
     /// 60-second sync loop and empties the coordinator's per-subwallet store so
     /// the next bind cold-resyncs from index 0. Used by the "delete all local
     /// data" sweep, which must keep its own data when this fails.
-    pub(crate) async fn clear_shielded(&self) -> Result<(), TaskError> {
+    pub(crate) async fn clear_shielded(&self, data_dir: &Path) -> Result<(), TaskError> {
+        let path = shielded_database_path(data_dir, self.inner.network);
+        let path = std::path::absolute(&path).unwrap_or(path);
         // Upstream reports a missing coordinator as a store error, like a
         // failed reset; asked first, it is known to have cleared nothing.
         let coordinator_missing = self.inner.pwm.shielded_coordinator().await.is_none();
@@ -2049,8 +2051,9 @@ impl WalletBackend {
                 .clear_shielded_test_coordinator_missing
                 .load(std::sync::atomic::Ordering::Relaxed);
         if coordinator_missing {
-            return Err(TaskError::WalletDataClearShieldedUnavailable);
+            return Err(TaskError::WalletDataClearShieldedUnavailable { path });
         }
+        let map_error = |error| shielded_clear_error(error, path);
         #[cfg(test)]
         if let Some(error) = self
             .inner
@@ -2059,7 +2062,7 @@ impl WalletBackend {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
         {
-            return Err(shielded_clear_error(error));
+            return Err(map_error(error));
         }
         #[cfg(test)]
         if self
@@ -2067,16 +2070,10 @@ impl WalletBackend {
             .clear_shielded_test_refusal
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return Err(shielded_clear_error(
-                PlatformWalletError::ShieldedOperationInProgress,
-            ));
+            return Err(map_error(PlatformWalletError::ShieldedOperationInProgress));
         }
 
-        self.inner
-            .pwm
-            .clear_shielded()
-            .await
-            .map_err(shielded_clear_error)
+        self.inner.pwm.clear_shielded().await.map_err(map_error)
     }
 
     /// Remove a wallet from the upstream `det-<network>.sqlite` persistor
@@ -3769,13 +3766,14 @@ fn shield_capacity_exceeded_error(
 /// anything while a shielded operation holds its admission or a sync pass
 /// does not drain (that one after cancelling sync); every other failure may
 /// come after part of the reset.
-fn shielded_clear_error(e: PlatformWalletError) -> TaskError {
+fn shielded_clear_error(e: PlatformWalletError, path: std::path::PathBuf) -> TaskError {
     match e {
         PlatformWalletError::ShieldedOperationInProgress
         | PlatformWalletError::ShutdownIncomplete(_) => TaskError::WalletDataClearShieldedBusy {
             source: Some(Arc::new(e)),
         },
         e => TaskError::WalletDataClearShieldedResetFailed {
+            path,
             source: Arc::new(e),
         },
     }
@@ -4773,19 +4771,21 @@ mod tests {
     /// anything, so they are told apart from a reset that failed part-way.
     #[test]
     fn shielded_clear_refusals_are_busy_and_other_failures_are_not() {
+        let path = std::path::PathBuf::from("det-testnet-shielded.sqlite");
         for refusal in [
             PlatformWalletError::ShieldedOperationInProgress,
             PlatformWalletError::ShutdownIncomplete("shielded sync pass did not drain".into()),
         ] {
             assert!(matches!(
-                shielded_clear_error(refusal),
+                shielded_clear_error(refusal, path.clone()),
                 TaskError::WalletDataClearShieldedBusy { .. }
             ));
         }
         assert!(matches!(
-            shielded_clear_error(PlatformWalletError::ShieldedStoreError(
-                "reset_commitment_tree failed".into()
-            )),
+            shielded_clear_error(
+                PlatformWalletError::ShieldedStoreError("reset_commitment_tree failed".into()),
+                path,
+            ),
             TaskError::WalletDataClearShieldedResetFailed { .. }
         ));
     }

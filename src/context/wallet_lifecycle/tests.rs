@@ -3106,9 +3106,47 @@ async fn clear_network_database_deletes_nothing_without_a_shielded_coordinator()
     })
     .await;
     assert!(
-        matches!(error, TaskError::WalletDataClearShieldedUnavailable),
+        matches!(error, TaskError::WalletDataClearShieldedUnavailable { .. }),
         "{error:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_shielded_store_failure_explains_manual_recovery() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("wire backend");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let path = ctx.data_dir().join("det-testnet-shielded.sqlite");
+    backend.set_clear_shielded_test_error(
+        platform_wallet::error::PlatformWalletError::ShieldedStoreError(
+            "database disk image is malformed".into(),
+        ),
+    );
+    let reset_failure = ctx
+        .clear_network_database()
+        .await
+        .expect_err("reset failed");
+    backend.set_clear_shielded_test_coordinator_missing();
+    let unavailable = ctx
+        .clear_network_database()
+        .await
+        .expect_err("store unavailable");
+    backend.shutdown().await;
+
+    for error in [reset_failure, unavailable] {
+        let message = error.to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        let (_, after_deletion) = message
+            .split_once("back up the file, then delete it manually")
+            .unwrap_or_else(|| panic!("missing backup and deletion advice: {message}"));
+        assert!(after_deletion.contains("sync again"), "{message}");
+        assert!(
+            after_deletion.contains("then check your shielded balances"),
+            "{message}"
+        );
+    }
 }
 
 /// A shielded sync pass that does not stop in time makes upstream refuse the

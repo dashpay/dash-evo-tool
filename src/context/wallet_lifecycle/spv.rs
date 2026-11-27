@@ -36,7 +36,7 @@ impl AppContext {
         // loop and empties the per-network store). On any failure stop before
         // deleting anything: upstream requires its caller to keep its own data
         // when the reset fails, and a failed reset may have run part-way.
-        if let Err(error) = backend.clear_shielded().await {
+        if let Err(error) = backend.clear_shielded(self.data_dir()).await {
             tracing::warn!(%error, "Clear Database stopped: the shielded reset failed");
             return Err(error);
         }

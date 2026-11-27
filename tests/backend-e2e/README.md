@@ -75,7 +75,9 @@ If the harness reports a mismatch or missing configuration in a used slot,
 move that workdir aside or retry with the original configuration. Also move
 the workdir aside when the devnet deployment changes between runs (for
 example, new endpoints or a reset chain), because the harness reuses its saved
-state as long as `E2E_ENV_FILE` is unchanged. If variable
+state as long as `E2E_ENV_FILE` is unchanged. To move a workdir aside, move
+it out of the temporary directory, for example into your home directory: the
+fresh-start command below also removes renamed copies left there. If variable
 substitution changes the resolved devnet settings within a test process, use
 stable values in `E2E_ENV_FILE` and restart the tests.
 Devnet SPV sync needs DET to send the devnet name and user agent to dash-spv,

@@ -23,7 +23,7 @@
 //! - `E2E_MN_VOTING_KEY` — voting private key (WIF or 64-hex); TC-MN-019 only.
 //! - `E2E_MN_NODE_TYPE`  — "masternode" or "evonode" (optional, default "evonode").
 
-use crate::framework::harness::{ctx, e2e_network};
+use crate::framework::harness::{ctx, e2e_network, load_project_env};
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{
@@ -71,9 +71,7 @@ fn legacy_env_name(name: &str) -> Option<&'static str> {
 /// does) so the check runs before the costly harness init. The value is never
 /// logged.
 fn required_mn_env(name: &str) -> String {
-    if let Err(e) = dotenvy::dotenv() {
-        tracing::debug!(".env not loaded ({e}), relying on environment");
-    }
+    load_project_env();
     match std::env::var(name) {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {

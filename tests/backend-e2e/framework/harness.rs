@@ -17,11 +17,12 @@ use crate::framework::task_runner::run_task;
 use crate::framework::wait;
 use bip39::{Language, Mnemonic};
 use dash_evo_tool::app::TaskResult;
-use dash_evo_tool::app_dir::ensure_env_file;
+use dash_evo_tool::app_dir::{ENV_FILE, ensure_data_dir_exists, ensure_env_file};
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::platform_info::PlatformInfoTaskRequestType;
+use dash_evo_tool::config::EnvFileError;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
@@ -30,8 +31,13 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
 use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
-use std::path::PathBuf;
-use std::sync::Arc;
+use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::env::VarError;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Maximum timeout for any single test operation (poll loop, broadcast wait,
@@ -129,24 +135,247 @@ const MAX_WORKDIR_SLOTS: usize = 10;
 /// freed lower slot is still picked up.
 static WORKDIR_SLOT_FLOOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Network under test: `E2E_NETWORK` (`testnet` default, or `devnet`).
-pub fn e2e_network() -> Network {
-    match std::env::var("E2E_NETWORK").as_deref() {
-        Err(_) | Ok("") | Ok("testnet") => Network::Testnet,
-        Ok("devnet") => Network::Devnet,
-        Ok(other) => panic!("E2E_NETWORK={other} is not supported; use testnet or devnet"),
-    }
+/// Load the project .env before any workdir .env can change the process environment.
+pub fn load_project_env() {
+    static PROJECT_ENV: OnceLock<()> = OnceLock::new();
+    PROJECT_ENV.get_or_init(|| {
+        if let Err(error) = dotenvy::dotenv()
+            && !error.not_found()
+        {
+            panic!(
+                "Could not load the project .env. Correct the file and retry. ({})",
+                EnvFileError::from(error)
+            );
+        }
+    });
 }
 
-/// Write a workdir `.env`: a copy of `E2E_ENV_FILE` when set (e.g. devnet
-/// endpoints), otherwise the bundled `.env.example`. Never overwrites.
-pub fn write_workdir_env(workdir: &std::path::Path) -> std::io::Result<()> {
-    match std::env::var_os("E2E_ENV_FILE") {
-        Some(source) if !workdir.join(".env").exists() => {
-            std::fs::copy(source, workdir.join(".env")).map(drop)
+struct E2eSettings {
+    network: Network,
+    env_contents: Option<Vec<u8>>,
+    devnet: Option<DevnetSettings>,
+    bootstrap_amount: Result<Option<u64>, BootstrapAmountError>,
+    mnemonic: Option<String>,
+}
+
+fn settings() -> &'static E2eSettings {
+    static SETTINGS: OnceLock<E2eSettings> = OnceLock::new();
+    SETTINGS.get_or_init(|| {
+        load_project_env();
+        let network = match std::env::var("E2E_NETWORK").as_deref() {
+            Err(VarError::NotPresent) | Ok("") | Ok("testnet") => Network::Testnet,
+            Ok("devnet") => Network::Devnet,
+            _ => panic!("E2E_NETWORK is invalid. Set it to testnet or devnet and retry."),
+        };
+        let env_contents = std::env::var_os("E2E_ENV_FILE")
+            .map(std::fs::read)
+            .transpose()
+            .expect("Could not read E2E_ENV_FILE. Check the path and permissions and retry.");
+        let devnet = if network == Network::Devnet {
+            let contents = env_contents.as_deref().expect(
+                "Devnet settings are missing. Point E2E_ENV_FILE at the devnet .env and retry.",
+            );
+            Some(devnet_settings_from_env(contents).unwrap_or_else(|error| panic!("{error}")))
+        } else {
+            None
+        };
+        let bootstrap_amount = if network == Network::Devnet
+            && std::env::var("E2E_DEVNET_BOOTSTRAP").as_deref() == Ok("1")
+        {
+            match std::env::var("E2E_PLATFORM_FUND_DUFFS") {
+                Ok(value) => parse_bootstrap_amount(Some(&value)).map(Some),
+                Err(VarError::NotPresent) => parse_bootstrap_amount(None).map(Some),
+                Err(error) => Err(BootstrapAmountError::Encoding { source: error }),
+            }
+        } else {
+            Ok(None)
+        };
+        E2eSettings {
+            network,
+            env_contents,
+            devnet,
+            bootstrap_amount,
+            mnemonic: std::env::var("E2E_WALLET_MNEMONIC").ok(),
         }
-        Some(_) => Ok(()),
-        None => ensure_env_file(workdir),
+    })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DevnetConfigError {
+    #[error("E2E_ENV_FILE is invalid. Correct the .env file and retry.")]
+    InvalidFile(#[source] EnvFileError),
+    #[error("The devnet name is missing. Set DEVNET_devnet_name in E2E_ENV_FILE and retry.")]
+    MissingName,
+}
+
+#[derive(PartialEq, Eq)]
+struct DevnetSettings {
+    name: String,
+    entries: BTreeMap<String, String>,
+}
+
+fn devnet_config_field(key: &str) -> Option<String> {
+    key.strip_prefix("DEVNET_").map(str::to_ascii_lowercase)
+}
+
+fn devnet_settings_from_env(contents: &[u8]) -> Result<DevnetSettings, DevnetConfigError> {
+    let contents = contents.strip_prefix(b"\xef\xbb\xbf").unwrap_or(contents);
+    let mut file_entries = BTreeMap::new();
+    for entry in dotenvy::Iter::new(contents) {
+        let (key, value) = entry.map_err(|error| DevnetConfigError::InvalidFile(error.into()))?;
+        if let Some(field) = devnet_config_field(&key) {
+            file_entries.insert(field, value);
+        }
+    }
+    let name = file_entries
+        .get("devnet_name")
+        .ok_or(DevnetConfigError::MissingName)?
+        .trim();
+    // Use the same name as the SPV handshake, without Core's datadir prefix.
+    let name = name.strip_prefix("devnet-").unwrap_or(name);
+    if name.is_empty() {
+        return Err(DevnetConfigError::MissingName);
+    }
+    let name = name.to_owned();
+
+    // Match Config::load_from: file entries override process settings.
+    let mut entries: BTreeMap<_, _> = std::env::vars_os()
+        .filter_map(|(key, value)| {
+            let field = devnet_config_field(key.to_str()?)?;
+            Some((field, value.into_string().ok()?))
+        })
+        .collect();
+    entries.extend(file_entries);
+    Ok(DevnetSettings { name, entries })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum BootstrapAmountError {
+    #[error(
+        "E2E_PLATFORM_FUND_DUFFS is not valid UTF-8. Set it to a whole number of duffs and retry."
+    )]
+    Encoding {
+        #[source]
+        source: VarError,
+    },
+    #[error("E2E_PLATFORM_FUND_DUFFS is invalid. Set it to a whole number of duffs and retry.")]
+    InvalidNumber(#[from] std::num::ParseIntError),
+    #[error(
+        "E2E_PLATFORM_FUND_DUFFS is out of range. Set it to between 1 and {MAX_MONEY} duffs and retry."
+    )]
+    OutOfRange,
+}
+
+fn parse_bootstrap_amount(amount: Option<&str>) -> Result<u64, BootstrapAmountError> {
+    const DEFAULT_PLATFORM_FUND_DUFFS: u64 = 2_500_000_000;
+    let amount = amount.map_or(Ok(DEFAULT_PLATFORM_FUND_DUFFS), str::parse)?;
+    if !(1..=MAX_MONEY).contains(&amount) {
+        return Err(BootstrapAmountError::OutOfRange);
+    }
+    Ok(amount)
+}
+
+/// Network selected for this test process.
+pub fn e2e_network() -> Network {
+    settings().network
+}
+
+/// Validated amount when funding is explicitly enabled for Devnet.
+pub fn devnet_bootstrap_amount() -> Option<u64> {
+    settings()
+        .bootstrap_amount
+        .as_ref()
+        .copied()
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Derive the seed from the framework mnemonic configured for this test process.
+pub fn framework_seed() -> [u8; 64] {
+    let phrase = settings().mnemonic.as_deref().expect(
+        "The framework wallet mnemonic is missing or invalid. Set E2E_WALLET_MNEMONIC to a funded wallet's BIP-39 mnemonic and retry.",
+    );
+    Mnemonic::parse_in(Language::English, phrase)
+        .expect("Invalid E2E_WALLET_MNEMONIC. Correct the BIP-39 mnemonic and retry.")
+        .to_seed("")
+}
+
+/// A workdir configuration could not be safely prepared or reused.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkdirEnvError {
+    #[error("Could not prepare the workdir .env. Check the directory permissions and retry.")]
+    Io(#[from] io::Error),
+    #[error(
+        "The workdir .env differs from E2E_ENV_FILE. Move the workdir aside or retry with the original E2E_ENV_FILE."
+    )]
+    Mismatch,
+    #[error(
+        "The workdir contains test data but its .env is missing. Move the workdir aside or restore its configuration and retry."
+    )]
+    Missing,
+    #[error(
+        "The resolved devnet settings changed during this run. Set stable devnet values in E2E_ENV_FILE and restart the tests."
+    )]
+    DevnetConfigChanged,
+}
+
+/// Prepare an isolated workdir with the resolved network configuration.
+pub fn write_workdir_env(workdir: &Path) -> Result<(), WorkdirEnvError> {
+    let settings = settings();
+    prepare_workdir_env(
+        workdir,
+        settings.env_contents.as_deref(),
+        settings.devnet.as_ref(),
+    )
+}
+
+fn prepare_workdir_env(
+    workdir: &Path,
+    contents: Option<&[u8]>,
+    expected_devnet: Option<&DevnetSettings>,
+) -> Result<(), WorkdirEnvError> {
+    use std::io::Write;
+
+    ensure_data_dir_exists(workdir)?;
+    let Some(contents) = contents else {
+        return Ok(ensure_env_file(workdir)?);
+    };
+    // AppContext loads the file into the process environment. An earlier
+    // context can change how dotenv substitutions resolve without changing
+    // the file bytes. Reject that drift before opening stores.
+    if let Some(expected) = expected_devnet
+        && !devnet_settings_from_env(contents).is_ok_and(|current| &current == expected)
+    {
+        return Err(WorkdirEnvError::DevnetConfigChanged);
+    }
+    let destination = workdir.join(ENV_FILE);
+    match std::fs::read(&destination) {
+        Ok(existing) if existing == contents => return Ok(()),
+        Ok(_) => return Err(WorkdirEnvError::Mismatch),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    for entry in std::fs::read_dir(workdir)? {
+        if entry?.file_name() != ".lock" {
+            return Err(WorkdirEnvError::Missing);
+        }
+    }
+
+    // NamedTempFile starts at 0600 on Unix. Publish only after the full write.
+    let mut temporary = tempfile::NamedTempFile::new_in(workdir)?;
+    temporary.write_all(contents)?;
+    temporary
+        .persist_noclobber(destination)
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn workdir_base(root: &Path, network: Network, devnet_name: Option<&str>) -> PathBuf {
+    match devnet_name {
+        Some(name) => root.join(format!(
+            "dash-evo-e2e-devnet-{}",
+            hex::encode(Sha256::digest(name))
+        )),
+        None => root.join(format!("dash-evo-e2e-{network}")),
     }
 }
 
@@ -159,7 +388,6 @@ pub async fn ctx() -> &'static BackendTestContext {
 pub struct BackendTestContext {
     pub app_context: Arc<AppContext>,
     pub framework_wallet_hash: WalletSeedHash,
-    pub _workdir: PathBuf,
     /// Lock file held for the lifetime of the test process to prevent
     /// concurrent test runs from using the same workdir.
     _lock_file: std::fs::File,
@@ -282,58 +510,42 @@ impl BackendTestContext {
             .with_target(false)
             .try_init();
 
-        // Load .env from the project root so E2E_WALLET_MNEMONIC is available.
-        if let Err(e) = dotenvy::dotenv() {
-            tracing::debug!(".env not loaded ({e}), relying on environment");
-        }
-
         // E2E_WALLET_MNEMONIC is required. Read and parse it BEFORE any store is
         // opened: a bad value here is the most common init failure, and failing
         // ahead of `open_available_workdir` keeps the first attempt from leaving
         // a workdir slot holding an un-droppable `det-app.sqlite` handle.
-        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
-            panic!(
-                "E2E_WALLET_MNEMONIC is not set.\n\
-                 This environment variable is required for backend E2E tests.\n\
-                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
-                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
-                 You can also add it to the project root .env file."
-            );
-        });
-
-        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
-            .expect("Invalid E2E_WALLET_MNEMONIC");
-        let seed = mnemonic.to_seed("");
+        let settings = settings();
+        let network = settings.network;
+        let seed = framework_seed();
         let framework_wallet_hash = {
-            let tmp_wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
-                seed,
-                e2e_network(),
-                None,
-                None,
-            )
-            .expect("Failed to compute framework wallet hash");
+            let tmp_wallet =
+                dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, network, None, None)
+                    .expect("Failed to compute framework wallet hash");
             tmp_wallet.seed_hash()
         };
 
         // Deterministic workdir — always the same path so the database, wallets,
         // and SPV data persist across runs. If the primary path is locked by
         // another process, fall back to numbered alternatives (slot 1, 2, ...).
-        let base = match e2e_network() {
-            Network::Testnet => std::env::temp_dir().join("dash-evo-e2e-testnet"),
-            other => std::env::temp_dir().join(format!("dash-evo-e2e-{other}")),
-        };
+        let base = workdir_base(
+            &std::env::temp_dir(),
+            network,
+            settings.devnet.as_ref().map(|devnet| devnet.name.as_str()),
+        );
         let slot_floor = WORKDIR_SLOT_FLOOR.load(std::sync::atomic::Ordering::SeqCst);
         let WorkdirHandles {
             dir: workdir,
             lock_file,
             app_kv,
             secret_store,
-        } = open_available_workdir(&base, slot_floor)
-            .unwrap_or_else(|e| panic!("{}", error_report(&e)));
+        } = open_available_workdir(
+            &base,
+            slot_floor,
+            settings.env_contents.as_deref(),
+            settings.devnet.as_ref(),
+        )
+        .unwrap_or_else(|e| panic!("{}", error_report(&e)));
         tracing::info!("E2E workdir: {}", workdir.display());
-
-        // Ensure .env is present in the workdir (no env var mutation needed).
-        write_workdir_env(&workdir).expect("write .env");
 
         // Create database
         let db_path = workdir.join("data.db");
@@ -348,7 +560,7 @@ impl BackendTestContext {
 
         let app_context = AppContext::new(
             workdir.clone(),
-            e2e_network(),
+            network,
             db,
             subtasks,
             connection_status,
@@ -404,7 +616,7 @@ impl BackendTestContext {
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
-            e2e_network(),
+            network,
             Some("E2E Framework Wallet".to_string()),
             None,
         )
@@ -584,7 +796,6 @@ impl BackendTestContext {
         BackendTestContext {
             app_context,
             framework_wallet_hash,
-            _workdir: workdir,
             _lock_file: lock_file,
             _task_result_rx: task_result_rx,
         }
@@ -611,7 +822,7 @@ impl BackendTestContext {
 
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
-            e2e_network(),
+            app_context.network(),
             // Wallet aliases are unique per app; a fixed one fails the second call.
             Some(format!("E2E Test Wallet {:08x}", rand::random::<u32>())),
             None,
@@ -818,6 +1029,13 @@ enum WorkdirOpenError {
         source: std::io::Error,
     },
 
+    #[error("E2E workdir {} could not use the requested configuration", dir.display())]
+    ConfigUnusable {
+        dir: PathBuf,
+        #[source]
+        source: WorkdirEnvError,
+    },
+
     /// A store refused to open for a reason another slot cannot avoid, such as
     /// an ancestor directory other users can write to. Cycling the remaining
     /// slots would only repeat the refusal and hide its cause.
@@ -927,6 +1145,8 @@ fn error_report(error: &dyn std::error::Error) -> String {
 fn open_available_workdir(
     base: &std::path::Path,
     slot_floor: usize,
+    contents: Option<&[u8]>,
+    expected_devnet: Option<&DevnetSettings>,
 ) -> Result<WorkdirHandles, WorkdirOpenError> {
     use std::io::Write;
 
@@ -997,6 +1217,13 @@ fn open_available_workdir(
             }
             Err(source) => return Err(WorkdirOpenError::LockUnsupported { dir, source }),
         }
+
+        prepare_workdir_env(&dir, contents, expected_devnet).map_err(|source| {
+            WorkdirOpenError::ConfigUnusable {
+                dir: dir.clone(),
+                source,
+            }
+        })?;
 
         // Both stores refuse a second open, so opening them here is what makes
         // a slot leaked by a panicked init unusable rather than fatal. Dropping
@@ -1111,6 +1338,154 @@ mod workdir_tests {
     use platform_wallet_storage::secrets::SecretStoreError;
 
     #[test]
+    fn config_regression_named_devnets_have_distinct_workdir_bases() {
+        let root = std::path::Path::new("tmp");
+        let alpha = workdir_base(root, Network::Devnet, Some("alpha"));
+        assert_ne!(alpha, workdir_base(root, Network::Devnet, Some("beta")));
+        assert_ne!(alpha, workdir_base(root, Network::Devnet, Some("Alpha")));
+        assert_eq!(alpha, workdir_base(root, Network::Devnet, Some("alpha")));
+        assert_eq!(
+            workdir_base(root, Network::Devnet, Some("../alpha")).parent(),
+            Some(root)
+        );
+        assert_eq!(
+            workdir_base(root, Network::Testnet, None),
+            root.join("dash-evo-e2e-testnet")
+        );
+    }
+
+    #[test]
+    fn config_regression_stale_env_is_refused_before_opening_stores() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let workdir = scratch.path();
+        let old = b"DEVNET_core_host=old.example";
+        std::fs::write(workdir.join(".env"), old).expect("write old .env");
+
+        let result =
+            open_available_workdir(workdir, 0, Some(b"DEVNET_core_host=new.example"), None);
+
+        assert!(matches!(
+            result,
+            Err(WorkdirOpenError::ConfigUnusable {
+                source: WorkdirEnvError::Mismatch,
+                ..
+            })
+        ));
+        assert_eq!(std::fs::read(workdir.join(".env")).unwrap(), old);
+        assert!(!workdir.join("det-app.sqlite").exists());
+        assert!(!workdir.join("secrets").exists());
+    }
+
+    #[test]
+    fn config_regression_refuses_resolved_devnet_name_drift_before_stores() {
+        let expected =
+            devnet_settings_from_env(b"DEVNET_devnet_name=alpha\nDEVNET_core_host=alpha.example")
+                .unwrap();
+        for contents in [
+            b"DEVNET_devnet_name=beta\nDEVNET_core_host=alpha.example".as_slice(),
+            b"DEVNET_devnet_name=alpha\nDEVNET_core_host=beta.example",
+        ] {
+            let scratch = tempfile::tempdir().expect("scratch dir");
+            let workdir = scratch.path();
+            std::fs::write(workdir.join(".env"), contents).unwrap();
+
+            let result = open_available_workdir(workdir, 0, Some(contents), Some(&expected));
+
+            assert!(matches!(
+                result,
+                Err(WorkdirOpenError::ConfigUnusable {
+                    source: WorkdirEnvError::DevnetConfigChanged,
+                    ..
+                })
+            ));
+            assert!(!workdir.join("det-app.sqlite").exists());
+            assert!(!workdir.join("secrets").exists());
+        }
+    }
+
+    #[test]
+    fn config_regression_accepts_matching_env_and_refuses_missing_config_for_existing_data() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let workdir = scratch.path();
+        let contents = b"DEVNET_core_host=devnet.example";
+        std::fs::write(workdir.join(".env"), contents).unwrap();
+        prepare_workdir_env(workdir, Some(contents), None).expect("reuse an identical .env");
+
+        let other = workdir.join("used");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("data.db"), []).unwrap();
+        assert!(matches!(
+            prepare_workdir_env(&other, Some(contents), None),
+            Err(WorkdirEnvError::Missing)
+        ));
+        assert!(!other.join(".env").exists());
+    }
+
+    #[test]
+    fn config_regression_devnet_name_uses_last_entry_and_core_prefix() {
+        let contents =
+            b"\xef\xbb\xbfDEVNET_devnet_name=first\nexport DEVNET_DEVNET_NAME=' devnet-second '\n";
+        assert_eq!(devnet_settings_from_env(contents).unwrap().name, "second");
+        for contents in [b"".as_slice(), b"DEVNET_devnet_name=devnet-"] {
+            assert!(matches!(
+                devnet_settings_from_env(contents),
+                Err(DevnetConfigError::MissingName)
+            ));
+        }
+        assert!(matches!(
+            devnet_settings_from_env(b"DEVNET_devnet_name='"),
+            Err(DevnetConfigError::InvalidFile(_))
+        ));
+    }
+
+    #[test]
+    fn config_regression_bootstrap_amount_is_positive_and_in_range() {
+        assert_eq!(parse_bootstrap_amount(None).unwrap(), 2_500_000_000);
+        assert_eq!(parse_bootstrap_amount(Some("12345")).unwrap(), 12_345);
+        assert_eq!(
+            parse_bootstrap_amount(Some(&MAX_MONEY.to_string())).unwrap(),
+            MAX_MONEY
+        );
+        for invalid in [
+            "",
+            "-1",
+            "0",
+            "0.5",
+            "18446744073709551616",
+            &(MAX_MONEY + 1).to_string(),
+        ] {
+            assert!(
+                parse_bootstrap_amount(Some(invalid)).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_regression_copied_env_and_workdir_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let workdir = scratch.path().join("isolated");
+        std::fs::create_dir(&workdir).unwrap();
+        std::fs::set_permissions(&workdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let contents = b"DEVNET_core_host=devnet.example";
+        prepare_workdir_env(&workdir, Some(contents), None).expect("prepare workdir .env");
+
+        let path = workdir.join(".env");
+        assert_eq!(std::fs::read(&path).unwrap(), contents);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&workdir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
     fn slot_held_only_for_in_process_open_handles() {
         assert!(is_slot_held(&TaskError::WalletStorage {
             source: WalletStorageError::AlreadyOpen {
@@ -1162,7 +1537,7 @@ mod workdir_tests {
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500))
             .expect("chmod 0500");
 
-        let result = open_available_workdir(&readonly.join("dash-evo-e2e-testnet"), 0);
+        let result = open_available_workdir(&readonly.join("dash-evo-e2e-testnet"), 0, None, None);
 
         // Restore write permission so the tempdir can clean itself up.
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700))

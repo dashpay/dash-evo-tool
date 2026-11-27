@@ -1,15 +1,16 @@
 # Backend E2E Test Framework
 
 End-to-end tests that exercise Dash Evo Tool backend tasks directly (no GUI)
-against a live Dash testnet via SPV. These tests verify that core wallet
-operations, identity management, DPNS registration, and Platform queries work
-correctly through the same `AppContext` and `BackendTask` pipeline used by the
+against a live Dash testnet or named devnet via SPV. These tests verify that
+Core wallet operations, identity management, DPNS registration, and Platform
+queries work through the same `AppContext` and `BackendTask` pipeline used by the
 application at runtime.
 
 ## Running the tests
 
-All tests are marked `#[ignore]` to prevent them from running during normal
-`cargo test`. They require network access and a funded wallet.
+Live-network tests are marked `#[ignore]` to prevent them from running during
+normal `cargo test`. They require network access and a funded wallet, except
+where a test documents otherwise.
 
 The harness routes all SDK-deep work — backend tasks (`run_task`) and direct
 `dash_sdk::platform::Fetch` calls in test bodies (`run_on_large_stack`) alike —
@@ -40,11 +41,11 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 
 | Variable | Required | Description |
 |---|---|---|
-| `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
+| `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet on the selected network, funded with at least 10 DASH on that network. Set it in the shell or in the project root `.env`. |
 | `E2E_NETWORK` | No | `testnet` (default) or `devnet`. Devnet needs `E2E_ENV_FILE` with `DEVNET_dapi_addresses`, `DEVNET_core_host` (SPV peer, Core P2P port 20001) and `DEVNET_devnet_name`; see [Running against a devnet](#running-against-a-devnet). |
-| `E2E_DEVNET_BOOTSTRAP` | No | `1` lets `devnet_setup::fund_framework_platform_address` move funds; it does nothing unless this is set and `E2E_NETWORK=devnet`. |
-| `E2E_PLATFORM_FUND_DUFFS` | No | Amount that bootstrap moves from Core to the platform address, in duffs (default 2500000000 = 25 DASH). A value that is not a whole number fails the bootstrap before anything is sent. |
-| `E2E_ENV_FILE` | No | `.env` copied into each fresh workdir instead of the bundled `.env.example`. |
+| `E2E_DEVNET_BOOTSTRAP` | No | Set to `1` with `E2E_NETWORK=devnet` to let `devnet_setup::fund_framework_platform_address` move funds on Devnet. |
+| `E2E_PLATFORM_FUND_DUFFS` | No | Amount bootstrap moves from Core to the Platform address (default 2,500,000,000 duffs or 25 DASH). Set a positive whole number of duffs within the Core money range. |
+| `E2E_ENV_FILE` | For devnet | Path to the network configuration to copy into each fresh workdir. With no path set, Testnet uses the bundled `.env.example` for fresh workdirs. |
 
 ### Running against a devnet
 
@@ -57,12 +58,21 @@ Testnet is the default. To run against a devnet:
    (the init failure prints its address).
 3. Run `devnet_setup::fund_framework_platform_address` once with
    `E2E_DEVNET_BOOTSTRAP=1`, so the DPNS tests that fund identities from
-   platform addresses find credits. It moves `E2E_PLATFORM_FUND_DUFFS`
-   (25 DASH by default) out of the framework wallet's Core balance, so fund
-   that wallet with this amount plus the usual 10 DASH. Leave the variable
-   unset afterwards: later runs, and every testnet run, skip the transfer.
+   Platform addresses find credits. Budget the transfer amount
+   (`E2E_PLATFORM_FUND_DUFFS`, 25 DASH by default), the Core transaction fee,
+   and at least 10 DASH to leave in the framework wallet's Core balance for
+   the harness. Unset `E2E_DEVNET_BOOTSTRAP` after funding.
 
-The workdir is `<tmp>/dash-evo-e2e-devnet`, separate from the testnet one.
+If bootstrap reports an error, check the framework wallet's Platform address
+balance before rerunning it. The transfer may have succeeded before the balance
+refresh failed, and rerunning bootstrap could send the full amount again.
+
+Each devnet uses `<tmp>/dash-evo-e2e-devnet-<name-hash>`, with a numeric suffix
+for fallback slots. A saved `.env` must match `E2E_ENV_FILE` byte for byte.
+If the harness reports a mismatch or missing configuration in a used slot,
+move that workdir aside or retry with the original configuration. If variable
+substitution changes the resolved devnet settings within a test process, use
+stable values in `E2E_ENV_FILE` and restart the tests.
 Devnet SPV sync needs DET to send the devnet name and user agent to dash-spv,
 which it does from #1250 (in `v1.0-dev`), and `DEVNET_devnet_name` set in the
 env file: without the name, dash-spv refuses to start on Devnet.
@@ -118,39 +128,26 @@ it.
 
 The harness uses two separate `.env` files for different purposes:
 
-1. **Project root `.env`** -- loaded via `dotenvy::dotenv()` at the start of
-   initialization. `dotenvy` merges entries from this file into the process
-   environment, so `E2E_WALLET_MNEMONIC` can be defined here instead of (or in
-   addition to) a shell export.
+1. **Project root `.env`** is loaded before the harness resolves the network,
+   funding options, and mnemonic. Set the `E2E_*` options here or in the shell.
+   Shell values take precedence.
 
    ```bash
    # Example: add to project root .env to persist across sessions
    E2E_WALLET_MNEMONIC="word1 word2 word3 ... word12"
    ```
 
-2. **Workdir `.env`** -- the harness passes a persistent temp directory
-   (e.g., `/tmp/dash-evo-e2e-testnet-abc1234/`) as `data_dir` to
-   `AppContext::new()`, and calls `ensure_env_file()` to copy the bundled
-   `.env.example` into the workdir. `AppContext` reads this file for network
-   configuration (testnet Platform endpoints, seeds, etc.).
-
-**Precedence**: a shell-exported `E2E_WALLET_MNEMONIC` takes priority over the
-`.env` file value (`dotenvy` does not overwrite existing env vars).
-
-```
-Project root .env  →  dotenvy merges into process env
-                      (E2E_WALLET_MNEMONIC, required)
-
-Harness passes workdir → /tmp/dash-evo-e2e-testnet-<hash>/
-    → ensure_env_file() copies .env.example into workdir
-    → AppContext::new(workdir, ...) reads workdir/.env for network config
-```
+2. **Workdir `.env`** provides the network settings to `AppContext`. The
+   harness prepares it before opening stores. When `E2E_ENV_FILE` is set,
+   the harness copies it into a private workdir and creates the file with
+   mode `0600` on Unix. With no override, the harness seeds Testnet workdirs
+   from the bundled `.env.example`.
 
 ## Architecture
 
 ### Shared singleton context
 
-All tests share a single `BackendTestContext` initialized via
+Most live-network tests share a single `BackendTestContext` initialized via
 `tokio::sync::OnceCell`. The first test to call `ctx().await` triggers
 initialization; subsequent calls return the cached reference.
 
@@ -160,28 +157,21 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 
 `BackendTestContext` holds:
 
-- **`app_context`** -- a fully initialized `Arc<AppContext>` connected to Dash
-  testnet with SPV running
+- **`app_context`** holds the selected network and workdir, with SPV running.
 - **`framework_wallet_hash`** -- the `WalletSeedHash` of the "bank" wallet used
   to fund per-test wallets
-- **`_workdir`** -- path to a persistent temp directory (e.g.,
-  `/tmp/dash-evo-e2e-testnet`, or a numbered fallback slot; see "Persistent
-  workdir" below -- not git-rev-keyed)
 
 ### Initialization sequence
 
-1. Initialize tracing subscriber for structured log output.
-2. Create a persistent workdir under `/tmp/` (deterministic path, with numbered
-   fallback slots guarded by a `.lock` file -- see "Persistent workdir" below).
-3. Copy `.env.example` into the workdir via `ensure_env_file()`.
-4. Create a SQLite database and `AppContext` for the network under test (`E2E_NETWORK`, testnet by default), passing the workdir as `data_dir`.
-5. Start SPV in light-client mode and wait for peer connections (60s timeout).
-6. Restore the framework wallet from `E2E_WALLET_MNEMONIC` (required).
-7. Register the wallet with `AppContext` (idempotent -- handles "already imported").
-8. Wait for SPV to sync the wallet's UTXOs and funds to become spendable (180s timeout).
+1. Initialize tracing and resolve the test settings and framework wallet seed.
+2. Lock a persistent workdir for the selected network and prepare its `.env`.
+3. Open the stores and create the SQLite database and `AppContext` in that workdir.
+4. Register the framework wallet, reusing it if it already exists.
+5. Start SPV in light-client mode and wait for peer connections and full sync.
+6. Verify the framework wallet has at least 10 DASH and sweep orphaned test
+   wallets from previous runs back to it.
 
-The full SPV sync wait before step 8 is progress-aware and bounded
-(`framework/wait.rs`):
+The full SPV sync wait is progress-aware and bounded in `framework/wait.rs`.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -192,18 +182,14 @@ A slow but advancing sync keeps waiting on the same runtime and workdir slot,
 so its stored headers and filters are reused. Failing into an init retry would
 move to a fresh slot (the previous slot's SPV lock cannot be released
 in-process) and restart the sync from genesis. A fresh workdir needs a full
-testnet sync, which can take well over 10 minutes; later runs resume from the
-stored data.
-9. Verify balance is above minimum threshold (10 tDASH).
-10. Sweep orphaned test wallets from previous runs back to the framework wallet.
+sync, which can take well over 10 minutes. Later runs resume from the stored data.
 
 ### Persistent workdir
 
-The workdir is deterministic, not git-rev-keyed: it's always
-`<tmp>/dash-evo-e2e-testnet` (slot 0), with numbered fallback slots
-(`dash-evo-e2e-testnet-1`, `-2`, ...) that `pick_available_workdir` cycles
-through via a per-slot `.lock` file when an earlier slot is still locked by
-another process (see `framework/harness.rs`). This means:
+The base workdir is `<tmp>/dash-evo-e2e-testnet` for Testnet and includes the
+devnet name hash for Devnet. If a slot is held by another process,
+`open_available_workdir` tries numbered fallback slots using a per-slot
+`.lock` file.
 
 - The SQLite database is reused across runs, so wallets registered previously
   are already present, regardless of which commit produced them.
@@ -221,8 +207,8 @@ rm -rf /tmp/dash-evo-e2e-testnet*
 
 ### Framework wallet ("the bank")
 
-A single long-lived wallet created during initialization. It holds testnet DASH
-and serves as the funding source for all per-test wallets.
+A single long-lived wallet created during initialization. It holds DASH on the
+selected network and serves as the funding source for all per-test wallets.
 `E2E_WALLET_MNEMONIC` must be set to the mnemonic of a pre-funded wallet.
 
 ### Test wallets

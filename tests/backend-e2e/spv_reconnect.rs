@@ -27,8 +27,7 @@
 //!   --ignored --nocapture spv_reconnect_succeeds_without_already_open
 //! ```
 
-use crate::framework::harness::e2e_network;
-
+use crate::framework::harness::{e2e_network, write_workdir_env};
 use crate::framework::wait;
 use dash_evo_tool::app::TaskResult;
 use dash_evo_tool::context::AppContext;
@@ -57,8 +56,7 @@ async fn spv_reconnect_succeeds_without_already_open() {
     // ── Isolated context setup ──────────────────────────────────────────────
     let workdir =
         std::env::temp_dir().join(format!("dash-evo-e2e-reconnect-{}", std::process::id()));
-    std::fs::create_dir_all(&workdir).expect("create reconnect test workdir");
-    crate::framework::harness::write_workdir_env(&workdir).expect("write .env");
+    write_workdir_env(&workdir).unwrap_or_else(|error| panic!("{error}"));
 
     let db_path = workdir.join("data.db");
     let db = Arc::new(create_database_at_path(&db_path).expect("create reconnect test DB"));

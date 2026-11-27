@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::{CacheDomain, CacheUpdate};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::KeyRequirements;
@@ -23,7 +24,8 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-use dash_sdk::platform::{DataContract, IdentityPublicKey};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
@@ -91,11 +93,7 @@ impl RegisterDataContractScreen {
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
-            .map(|qi| {
-                qi.identity
-                    .id()
-                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
-            })
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58))
             .unwrap_or_default();
 
         Self {
@@ -346,6 +344,62 @@ impl RegisterDataContractScreen {
 }
 
 impl ScreenLike for RegisterDataContractScreen {
+    fn cached_data_changed(&mut self, update: CacheUpdate) {
+        if update.network == self.app_context.network()
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        let identities = match self.app_context.load_local_user_identities() {
+            Ok(identities) => identities,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "Register Contract could not reload stored identities"
+                );
+                return;
+            }
+        };
+        let selected_id = Identifier::from_base58_text(&self.selected_identity_string);
+        self.selected_qualified_identity = match selected_id {
+            Some(id) => identities.iter().find(|qi| qi.identity.id() == id),
+            None => identities.first(),
+        }
+        .cloned();
+        self.qualified_identities = identities;
+
+        if let Some(identity) = &self.selected_qualified_identity {
+            let id = identity.identity.id();
+            self.selected_identity_string = id.to_string(Encoding::Base58);
+            if let BroadcastStatus::ValidContract(contract) = &mut self.broadcast_status {
+                contract.set_owner_id(id);
+            }
+        }
+        self.selected_key = self.selected_key.as_ref().and_then(|key| {
+            self.selected_qualified_identity
+                .as_ref()?
+                .current_public_key(key)
+                .cloned()
+        });
+        crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_qualified_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        );
+        if crate::ui::identity::sync_signing_wallet(
+            self.selected_qualified_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.wallet_unlock_popup.close();
+        }
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
@@ -664,6 +718,86 @@ mod tests {
         harness.get_by_label("Add New Key to Identity").click();
         harness.run();
         assert!(harness.state().1);
+    }
+
+    async fn assert_register_contract_recovers_signer_and_keeps_draft(
+        reload: impl FnOnce(&mut RegisterDataContractScreen),
+    ) {
+        use crate::context::test_support::wired_test_app_context;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let master = auth_key(1, SecurityLevel::MASTER);
+        let identity = identity_holding(std::slice::from_ref(&master));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        let draft = serde_json::json!({
+            "$formatVersion": "1",
+            "id": Identifier::from([7; 32]).to_string(Encoding::Base58),
+            "ownerId": identity.identity.id().to_string(Encoding::Base58),
+            "version": 1,
+            "documentSchemas": { "note": {
+                "type": "object",
+                "properties": { "text": { "type": "string", "maxLength": 20, "position": 0 } },
+                "additionalProperties": false
+            } }
+        })
+        .to_string();
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.contract_json_input = draft.clone();
+        screen.contract_alias_input = "Draft alias".to_string();
+        screen.show_advanced_options = true;
+        screen.parse_contract();
+        if let BroadcastStatus::ParsingError(error) = &screen.broadcast_status {
+            panic!("Invalid test contract: {error}");
+        }
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1100.0))
+            .build_ui_state(
+                |ui, (screen, submitted): &mut (RegisterDataContractScreen, Option<u32>)| {
+                    if let AppAction::BackendTask(BackendTask::ContractTask(task)) = screen.ui(ui)
+                        && let ContractTask::RegisterDataContract(_, _, _, key) = *task
+                    {
+                        *submitted = Some(key.id());
+                    }
+                },
+                (screen, None),
+            );
+        harness.run();
+        harness.get_by_label("Register Contract").click();
+        harness.run();
+        assert_eq!(harness.state().1, None);
+
+        let signing_key = auth_key(2, SecurityLevel::HIGH);
+        ctx.insert_local_qualified_identity(&identity_holding(&[master, signing_key]), &None)
+            .expect("store identity with its new signing key");
+        reload(&mut harness.state_mut().0);
+        harness.run();
+        let screen = &harness.state().0;
+        assert_eq!(screen.contract_json_input, draft);
+        assert_eq!(screen.contract_alias_input, "Draft alias");
+        assert!(screen.show_advanced_options);
+        harness.get_by_label("Register Contract").click();
+        harness.step(); // Broadcasting keeps the spinner repainting.
+        assert_eq!(harness.state().1, Some(2), "Register must use the new key");
+    }
+
+    #[tokio::test]
+    async fn register_contract_recovers_signer_and_keeps_draft_on_return() {
+        assert_register_contract_recovers_signer_and_keeps_draft(ScreenLike::refresh).await;
+    }
+
+    #[tokio::test]
+    async fn register_contract_recovers_signer_and_keeps_draft_on_cache_update() {
+        assert_register_contract_recovers_signer_and_keeps_draft(|screen| {
+            screen.cached_data_changed(CacheUpdate {
+                network: screen.app_context.network(),
+                domain: CacheDomain::Identities,
+            });
+        })
+        .await;
     }
 
     #[tokio::test]

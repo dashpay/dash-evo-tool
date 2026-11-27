@@ -159,7 +159,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     let workdir =
         std::env::temp_dir().join(format!("dash-evo-e2e-coldboot-{}", std::process::id()));
     std::fs::create_dir_all(&workdir).expect("create cold-boot workdir");
-    ensure_env_file(&workdir);
+    ensure_env_file(&workdir).expect("write .env");
 
     let db_path = workdir.join("data.db");
     let db = Arc::new(create_database_at_path(&db_path).expect("create cold-boot database"));

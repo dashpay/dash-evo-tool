@@ -1,6 +1,6 @@
 //! Screen ownership, finite domain observers and non-destructive cache delivery.
 use super::request_routing::{ResultRoute, ScreenOwner};
-use super::{AppAction, AppState, BackendTasksExecutionMode};
+use super::{AppAction, AppState};
 #[cfg(feature = "testing")]
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
@@ -256,28 +256,8 @@ impl AppState {
 
     pub(super) fn dispatch_screen_task(&mut self, owner: Option<ScreenOwner>, action: AppAction) {
         let network = self.current_app_context().network;
-        let (tasks, mode) = match action {
-            AppAction::BackendTask(task) => {
-                let context = BackendTaskContext::for_dispatch_on(&task, network);
-                (vec![(task, context)], BackendTasksExecutionMode::Sequential)
-            }
-            AppAction::BackendTaskWithContext { task, context } => {
-                (vec![(task, context)], BackendTasksExecutionMode::Sequential)
-            }
-            AppAction::BackendTasks(tasks, mode) => (
-                tasks
-                    .into_iter()
-                    .map(|task| {
-                        let context = BackendTaskContext::for_dispatch_on(&task, network);
-                        (task, context)
-                    })
-                    .collect(),
-                mode,
-            ),
-            // The screen chose each task's context, so it can tell one
-            // dispatch of a task from another.
-            AppAction::BackendTasksWithContexts(tasks, mode) => (tasks, mode),
-            _ => return,
+        let Ok((tasks, mode)) = action.into_dispatch(network) else {
+            return;
         };
         if let Some(owner) = owner {
             for (_, context) in &tasks {

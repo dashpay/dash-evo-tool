@@ -26,7 +26,9 @@ use dash_sdk::{
 
 use crate::{
     context::AppContext,
-    model::{qualified_identity::QualifiedIdentity, wallet::Wallet},
+    model::{
+        identity_key_usability::SigningScope, qualified_identity::QualifiedIdentity, wallet::Wallet,
+    },
 };
 
 pub mod activity;
@@ -194,6 +196,23 @@ pub(crate) fn sync_signing_wallet(
         *wallet_open_attempted = false;
     }
     *selected_wallet = next;
+    changed
+}
+
+/// Keeps `selected` while `identity` can still sign a non-batch transition
+/// with it; otherwise takes `fallback`. Returns whether the key changed.
+pub(crate) fn reselect_unusable_key(
+    identity: &QualifiedIdentity,
+    selected: &mut Option<IdentityPublicKey>,
+    fallback: Option<&IdentityPublicKey>,
+) -> bool {
+    if selected.as_ref().is_some_and(|key| {
+        crate::ui::helpers::signable_key_now(identity, key, SigningScope::NonBatch).is_some()
+    }) {
+        return false;
+    }
+    let changed = selected.as_ref() != fallback;
+    *selected = fallback.cloned();
     changed
 }
 

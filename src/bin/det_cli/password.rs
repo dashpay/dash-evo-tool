@@ -186,7 +186,7 @@ pub(super) fn read_password(source: &PasswordSource) -> Result<SecretString, Pas
                 return Err(PasswordReadError::StdinIsTerminal);
             }
             let raw = raw_stdin()
-                .and_then(read_bounded)
+                .and_then(|stdin| read_bounded(stdin, READ_LIMIT))
                 .map_err(|source| PasswordReadError::ReadStdin { source })?;
             parse_password(&raw)
         }
@@ -201,7 +201,7 @@ pub(super) fn read_password(source: &PasswordSource) -> Result<SecretString, Pas
 /// [`read_bounded`]. Reading the duplicated descriptor directly leaves that
 /// buffer untouched: the only user-space copy is the zeroizing one.
 #[cfg(unix)]
-fn raw_stdin() -> std::io::Result<std::fs::File> {
+pub(super) fn raw_stdin() -> std::io::Result<std::fs::File> {
     use std::os::fd::AsFd as _;
     Ok(std::fs::File::from(
         std::io::stdin().as_fd().try_clone_to_owned()?,
@@ -211,7 +211,7 @@ fn raw_stdin() -> std::io::Result<std::fs::File> {
 /// See the Unix variant: the same bypass of std's stdin buffer, over a
 /// duplicated handle.
 #[cfg(windows)]
-fn raw_stdin() -> std::io::Result<std::fs::File> {
+pub(super) fn raw_stdin() -> std::io::Result<std::fs::File> {
     use std::os::windows::io::AsHandle as _;
     Ok(std::fs::File::from(
         std::io::stdin().as_handle().try_clone_to_owned()?,
@@ -230,17 +230,22 @@ fn raw_stdin() -> std::io::Result<std::fs::File> {
 /// host, and for an address that does not parse — an unknown destination is
 /// not a safe one.
 pub(super) fn ensure_safe_destination(addr: &str) -> Result<(), PasswordArgError> {
-    let safe = match reqwest::Url::parse(addr) {
-        Ok(url) if url.scheme() == "https" => true,
-        Ok(url) if url.scheme() == "http" => url.host_str().is_some_and(is_loopback_host),
-        _ => false,
-    };
-    if safe {
+    if is_private_destination(addr) {
         Ok(())
     } else {
         Err(PasswordArgError::InsecureDestination {
             addr: addr.to_owned(),
         })
+    }
+}
+
+/// Whether a secret sent to `addr` stays private: `https` anywhere, plain
+/// `http` only to this computer. An address that does not parse is not.
+pub(super) fn is_private_destination(addr: &str) -> bool {
+    match reqwest::Url::parse(addr) {
+        Ok(url) if url.scheme() == "https" => true,
+        Ok(url) if url.scheme() == "http" => url.host_str().is_some_and(is_loopback_host),
+        _ => false,
     }
 }
 
@@ -296,7 +301,7 @@ fn read_password_file(path: &Path) -> Result<SecretString, PasswordReadError> {
             mode: mode & 0o7777,
         });
     }
-    let raw = read_bounded(file).map_err(read_error)?;
+    let raw = read_bounded(file, READ_LIMIT).map_err(read_error)?;
     parse_password(&raw)
 }
 
@@ -308,10 +313,13 @@ fn read_password_file(_path: &Path) -> Result<SecretString, PasswordReadError> {
     Err(PasswordReadError::FileUnsupportedOnPlatform)
 }
 
-/// Reads at most [`READ_LIMIT`] bytes into a zeroizing buffer allocated once
-/// up front, so no reallocation leaves an unwiped copy of the password behind.
-fn read_bounded(mut reader: impl Read) -> std::io::Result<Zeroizing<Vec<u8>>> {
-    let mut buffer = Zeroizing::new(vec![0u8; READ_LIMIT]);
+/// Reads at most `limit` bytes into a zeroizing buffer allocated once up
+/// front, so no reallocation leaves an unwiped copy of the secret behind.
+pub(super) fn read_bounded(
+    mut reader: impl Read,
+    limit: usize,
+) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    let mut buffer = Zeroizing::new(vec![0u8; limit]);
     let mut filled = 0;
     while filled < buffer.len() {
         match reader.read(&mut buffer[filled..]) {
@@ -494,7 +502,8 @@ mod tests {
 
         // A reader stops at the limit, and what it returns is still refused.
         let endless = std::io::repeat(b'a');
-        let raw = read_bounded(endless.take(10 * READ_LIMIT as u64)).expect("bounded read");
+        let raw =
+            read_bounded(endless.take(10 * READ_LIMIT as u64), READ_LIMIT).expect("bounded read");
         assert_eq!(raw.len(), READ_LIMIT);
         assert!(matches!(
             parse_password(&raw),
@@ -504,7 +513,8 @@ mod tests {
 
     #[test]
     fn a_pipe_is_read_to_its_single_line() {
-        let raw = read_bounded(std::io::Cursor::new(format!("{PASSWORD}\n"))).expect("read");
+        let raw =
+            read_bounded(std::io::Cursor::new(format!("{PASSWORD}\n")), READ_LIMIT).expect("read");
         let secret = parse_password(&raw).expect("one line");
         assert_eq!(secret.expose_secret(), PASSWORD);
     }

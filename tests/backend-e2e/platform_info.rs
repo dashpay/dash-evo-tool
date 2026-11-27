@@ -5,9 +5,8 @@
 //!
 //! - the current epoch is fetched live again (dashpay/platform#4231 is fixed in
 //!   this repo's pin), instead of the degraded, hardcoded rendering;
-//! - the completed-withdrawals filter, which sends the `FAILED` status that the
-//!   protocol-13 withdrawals schema does not define, is accepted by Drive
-//!   rather than rejected.
+//! - the completed-withdrawals filter includes every terminal status on supported
+//!   networks and is accepted by Drive.
 //!
 //! No funds move and no state transition is broadcast.
 
@@ -48,7 +47,7 @@ async fn test_pi001_current_epoch_is_fetched_live() {
         "• Epoch Index:",
         "• Start Height:",
         "• Start Core Height:",
-        "(Fee multiplier cache updated:",
+        "Fee estimates use a multiplier of",
     ] {
         assert!(text.contains(field), "expected {field} in: {text}");
     }
@@ -64,11 +63,9 @@ async fn test_pi001_current_epoch_is_fetched_live() {
     );
 }
 
-// ── TC-PI-002 — the completed-withdrawals filter is accepted at protocol 13 ───
+// ── TC-PI-002 — the completed-withdrawals filter is accepted ─────────────────
 //
-// The filter sends `FAILED` (5), which the protocol-13 withdrawals schema's
-// `status` enum (0..4) does not define. A schema enum constrains documents, not
-// query values, so Drive must answer the query instead of rejecting it.
+// The filter includes COMPLETE, EXPIRED and FAILED on supported networks.
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]

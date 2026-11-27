@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::CacheUpdate;
 use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
@@ -23,6 +24,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
@@ -91,11 +93,7 @@ impl RegisterDataContractScreen {
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
-            .map(|qi| {
-                qi.identity
-                    .id()
-                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
-            })
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58))
             .unwrap_or_default();
 
         Self {
@@ -346,6 +344,42 @@ impl RegisterDataContractScreen {
 }
 
 impl ScreenLike for RegisterDataContractScreen {
+    fn cached_data_changed(&mut self, update: CacheUpdate) {
+        if super::signing_identities_changed(&self.app_context, update) {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        let Some((identities, selected)) =
+            super::reload_signing_identities(&self.app_context, &mut self.selected_identity_string)
+        else {
+            return;
+        };
+        self.qualified_identities = identities;
+        self.selected_qualified_identity = selected;
+
+        if let Some(identity) = &self.selected_qualified_identity
+            && let BroadcastStatus::ValidContract(contract) = &mut self.broadcast_status
+        {
+            contract.set_owner_id(identity.identity.id());
+        }
+        crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_qualified_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        );
+        if crate::ui::identity::sync_signing_wallet(
+            self.selected_qualified_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.wallet_unlock_popup.close();
+        }
+    }
+
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
@@ -413,6 +447,7 @@ impl ScreenLike for RegisterDataContractScreen {
             }
 
             ScrollArea::vertical().show(ui, |ui| {
+                let mut key_action = AppAction::None;
                 ui.horizontal(|ui| {
                     ui.heading("Register Data Contract");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -480,7 +515,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 if self.show_advanced_options {
                     ui.add_space(10.0);
                     if let Some(identity) = &self.selected_qualified_identity {
-                        add_key_chooser(
+                        key_action = add_key_chooser(
                             ui,
                             &self.app_context,
                             identity,
@@ -563,7 +598,8 @@ impl ScreenLike for RegisterDataContractScreen {
                 self.ui_input_field(ui, json_heading.id);
 
                 // Parse the contract and show the result
-                self.ui_parsed_contract(ui)
+                key_action |= self.ui_parsed_contract(ui);
+                key_action
             }).inner
         });
 
@@ -631,6 +667,120 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallet| Arc::ptr_eq(wallet, &second))
         );
+    }
+
+    /// Regression: the chooser's "Add New Key to Identity" button returned an
+    /// action this screen dropped, so the button did nothing.
+    #[test]
+    fn add_new_key_opens_the_add_key_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity = identity_holding(&[auth_key(1, SecurityLevel::MEDIUM)]);
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+        screen.show_advanced_options = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, (screen, opened): &mut (RegisterDataContractScreen, bool)| {
+                    if matches!(
+                        screen.ui(ui),
+                        AppAction::AddScreen(crate::ui::Screen::AddKeyScreen(_))
+                    ) {
+                        *opened = true;
+                    }
+                },
+                (screen, false),
+            );
+        harness.run();
+        harness.get_by_label("Add New Key to Identity").click();
+        harness.run();
+        assert!(harness.state().1);
+    }
+
+    async fn assert_register_contract_recovers_signer_and_keeps_draft(
+        reload: impl FnOnce(&mut RegisterDataContractScreen),
+    ) {
+        use crate::context::test_support::wired_test_app_context;
+        use dash_sdk::platform::Identifier;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let master = auth_key(1, SecurityLevel::MASTER);
+        let identity = identity_holding(std::slice::from_ref(&master));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        let draft = serde_json::json!({
+            "$formatVersion": "1",
+            "id": Identifier::from([7; 32]).to_string(Encoding::Base58),
+            "ownerId": identity.identity.id().to_string(Encoding::Base58),
+            "version": 1,
+            "documentSchemas": { "note": {
+                "type": "object",
+                "properties": { "text": { "type": "string", "maxLength": 20, "position": 0 } },
+                "additionalProperties": false
+            } }
+        })
+        .to_string();
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.contract_json_input = draft.clone();
+        screen.contract_alias_input = "Draft alias".to_string();
+        screen.show_advanced_options = true;
+        screen.parse_contract();
+        if let BroadcastStatus::ParsingError(error) = &screen.broadcast_status {
+            panic!("Invalid test contract: {error}");
+        }
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1100.0))
+            .build_ui_state(
+                |ui, (screen, submitted): &mut (RegisterDataContractScreen, Option<u32>)| {
+                    if let AppAction::BackendTask(BackendTask::ContractTask(task)) = screen.ui(ui)
+                        && let ContractTask::RegisterDataContract(_, _, _, key) = *task
+                    {
+                        *submitted = Some(key.id());
+                    }
+                },
+                (screen, None),
+            );
+        harness.run();
+        harness.get_by_label("Register Contract").click();
+        harness.run();
+        assert_eq!(harness.state().1, None);
+
+        let signing_key = auth_key(2, SecurityLevel::HIGH);
+        ctx.insert_local_qualified_identity(&identity_holding(&[master, signing_key]), &None)
+            .expect("store identity with its new signing key");
+        reload(&mut harness.state_mut().0);
+        harness.run();
+        let screen = &harness.state().0;
+        assert_eq!(screen.contract_json_input, draft);
+        assert_eq!(screen.contract_alias_input, "Draft alias");
+        assert!(screen.show_advanced_options);
+        harness.get_by_label("Register Contract").click();
+        harness.step(); // Broadcasting keeps the spinner repainting.
+        assert_eq!(harness.state().1, Some(2), "Register must use the new key");
+    }
+
+    #[tokio::test]
+    async fn register_contract_recovers_signer_and_keeps_draft_on_return() {
+        assert_register_contract_recovers_signer_and_keeps_draft(ScreenLike::refresh).await;
+    }
+
+    #[tokio::test]
+    async fn register_contract_recovers_signer_and_keeps_draft_on_cache_update() {
+        use crate::backend_task::CacheDomain;
+
+        assert_register_contract_recovers_signer_and_keeps_draft(|screen| {
+            screen.cached_data_changed(CacheUpdate {
+                network: screen.app_context.network(),
+                domain: CacheDomain::Identities,
+            });
+        })
+        .await;
     }
 
     #[tokio::test]

@@ -61,8 +61,8 @@ const MISSING_VOTING_KEY: &str =
     "This node has no voting key loaded. Add its voting private key to cast votes.";
 const PROTECTION_UNAVAILABLE: &str = "Key protection status is unavailable. Refresh to try again.";
 
-/// Share of the panel the pinned area may take before it scrolls on its own;
-/// the vote rows always get the rest.
+/// Share of the panel the pinned area may take when the votes below it need
+/// more than the rest; with fewer votes it may also take the room they leave.
 const PINNED_MAX_SHARE: f32 = 0.6;
 
 fn remove_node_action(identity_id: Identifier) -> AppAction {
@@ -131,6 +131,9 @@ pub struct MasternodeDetailView {
     /// Never remembered beyond this view, so every visit to the node starts with
     /// Remove out of reach.
     danger_zone_open: bool,
+    /// Height the votes section (heading and rows) needed last frame, which
+    /// decides how much room the pinned area above it may take.
+    votes_height: Option<f32>,
     voter_key_prompt: Option<PasswordInput>,
     /// The `Add voting key` merge this view dispatched and has not yet seen
     /// finish. Gates Save so a re-click cannot discard the key typed into a
@@ -364,6 +367,7 @@ impl MasternodeDetailView {
             key_presence,
             remove_dialog: None,
             danger_zone_open: false,
+            votes_height: None,
             voter_key_prompt: None,
             pending_voter_key_load: None,
             recovery,
@@ -528,11 +532,17 @@ impl MasternodeDetailView {
         });
         ui.separator();
 
-        // Pinned above the vote rows; capped so the rows always keep room, and
-        // scrolling on its own when its content is taller than the cap.
+        // Pinned above the vote rows, taking the height its content needs. The
+        // votes keep what they need up to the share the pinned area leaves
+        // them; beyond its limit the pinned area scrolls on its own.
+        let available = ui.available_height();
+        let votes_reserve = self
+            .votes_height
+            .unwrap_or(f32::INFINITY)
+            .min(available * (1.0 - PINNED_MAX_SHARE));
         egui::ScrollArea::vertical()
             .id_salt("masternode_detail_pinned")
-            .max_height(ui.available_height() * PINNED_MAX_SHARE)
+            .max_height((available - votes_reserve).max(0.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 self.render_header(ui, dark_mode);
@@ -557,12 +567,22 @@ impl MasternodeDetailView {
                 ui.add_space(8.0);
                 self.render_danger_zone(ui, dark_mode);
             });
+        let votes_top = ui.cursor().top();
         ui.add_space(12.0);
         if let Some(node) = self.render_votes_heading(ui, dark_mode) {
             outcome = DetailOutcome::VoteWithNode(node);
         }
         ui.add_space(6.0);
-        self.render_vote_rows(ui);
+        let rows_top = ui.cursor().top();
+        let votes_height = rows_top - votes_top + self.render_vote_rows(ui);
+        if self
+            .votes_height
+            .is_none_or(|last| (last - votes_height).abs() > 0.5)
+        {
+            // The pinned area was sized from the previous measurement.
+            self.votes_height = Some(votes_height);
+            ui.ctx().request_repaint();
+        }
         if let Some(action) = self.show_remove_dialog(ui) {
             outcome = DetailOutcome::Forward(Box::new(action));
         }
@@ -1035,7 +1055,8 @@ impl MasternodeDetailView {
     }
 
     /// The node's vote rows, in their own scroll area below the pinned heading.
-    fn render_vote_rows(&self, ui: &mut Ui) {
+    /// Returns the height the rows need.
+    fn render_vote_rows(&self, ui: &mut Ui) -> f32 {
         let node = self.identity.identity.id();
         egui::ScrollArea::vertical()
             .id_salt("masternode_detail_vote_rows")
@@ -1069,7 +1090,9 @@ impl MasternodeDetailView {
                             }
                         });
                 }
-            });
+            })
+            .content_size
+            .y
     }
 
     /// The collapsible Danger zone holding `Remove masternode`, which opens the
@@ -1091,9 +1114,7 @@ impl MasternodeDetailView {
             },
             |ui| {
                 ui.label(
-                    RichText::new(DANGER_ZONE_NOTE)
-                        .small()
-                        .color(DashColors::text_secondary(dark_mode)),
+                    RichText::new(DANGER_ZONE_NOTE).color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(6.0);
                 ui.add_enabled(

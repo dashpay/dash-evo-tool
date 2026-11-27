@@ -1914,7 +1914,7 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 As a masternode operator, I want to open a node, see its votes, and jump to voting with just that node when needed, so that I can fulfil and check my node's governance role.
 
 - Clicking a card opens a detail view with the keys summary, node actions, the node's type and voting weight, its masternode-list status, and a "This node's votes" table (name, choice, changes left, deadline).
-- Everything above the vote rows — the back row, the node header, its actions, the Keys and Danger zone sections, and the votes heading with `Vote with this node` — stays in place; only the vote rows scroll. When the sections above take more than about 60% of the page, they scroll on their own and the vote rows keep the rest.
+- Everything above the vote rows — the back row, the node header, its actions, the Keys and Danger zone sections, and the votes heading with `Vote with this node` — stays in place; only the vote rows scroll. The sections above take the height they need, up to about 60% of the page when the vote rows need the rest; beyond that they scroll on their own.
 - `Vote with this node` opens Masternodes ▸ Votes with the node set limited to that node, shown on the node-set chip. No draft is carried.
 - Voting uses the shared durable voting-operation path.
 - When no loaded node has a voting key, Votes explains what is missing and offers `Add a voting key` (or `Load a masternode` when no node is loaded).

@@ -1655,6 +1655,43 @@ fn a_tall_pinned_area_scrolls_on_its_own_and_leaves_room_for_vote_rows() {
     });
 }
 
+/// Whether the button `label` lies wholly inside the pinned area, which ends
+/// above the votes heading, with nothing scrolled out of view at its top.
+fn fully_visible_in_pinned_area(harness: &App, label: &str) -> bool {
+    let back_row = harness.get_by_label("‹ All masternodes").rect();
+    let heading = harness.get_by_label("This node's votes").rect();
+    let button = harness.get_by_role_and_label(Role::Button, label).rect();
+    top_of(harness, "Actions") >= back_row.bottom()
+        && button.top() >= back_row.bottom()
+        && button.bottom() <= heading.top()
+}
+
+/// When the vote rows need little room, an expanded section takes the height
+/// it needs instead of being clipped by a cap that leaves the space below the
+/// votes heading empty.
+#[test]
+fn expanded_sections_fit_when_the_vote_rows_need_little_room() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness =
+            open_detail_with_vote_rows(0xB9, "mn-fit-01", 0, egui::vec2(1260.0, 780.0));
+
+        toggle_detail_section(&mut harness, "Keys");
+        assert!(
+            fully_visible_in_pinned_area(&harness, "Add voting key"),
+            "the expanded Keys section must not be clipped"
+        );
+        toggle_detail_section(&mut harness, "Keys");
+
+        toggle_detail_section(&mut harness, "Danger zone");
+        assert!(
+            fully_visible_in_pinned_area(&harness, "Remove masternode"),
+            "the expanded Danger zone must not be clipped"
+        );
+    });
+}
+
 /// Each section header is one named control that reports whether it is
 /// expanded, and one keyboard stop: Tab from the Keys header lands on the
 /// Danger zone header, with no unnamed stop for the arrow between them.

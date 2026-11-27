@@ -67,8 +67,12 @@ secret values. Use a new output filename when repeating collection.
 - Flatpak publication has its own `flatpak-release.yml` caller, so a reusable
   build called by weekly needs only read permission. A skipped write-capable job
   inside the reusable workflow would still exceed a read-only caller's budget.
-- Privileged signing/publication actions and the review action are pinned to
-  immutable commits. Standard release-tag builds still do not automatically
+- Signing, publication and attestation actions (`release.yml`,
+  `weekly-build.yml`, `flatpak*.yml`, `release-qa.yml`,
+  `migration-fixture-capture.yml`) are pinned to immutable commits. The review
+  action in `claude-code-review.yml` intentionally tracks `main`: the
+  maintainer controls it, an accepted and limited risk. Standard release-tag
+  builds still do not automatically
   create a GitHub release unless the existing publication input is supplied.
 
 ## One-time rollout prerequisites
@@ -118,7 +122,7 @@ access. The branch does not change live repository settings or move secrets.
      --signer-workflow dashpay/dash-evo-tool/.github/workflows/release.yml
      --source-digest <authorized release commit>`. The release checks prove
      the bytes did not change after publication; only the source digest
-     detects an asset from another `release.yml` build substituted in a draft.
+     detects a substituted draft asset built from a different source commit.
      The provenance check differs per asset type:
      - platform packages (Linux, macOS, Windows): the `release.yml` command
        above;

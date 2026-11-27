@@ -1042,7 +1042,7 @@ impl StoragePrepGate {
             } else {
                 config = config.with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
             }
-            let message = if failure.retryable {
+            let message = if failure.retryable && !failure.error.is_wallet_data_check_in_use() {
                 STORAGE_PREP_FAILED_MESSAGE.to_string()
             } else {
                 failure.error.to_string()

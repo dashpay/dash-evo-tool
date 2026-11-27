@@ -2062,6 +2062,7 @@ mod tests {
     /// store, naming that store, and leaves the app database untouched:
     /// opening it migrates it past what the upgrade release can read, which
     /// would strand that store if it is on the pinned lineage.
+    #[cfg(unix)]
     fn assert_unreadable_store_stops_startup(data_dir: &Path, store: &Path) -> TaskError {
         let before = app_database_state(data_dir);
 
@@ -2099,12 +2100,62 @@ mod tests {
     }
 
     #[test]
-    fn a_store_that_is_not_a_database_stops_startup() {
+    fn pinned_lineage_corrupt_store_stops_startup_with_recovery_advice() {
         let dir = tempfile::tempdir().expect("tempdir");
         seed_app_database_with_pending_migration(dir.path());
         let store = wallet_database_path(dir.path(), Network::Testnet);
         std::fs::write(&store, b"not a database").expect("write the store");
-        assert_unreadable_store_stops_startup(dir.path(), &store);
+        let before = app_database_state(dir.path());
+        let error = AppContext::open_app_kv(dir.path()).expect_err("corrupt store stops startup");
+        assert!(
+            matches!(&error, TaskError::WalletDataCheckCorrupt { database, source }
+                if database == &store && source.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase)),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains(store.to_str().unwrap()), "{message}");
+        assert!(message.contains("damaged"), "{message}");
+        assert!(message.contains("back up"), "{message}");
+        assert!(
+            message.contains("original file name and location, with its own matching files"),
+            "{message}"
+        );
+        assert!(message.contains("confirmed"), "{message}");
+        assert!(
+            message.contains("delete the damaged file manually"),
+            "{message}"
+        );
+        assert!(message.contains("only on this device"), "{message}");
+        assert!(crate::backend_task::is_terminal_storage_open_error(&error));
+        assert_eq!(std::fs::read(&store).unwrap(), b"not a database");
+        assert_eq!(app_database_state(dir.path()), before);
+    }
+
+    #[test]
+    fn pinned_lineage_corrupt_app_database_names_local_data_at_risk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = app_database_path(dir.path());
+        std::fs::write(&store, b"not a database").expect("write the app database");
+
+        let error =
+            AppContext::open_app_kv(dir.path()).expect_err("corrupt app database stops startup");
+        assert!(
+            matches!(&error, TaskError::AppDataCheckCorrupt { database, .. } if database == &store),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains(store.to_str().unwrap()), "{message}");
+        assert!(message.contains("wallet names"), "{message}");
+        assert!(
+            message.contains("recovery phrases for your wallets"),
+            "{message}"
+        );
+        assert!(
+            message.contains("copies of any private keys you imported"),
+            "{message}"
+        );
+        assert!(message.contains("the network cannot restore"), "{message}");
+        assert_eq!(std::fs::read(&store).unwrap(), b"not a database");
     }
 
     #[cfg(unix)]
@@ -2192,12 +2243,12 @@ mod tests {
     }
 
     #[test]
-    fn a_hot_rollback_journal_stops_startup() {
-        use crate::backend_task::error::WalletDataCheckError;
+    fn pinned_lineage_hot_journal_restores_committed_history_before_startup() {
         let dir = tempfile::tempdir().expect("tempdir");
         seed_app_database_with_pending_migration(dir.path());
         let source = dir.path().join("source.sqlite");
         seed_pinned_pr_history(&source).expect("create a pinned network store");
+        let committed = std::fs::read(&source).expect("read the committed store");
         let writer = rusqlite::Connection::open(&source).expect("open the pinned store");
         writer
             .execute_batch(
@@ -2219,24 +2270,20 @@ mod tests {
             .execute_batch("ROLLBACK")
             .expect("clean up the source transaction");
 
-        let error = assert_unreadable_store_stops_startup(dir.path(), &store);
+        let before = app_database_state(dir.path());
+        let error = AppContext::open_app_kv(dir.path())
+            .expect_err("the recovered pinned lineage must stop startup");
         assert!(
-            matches!(&error, TaskError::WalletDataCheckFailed {
-                source: WalletDataCheckError::Sqlite(rusqlite::Error::SqliteFailure(sqlite, _)),
-                ..
-            } if sqlite.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK),
+            matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks }
+                if networks.0 == [Network::Testnet]),
             "{error:?}"
         );
-
-        let restored = rusqlite::Connection::open(&store)
-            .expect("open writable so SQLite can roll back")
-            .query_row(
-                "SELECT max(version) FROM refinery_schema_history",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("read the restored history");
-        assert_eq!(restored, 14);
+        assert_eq!(app_database_state(dir.path()), before);
+        assert_eq!(
+            std::fs::read(&store).expect("read the recovered store"),
+            committed
+        );
+        assert!(!journal.exists(), "SQLite completed recovery");
     }
 
     #[cfg(unix)]

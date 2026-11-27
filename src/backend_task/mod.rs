@@ -251,15 +251,12 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
     Some((identity_id, token))
 }
 
-/// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable data folder, data only an
-/// earlier release can upgrade, or a store whose lineage could not be checked:
-/// that check already waited out a busy lock, and what remains, another copy
-/// of the app holding the store or missing permission, needs the user). These
-/// must surface their actionable message instead of being logged-and-discarded
-/// as a transient deferral (F50); retrying cannot fix them. Every other init
-/// error is retried by the cold-boot bridge.
+/// Whether a storage-open failure needs the user to act outside the app.
+/// An in-use lineage check can be retried once the other connection finishes.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
+    if matches!(error, TaskError::WalletDataCheckFailed { .. }) {
+        return !error.is_wallet_data_check_in_use();
+    }
     matches!(
         error,
         TaskError::WalletDataTooNew { .. }
@@ -269,7 +266,9 @@ pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
             | TaskError::SecretStoreAccessDenied { .. }
             | TaskError::WalletDataNeedsUpgradeRelease { .. }
             | TaskError::AppDataNeedsUpgradeRelease { .. }
-            | TaskError::WalletDataCheckFailed { .. }
+            | TaskError::WalletDataCheckCorrupt { .. }
+            | TaskError::AppDataCheckCorrupt { .. }
+            | TaskError::WalletDataJournalRecoveryFailed { .. }
     )
 }
 
@@ -3751,6 +3750,18 @@ mod tests {
         assert!(!is_terminal_storage_open_error(
             &TaskError::WalletStorageNotReady
         ));
+    }
+
+    #[test]
+    fn pinned_lineage_sqlite_contention_can_be_retried() {
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            let error = TaskError::WalletDataCheckFailed {
+                database: std::path::PathBuf::from("det-testnet.sqlite"),
+                source: rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+                    .into(),
+            };
+            assert!(!is_terminal_storage_open_error(&error), "{error:?}");
+        }
     }
 
     #[test]

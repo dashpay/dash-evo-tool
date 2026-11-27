@@ -26,22 +26,34 @@ const MIN_BODY_HEIGHT: f32 = 60.0;
 pub enum StartupErrorDialogAction {
     /// Nothing.
     None,
+    /// Check the profile again.
+    Retry,
     /// Quit the app (Quit or the window's close button).
     Quit,
 }
 
-/// Renders a [`StartupFailure`] with its technical details and a Quit action.
+/// Renders a [`StartupFailure`] with its technical details and recovery actions.
 ///
 /// The only content of the app window after a fatal startup failure; nothing
 /// else is built behind it.
 pub struct StartupErrorDialog<'a> {
     failure: &'a StartupFailure,
+    retryable: bool,
 }
 
 impl<'a> StartupErrorDialog<'a> {
     /// Dialog for `failure`; value-constructed each frame.
     pub fn new(failure: &'a StartupFailure) -> Self {
-        Self { failure }
+        Self {
+            failure,
+            retryable: false,
+        }
+    }
+
+    /// Show Try again when the owner can repeat the failed step.
+    pub(crate) fn with_retry(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
     }
 
     /// Show the dialog and report the user's action.
@@ -131,7 +143,16 @@ impl<'a> StartupErrorDialog<'a> {
     fn actions(&self, ui: &mut Ui) -> StartupErrorDialogAction {
         let mut action = StartupErrorDialogAction::None;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ComponentStyles::add_primary_button(ui, "Quit").clicked() {
+            if self.retryable {
+                if ComponentStyles::add_primary_button(ui, "Try again").clicked() {
+                    action = StartupErrorDialogAction::Retry;
+                }
+                if ComponentStyles::add_secondary_button(ui, "Quit", ui.visuals().dark_mode)
+                    .clicked()
+                {
+                    action = StartupErrorDialogAction::Quit;
+                }
+            } else if ComponentStyles::add_primary_button(ui, "Quit").clicked() {
                 action = StartupErrorDialogAction::Quit;
             }
         });

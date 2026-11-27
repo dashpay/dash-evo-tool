@@ -13,10 +13,11 @@ pub(crate) use storage_failure::StorageFailure;
 
 use std::fs::Metadata;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::config::DbConfig;
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::backend_task::error::{TaskError, UpgradeReleaseNetworks, WalletDataCheckError};
 
@@ -66,10 +67,7 @@ pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, Tas
                 database: config.path,
             })
         }
-        Lineage::Unknown(source) => Err(TaskError::WalletDataCheckFailed {
-            database: config.path,
-            source,
-        }),
+        Lineage::Unknown(source) => Err(unchecked_database_error(config.path, source)),
     }
 }
 
@@ -114,8 +112,34 @@ pub(crate) fn refuse_stores_needing_upgrade_release(data_dir: &Path) -> Result<(
         Lineage::NotPinned => {}
     }
     match unchecked {
-        Some((database, source)) => Err(TaskError::WalletDataCheckFailed { database, source }),
+        Some((database, source)) => Err(unchecked_database_error(database, source)),
         None => Ok(()),
+    }
+}
+
+fn unchecked_database_error(database: PathBuf, source: WalletDataCheckError) -> TaskError {
+    match source {
+        WalletDataCheckError::Sqlite(source) | WalletDataCheckError::JournalRecovery(source)
+            if matches!(
+                source.sqlite_error_code(),
+                Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
+            ) =>
+        {
+            if database
+                .file_name()
+                .is_some_and(|name| name == super::APP_DATABASE_FILE)
+            {
+                TaskError::AppDataCheckCorrupt { database, source }
+            } else {
+                TaskError::WalletDataCheckCorrupt { database, source }
+            }
+        }
+        WalletDataCheckError::JournalRecovery(source)
+            if StorageFailure::of_sqlite(&source) != Some(StorageFailure::InUse) =>
+        {
+            TaskError::WalletDataJournalRecoveryFailed { database, source }
+        }
+        source => TaskError::WalletDataCheckFailed { database, source },
     }
 }
 
@@ -131,7 +155,7 @@ enum Lineage {
 }
 
 /// The lineage of the database at `path`, from its migration history read
-/// through a read-only connection, before anything else opens the file.
+/// before opening it for migration. A hot rollback journal can require a writable read.
 fn probe_lineage(path: &Path) -> Lineage {
     match read_history(path) {
         Ok(history) => {
@@ -177,20 +201,39 @@ fn read_history(path: &Path) -> Result<Option<MigrationHistory>, WalletDataCheck
     if !has_recovery_sidecars(path)?
         && let Some(uri) = immutable_uri(path)
     {
-        let history = query_history(Connection::open_with_flags(
-            uri,
-            flags | OpenFlags::SQLITE_OPEN_URI,
-        )?)?;
+        let history = Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI)
+            .and_then(query_history);
         if !has_recovery_sidecars(path)?
             && let Some(after) = probe_metadata(path)?
             && before.len() == after.len()
             && let Ok(modified) = before.modified()
             && after.modified().ok() == Some(modified)
         {
-            return Ok(history);
+            return Ok(history?);
         }
     }
-    Ok(query_history(Connection::open_with_flags(path, flags)?)?)
+    match Connection::open_with_flags(path, flags).and_then(query_history) {
+        Err(error)
+            if error.sqlite_extended_error_code()
+                == Some(rusqlite::ffi::SQLITE_READONLY_ROLLBACK) =>
+        {
+            recover_journal_and_read_history(path).map_err(WalletDataCheckError::JournalRecovery)
+        }
+        history => Ok(history?),
+    }
+}
+
+fn recover_journal_and_read_history(path: &Path) -> rusqlite::Result<Option<MigrationHistory>> {
+    // SQLite restores committed pages under its own locks before the first read.
+    // Open without CREATE or the persister's setup and migrations. Query-only
+    // prevents SQL writes, and disabling checkpoints also covers a switch to WAL.
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    conn.pragma_update(None, "query_only", true)?;
+    query_history(conn)
 }
 
 fn query_history(mut conn: Connection) -> rusqlite::Result<Option<MigrationHistory>> {
@@ -402,7 +445,7 @@ mod tests {
             .err()
             .expect("an unchecked store must not open");
         assert!(
-            matches!(&error, TaskError::WalletDataCheckFailed { database: path, .. } if *path == database),
+            matches!(&error, TaskError::WalletDataCheckCorrupt { database: path, .. } if *path == database),
             "{error:?}"
         );
         assert_eq!(

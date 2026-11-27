@@ -308,3 +308,63 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
         );
     });
 }
+
+#[test]
+fn pinned_lineage_locked_store_offers_a_startup_retry() {
+    with_isolated_data_dir(|| {
+        let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
+        dash_evo_tool::app_dir::ensure_data_dir_exists(&data_dir).expect("data dir");
+        let store = data_dir.join("det-testnet.sqlite");
+        let app_db = data_dir.join("det-app.sqlite");
+        let writer = rusqlite::Connection::open(&store).expect("open store");
+        writer
+            .execute_batch(
+                "CREATE TABLE sample (id INTEGER);
+                 BEGIN EXCLUSIVE;
+                 INSERT INTO sample VALUES (1);",
+            )
+            .expect("hold a write lock and create a rollback journal");
+        assert!(store.with_extension("sqlite-journal").exists());
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let outcome = StartupOutcome::default();
+        let shared = outcome.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_eframe(move |cc| BootApp::new(cc.egui_ctx.clone(), shared));
+        harness.run_steps(3);
+
+        assert!(outcome.failed());
+        assert!(
+            !app_db.exists(),
+            "the blocked boot must not open det-app.sqlite"
+        );
+        let message = outcome
+            .shown_failure()
+            .expect("startup failure")
+            .to_string();
+        assert!(message.contains(store.to_str().expect("UTF-8 store path")));
+        assert!(harness.query_by_label(&message).is_some());
+        assert!(harness.query_by_label("Try again").is_some());
+
+        harness.get_by_label("Try again").click();
+        harness.run_steps(3);
+        assert!(outcome.failed(), "the store is still locked");
+        assert!(!app_db.exists());
+
+        writer.execute_batch("ROLLBACK").expect("release the lock");
+        harness.get_by_label("Try again").click();
+        harness.run_steps(3);
+
+        assert!(matches!(harness.state(), BootApp::Running(_)));
+        assert!(
+            !outcome.failed(),
+            "a successful retry clears the failed exit status"
+        );
+        assert!(
+            app_db.exists(),
+            "the retry may open det-app.sqlite once the probe succeeds"
+        );
+    });
+}

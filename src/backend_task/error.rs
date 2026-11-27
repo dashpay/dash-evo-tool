@@ -341,6 +341,9 @@ pub enum WalletDataCheckError {
     /// SQLite could not open the database or read its migration history.
     #[error("Could not read the database migration history.")]
     Sqlite(#[from] rusqlite::Error),
+    /// The history read still failed on the connection allowed to recover the journal.
+    #[error("Could not read the database migration history after attempting journal recovery.")]
+    JournalRecovery(#[source] rusqlite::Error),
 }
 
 /// Lets `?` on a joined task keep the panic message out of the error.
@@ -884,13 +887,52 @@ pub enum TaskError {
     /// this database, so nothing is opened: if it is on that layout, opening
     /// the app database would leave it unconvertible.
     #[error(
-        "Dash Evo Tool could not read your saved data in {database} before starting. Close any other open copies of Dash Evo Tool, make sure your account has permission to open this file, then start the application again.",
+        "Dash Evo Tool could not read your saved data in {database} before starting. Close any other open copies of Dash Evo Tool, make sure your account has permission to open this file, then try again.",
         database = .database.display()
     )]
     WalletDataCheckFailed {
         database: std::path::PathBuf,
         #[source]
         source: WalletDataCheckError,
+    },
+
+    /// SQLite confirmed damage in a per-network wallet store.
+    #[error(
+        "The wallet data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
+         If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
+         If you have no working backup, first wait until recent payments are confirmed and any unfinished wallet funding is resolved. If you accept losing records kept only on this device, such as saved identities and pending payments, delete the damaged file manually along with its matching files, then start the app again. \
+         Dash Evo Tool creates an empty file when you open that network. You may need to restore your wallets and sync again. Syncing cannot bring back records saved only on this device.",
+        database = .database.display()
+    )]
+    WalletDataCheckCorrupt {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// SQLite confirmed damage in the shared app database.
+    #[error(
+        "The app data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
+         If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
+         If you have no working backup, first wait until recent payments are confirmed and any unfinished wallet funding is resolved. Before deleting this file, make sure you have the recovery phrases for your wallets and copies of any private keys you imported. You may need them to regain access to your funds. \
+         If you accept losing app settings, wallet names and other details that the network cannot restore, delete the damaged file manually along with its matching files, then start the app again. Dash Evo Tool creates a new file, and you may need to add your wallets and keys again.",
+        database = .database.display()
+    )]
+    AppDataCheckCorrupt {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// A database needed recovery before its history could be read.
+    #[error(
+        "Dash Evo Tool could not finish checking the file at \"{database}\" after an interrupted write. Leave the file and its matching files together. Make sure the disk has free space and that you can change the file and its folder, then restart the app.",
+        database = .database.display()
+    )]
+    WalletDataJournalRecoveryFailed {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
     },
 
     /// Persisted Core transaction rows could not be read through the upstream
@@ -4030,6 +4072,15 @@ pub enum TaskError {
 const DATA_FOLDER_ACCESS_DENIED: &str = "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application.";
 
 impl TaskError {
+    /// Whether another SQLite connection is blocking the lineage check.
+    pub(crate) fn is_wallet_data_check_in_use(&self) -> bool {
+        matches!(
+            self,
+            Self::WalletDataCheckFailed { source, .. }
+                if StorageFailure::in_chain(source) == Some(StorageFailure::InUse)
+        )
+    }
+
     /// A failure to open or prepare the app database at `path`: read-only,
     /// permission and access-refused codes get [`Self::DatabaseAccessDenied`],
     /// the rest, and a directory in the file's place, [`Self::Database`].

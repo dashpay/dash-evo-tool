@@ -13,8 +13,8 @@
 //! not portable — winit forbids a second event loop on macOS) and re-opens the
 //! SAME vault in place with the supplied passphrase. The open is
 //! non-destructive — the vault is never deleted, recreated, or rekeyed — so
-//! wallet seeds are never at risk. Every other boot failure is fatal and shows
-//! the startup failure dialog instead of the app.
+//! wallet seeds are never at risk. Startup failures show a dialog instead of
+//! the app. A busy wallet data check can be retried from that dialog.
 //!
 //! Only the GUI binary boots through here; the headless MCP/CLI path keeps the
 //! keyless open and surfaces the typed error instead of popping a dialog.
@@ -26,6 +26,7 @@ use eframe::egui;
 use platform_wallet_storage::secrets::{SecretStore, SecretString};
 
 use crate::app::AppState;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::error_report::StartupFailure;
@@ -142,6 +143,9 @@ pub enum BootApp {
     /// Startup failed. Only the failure dialog is shown; no part of the app
     /// is built.
     Failed(StartupFailure),
+    /// The lineage check was blocked by another connection. Keep the boot
+    /// inputs and vault open so a retry can recheck storage in place.
+    Retryable(StorageRetry),
     /// The failure dialog closed on macOS, by any route; reports and exits when
     /// eframe drops the app.
     Exiting(FailureExit),
@@ -154,7 +158,7 @@ impl BootApp {
     /// On success the full [`AppState`] is built immediately. If the keyless
     /// open fails *specifically* with a wrong vault passphrase, this returns
     /// [`BootApp::Unlocking`] so the frame loop can prompt for it. Any other
-    /// failure (including app assembly) returns [`BootApp::Failed`].
+    /// failure shows the startup dialog, with a retry for a busy lineage check.
     pub fn new(ctx: egui::Context, outcome: StartupOutcome) -> Self {
         Self::start(ctx, BootPreparation::run(), &outcome)
     }
@@ -168,11 +172,8 @@ impl BootApp {
         // Every boot outcome, the failure dialog included, keeps selections
         // out of PRIMARY.
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
-        match preparation
-            .0
-            .and_then(|prepared| Self::open(ctx, prepared, outcome))
-        {
-            Ok(app) => app,
+        match preparation.0 {
+            Ok(prepared) => Self::open(ctx, prepared, outcome),
             Err(error) => Self::failed(&*error, outcome),
         }
     }
@@ -185,35 +186,64 @@ impl BootApp {
             decision,
         }: Prepared,
         outcome: &StartupOutcome,
-    ) -> Result<Self, BootError> {
+    ) -> Self {
         match decision {
             BootDecision::Ready(store) => {
-                // Held until the app runs: if building it fails, the failure
-                // window still saves into the profile, so no other launch may
-                // start writing that profile meanwhile.
+                // A failure window can still save into the profile. Hold the
+                // vault so another launch cannot write there at the same time.
                 outcome.hold_vault(Arc::clone(&store));
-                let app = AppState::new_inner(ctx, db, data_dir, store)?;
-                outcome.release_vault();
-                Ok(BootApp::Running(Box::new(app)))
+                Self::open_with_vault(ctx, db, data_dir, store, outcome)
             }
             BootDecision::Unlock => {
                 tracing::warn!(
                     "Seed vault is protected by a passphrase from an earlier version; \
                      prompting to unlock instead of aborting boot"
                 );
-                Ok(BootApp::Unlocking(UnlockState::new(
-                    ctx,
-                    db,
-                    data_dir,
-                    outcome.clone(),
-                )))
+                BootApp::Unlocking(UnlockState::new(ctx, db, data_dir, outcome.clone()))
             }
+        }
+    }
+
+    fn open_with_vault(
+        ctx: egui::Context,
+        db: Arc<Database>,
+        data_dir: PathBuf,
+        store: Arc<SecretStore>,
+        outcome: &StartupOutcome,
+    ) -> Self {
+        match AppState::new_inner(ctx, Arc::clone(&db), data_dir.clone(), Arc::clone(&store)) {
+            Ok(app) => {
+                outcome.clear_failure();
+                outcome.release_vault();
+                Self::Running(Box::new(app))
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<TaskError>()
+                    .is_some_and(TaskError::is_wallet_data_check_in_use) =>
+            {
+                Self::Retryable(StorageRetry {
+                    failure: Self::record_failure(&*error, outcome),
+                    data_dir,
+                    db,
+                    store,
+                    outcome: outcome.clone(),
+                })
+            }
+            Err(error) => Self::failed(&*error, outcome),
         }
     }
 
     /// The fatal-failure state for `error`: logs it, records it in `outcome`
     /// and shows it in the startup failure dialog with this run's log file.
     pub fn failed(error: &(dyn std::error::Error + 'static), outcome: &StartupOutcome) -> Self {
+        Self::Failed(Self::record_failure(error, outcome))
+    }
+
+    fn record_failure(
+        error: &(dyn std::error::Error + 'static),
+        outcome: &StartupOutcome,
+    ) -> StartupFailure {
         tracing::error!(error = ?error, "Startup failed; showing the startup failure dialog");
         // A data folder step names itself; a typed task error in the chain
         // still takes precedence over this fallback.
@@ -226,27 +256,25 @@ impl BootApp {
         let failure =
             StartupFailure::with_fallback(error, fallback, crate::logging::log_file_path());
         outcome.mark_failed(&failure);
-        BootApp::Failed(failure)
+        failure
     }
 
     /// Attempt to open the vault with the supplied passphrase and, on success,
-    /// build the full app. A wrong passphrase re-arms the prompt; any other
-    /// failure is fatal and shows the startup failure dialog.
+    /// build the full app. A wrong passphrase re-arms the prompt. Other vault
+    /// access failures show the startup failure dialog.
     fn try_unlock(&mut self, passphrase: SecretString) {
         let BootApp::Unlocking(state) = self else {
             return;
         };
         match AppContext::open_secret_store_with_passphrase(&state.data_dir, passphrase) {
             Ok(store) => {
-                *self = match AppState::new_inner(
+                *self = Self::open_with_vault(
                     state.ctx.clone(),
                     Arc::clone(&state.db),
                     state.data_dir.clone(),
                     store,
-                ) {
-                    Ok(app) => BootApp::Running(Box::new(app)),
-                    Err(error) => Self::failed(&*error, &state.outcome),
-                };
+                    &state.outcome,
+                );
             }
             Err(e) if e.is_recoverable_secret_store_passphrase_error() => {
                 state.error = Some(if e.is_secret_store_wrong_passphrase() {
@@ -266,15 +294,33 @@ impl BootApp {
 
 impl eframe::App for BootApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let retryable = matches!(self, BootApp::Retryable(_));
         let state = match self {
             BootApp::Running(app) => {
                 app.ui(ui, frame);
                 return;
             }
-            BootApp::Failed(failure) => {
-                if StartupErrorDialog::new(failure).show(ui) == StartupErrorDialogAction::Quit {
-                    tracing::info!("User closed the startup failure dialog");
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            BootApp::Failed(failure) | BootApp::Retryable(StorageRetry { failure, .. }) => {
+                match StartupErrorDialog::new(failure)
+                    .with_retry(retryable)
+                    .show(ui)
+                {
+                    StartupErrorDialogAction::Quit => {
+                        tracing::info!("User closed the startup failure dialog");
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    StartupErrorDialogAction::Retry => {
+                        if let BootApp::Retryable(state) = self {
+                            *self = Self::open_with_vault(
+                                ui.ctx().clone(),
+                                Arc::clone(&state.db),
+                                state.data_dir.clone(),
+                                Arc::clone(&state.store),
+                                &state.outcome,
+                            );
+                        }
+                    }
+                    StartupErrorDialogAction::None => {}
                 }
                 return;
             }
@@ -306,13 +352,27 @@ impl eframe::App for BootApp {
             // never returns to `main`, so the failure is reported and the
             // status set when this app is dropped. Elsewhere `main` does both
             // after eframe finishes its teardown.
-            BootApp::Failed(failure) if cfg!(target_os = "macos") => {
+            BootApp::Failed(failure) | BootApp::Retryable(StorageRetry { failure, .. })
+                if cfg!(target_os = "macos") =>
+            {
                 let notice = FailureNotice(failure.clone());
                 *self = BootApp::Exiting(FailureExit(notice));
             }
-            BootApp::Failed(_) | BootApp::Unlocking(_) | BootApp::Exiting(_) => {}
+            BootApp::Failed(_)
+            | BootApp::Retryable(_)
+            | BootApp::Unlocking(_)
+            | BootApp::Exiting(_) => {}
         }
     }
+}
+
+/// Boot inputs retained while a wallet data check is waiting to be retried.
+pub struct StorageRetry {
+    failure: StartupFailure,
+    data_dir: PathBuf,
+    db: Arc<Database>,
+    store: Arc<SecretStore>,
+    outcome: StartupOutcome,
 }
 
 /// Reports a failed startup and exits with `main`'s failure status when
@@ -484,7 +544,14 @@ impl StartupOutcome {
             Some(FailureNotice(failure.clone()));
     }
 
-    /// Whether the app entered [`BootApp::Failed`].
+    fn clear_failure(&self) {
+        self.shown
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+
+    /// Whether the last startup attempt failed.
     pub fn failed(&self) -> bool {
         self.shown_failure().is_some()
     }

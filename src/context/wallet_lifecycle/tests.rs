@@ -179,7 +179,7 @@ async fn shielded_store_startup_failure_explains_manual_recovery() {
     for step in [
         "Your wallets and keys are still saved",
         "free space",
-        "every shielded payment, transfer and withdrawal",
+        "every shielded payment, transfer, unshield and withdrawal",
         "including those to your own wallets",
         "Do not send any of them again until the new file has synced",
         "close the app",

@@ -891,10 +891,17 @@ fn detail_view_opens_from_card_with_sections_and_back() {
             harness.query_by_label("Transfer").is_none(),
             "Transfer action was removed from the masternode detail screen"
         );
-        assert!(harness.query_by_label("Keys").is_some(), "Keys section");
         assert!(
-            harness.query_by_label("Remove masternode").is_some(),
-            "Remove action"
+            harness
+                .query_by_role_and_label(Role::Button, "Keys")
+                .is_some(),
+            "Keys section"
+        );
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, "Danger zone")
+                .is_some(),
+            "Danger zone section"
         );
         assert!(
             harness.query_all_by_label("Refresh").count() >= 1,
@@ -995,9 +1002,9 @@ fn an_unrelated_task_result_keeps_the_open_voter_key_prompt() {
         activate_masternodes_tab(&mut harness, &app_context);
         harness.get_by_label("Open mn-vote-keep").click();
         harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Keys");
 
-        harness.get_by_label("Add voting key").click();
-        harness.run_steps(3);
+        click_detail_button(&mut harness, "Add voting key");
         harness
             .query_all_by_role(Role::PasswordInput)
             .next()
@@ -1116,8 +1123,8 @@ fn remove_flow_deletes_only_target_node() {
         // (unique before the dialog opens).
         harness.get_by_label("Open mn-remove-me").click();
         harness.run_steps(3);
-        harness.get_by_label("Remove masternode").click();
-        harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Danger zone");
+        click_detail_button(&mut harness, "Remove masternode");
 
         // The confirmation is open with the `Remove masternode` verb; confirm by
         // clicking the danger button (last node with that label — the section
@@ -1193,11 +1200,8 @@ fn remove_flow_deletes_associated_voter_identity() {
         // Open the node's detail and confirm removal.
         harness.get_by_label("Open mn-with-voter").click();
         harness.run_steps(3);
-        // A node without a signing key also shows the add-key form above removal.
-        harness.get_by_label("Remove masternode").scroll_to_me();
-        harness.run_steps(3);
-        harness.get_by_label("Remove masternode").click();
-        harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Danger zone");
+        click_detail_button(&mut harness, "Remove masternode");
         let confirm = harness
             .query_all_by_label("Remove masternode")
             .last()
@@ -1257,6 +1261,7 @@ fn manage_keys_button_opens_key_info_screen() {
 
         harness.get_by_label("Open mn-keys-01").click();
         harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Keys");
 
         // The per-key "Manage keys" list renders a Voting key button.
         assert!(
@@ -1308,6 +1313,7 @@ fn add_password_protection_opens_confirmation_dialog() {
 
         harness.get_by_label("Open mn-protect-01").click();
         harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Keys");
         assert!(
             harness.query_by_label("Add password protection…").is_some(),
             "an unprotected vault key must offer the aggregate protection action"
@@ -1332,6 +1338,306 @@ fn add_password_protection_opens_confirmation_dialog() {
         assert!(
             harness.query_by_label("Yes, add protection").is_some(),
             "the visible dialog must expose its confirmation action"
+        );
+    });
+}
+
+/// Click a button of the open node detail. The pinned area scrolls on its own
+/// once its content outgrows its share of the window, so the button is first
+/// scrolled into view, as a user would.
+fn click_detail_button(harness: &mut App, label: &str) {
+    harness
+        .get_by_role_and_label(Role::Button, label)
+        .scroll_to_me();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::Button, label).click();
+    harness.run_steps(3);
+}
+
+/// Toggle a collapsible section of the open node detail by clicking its title.
+fn toggle_detail_section(harness: &mut App, title: &str) {
+    click_detail_button(harness, title);
+}
+
+/// Whether a clickable `Remove masternode` button is on screen. The collapsed
+/// Danger zone names the action as plain text, which is not a way to reach it.
+fn remove_button_present(harness: &App) -> bool {
+    harness
+        .query_by_role_and_label(Role::Button, "Remove masternode")
+        .is_some()
+}
+
+/// Open the detail view of a key-less masternode in a window of `size`, with
+/// `contests` open name contests listed, so the node has that many vote rows.
+fn open_detail_with_vote_rows(byte: u8, alias: &str, contests: usize, size: egui::Vec2) -> App {
+    let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+    let app_context = harness.state().current_app_context().clone();
+    seed_node(&app_context, byte, alias, IdentityType::Masternode);
+    for index in 0..contests {
+        seed_open_contest(&app_context, &format!("row{index:02}"));
+    }
+    harness.set_size(size);
+    activate_masternodes_tab(&mut harness, &app_context);
+    harness.get_by_label(&format!("Open {alias}")).click();
+    harness.run_steps(3);
+    harness
+}
+
+/// The node's vote rows on screen, by their name cell.
+fn vote_row_rects(harness: &App, contests: usize) -> Vec<egui::Rect> {
+    (0..contests)
+        .map(|index| harness.get_by_label(&format!("row{index:02}.dash")).rect())
+        .collect()
+}
+
+/// Both collapsible sections of the node detail start collapsed. Keys shows a
+/// one-line summary — the role letters, the protection tier and the missing
+/// voting key — and the Danger zone shows only its title, so neither body nor
+/// the Remove button is on screen. The sections sit in their fixed order:
+/// Keys, then the Danger zone, then the votes heading.
+#[test]
+fn detail_sections_start_collapsed_with_a_keys_summary() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0xB1,
+            "mn-collapsed-01",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-collapsed-01").click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Roles:").is_some(),
+            "the collapsed Keys summary names the key roles"
+        );
+        assert!(
+            harness.query_by_label("Not password protected").is_some(),
+            "the collapsed Keys summary shows the protection tier"
+        );
+        assert!(
+            harness
+                .query_by_label("This node has no voting key loaded.")
+                .is_some(),
+            "the collapsed Keys summary warns that the voting key is missing"
+        );
+        assert!(
+            harness.query_by_label("Manage keys").is_none(),
+            "Manage keys belongs to the expanded Keys section"
+        );
+        assert!(
+            harness.query_by_label("Add voting key").is_none(),
+            "the voting-key form belongs to the expanded Keys section"
+        );
+        assert!(
+            harness
+                .query_by_label(
+                    "This action affects this device only. The masternode stays on the network."
+                )
+                .is_none(),
+            "the Danger zone note belongs to the expanded section"
+        );
+        assert!(
+            !remove_button_present(&harness),
+            "the collapsed Danger zone must not offer Remove"
+        );
+
+        let keys = harness.get_by_role_and_label(Role::Button, "Keys").rect();
+        let danger = harness
+            .get_by_role_and_label(Role::Button, "Danger zone")
+            .rect();
+        let votes = harness.get_by_label("This node's votes").rect();
+        assert!(
+            keys.top() < danger.top() && danger.top() < votes.top(),
+            "Keys, then the Danger zone, then the votes heading: {keys:?} {danger:?} {votes:?}"
+        );
+    });
+}
+
+/// Expanding Keys shows the key details and the per-key Manage keys buttons;
+/// collapsing it again hides them.
+#[test]
+fn expanding_keys_shows_manage_keys() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_voter_key(&app_context, 0xB2, "mn-keys-open-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-keys-open-01").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Voting key ›").is_none());
+
+        toggle_detail_section(&mut harness, "Keys");
+        assert!(
+            harness.query_by_label("Manage keys").is_some(),
+            "the expanded Keys section shows Manage keys"
+        );
+        assert!(
+            harness.query_by_label("Voting key ›").is_some(),
+            "the expanded Keys section lists a button per key"
+        );
+
+        toggle_detail_section(&mut harness, "Keys");
+        assert!(
+            harness.query_by_label("Manage keys").is_none(),
+            "collapsing Keys hides Manage keys again"
+        );
+    });
+}
+
+/// Expanding the Danger zone shows its note and the Remove button, which still
+/// opens the removal confirmation.
+#[test]
+fn expanding_the_danger_zone_shows_the_note_and_remove() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0xB3, "mn-danger-01", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-danger-01").click();
+        harness.run_steps(3);
+
+        toggle_detail_section(&mut harness, "Danger zone");
+        assert!(
+            harness
+                .query_by_label(
+                    "This action affects this device only. The masternode stays on the network."
+                )
+                .is_some(),
+            "the expanded Danger zone explains the action's reach"
+        );
+        assert!(
+            !harness
+                .get_by_role_and_label(Role::Button, "Remove masternode")
+                .accesskit_node()
+                .is_disabled()
+        );
+        click_detail_button(&mut harness, "Remove masternode");
+        assert!(
+            harness.query_all_by_label("Remove masternode").count() >= 2,
+            "Remove opens its confirmation"
+        );
+    });
+}
+
+/// Remove is reachable only through the expanded Danger zone: not before it is
+/// opened, and not after it is closed again.
+#[test]
+fn remove_is_unreachable_while_the_danger_zone_is_collapsed() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0xB4, "mn-danger-02", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-danger-02").click();
+        harness.run_steps(3);
+
+        assert!(!remove_button_present(&harness));
+        toggle_detail_section(&mut harness, "Danger zone");
+        assert!(remove_button_present(&harness));
+        toggle_detail_section(&mut harness, "Danger zone");
+        assert!(
+            !remove_button_present(&harness),
+            "closing the Danger zone takes Remove off screen again"
+        );
+    });
+}
+
+/// Only the vote rows scroll: the wheel over them moves the rows while the
+/// back row, the actions and the votes heading stay where they are.
+#[test]
+fn vote_rows_scroll_under_a_pinned_heading() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        const CONTESTS: usize = 30;
+        const PINNED: [&str; 3] = ["‹ All masternodes", "Actions", "This node's votes"];
+        let window = egui::vec2(800.0, 600.0);
+        let mut harness = open_detail_with_vote_rows(0xB5, "mn-rows-01", CONTESTS, window);
+
+        let heading = harness.get_by_label("This node's votes").rect();
+        let pinned = PINNED.map(|label| top_of(&harness, label));
+        let rows = vote_row_rects(&harness, CONTESTS);
+        assert!(
+            rows.iter().any(|row| row.top() > window.y),
+            "the premise: the rows outgrow the window"
+        );
+
+        harness.hover_at(egui::pos2(heading.left() + 40.0, heading.bottom() + 60.0));
+        harness.run_steps(3);
+        wheel_down(&mut harness);
+
+        let scrolled = vote_row_rects(&harness, CONTESTS);
+        assert!(
+            rows.iter()
+                .zip(&scrolled)
+                .all(|(before, after)| after.top() < before.top()),
+            "the wheel over the rows must scroll them"
+        );
+        assert_eq!(
+            PINNED.map(|label| top_of(&harness, label)),
+            pinned,
+            "everything above the vote rows stays pinned"
+        );
+    });
+}
+
+/// With Keys and the Danger zone open in a small window, the pinned area is
+/// capped and scrolls on its own, while the votes heading stays put and the
+/// vote rows keep room of their own.
+#[test]
+fn a_tall_pinned_area_scrolls_on_its_own_and_leaves_room_for_vote_rows() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        const CONTESTS: usize = 30;
+        let window = egui::vec2(800.0, 480.0);
+        let mut harness = open_detail_with_vote_rows(0xB6, "mn-tall-01", CONTESTS, window);
+        toggle_detail_section(&mut harness, "Keys");
+        toggle_detail_section(&mut harness, "Danger zone");
+        // Opening the Danger zone scrolled the pinned area to it; bring the top
+        // back so there is content below to scroll to.
+        harness.get_by_label("Actions").scroll_to_me();
+        harness.run_steps(3);
+
+        let heading = harness.get_by_label("This node's votes").rect();
+        assert!(
+            vote_row_rects(&harness, CONTESTS)
+                .iter()
+                .any(|row| row.top() > heading.bottom() && row.bottom() <= window.y),
+            "at least one vote row must stay visible below the heading: {heading:?}"
+        );
+
+        // Just below the back row: inside the pinned area, whose bottom edge
+        // clips what it cannot show.
+        let back_row = harness.get_by_label("‹ All masternodes").rect();
+        let actions = harness.get_by_label("Actions").rect();
+        harness.hover_at(egui::pos2(back_row.left() + 40.0, back_row.bottom() + 40.0));
+        harness.run_steps(3);
+        wheel_down(&mut harness);
+        assert!(
+            top_of(&harness, "Actions") < actions.top(),
+            "the wheel over the pinned area must scroll it"
+        );
+        assert_eq!(
+            top_of(&harness, "This node's votes"),
+            heading.top(),
+            "the votes heading must stay put while the pinned area scrolls"
         );
     });
 }
@@ -1522,6 +1828,7 @@ fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
 
         harness.get_by_label("Open mn-nav-back-01").click();
         harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Keys");
         harness.get_by_label("Voting key ›").click();
         harness.run_steps(3);
         assert!(matches!(
@@ -1627,6 +1934,7 @@ fn key_info_names_a_voter_key_as_the_masternode_key_list_does() {
         activate_masternodes_tab(&mut harness, &app_context);
         harness.get_by_label("Open mn-voter-label-01").click();
         harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Keys");
 
         // What the list calls it: the voter-identity override, from the
         // structural target.
@@ -1759,6 +2067,7 @@ fn the_masternode_page_resolves_held_keys_the_way_the_keys_list_does() {
         activate_masternodes_tab(&mut harness, &app_context);
         harness.get_by_label("Open mn-filed-by-purpose-01").click();
         harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Keys");
 
         harness.get_by_label("Voting key \u{203a}").click();
         harness.run_steps(3);

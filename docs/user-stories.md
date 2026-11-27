@@ -1914,6 +1914,7 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 As a masternode operator, I want to open a node, see its votes, and jump to voting with just that node when needed, so that I can fulfil and check my node's governance role.
 
 - Clicking a card opens a detail view with the keys summary, node actions, the node's type and voting weight, its masternode-list status, and a "This node's votes" table (name, choice, changes left, deadline).
+- Everything above the vote rows — the back row, the node header, its actions, the Keys and Danger zone sections, and the votes heading with `Vote with this node` — stays in place; only the vote rows scroll. When the sections above take more than about 60% of the page, they scroll on their own and the vote rows keep the rest.
 - `Vote with this node` opens Masternodes ▸ Votes with the node set limited to that node, shown on the node-set chip. No draft is carried.
 - Voting uses the shared durable voting-operation path.
 - When no loaded node has a voting key, Votes explains what is missing and offers `Add a voting key` (or `Load a masternode` when no node is loaded).
@@ -1923,7 +1924,7 @@ As a masternode operator, I want to open a node, see its votes, and jump to voti
 
 As a masternode operator, I want to remove a masternode from DET, so that I can stop tracking a node I no longer operate.
 
-- The detail view's "Remove masternode" action shows a confirmation dialog before proceeding.
+- The detail view's "Remove masternode" action sits in a "Danger zone" section, collapsed by default, which when opened turns red and states that the action affects this device only and the masternode stays on the network. The action shows a confirmation dialog before proceeding.
 - The confirmation explains that removal deletes local private keys and that loading the node again requires its ProTxHash and a private-key backup.
 - Confirming forgets the masternode and its associated voter identity, and the card disappears from the list.
 - Removal completes off the UI thread. Its outcome and any cleanup warnings remain visible after navigation, identify the affected network, and update the retained node view without affecting another network's nodes.
@@ -1943,7 +1944,7 @@ As a masternode operator, I want to set an optional password when I load my node
 
 - Leaving the load form's "Encryption password" field blank loads the node's keys unprotected (Tier-1), same as before; a password can be added later from the Key Info screen or the node's detail view.
 - Entering a password seals the entered voting/owner/payout keys encrypted-at-rest (Tier-2) at load time.
-- The detail view's Keys section shows the current protection tier ("Unprotected" / "Password-protected") and offers "Add password protection…" only while unprotected.
+- The detail view's Keys section is collapsed by default to a one-line summary: the key-role letters, the current protection tier ("Not password protected" / "Password protected"), and a warning when the voting key is missing. Opened, it offers "Add password protection…" only while unprotected.
 
 ### MN-007: Withdraw a node's credits [Implemented]
 **Persona:** Priya
@@ -1959,7 +1960,7 @@ As a masternode operator, I want to withdraw a node's Platform credits from its 
 
 As a masternode operator, I want to open the key screen for a node, so that I can view a private key/WIF, sign a message, or add/remove a key.
 
-- The detail view's "Manage keys ›" opens the existing Key Info screen scoped to the node.
+- The detail view's Keys section, once opened, lists a "Manage keys" button per key, each opening the existing Key Info screen scoped to the node.
 - The add-key purpose selector excludes OWNER and VOTING (Core-registered roles that cannot be added via Platform); TRANSFER/AUTHENTICATION/ENCRYPTION/DECRYPTION remain available.
 
 ### MN-009: Claim an evonode's token rewards [Implemented]

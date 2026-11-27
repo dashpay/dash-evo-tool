@@ -3671,7 +3671,9 @@ pub enum TaskError {
     /// The per-network shielded balance file could not be opened during storage preparation.
     #[error(
         "The app could not open the shielded balance file at \"{path}\". \
-        If it keeps failing and the file exists, first wait until every shielded payment you sent is confirmed, because this file also keeps the records of shielded payments that are still pending. \
+        Your wallets and keys are still saved. \
+        Check that your disk has free space and that the app can write to its data folder, then try again. \
+        If it keeps failing and the file exists, first wait until the recipients of shielded payments you sent recently have confirmed that they arrived, because this file also keeps the records of shielded payments that are still pending. \
         Then close the app, back up the file, then delete it manually. \
         Reopen the app, connect to the network and unlock your wallets if needed. \
         The app will create a new file and sync your shielded balances again. \

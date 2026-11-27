@@ -177,7 +177,9 @@ async fn shielded_store_startup_failure_explains_manual_recovery() {
     assert!(message.contains(&path.display().to_string()), "{message}");
     let mut remaining = message.as_str();
     for step in [
-        "every shielded payment you sent is confirmed",
+        "Your wallets and keys are still saved",
+        "free space",
+        "have confirmed that they arrived",
         "close the app",
         "back up the file",
         "delete it manually",

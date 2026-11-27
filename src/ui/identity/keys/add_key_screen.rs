@@ -673,7 +673,7 @@ impl AddKeyScreen {
                 }
             });
         ui.add_space(20.0);
-        if ui.button("Back to Identities Screen").clicked() {
+        if ui.button("Back").clicked() {
             action = AppAction::PopScreenAndRefresh;
         }
         action
@@ -700,7 +700,7 @@ impl AddKeyScreen {
                 );
             });
         ui.add_space(20.0);
-        if ui.button("Back to Identities Screen").clicked() {
+        if ui.button("Back").clicked() {
             action = AppAction::PopScreenAndRefresh;
         }
         action
@@ -711,10 +711,7 @@ impl AddKeyScreen {
             ui,
             "Key Added Successfully!".to_string(),
             vec![
-                (
-                    "Back to Identities Screen".to_string(),
-                    AppAction::PopScreenAndRefresh,
-                ),
+                ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
                     "Add another key".to_string(),
                     AppAction::Custom("add_another".to_string()),
@@ -1977,11 +1974,7 @@ mod derived_key_tests {
         harness.run();
         assert!(harness.query_by_label("Copy private key").is_none());
         assert!(harness.query_by_label("Private Key:").is_none());
-        assert!(
-            harness
-                .query_by_label("Back to Identities Screen")
-                .is_some()
-        );
+        assert!(harness.query_by_label("Back").is_some());
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
         let own_add = pending_add(&mut screen);
@@ -1993,6 +1986,37 @@ mod derived_key_tests {
         let mut harness = not_saved_harness(screen);
         harness.run();
         assert!(harness.query_by_label("Copy private key").is_some());
+    }
+
+    #[test]
+    fn add_key_returns_to_its_caller() {
+        use crate::context::test_support::{identity_holding, test_app_context};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        for status in [
+            AddKeyStatus::Complete,
+            AddKeyStatus::KeyOnNetworkNotSaved,
+            AddKeyStatus::DerivedKeyOnNetworkNotSaved,
+        ] {
+            let mut screen = AddKeyScreen::new(identity_holding(&[]), &ctx);
+            screen.add_key_status = status;
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, (screen, action): &mut (AddKeyScreen, AppAction)| {
+                        let frame_action = screen.ui(ui);
+                        if frame_action != AppAction::None {
+                            *action = frame_action;
+                        }
+                    },
+                    (screen, AppAction::None),
+                );
+            harness.run();
+            harness.get_by_label("Back").click();
+            harness.run();
+            assert_eq!(harness.state().1, AppAction::PopScreenAndRefresh);
+        }
     }
 }
 

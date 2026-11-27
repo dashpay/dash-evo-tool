@@ -9,6 +9,58 @@ use crate::backend_task::error::TaskError;
 /// Message shown when a startup error carries no user-facing message of its own.
 pub const GENERIC_STARTUP_FAILURE: &str = "Dash Evo Tool could not start because of an unexpected problem. Restart the application to try again.";
 
+/// Why the app window could not be opened, as far as the user can act on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFailureKind {
+    /// The graphics system (driver or graphics card) could not be started.
+    Graphics,
+    /// The app could not connect to the desktop to create its window.
+    DesktopSession,
+    /// Any other cause.
+    Other,
+}
+
+impl WindowFailureKind {
+    /// What happened and what the user can do about it.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Graphics => {
+                "Dash Evo Tool could not open its window because the graphics system could not be started. Update your graphics drivers, then restart the application."
+            }
+            Self::DesktopSession => {
+                "Dash Evo Tool could not open its window because it could not connect to your desktop. Sign out and sign back in, or restart your computer, then start the application again."
+            }
+            Self::Other => {
+                "Dash Evo Tool could not open its window because of an unexpected problem. Restart the application to try again."
+            }
+        }
+    }
+}
+
+/// The system dialog text for a window failure: the message for `kind`, the
+/// log file location when known, and where to report the problem, which is
+/// public.
+pub fn window_failure_text(kind: WindowFailureKind, log_file: Option<&Path>) -> String {
+    let mut text = kind.message().to_owned();
+    match log_file {
+        Some(log_file) => {
+            text.push_str(&format!(
+                "\n\nThe log file is at {path}.",
+                path = log_file.display()
+            ));
+            text.push_str(&format!(
+                "\n\nIf you cannot solve this yourself, report the problem at {url} and include the log file. The issue page is public, and the log file can include folder names from your computer, so read it before posting and remove anything you do not want to share.",
+                url = crate::SUPPORT_URL
+            ));
+        }
+        None => text.push_str(&format!(
+            "\n\nIf you cannot solve this yourself, report the problem at {url}. The issue page is public, so do not post anything you do not want to share.",
+            url = crate::SUPPORT_URL
+        )),
+    }
+    text
+}
+
 /// A user-facing message and the technical details behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorReport {
@@ -124,6 +176,52 @@ mod tests {
         let report = ErrorReport::from_error(&error, "fallback");
         assert_eq!(report.message(), "fallback");
         assert!(report.details().contains("disk exploded"));
+    }
+
+    /// The window failure text says what happened, what to do, where the log
+    /// is and where to report the problem.
+    #[test]
+    fn window_failure_text_names_the_log_and_support() {
+        let kind = WindowFailureKind::Graphics;
+        let text = window_failure_text(kind, Some(Path::new("/logs/det.log")));
+        assert!(text.starts_with(kind.message()), "{text}");
+        assert!(text.contains("The log file is at /logs/det.log."), "{text}");
+        assert!(text.contains(crate::SUPPORT_URL), "{text}");
+
+        let text = window_failure_text(kind, None);
+        assert!(!text.contains("log file is at"), "{text}");
+    }
+
+    /// The text asks for the log file only when there is one, and warns in
+    /// both cases that the issue page is public.
+    #[test]
+    fn window_failure_text_asks_for_the_log_only_when_it_exists() {
+        let kind = WindowFailureKind::Other;
+        let text = window_failure_text(kind, Some(Path::new("/logs/det.log")));
+        assert!(text.contains("include the log file"), "{text}");
+        assert!(text.contains("public"), "{text}");
+
+        let text = window_failure_text(kind, None);
+        assert!(!text.contains("log file"), "{text}");
+        assert!(text.contains(crate::SUPPORT_URL), "{text}");
+        assert!(text.contains("public"), "{text}");
+    }
+
+    /// Only a graphics failure sends the user to their graphics drivers; a
+    /// desktop connection failure or an unknown cause gets its own advice.
+    #[test]
+    fn window_failure_advice_follows_the_kind() {
+        let graphics = WindowFailureKind::Graphics.message();
+        let desktop = WindowFailureKind::DesktopSession.message();
+        let other = WindowFailureKind::Other.message();
+        assert!(graphics.contains("graphics drivers"), "{graphics}");
+        assert!(!desktop.contains("graphics"), "{desktop}");
+        assert!(desktop.contains("desktop"), "{desktop}");
+        assert!(!other.contains("graphics"), "{other}");
+        assert_ne!(desktop, other);
+
+        let text = window_failure_text(WindowFailureKind::DesktopSession, None);
+        assert!(text.starts_with(desktop), "{text}");
     }
 
     /// Startup failures fall back to the generic startup message.

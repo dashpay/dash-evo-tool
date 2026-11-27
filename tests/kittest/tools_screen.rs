@@ -35,6 +35,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -104,6 +105,21 @@ fn grovestark_does_not_seed_non_eddsa_identity() {
         assert_eq!(
             screen.selected_identity, None,
             "GroveSTARKScreen must not seed an identity that has no EdDSA keys (R4 guard)"
+        );
+    });
+}
+
+/// The Platform address balance lookup names its address field after the
+/// prompt above it, so a screen reader announces what to type.
+#[test]
+fn address_balance_names_its_address_field() {
+    with_isolated_data_dir(|| {
+        let harness = crate::support::mount_app(
+            dash_evo_tool::ui::RootScreenType::RootScreenToolsAddressBalanceScreen,
+        );
+        harness.get_by_role_and_label(
+            egui::accesskit::Role::TextInput,
+            "Enter a Platform address (dash1... or tdash1...):",
         );
     });
 }

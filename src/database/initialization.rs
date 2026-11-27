@@ -42,18 +42,23 @@ struct V34EnvSnapshot {
     has_any_rpc_password: bool,
 }
 
+/// A `.env` read error without the file's text, which dotenvy keeps on a parse failure.
+fn env_file_error(error: dotenvy::Error) -> std::io::Error {
+    std::io::Error::other(crate::config::EnvFileError::from(error))
+}
+
 /// Parse `<data_dir>/.env` via `dotenvy::from_path_iter` to decide the v34
 /// migration outcome. The iterator API does not mutate process env (unlike
 /// `Config::load_from` / `dotenvy::from_path_override`), so this is safe to
 /// call from inside the migration transaction and from parallel test runs.
 fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSnapshot> {
     let env_path = data_dir.join(".env");
-    let iter = dotenvy::from_path_iter(&env_path).map_err(std::io::Error::other)?;
+    let iter = dotenvy::from_path_iter(&env_path).map_err(env_file_error)?;
 
     let mut developer_mode = false;
     let mut has_any_rpc_password = false;
     for item in iter {
-        let (key, value) = item.map_err(std::io::Error::other)?;
+        let (key, value) = item.map_err(env_file_error)?;
         if key.eq_ignore_ascii_case("DEVELOPER_MODE") {
             developer_mode = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
         } else if key.to_ascii_lowercase().ends_with("core_rpc_password") && !value.is_empty() {
@@ -2960,6 +2965,26 @@ mod test {
             assert!(result.is_ok(), "migration failed: {:?}", result.err());
             assert_eq!(db.db_schema_version().unwrap(), 34);
             assert_eq!(read_core_backend_mode(&db), 1);
+        }
+
+        /// A malformed `.env` defaults to SPV without logging the file's text.
+        #[test]
+        fn v34_log_omits_malformed_env_text() {
+            let marker = crate::test_support::keys::wif(dash_sdk::dpp::dashcore::Network::Testnet);
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(
+                tmp.path(),
+                &format!("TESTNET_core_host=\"unterminated\nTESTNET_wallet_private_key={marker}\n"),
+            );
+
+            let log = crate::test_support::CapturedLog::start();
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(read_core_backend_mode(&db), 1);
+            let text = log.text();
+            assert!(text.contains("v34 migration: .env unreadable"), "{text}");
+            assert!(!text.contains(&marker), "the log carries .env text");
         }
 
         /// Re-running the migration on an already-migrated DB is a no-op.

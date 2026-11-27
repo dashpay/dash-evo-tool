@@ -167,8 +167,10 @@ async fn hydrate_wallets(
     ctx: &Arc<AppContext>,
     wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
 ) -> Result<(), McpToolError> {
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: this call may be the one that wires the
+    // wallet backend, which keeps the sender for good. Mirrors
+    // `ensure_spv_ready` and `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
         .map_err(McpToolError::TaskFailed)?;
@@ -253,10 +255,6 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 /// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while a
 /// storage update is mid-flight.
 ///
-/// Once synced, an unpopulated Platform protocol cache is refreshed so
-/// headless feature gates evaluate the connected network rather than boot state.
-/// Refresh failures remain best-effort here so Core-only tools can proceed.
-///
 /// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
 ///
 /// `OverallConnectionState::Synced` requires both SPV running **and**
@@ -268,31 +266,11 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 /// proof-verifying SDK calls only require a synced chain, not a live DAPI
 /// counter at the `ensure_spv_synced` callsite.
 pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
-    ensure_spv_ready(ctx, ProtocolRefresh::BestEffortIfUnpopulated).await
-}
-
-/// Require synced SPV and fresh epoch metadata before a shielded fund movement.
-pub(crate) async fn ensure_shielded_operations_ready(
-    ctx: &Arc<AppContext>,
-) -> Result<(), McpToolError> {
-    ensure_spv_ready(ctx, ProtocolRefresh::Required).await
-}
-
-#[derive(Clone, Copy)]
-enum ProtocolRefresh {
-    BestEffortIfUnpopulated,
-    Required,
-}
-
-async fn ensure_spv_ready(
-    ctx: &Arc<AppContext>,
-    protocol_refresh: ProtocolRefresh,
-) -> Result<(), McpToolError> {
-    // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
-    // it, so the receiver is dropped. The `EventBridge` only does non-blocking
-    // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: the GUI's when the server is embedded,
+    // a sink in a headless process. The backend wired here keeps the sender
+    // for good, so it is never one made for this call. Mirrors
+    // `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     // Prepare storage, THEN start chain sync — both inside the chokepoint, in
     // that order. This call used to start SPV before the legacy drain had run;
     // the drain is now part of `prepare_storage`, which the chokepoint awaits
@@ -308,13 +286,10 @@ async fn ensure_spv_ready(
     // run another process or the embedded GUI started concurrently.
     ensure_storage_ready(ctx).await?;
 
-    wait_for_spv_and_refresh_platform_info(ctx, protocol_refresh).await
+    wait_for_spv(ctx).await
 }
 
-async fn wait_for_spv_and_refresh_platform_info(
-    ctx: &Arc<AppContext>,
-    protocol_refresh: ProtocolRefresh,
-) -> Result<(), McpToolError> {
+async fn wait_for_spv(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
     // Subscribe before reading the current value so no transition is lost.
     // `borrow_and_update` keeps later iterations asleep until a real change.
     let mut rx = ctx.connection_status().subscribe_spv_status();
@@ -348,39 +323,6 @@ async fn wait_for_spv_and_refresh_platform_info(
         }
     }
 
-    match protocol_refresh {
-        ProtocolRefresh::BestEffortIfUnpopulated
-            if ctx.protocol_version_info().verified_version.is_none() =>
-        {
-            let _ = refresh_platform_protocol_version(ctx).await;
-            Ok(())
-        }
-        ProtocolRefresh::BestEffortIfUnpopulated => Ok(()),
-        ProtocolRefresh::Required => refresh_platform_protocol_version(ctx).await,
-    }
-}
-
-async fn refresh_platform_protocol_version(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
-    tracing::trace!("Refreshing Platform epoch information for headless feature gating");
-    crate::mcp::dispatch::dispatch_task(
-        ctx,
-        crate::backend_task::BackendTask::PlatformInfo(
-            crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
-        ),
-    )
-    .await
-    .map_err(|error| {
-        tracing::warn!(
-            error = ?error,
-            "Platform epoch information refresh failed for headless feature gating"
-        );
-        McpToolError::TaskFailed(error)
-    })?;
-
-    tracing::trace!(
-        protocol_version = ?ctx.protocol_version_info().verified_version,
-        "Platform epoch information refreshed for headless feature gating"
-    );
     Ok(())
 }
 
@@ -445,112 +387,22 @@ pub(crate) fn qualified_identity(
 mod tests {
     use super::*;
     use dash_sdk::Sdk;
-    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-    use dash_sdk::dpp::version::LATEST_VERSION;
-    use dash_sdk::platform::DataContract;
-
-    /// Mocks the DPNS-contract fetch that drives the protocol-version ratchet,
-    /// the epoch task's fallback when the current epoch cannot be read (the
-    /// mock has no epoch response). The app reads the version the SDK
-    /// verified, and a mock expectation is made up, never verified, so the
-    /// SDK accepts `LATEST_VERSION` from metadata it is told was proved, as
-    /// it does after a live network's quorum-signed response.
-    async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let sdk = mock_sdk_with_unproved_dpns_contract(ctx).await;
-        sdk.verify_response_metadata(
-            "get_data_contract",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                protocol_version: LATEST_VERSION,
-                height: 1,
-                ..Default::default()
-            },
-        )
-        .expect("proved metadata is accepted");
-        sdk
-    }
-
-    /// The DPNS-contract fetch alone: its expectation proves nothing about the
-    /// network's protocol version.
-    async fn mock_sdk_with_unproved_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let contract = DataContract::clone(&ctx.dpns_contract());
-        let mut sdk = Sdk::new_mock();
-        sdk.mock()
-            .expect_fetch(contract.id(), Some(contract))
-            .await
-            .expect("register DPNS contract response");
-        sdk
-    }
-
-    /// A DPNS fetch whose response the SDK never verified does not confirm
-    /// the network's protocol version: features stay gated off.
-    #[tokio::test]
-    async fn an_unproved_response_leaves_the_protocol_version_unconfirmed() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_unproved_dpns_contract(&ctx).await));
-
-        refresh_platform_protocol_version(&ctx)
-            .await
-            .expect("refresh platform metadata");
-
-        assert_eq!(ctx.protocol_version_info().verified_version, None);
-    }
-
-    /// Once SPV runs, the headless sync completes and reads the protocol
-    /// version the current SDK has proven; the fee multiplier stays at the
-    /// default without a proved epoch.
-    #[tokio::test]
-    async fn headless_sync_reads_the_proven_protocol_version_after_spv_is_running() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
-        ctx.connection_status().set_spv_status(SpvStatus::Running);
-
-        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
-            .await
-            .expect("headless sync completion");
-
-        assert_eq!(
-            ctx.protocol_version_info().verified_version,
-            Some(LATEST_VERSION)
-        );
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
-    }
 
     #[tokio::test]
-    async fn best_effort_protocol_refresh_retries_without_blocking_spv_readiness() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
+    async fn headless_spv_readiness_does_not_require_a_verified_protocol() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
         ctx.sdk.store(Arc::new(Sdk::new_mock()));
         ctx.connection_status().set_spv_status(SpvStatus::Running);
-
-        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
-            .await
-            .expect("SPV readiness survives a Platform metadata failure");
+        wait_for_spv(&ctx).await.unwrap();
         assert_eq!(ctx.protocol_version_info().verified_version, None);
-
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
-        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
-            .await
-            .expect("SPV readiness retries Platform metadata");
-
-        assert_eq!(
-            ctx.protocol_version_info().verified_version,
-            Some(LATEST_VERSION)
-        );
     }
 
     /// Insert a wallet straight into the in-memory map, bypassing registration
     /// — the shape legacy data takes when two wallets already share an alias.
     fn insert_wallet_with_alias(ctx: &AppContext, seed_byte: u8, alias: &str) -> WalletSeedHash {
         let wallet = crate::model::wallet::Wallet::new_from_seed(
-            [seed_byte; 64],
+            crate::test_support::keys::labelled_seed("mcp_resolve", u64::from(seed_byte)),
             ctx.network(),
             Some(alias.to_owned()),
             None,
@@ -637,5 +489,33 @@ mod tests {
             }) => assert!(Arc::ptr_eq(&actual, &source)),
             other => panic!("expected the typed migration failure, got {other:?}"),
         }
+    }
+
+    /// With the server embedded in the GUI, hydrating wallets may be the first
+    /// call to wire the wallet backend. The backend keeps its sender for good,
+    /// so it must be the GUI's frame loop, never one made for the call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydration_wires_the_backend_on_the_installed_frame_loop() {
+        use crate::backend_task::TaskResult;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut frame_loop) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+
+        ensure_wallets_hydrated(&ctx)
+            .await
+            .expect("hydrate wallets offline");
+
+        let backend = ctx.wallet_backend().expect("hydration wires the backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the installed frame loop");
+        assert!(matches!(frame_loop.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
     }
 }

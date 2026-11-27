@@ -379,6 +379,7 @@ fn scroll_to_bottom<State>(harness: &mut egui_kittest::Harness<'_, State>) {
     harness.run_steps(2);
     harness.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
+        source: egui::MouseWheelSource::Unknown,
         phase: egui::TouchPhase::Move,
         delta: egui::vec2(0.0, -10000.0),
         modifiers: egui::Modifiers::NONE,
@@ -826,7 +827,7 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
         // synced; these tests start on a synced network.
         app_context.connection_status().set_masternodes_ready(true);
         let screen = IdentityHubScreen::new(&app_context);
-        let mut harness = egui_kittest::Harness::builder()
+        let mut harness = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 800.0))
             .build_ui_state(
                 |ui,
@@ -1072,7 +1073,7 @@ fn hidden_hub_receives_its_profile_save_and_releases_the_next_draft() {
         context.set_selected_identity(Some(owner));
         let mut hub = IdentityHubScreen::new(&context);
         hub.select_tab(IdentityHubTab::Settings);
-        let mut editor = egui_kittest::Harness::builder()
+        let mut editor = crate::support::builder_with_app_fonts()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
                 |ui, state: &mut (IdentityHubScreen, Option<BackendTaskContext>)| {

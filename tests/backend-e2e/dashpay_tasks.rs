@@ -626,16 +626,16 @@ async fn step_update_contact_info(
         new_ipk.set_security_level(SecurityLevel::HIGH);
         new_ipk.set_key_type(KeyType::ECDSA_SECP256K1);
         new_ipk.set_data({
-                use dash_sdk::dpp::dashcore::PrivateKey;
-                let secret_key =
-                    dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
-                        .expect("Step 5: invalid secret key");
-                let pk = PrivateKey::from_byte_array(
-                    secret_key.as_secret_bytes(),
-                    dash_sdk::dpp::dashcore::Network::Testnet,
-                )
-                .expect("valid secret key");
-                pk.public_key().to_bytes().into()
+            use dash_sdk::dpp::dashcore::PrivateKey;
+            let secret_key =
+                dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
+                    .expect("Step 5: invalid secret key");
+            let pk = PrivateKey::from_byte_array(
+                secret_key.as_secret_bytes(),
+                dash_sdk::dpp::dashcore::Network::Testnet,
+            )
+            .expect("valid secret key");
+            pk.public_key().to_bytes().into()
         });
 
         let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
@@ -844,18 +844,18 @@ async fn tc_045_detect_incoming_contact_payment() {
     // map, and `LoadPaymentHistory` surfaces an unknown counterparty by id.
     let contact_1 = Identifier::from([0x5a; 32]);
 
-    // Two deterministic, network-valid receiving addresses (distinct pubkeys)
-    // standing in for two freshly-derived contact addresses. Derived from fixed
-    // secret keys so the addresses stay stable across runs while remaining valid
-    // curve points — secp256k1 now rejects raw bytes that are not on the curve,
-    // so a hand-written `[0x02; 33]` is no longer a usable public key.
-    let derive_pubkey = |seed: [u8; 32]| {
-        let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(seed)
-            .expect("fixed test secret key is a valid scalar");
-        dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key())
+    // Two network-valid receiving addresses (distinct pubkeys) standing in for
+    // two freshly-derived contact addresses. Derived from runtime-generated
+    // secret keys so they are valid curve points — secp256k1 rejects raw bytes
+    // that are not on the curve, so a hand-written `[0x02; 33]` is no longer a
+    // usable public key.
+    let derive_pubkey = || {
+        dash_sdk::dpp::dashcore::PublicKey::new(
+            dash_evo_tool::test_support::keys::secret_key().public_key(),
+        )
     };
-    let pubkey_0 = derive_pubkey([0x01; 32]);
-    let pubkey_1 = derive_pubkey([0x02; 32]);
+    let pubkey_0 = derive_pubkey();
+    let pubkey_1 = derive_pubkey();
     let address_0 =
         dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey_0, ctx.app_context.network()).to_string();
     let address_1 =
@@ -981,8 +981,7 @@ async fn tc_043_reject_contact_request() {
     // Create a third DashPay identity (C) from a fresh funded wallet
     tracing::info!("TC-043: creating third DashPay identity (C)...");
     let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(30_000_000).await;
-    let qi_c =
-        dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c).await;
+    let qi_c = dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c).await;
 
     // Register a DPNS name for C so A can send a contact request
     // >= 20 chars to avoid DPNS contest voting period
@@ -994,7 +993,7 @@ async fn tc_043_reject_contact_request() {
             dash_evo_tool::backend_task::identity::RegisterDpnsNameInput {
                 qualified_identity: qi_c.clone(),
                 name_input: username_c.clone(),
-        approved_contest_fee: 0,
+                approved_contest_fee: 0,
                 signing_key_id: None,
             },
         ),
@@ -1031,7 +1030,7 @@ async fn tc_043_reject_contact_request() {
         )
         .await;
 
-        if matches!(search, Ok(BackendTaskSuccessResult::LoadedIdentity(_))) {
+        if matches!(search, Ok(BackendTaskSuccessResult::LoadedIdentity { .. })) {
             tracing::info!(
                 "TC-043: DPNS name '{}' propagated after {:?}",
                 username_c,

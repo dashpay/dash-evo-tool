@@ -10,6 +10,7 @@ use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash}
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
+use crate::ui::components::copyable_id::CopyableId;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
 pub use crate::ui::state::identity_home::HomeState;
@@ -134,15 +135,27 @@ pub fn render_header(
                                 )
                                 .clickable_tooltip("Get another username.");
                             add.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    "Add username",
-                                )
+                                egui::WidgetInfo::labeled(egui::Role::Button, true, "Add username")
                             });
                             if add.clicked() {
                                 action = register_action_for(app_context, identity.identity.id());
                             }
+                        },
+                    );
+                    let full_id = identity.identity.id().to_string(Encoding::Base58);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), username_action_size.y),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().button_padding = egui::vec2(Spacing::XS, Spacing::XXS);
+                            CopyableId::new(
+                                &full_id,
+                                "Copy full identity ID",
+                                "Copy the full identity ID.",
+                                "The identity ID was copied to the clipboard.",
+                            )
+                            .button_size(username_action_size)
+                            .show(ui);
                         },
                     );
                 },
@@ -451,7 +464,7 @@ fn render_receive(
     state: &mut HomeState,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let response = egui::Modal::new(egui::Id::new("identity_receive")).show(ui.ctx(), |ui| {
+    let response = egui::Modal::new(egui::Id::unique("identity_receive")).show(ui.ctx(), |ui| {
         ui.set_max_width(400.0);
         ui.heading("Receive Dash");
         let name = app_context.main_username(identity);

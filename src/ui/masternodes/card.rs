@@ -11,8 +11,8 @@ use crate::ui::identity::identity_picker_card::{
 use crate::ui::masternodes::key_status_tokens;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
-    self, Color32, CornerRadius, Frame, Margin, Response, RichText, Sense, Stroke, Ui, Vec2,
-    WidgetInfo, WidgetType,
+    self, Color32, CornerRadius, Frame, Margin, Response, RichText, Role, Sense, Stroke, Ui, Vec2,
+    WidgetInfo,
 };
 
 pub(crate) const PLATFORM_IDENTITY_STATUS_TOOLTIP: &str = "This shows whether this masternode's Platform identity can currently be found. It does not show Core network or PoSe status.";
@@ -45,11 +45,11 @@ pub fn balance_label(credits: u64) -> String {
     format_credits_as_dash(credits)
 }
 
-/// Voter-readiness label. Green + `Voting ready` when a voting key is loaded,
+/// Voting-key presence label. Green + `Voting key loaded` when a voting key is loaded,
 /// warning + `No voting key` otherwise (§7 copy).
 pub fn voter_readiness_label(voting_present: bool) -> &'static str {
     if voting_present {
-        "Voting ready"
+        "Voting key loaded"
     } else {
         "No voting key"
     }
@@ -301,7 +301,7 @@ impl MasternodeCard {
 
         // Whole card = one click target with an accessible label (NFR-6).
         let rect = inner.response.rect;
-        let id = ui.id().with(("masternode-card", &self.node_id));
+        let id = ui.scope_id().with(("masternode-card", &self.node_id));
         let response: Response = ui.interact(rect, id, Sense::click());
         let response = if platform_identity_status_rect.is_some_and(|status_rect| {
             ui.input(|input| {
@@ -324,7 +324,7 @@ impl MasternodeCard {
             );
         }
         response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, true, format!("Open {heading_for_a11y}"))
+            WidgetInfo::labeled(Role::Button, true, format!("Open {heading_for_a11y}"))
         });
 
         MasternodeCardResponse {
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn tc_fr3_06_07_voter_readiness_copy() {
-        assert_eq!(voter_readiness_label(true), "Voting ready");
+        assert_eq!(voter_readiness_label(true), "Voting key loaded");
         assert_eq!(voter_readiness_label(false), "No voting key");
     }
 

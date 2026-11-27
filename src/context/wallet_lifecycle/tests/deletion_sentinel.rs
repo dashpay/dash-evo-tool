@@ -163,7 +163,7 @@ async fn deletion_paths_leave_every_untargeted_file_intact() {
     }
 
     // Wallet and identity to remove.
-    let seed = [0xC4u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();

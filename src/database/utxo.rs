@@ -1,6 +1,5 @@
 use crate::database::Database;
 use dash_sdk::dashcore_rpc::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
-use dash_sdk::dpp::dashcore::hashes::Hash;
 #[cfg(test)]
 use dash_sdk::dpp::dashcore::{Address, Network};
 use rusqlite::params;

@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskContext;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::CacheUpdate;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, document::DocumentTask};
@@ -28,7 +29,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
-    show_success_screen_with_info,
+    show_success_screen_with_info, signable_key_now,
 };
 use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::state::PendingRequest;
@@ -200,8 +201,8 @@ pub struct DocumentActionScreen {
 }
 
 /// Shown when the selected identity holds no key this device can sign the
-/// chosen document action with.
-const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
+/// chosen document or contract action with.
+pub(super) const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
 
 /// An open contract fee confirmation and the action it was opened for: the
 /// action is built, fee agreement included, when the dialog opens, and that
@@ -339,13 +340,14 @@ impl DocumentActionScreen {
 
     /// The document ID input of Purchase and Replace, where the fetched
     /// document belongs to the ID shown.
-    fn fetched_document_id_input(&mut self, ui: &mut Ui) {
+    fn fetched_document_id_input(&mut self, ui: &mut Ui, label_id: egui::Id) {
         let dark_mode = ui.style().visuals.dark_mode;
         if ui
             .add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
             ))
+            .labelled_by(label_id)
             .changed()
         {
             self.document_id_changed();
@@ -435,6 +437,17 @@ impl DocumentActionScreen {
         wallet_for_signing_key(identity, self.selected_key.as_ref())
     }
 
+    fn sync_signing_wallet(&mut self) {
+        if crate::ui::identity::sync_signing_wallet(
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.wallet_unlock_popup.close();
+        }
+    }
+
     /// The contract or document type changed: what was fetched for the old
     /// one no longer applies, and the key is picked again for the new scope
     /// (a key bound to the old contract or type cannot sign in the new one).
@@ -449,7 +462,7 @@ impl DocumentActionScreen {
         }
     }
 
-    fn render_identity_and_key_selection(&mut self, ui: &mut Ui) {
+    fn render_identity_and_key_selection(&mut self, ui: &mut Ui) -> AppAction {
         ui.horizontal(|ui| {
             ui.heading("2. Select an identity:");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -497,10 +510,11 @@ impl DocumentActionScreen {
         }
 
         // Key selector (only shown in advanced mode)
+        let mut action = AppAction::None;
         if self.show_advanced_options {
             ui.add_space(10.0);
             if let Some(identity) = &self.selected_identity {
-                add_key_chooser_with_doc_type(
+                action = add_key_chooser_with_doc_type(
                     ui,
                     &self.app_context,
                     identity,
@@ -516,6 +530,7 @@ impl DocumentActionScreen {
         }
 
         ui.add_space(10.0);
+        action
     }
 
     fn render_action_specific_inputs(&mut self, ui: &mut Ui) -> AppAction {
@@ -558,12 +573,13 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
+            let label = ui.label("Document ID:");
             let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
-            ));
+            ))
+            .labelled_by(label.id);
         });
 
         ui.add_space(10.0);
@@ -629,7 +645,7 @@ impl DocumentActionScreen {
                             self.document_id_input = doc_id_str.clone();
                         }
 
-                        let popup_id = egui::Id::new(format!("popup_{}", doc_id_str));
+                        let popup_id = egui::Id::unique(format!("popup_{}", doc_id_str));
                         egui::Popup::new(
                             popup_id,
                             ui.ctx().clone(),
@@ -644,7 +660,7 @@ impl DocumentActionScreen {
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
                             ui.set_min_width(400.0);
-                            ui.label("Document JSON:");
+                            let json_label = ui.label("Document JSON:");
                             if let Ok(json) = serde_json::to_string_pretty(doc) {
                                 ui.add(
                                     egui::TextEdit::multiline(&mut json.clone())
@@ -652,7 +668,8 @@ impl DocumentActionScreen {
                                         .desired_rows(10)
                                         .desired_width(380.0)
                                         .interactive(false),
-                                );
+                                )
+                                .labelled_by(json_label.id);
                             } else {
                                 ui.label("Failed to serialize document.");
                             }
@@ -692,8 +709,8 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            self.fetched_document_id_input(ui);
+            let label = ui.label("Document ID:");
+            self.fetched_document_id_input(ui, label.id);
         });
 
         // Add fetch button
@@ -747,8 +764,8 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
-            self.fetched_document_id_input(ui);
+            let label = ui.label("Document ID:");
+            self.fetched_document_id_input(ui, label.id);
 
             if self.fetch_button(ui, "Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
@@ -823,21 +840,23 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
+            let label = ui.label("Document ID:");
             let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
-            ));
+            ))
+            .labelled_by(label.id);
         });
 
         ui.horizontal(|ui| {
-            ui.label("Price (credits):");
+            let label = ui.label("Price (credits):");
             let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.price_input,
                 dark_mode,
-            ));
+            ))
+            .labelled_by(label.id);
         });
 
         ui.add_space(10.0);
@@ -852,21 +871,23 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.label("Document ID:");
+            let label = ui.label("Document ID:");
             let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
-            ));
+            ))
+            .labelled_by(label.id);
         });
 
         ui.horizontal(|ui| {
-            ui.label("Recipient Identity:");
+            let label = ui.label("Recipient Identity:");
             let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.recipient_id_input,
                 dark_mode,
-            ));
+            ))
+            .labelled_by(label.id);
         });
 
         ui.add_space(10.0);
@@ -894,7 +915,7 @@ impl DocumentActionScreen {
                     } else {
                         format!("{}:", prop_name)
                     };
-                    ui.label(label);
+                    let label_id = ui.label(label).id;
                     match &schema.property_type {
                         DocumentPropertyType::U128
                         | DocumentPropertyType::I128
@@ -913,7 +934,8 @@ impl DocumentActionScreen {
                                     .hint_text("integer")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::F64 => {
                             let dark_mode = ui.style().visuals.dark_mode;
@@ -922,7 +944,8 @@ impl DocumentActionScreen {
                                     .hint_text("floating-point")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::String(size) => {
                             let dark_mode = ui.style().visuals.dark_mode;
@@ -935,7 +958,8 @@ impl DocumentActionScreen {
                                 } else {
                                     text_edit
                                 }
-                            });
+                            })
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::ByteArray(_size) => {
                             let dark_mode = ui.style().visuals.dark_mode;
@@ -944,7 +968,8 @@ impl DocumentActionScreen {
                                     .hint_text("hex or base64")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::Identifier
                         | DocumentPropertyType::IdentifierWithReference(_) => {
@@ -954,14 +979,19 @@ impl DocumentActionScreen {
                                     .hint_text("base58 identifier")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::Boolean => {
                             let mut checked = matches!(
                                 val.to_ascii_lowercase().as_str(),
                                 "true" | "1" | "yes" | "on"
                             );
-                            if ui.checkbox(&mut checked, "").changed() {
+                            if ui
+                                .checkbox(&mut checked, "")
+                                .labelled_by(label_id)
+                                .changed()
+                            {
                                 *val = checked.to_string();
                             }
                         }
@@ -972,7 +1002,8 @@ impl DocumentActionScreen {
                                     .hint_text("unix-ms")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                         DocumentPropertyType::TypedArray(_) => {
                             ui.label(UNEDITABLE_FIELD_NOTICE);
@@ -986,7 +1017,8 @@ impl DocumentActionScreen {
                                     .hint_text("JSON value")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
-                            );
+                            )
+                            .labelled_by(label_id);
                         }
                     }
                     ui.end_row();
@@ -1130,7 +1162,13 @@ impl DocumentActionScreen {
         };
 
         // A second click while the first action is being sent would pay for it twice.
-        let idle = self.broadcast_status != BroadcastStatus::Broadcasting;
+        let idle = self.broadcast_status != BroadcastStatus::Broadcasting
+            && self.selected_identity.is_some()
+            && self.selected_key.is_some()
+            && self
+                .wallet
+                .as_ref()
+                .is_none_or(|wallet| !wallet_needs_unlock(wallet));
         if ComponentStyles::add_primary_button_enabled(ui, idle, button_text).clicked()
             && self.can_broadcast()
         {
@@ -1988,8 +2026,35 @@ impl ScreenLike for DocumentActionScreen {
         action
     }
 
+    fn cached_data_changed(&mut self, update: CacheUpdate) {
+        if super::signing_identities_changed(&self.app_context, update) {
+            self.refresh();
+        }
+    }
+
     fn refresh(&mut self) {
-        // Task outcomes arrive in display_backend_task_result/_error.
+        let Some((identities, selected)) =
+            super::reload_signing_identities(&self.app_context, &mut self.selected_identity_string)
+        else {
+            return;
+        };
+        self.identities_map = identities
+            .into_iter()
+            .map(|identity| (identity.identity.id(), identity))
+            .collect();
+        self.selected_identity = selected;
+
+        let contract = self.selected_contract.as_ref();
+        let document_type = self.selected_document_type.as_ref();
+        let scope = signing_scope(contract, document_type);
+        self.selected_key = self.selected_identity.as_ref().and_then(|identity| {
+            self.selected_key
+                .as_ref()
+                .and_then(|key| signable_key_now(identity, key, scope))
+                .cloned()
+                .or_else(|| auto_selected_document_key(identity, contract, document_type))
+        });
+        self.sync_signing_wallet();
     }
 
     // No `display_message` override: a message may come from any task, such
@@ -2166,36 +2231,21 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
 
                 // Step 2: Identity and Key Selection
-                self.render_identity_and_key_selection(ui);
+                action |= self.render_identity_and_key_selection(ui);
 
-                if self.selected_identity.is_none() {
-                    return action;
-                }
                 if self.selected_key.is_none() {
                     let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(NO_SIGNING_KEY_NOTICE)
                             .color(DashColors::warning_color(dark_mode)),
                     );
-                    return action;
                 }
 
                 ui.separator();
                 ui.add_space(10.0);
 
                 // Wallet unlock
-                if self.selected_identity.is_some() {
-                    let new_wallet = self.signing_wallet();
-                    let wallet_changed = match (&self.wallet, &new_wallet) {
-                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                        (None, None) => false,
-                        _ => true,
-                    };
-                    if wallet_changed {
-                        self.wallet_open_attempted = false;
-                    }
-                    self.wallet = new_wallet;
-                }
+                self.sync_signing_wallet();
                 if let Some(wallet) = &self.wallet {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
@@ -2219,7 +2269,6 @@ impl DocumentActionScreen {
                         if ui.button("Unlock Wallet").clicked() {
                             self.wallet_unlock_popup.open();
                         }
-                        return action;
                     }
                 }
 
@@ -2394,6 +2443,86 @@ mod tests {
             .document_type_for_name(name)
             .expect("document type")
             .to_owned_document_type()
+    }
+
+    async fn assert_document_action_recovers_signer_and_keeps_draft(
+        reload: impl FnOnce(&mut DocumentActionScreen),
+    ) {
+        use crate::context::test_support::{dashpay_contract, wired_test_app_context};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let master = auth_key(1, SecurityLevel::MASTER, None);
+        let identity = identity_holding(std::slice::from_ref(&master));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        let contract = QualifiedContract {
+            contract: dashpay_contract(),
+            alias: Some("dashpay".to_string()),
+        };
+        let doc_type = owned_document_type(&contract, "profile");
+        let signing_key = auth_key(2, doc_type.security_level_requirement(), None);
+        let mut screen =
+            DocumentActionScreen::new(ctx.clone(), Some(identity), DocumentActionType::Create);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(doc_type);
+        screen.show_advanced_options = true;
+        screen.contract_search = "dashpay".to_string();
+        screen
+            .field_inputs
+            .insert("displayName".into(), "Draft name".into());
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1100.0))
+            .build_ui_state(
+                |ui, (screen, submitted): &mut (DocumentActionScreen, Option<u32>)| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::DocumentTask(task),
+                        ..
+                    } = screen.ui(ui)
+                        && let DocumentTask::BroadcastDocument { identity_key, .. } = *task
+                    {
+                        *submitted = Some(identity_key.id());
+                    }
+                },
+                (screen, None),
+            );
+        harness.run();
+        harness.get_by_label("Broadcast document").click();
+        harness.run();
+        assert_eq!(harness.state().1, None);
+
+        ctx.insert_local_qualified_identity(&identity_holding(&[master, signing_key]), &None)
+            .expect("store the added signing key");
+        reload(&mut harness.state_mut().0);
+        harness.run();
+        let screen = &harness.state().0;
+        assert_eq!(screen.field_inputs["displayName"], "Draft name");
+        assert_eq!(screen.contract_search, "dashpay");
+        assert!(screen.show_advanced_options);
+        harness.get_by_label("Broadcast document").click();
+        harness.step();
+        assert_eq!(harness.state().1, Some(2), "Broadcast must use the new key");
+    }
+
+    #[tokio::test]
+    async fn document_action_recovers_signer_and_keeps_draft_on_return() {
+        assert_document_action_recovers_signer_and_keeps_draft(ScreenLike::refresh).await;
+    }
+
+    #[tokio::test]
+    async fn document_action_recovers_signer_and_keeps_draft_on_cache_update() {
+        use crate::backend_task::CacheDomain;
+
+        assert_document_action_recovers_signer_and_keeps_draft(|screen| {
+            screen.cached_data_changed(CacheUpdate {
+                network: screen.app_context.network(),
+                domain: CacheDomain::All,
+            });
+        })
+        .await;
     }
 
     /// Regression: automatic selection admitted every non-master level and
@@ -3151,7 +3280,7 @@ mod tests {
             .with_size(egui::vec2(1200.0, 800.0))
             .build_ui_state(
                 |ui, screen: &mut DocumentActionScreen| {
-                    screen.render_identity_and_key_selection(ui)
+                    screen.render_identity_and_key_selection(ui);
                 },
                 screen,
             );
@@ -3437,5 +3566,77 @@ mod tests {
         ] {
             assert_eq!(action.transition_action(), expected);
         }
+    }
+
+    #[test]
+    fn interop_document_purchase_reads_price_without_a_signing_key() {
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use std::cell::RefCell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let contract = dpns();
+        let contract_id = contract.contract.id();
+        let mut screen = DocumentActionScreen::new(ctx, None, DocumentActionType::Purchase);
+        screen.selected_document_type = Some(owned_document_type(&contract, "domain"));
+        screen.selected_contract = Some(contract);
+        screen.selected_identity = Some(identity_holding(&[]));
+        let id = Identifier::new([9; 32]);
+        screen.document_id_input = id.to_string(Encoding::Base58);
+
+        let dispatch = RefCell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 840.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    let action = screen.render_main_content(ui);
+                    if !matches!(action, AppAction::None) {
+                        dispatch.replace(Some(action));
+                    }
+                },
+                screen,
+            );
+
+        harness.run_steps(4);
+        assert!(harness.state().selected_key.is_none());
+        let fetch = harness.get_by_label("Fetch Document Price");
+        assert!(!fetch.accesskit_node().is_disabled());
+        fetch.click();
+        harness.run_steps(4);
+        let Some(AppAction::BackendTaskWithContext { task, context }) = dispatch.take() else {
+            panic!("the price button must dispatch a contextual read");
+        };
+        let BackendTask::DocumentTask(task) = task else {
+            panic!("document task")
+        };
+        let DocumentTask::FetchDocuments(query) = *task else {
+            panic!("document fetch")
+        };
+        assert_eq!(query.data_contract.id(), contract_id);
+        assert_eq!(query.document_type_name, "domain");
+        assert!(query.where_clauses.iter().any(|where_clause| {
+            where_clause.field == "$id" && where_clause.value == Value::Identifier(id.into())
+        }));
+
+        harness
+            .state_mut()
+            .display_backend_task_result(&context, fetched(7));
+        harness.run_steps(4);
+        assert!(
+            harness
+                .query_by_label("Document price: 7 credits")
+                .is_some()
+        );
+        let send = harness.query_by_label("Purchase document");
+        assert!(send.is_none_or(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+        assert!(dispatch.take().is_none());
     }
 }

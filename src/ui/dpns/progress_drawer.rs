@@ -38,11 +38,11 @@ impl DrawerState {
 
 /// Expand the drawer, e.g. right after a submit.
 pub fn expand(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.insert_temp(Id::new(OPEN_ID), true));
+    ctx.data_mut(|data| data.insert_temp(Id::unique(OPEN_ID), true));
 }
 
 fn is_open(ctx: &egui::Context) -> bool {
-    ctx.data(|data| data.get_temp(Id::new(OPEN_ID)).unwrap_or(false))
+    ctx.data(|data| data.get_temp(Id::unique(OPEN_ID)).unwrap_or(false))
 }
 
 /// The action a row offers for an outcome, if any (VOTE-FR-083).
@@ -110,7 +110,7 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
     let counts = progress_counts(shown.iter().copied());
     let mut open = is_open(ctx);
     let mut action = AppAction::None;
-    egui::Area::new(Id::new("dpns_vote_progress_drawer"))
+    egui::Area::new(Id::unique("dpns_vote_progress_drawer"))
         .anchor(Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -208,7 +208,7 @@ pub fn show(ctx: &egui::Context, app_context: &AppContext, state: &mut DrawerSta
                     });
             });
         });
-    ctx.data_mut(|data| data.insert_temp(Id::new(OPEN_ID), open));
+    ctx.data_mut(|data| data.insert_temp(Id::unique(OPEN_ID), open));
     action
 }
 
@@ -269,7 +269,7 @@ mod tests {
             app.update_dpns_vote_target(operation.id, &key, status, None)
                 .unwrap();
             for open in [false, true] {
-                ctx.data_mut(|data| data.insert_temp(Id::new(OPEN_ID), open));
+                ctx.data_mut(|data| data.insert_temp(Id::unique(OPEN_ID), open));
                 let reads = store.read_count();
                 ctx.run_ui(egui::RawInput::default(), |ui| {
                     show(ui.ctx(), &app, &mut state);

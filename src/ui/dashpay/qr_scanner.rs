@@ -378,6 +378,15 @@ impl ScreenLike for QRScannerScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.display_task_result(result);
     }
+
+    fn display_backend_task_error(
+        &mut self,
+        _context: &crate::backend_task::BackendTaskContext,
+        _error: &crate::backend_task::error::TaskError,
+    ) {
+        // The banner reports the failure; the form must offer Send again.
+        self.sending = false;
+    }
 }
 
 /// The wall clock in Unix seconds, the clock a contact QR code's expiry is
@@ -429,5 +438,20 @@ mod tests {
             .selected_wallet
             .expect("the wallet holding the DashPay signing key");
         assert_eq!(selected.read().expect("wallet").seed_hash(), seed_hash);
+    }
+
+    /// Regression: a failed send left the screen spinning with no way to
+    /// retry, as only a success cleared the sending state.
+    #[test]
+    fn a_failed_send_lets_the_user_retry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut screen =
+            QRScannerScreen::new(crate::context::test_support::test_app_context(dir.path()));
+        screen.sending = true;
+        screen.display_backend_task_error(
+            &crate::backend_task::BackendTaskContext::Unknown,
+            &crate::backend_task::error::TaskError::ContactQrExpired,
+        );
+        assert!(!screen.sending);
     }
 }

@@ -766,6 +766,12 @@ impl AppContext {
         let status = self.migration_status();
         let total = wallets.len() as u32;
         for (index, wallet) in wallets.iter().enumerate() {
+            // Closing the app stops the pass between wallets, never inside
+            // one: a wallet's bootstrap writes upstream registration and key
+            // bindings, and the next start runs the whole pass again.
+            if self.subtasks.cancellation_token.is_cancelled() {
+                break;
+            }
             status.set_wallet_load(Some((index as u32 + 1, total)));
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }
@@ -824,8 +830,8 @@ mod tests {
         let ctx = test_app_context(dir.path());
         let mut wallets = Vec::new();
         let mut response = AddressInfos::new();
-        for (seed_byte, balance) in [(0x31, 205_741_823_420), (0x32, 68_892_360)] {
-            let seed = [seed_byte; 64];
+        for balance in [205_741_823_420, 68_892_360] {
+            let seed = crate::test_support::keys::seed();
             let mut wallet = Wallet::new_from_seed(seed, ctx.network, None, None).expect("wallet");
             let address = wallet
                 .generate_platform_receive_address_with_seed(&seed, ctx.network)

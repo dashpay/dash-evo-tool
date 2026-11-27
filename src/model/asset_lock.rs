@@ -78,7 +78,7 @@ pub(crate) fn confirmed_funding_for_test(
     txid_byte: u8,
     amount_duffs: u64,
 ) -> platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock {
-    use dash_sdk::dpp::dashcore::{OutPoint, Transaction, Txid, hashes::Hash};
+    use dash_sdk::dpp::dashcore::{OutPoint, Transaction, Txid};
     use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
     use dash_sdk::dpp::prelude::AssetLockProof;
     use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
@@ -102,6 +102,7 @@ pub(crate) fn confirmed_funding_for_test(
             core_chain_locked_height: 1,
             out_point,
         })),
+        shielded_recipient: None,
     }
 }
 

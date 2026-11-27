@@ -110,3 +110,19 @@ fn system_theme_frames_after_mount_need_no_tokio_runtime() {
         harness.run_steps(3);
     });
 }
+
+/// The running app keeps text selections out of the X11/Wayland PRIMARY
+/// selection, so selecting a displayed secret does not hand it to other apps.
+#[test]
+fn app_installs_the_primary_selection_guard() {
+    with_isolated_data_dir(|| {
+        let harness =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        assert!(
+            harness
+                .ctx
+                .plugin_opt::<dash_evo_tool::ui::primary_selection_guard::PrimarySelectionGuard>()
+                .is_some()
+        );
+    });
+}

@@ -208,7 +208,9 @@ fn just_explore_lands_on_identities_hub() {
             "a fresh data dir must open on the onboarding welcome screen"
         );
 
-        harness.get_by_label("Just Explore").click();
+        harness
+            .get_by_role_and_label(Role::Button, "Just Explore")
+            .click();
         harness.run_steps(5);
 
         assert!(
@@ -221,6 +223,51 @@ fn just_explore_lands_on_identities_hub() {
             "the 'Just Explore' path must land on the Identities hub, not the hidden DashPay profile"
         );
     });
+}
+
+/// The onboarding action cards are buttons named by their titles, so a screen
+/// reader announces them and a keyboard user activates them with Enter or Space.
+#[test]
+fn welcome_action_cards_are_named_buttons_activated_by_enter_and_space() {
+    for key in [egui::Key::Enter, egui::Key::Space] {
+        with_isolated_data_dir(|| {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            let _guard = rt.enter();
+
+            let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+                dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                    .expect("Failed to create AppState")
+                    .with_animations(false)
+            });
+            harness.set_size(egui::vec2(1024.0, 768.0));
+            crate::support::wait_for_screens(&mut harness);
+
+            for title in ["Create Wallet", "Import Wallet"] {
+                harness.get_by_role_and_label(Role::Button, title);
+            }
+            harness
+                .get_by_role_and_label(Role::Button, "Just Explore")
+                .focus();
+            harness.step();
+            assert!(
+                harness
+                    .get_by_role_and_label(Role::Button, "Just Explore")
+                    .is_focused(),
+                "the card must keep keyboard focus"
+            );
+
+            harness.key_press(key);
+            harness.run_steps(5);
+            assert!(
+                !harness.state().show_welcome_screen,
+                "{key:?} must activate the focused card"
+            );
+            assert_eq!(
+                harness.state().selected_main_screen,
+                RootScreenType::RootScreenIdentityHub
+            );
+        });
+    }
 }
 
 /// A cold start opens on the Welcome screen while the connection state is still

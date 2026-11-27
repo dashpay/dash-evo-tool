@@ -16,7 +16,6 @@ use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -1555,6 +1554,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::platform::DataContract;
     use dash_sdk::platform::Identity;
@@ -2251,11 +2251,10 @@ mod tests {
         assert!(harness.state().selected_key.is_none());
         harness.get_by_label("Draft overview");
         assert!(
-            !harness
+            harness
                 .get_by_label("Check settings")
                 .accesskit_node()
-                .data()
-                .supports_action(egui::accesskit::Action::Click)
+                .is_disabled()
         );
         context.wallet_backend().unwrap().shutdown().await;
     }

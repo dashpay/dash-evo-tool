@@ -150,6 +150,50 @@ async fn wiring_does_not_start_chain_sync() {
     backend.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_store_startup_failure_explains_manual_recovery() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let path = ctx.data_dir().join("det-testnet-shielded.sqlite");
+    let corrupt = b"not a SQLite database";
+    std::fs::write(&path, corrupt).expect("write corrupt shielded store");
+
+    let error = ctx
+        .prepare_storage(sender)
+        .await
+        .expect_err("storage preparation must fail");
+    let TaskError::ShieldedStoreOpenFailed {
+        path: failed_path,
+        source,
+    } = &error
+    else {
+        panic!("expected a shielded store open failure, got {error:?}");
+    };
+    assert_eq!(failed_path, &path);
+    assert!(matches!(
+        source.as_ref(),
+        platform_wallet::error::PlatformWalletError::ShieldedStoreError(_)
+    ));
+    let message = error.to_string();
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    let mut remaining = message.as_str();
+    for step in [
+        "every shielded payment you sent is confirmed",
+        "close the app",
+        "back up the file",
+        "delete it manually",
+        "Reopen the app",
+        "create a new file",
+        "Wait for the sync to finish",
+        "check your shielded balances",
+    ] {
+        remaining = remaining
+            .split_once(step)
+            .unwrap_or_else(|| panic!("missing or out of order: {step:?} in {message}"))
+            .1;
+    }
+    assert_eq!(std::fs::read(&path).expect("read shielded store"), corrupt);
+}
+
 /// Once a context has completed storage preparation, later chokepoint calls
 /// return without replaying the drain or overwriting another migration status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

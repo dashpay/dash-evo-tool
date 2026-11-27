@@ -3668,6 +3668,22 @@ pub enum TaskError {
     #[error("The shielded pool is not available yet. Restart the application and try again.")]
     ShieldedNotConfigured,
 
+    /// The per-network shielded balance file could not be opened during storage preparation.
+    #[error(
+        "The app could not open the shielded balance file at \"{path}\". \
+        If it keeps failing and the file exists, first wait until every shielded payment you sent is confirmed, because this file also keeps the records of shielded payments that are still pending. \
+        Then close the app, back up the file, then delete it manually. \
+        Reopen the app, connect to the network and unlock your wallets if needed. \
+        The app will create a new file and sync your shielded balances again. \
+        Wait for the sync to finish, then check your shielded balances.",
+        path = .path.display()
+    )]
+    ShieldedStoreOpenFailed {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// A shielded operation was requested but this wallet's Orchard keys have
     /// not been bound. `bind_shielded` is triggered automatically on wallet
     /// unlock; this error surfaces when the operation races the bind (e.g. an

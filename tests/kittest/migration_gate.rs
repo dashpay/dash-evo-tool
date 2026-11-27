@@ -690,6 +690,38 @@ fn a_retryable_failure_offers_try_again_and_close() {
     });
 }
 
+#[test]
+fn shielded_store_startup_failure_shows_recovery_advice_and_both_actions() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let data_dir = std::env::var_os("DASH_EVO_DATA_DIR").expect("the isolated data dir");
+        let path = std::path::PathBuf::from(data_dir).join("det-mainnet-shielded.sqlite");
+        std::fs::write(&path, b"not a SQLite database").expect("write corrupt shielded store");
+
+        let mut harness = Harness::builder().build_eframe(|ctx| {
+            AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while harness.query_by_label("Try again").is_none() {
+            assert!(Instant::now() < deadline, "startup did not offer a retry");
+            harness.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let path = path.display().to_string();
+        assert!(harness.query_by_label_contains(path.as_str()).is_some());
+        assert!(
+            harness
+                .query_by_label_contains("back up the file, then delete it manually")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Close the app").is_some());
+    });
+}
+
 /// The retry button's *behaviour*, not its label: clicking "Try again" must
 /// clear the stale terminal status and dispatch a real preparation.
 ///

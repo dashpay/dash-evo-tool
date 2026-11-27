@@ -820,13 +820,15 @@ impl WalletBackend {
             // all Orchard state. The coordinator starts empty — no wallets are bound
             // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
             // calls with the same path are idempotent (upstream no-ops).
+            let path = shielded_database_path(ctx.data_dir(), network);
             backend
                 .inner
                 .pwm
-                .configure_shielded(shielded_database_path(ctx.data_dir(), network))
+                .configure_shielded(&path)
                 .await
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Arc::new(e),
+                .map_err(|source| TaskError::ShieldedStoreOpenFailed {
+                    path: std::path::absolute(&path).unwrap_or(path),
+                    source: Arc::new(source),
                 })?;
 
             // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +

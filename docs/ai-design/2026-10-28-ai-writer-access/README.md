@@ -119,6 +119,16 @@ access. The branch does not change live repository settings or move secrets.
      --source-digest <authorized release commit>`. The release checks prove
      the bytes did not change after publication; only the source digest
      detects an asset from another `release.yml` build substituted in a draft.
+     The provenance check differs per asset type:
+     - platform packages (Linux, macOS, Windows): the `release.yml` command
+       above;
+     - Flatpak bundles: no attestation yet, so they cannot be verified; #1269
+       adds one;
+     - migration fixtures: `gh attestation verify <file> --repo
+       dashpay/dash-evo-tool --signer-workflow
+       dashpay/dash-evo-tool/.github/workflows/migration-fixture-capture.yml
+       --source-ref refs/heads/v1.0-dev`, as
+       `scripts/migration-fixtures/download-fixtures.sh` does.
 
    Do not grant direct write access until both are in place.
 7. Before the next stable release, update `master` through the normal reviewed

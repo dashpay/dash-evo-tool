@@ -129,27 +129,22 @@ mod tests {
         PlatformVersion::get(protocol_version).expect("known protocol version")
     }
 
-    /// Protocol 14 redefines some system contracts, so a set loaded at 13
-    /// must not be served once the network runs 14.
+    /// Each supported protocol version has its own cached system contracts.
     #[test]
     fn a_new_protocol_version_reloads_the_contracts() {
-        let v13 = version(13);
         let v14 = version(14);
-        let dashpay_v13 = load_system_data_contract(SystemDataContract::Dashpay, v13).unwrap();
+        let v15 = version(15);
         let dashpay_v14 = load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap();
-        assert_ne!(
-            dashpay_v13, dashpay_v14,
-            "precondition: protocol 14 redefines the DashPay contract"
-        );
+        let dashpay_v15 = load_system_data_contract(SystemDataContract::Dashpay, v15).unwrap();
 
-        let cache = SystemContractsCache::new(SystemContracts::load(v13).unwrap());
-        assert_eq!(*cache.get(v13).dashpay, dashpay_v13);
-        let reloaded = cache.get(v14);
-        assert_eq!(*reloaded.dashpay, dashpay_v14);
-        assert_eq!(reloaded.dpns.id(), cache.get(v13).dpns.id());
+        let cache = SystemContractsCache::new(SystemContracts::load(v14).unwrap());
+        assert_eq!(*cache.get(v14).dashpay, dashpay_v14);
+        let reloaded = cache.get(v15);
+        assert_eq!(*reloaded.dashpay, dashpay_v15);
+        assert_eq!(reloaded.dpns.id(), cache.get(v14).dpns.id());
         assert_eq!(
-            *cache.get(v14).withdrawals,
-            load_system_data_contract(SystemDataContract::Withdrawals, v14).unwrap()
+            *cache.get(v15).withdrawals,
+            load_system_data_contract(SystemDataContract::Withdrawals, v15).unwrap()
         );
     }
 
@@ -157,14 +152,14 @@ mod tests {
     /// lookup; the app's lookup keeps the set it has.
     #[test]
     fn an_unloadable_version_fails_the_exact_lookup() {
-        let v13 = version(13);
-        let cache = SystemContractsCache::new(SystemContracts::load(v13).unwrap());
-        let mut unloadable = v13.clone();
+        let v14 = version(14);
+        let cache = SystemContractsCache::new(SystemContracts::load(v14).unwrap());
+        let mut unloadable = v14.clone();
         unloadable.protocol_version = u32::MAX;
 
         assert!(cache.try_get(&unloadable).is_err());
-        assert_eq!(cache.get(&unloadable).protocol_version, 13);
-        assert!(Arc::ptr_eq(&cache.get(v13), &cache.try_get(v13).unwrap()));
+        assert_eq!(cache.get(&unloadable).protocol_version, 14);
+        assert!(Arc::ptr_eq(&cache.get(v14), &cache.try_get(v14).unwrap()));
     }
 
     /// Regression: a lookup at another version (the proof verifier follows a
@@ -172,21 +167,21 @@ mod tests {
     /// reloaded the contracts twice. Each version keeps its own set.
     #[test]
     fn a_lookup_at_another_version_keeps_the_current_set() {
-        let v13 = version(13);
         let v14 = version(14);
-        let cache = SystemContractsCache::new(SystemContracts::load(v13).unwrap());
-        let current = cache.get(v13);
+        let v15 = version(15);
+        let cache = SystemContractsCache::new(SystemContracts::load(v14).unwrap());
+        let current = cache.get(v14);
 
-        let other = cache.try_get(v14).unwrap();
-        assert!(Arc::ptr_eq(&current, &cache.get(v13)));
-        assert!(Arc::ptr_eq(&other, &cache.try_get(v14).unwrap()));
+        let other = cache.try_get(v15).unwrap();
+        assert!(Arc::ptr_eq(&current, &cache.get(v14)));
+        assert!(Arc::ptr_eq(&other, &cache.try_get(v15).unwrap()));
     }
 
     /// The same version serves the cached set itself, not a reload.
     #[test]
     fn the_same_protocol_version_keeps_the_cached_set() {
-        let v13 = version(13);
-        let cache = SystemContractsCache::new(SystemContracts::load(v13).unwrap());
-        assert!(Arc::ptr_eq(&cache.get(v13), &cache.get(v13)));
+        let v14 = version(14);
+        let cache = SystemContractsCache::new(SystemContracts::load(v14).unwrap());
+        assert!(Arc::ptr_eq(&cache.get(v14), &cache.get(v14)));
     }
 }

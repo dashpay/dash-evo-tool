@@ -1,11 +1,5 @@
-//! Real-data regression test for the bridge: a profile the released
-//! `v1.0.0-weekly.20260908` build (Platform pin 67d4ef3) wrote on testnet,
-//! committed as a migration-fixture archive (`tests/migration-fixtures/`).
-//!
-//! The synthetic tests next door prove the bridge on rows written for them.
-//! This one feeds it bytes a real build wrote: a funded wallet's UTXO,
-//! transaction, address pool and sync state, and an uncheckpointed WAL left by
-//! the app's own clean shutdown.
+//! Real profiles on the pinned-PR lineage must be refused unchanged; the
+//! all-networks 20261117 archive must open and preserve its captured wallet.
 //!
 //! Env-gated. It runs only in the archived-profile suite, which sets
 //! `MIGRATION_FIXTURES_DIR`, and otherwise reports the skip and passes. With
@@ -16,16 +10,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::backend_task::error::TaskError;
+use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::changeset::PlatformWalletPersistence;
-use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
+use platform_wallet_storage::SqlitePersisterConfig;
 use sha2::{Digest, Sha256};
 
 use super::open;
 
 /// Set by the archived-profile suite, shared with the migration-matrix harness.
 const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
-/// The manifest entry this test reads.
-const FIXTURE_ID: &str = "v1.0.0-weekly.20260908-wallet-only";
 /// The committed manifest: the archive path, size and checksum.
 const MANIFEST: &str = include_str!("../../../tests/migration-fixtures/manifest.json");
 /// Directory the manifest's archive paths are relative to.
@@ -43,23 +37,62 @@ const VERSION_TABLES: [&str; 2] = ["refinery_schema_history", "meta_data_version
 /// database.
 const BACKUP_MARKER: &str = ".platform-67d4ef3-backup-";
 /// Rows the upgrade derives from the fixture wallet's history: Platform's
-/// V021 indexes the inputs of every stored transaction, and the captured
-/// faucet payment spends one. Its record needs no repair, so V021's table of
+/// V022 indexes the inputs of every stored transaction, and the captured
+/// faucet payment spends one. Its record needs no repair, so V022's table of
 /// original records stays empty.
 const NETWORK_DB_DERIVED_ROWS: [(&str, i64); 1] = [("core_transaction_inputs", 1)];
 
 #[test]
-fn platform_compatibility_upgrades_the_real_weekly_20260908_profile() {
-    let Some(staged) = stage() else {
+fn platform_compatibility_checks_real_weekly_profiles() {
+    for (id, networks) in [
+        (
+            "v1.0.0-weekly.20260908-wallet-only",
+            vec![Network::Mainnet, Network::Testnet],
+        ),
+        ("v1.0.0-weekly.20260915-wallet-only", vec![Network::Mainnet]),
+        ("v1.0.0-weekly.20260929-wallet-only", vec![Network::Mainnet]),
+        ("v1.0.0-weekly.20261006-wallet-only", vec![Network::Mainnet]),
+    ] {
+        let Some(staged) = stage(id) else {
+            return;
+        };
+        let before = data_file_digests(&staged.data_dir);
+        for _ in 0..2 {
+            let error = crate::context::AppContext::open_app_kv(&staged.data_dir)
+                .expect_err("the unconverted profile must be refused");
+            assert!(
+                matches!(&error, TaskError::WalletDataNeedsUpgradeRelease { networks: actual }
+                if actual.0 == networks),
+                "{id}: {error:?}"
+            );
+            assert_eq!(
+                data_file_digests(&staged.data_dir),
+                before,
+                "{id}: refusal must preserve every data file"
+            );
+        }
+    }
+    let Some(staged) = stage("v1.0.0-weekly.20261117-wallet-only") else {
         return;
     };
-
+    super::refuse_stores_needing_upgrade_release(&staged.data_dir)
+        .expect("every network in the committed 20261117 profile is converted");
     assert_eq!(
         assert_upgrade(&staged, NETWORK_DB, &NETWORK_DB_DERIVED_ROWS),
         [CAPTURED_BALANCE_DUFFS],
         "{NETWORK_DB} must still load its one captured wallet, with the captured balance"
     );
     assert_upgrade(&staged, APP_DB, &[]);
+    assert_upgrade(&staged, "det-mainnet.sqlite", &[]);
+}
+
+/// Like the migration matrix, exclude the `-shm` index a read-only WAL open rewrites.
+fn data_file_digests(dir: &Path) -> BTreeMap<PathBuf, [u8; 32]> {
+    super::tests::tree(dir)
+        .into_iter()
+        .filter(|(path, _)| !path.to_string_lossy().ends_with("-shm"))
+        .map(|(path, bytes)| (path, Sha256::digest(bytes).into()))
+        .collect()
 }
 
 /// The fixture unpacked into an owner-only temporary data directory.
@@ -85,9 +118,9 @@ impl Staged {
     }
 }
 
-/// Unpacks the fixture named by [`FIXTURE_ID`], or returns `None` when
+/// Unpacks the named fixture, or returns `None` when
 /// [`FIXTURES_DIR_ENV`] is unset.
-fn stage() -> Option<Staged> {
+fn stage(fixture_id: &str) -> Option<Staged> {
     if std::env::var_os(FIXTURES_DIR_ENV).is_none_or(|dir| dir.is_empty()) {
         eprintln!(
             "skipped: {FIXTURES_DIR_ENV} is unset; the archived-profile suite sets it to run this test"
@@ -100,8 +133,8 @@ fn stage() -> Option<Staged> {
         .as_array()
         .expect("the manifest lists fixtures")
         .iter()
-        .find(|fixture| fixture["id"] == FIXTURE_ID)
-        .unwrap_or_else(|| panic!("the manifest has no `{FIXTURE_ID}` entry"));
+        .find(|fixture| fixture["id"] == fixture_id)
+        .unwrap_or_else(|| panic!("the manifest has no `{fixture_id}` entry"));
     let recorded = &entry["archive"];
     let archive_path = recorded["path"]
         .as_str()
@@ -133,7 +166,7 @@ fn stage() -> Option<Staged> {
         archive.display()
     );
 
-    // Owner-only whatever the umask, like the bridge's own staging directory:
+    // Owner-only whatever the umask:
     // the wallet store refuses a database below a group-writable ancestor.
     let mut builder = tempfile::Builder::new();
     builder.prefix("platform-real-fixture-");
@@ -160,15 +193,7 @@ fn stage() -> Option<Staged> {
     Some(Staged { root, data_dir })
 }
 
-/// Opens `db_name` through the bridge exactly as the app does and asserts the
-/// bridge's contract on it. Returns the balance of every wallet the upgraded
-/// store loads.
-///
-/// The contract: the captured file really is the divergent 67d4ef3 schema (it
-/// does not open without the bridge); the bridge opens it and the typed loads
-/// succeed; no row is lost and the tables the upgrade adds hold exactly
-/// `derived_rows` (see [`assert_rows_kept`]); one backup of the original is
-/// retained with the same rows; and a second open changes nothing.
+/// Opens a converted store twice, preserving its data and retained bridge backups.
 fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) -> Vec<u64> {
     let path = staged.data_dir.join(db_name);
     let before = table_counts(&path, &staged.scratch(&format!("{db_name}-before")));
@@ -176,10 +201,11 @@ fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) 
         !before.is_empty(),
         "{db_name} is missing from the fixture or has no tables"
     );
-    assert_needs_bridge(&path, &staged.scratch(&format!("{db_name}-precondition")));
+    assert!(!super::needs_upgrade_release(&path));
+    let backups = backup_files(&path);
 
     let persister = open(SqlitePersisterConfig::new(&path))
-        .unwrap_or_else(|error| panic!("the bridge could not open {db_name}: {error:?}"));
+        .unwrap_or_else(|error| panic!("could not open {db_name}: {error:?}"));
     let loaded = persister.load().unwrap_or_else(|error| {
         panic!("{db_name}: typed load failed after the upgrade: {error:?}")
     });
@@ -196,14 +222,10 @@ fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) 
     let after = table_counts(&path, &staged.scratch(&format!("{db_name}-after")));
     assert_rows_kept(db_name, &before, &after, derived_rows);
 
-    let backups = backup_files(&path);
-    let [backup] = &backups.iter().collect::<Vec<_>>()[..] else {
-        panic!("{db_name}: expected exactly one retained backup, found {backups:?}");
-    };
     assert_eq!(
-        table_counts(backup, &staged.scratch(&format!("{db_name}-backup"))),
-        before,
-        "{db_name}: the retained backup must hold the original rows"
+        backup_files(&path),
+        backups,
+        "no new bridge backup is needed"
     );
 
     drop(
@@ -218,27 +240,6 @@ fn assert_upgrade(staged: &Staged, db_name: &str, derived_rows: &[(&str, i64)]) 
 
     eprintln!("{db_name}: upgraded, rows kept {:?}", data_tables(&after));
     balances
-}
-
-/// The captured file must fail the plain open with a migration error: proof
-/// that it carries the divergent history the bridge exists for, rather than a
-/// schema the current pin already accepts. Checked on a copy, because the open
-/// may checkpoint the WAL of the file under test.
-fn assert_needs_bridge(path: &Path, scratch: &Path) {
-    let copy = copy_database(path, scratch);
-    let config = SqlitePersisterConfig::new(&copy)
-        .with_auto_backup_dir(Some(scratch.join("precondition-backup")));
-    match SqlitePersister::open(config) {
-        Err(WalletStorageError::Migration(_)) => {}
-        Ok(_) => panic!(
-            "{} opened without the bridge; the fixture no longer exercises it",
-            path.display()
-        ),
-        Err(error) => panic!(
-            "{} must fail with a migration error without the bridge, got {error:?}",
-            path.display()
-        ),
-    }
 }
 
 /// Row count of every table, read from a copy of the database and its WAL.

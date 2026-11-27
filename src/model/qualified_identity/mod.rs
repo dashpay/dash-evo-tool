@@ -998,12 +998,14 @@ impl QualifiedIdentity {
                         return Ok(None);
                     };
                     for identity_index in 0..10u32 {
-                        let correct_path = DP::identity_authentication_path(
+                        let Ok(correct_path) = DP::identity_authentication_path(
                             network,
                             KeyDerivationType::ECDSA,
                             identity_index,
                             key_id,
-                        );
+                        ) else {
+                            continue;
+                        };
                         let Ok(extended_key) =
                             correct_path.derive_priv_ecdsa_for_master_seed(seed, network)
                         else {
@@ -1633,7 +1635,7 @@ mod key_placement_tests {
         );
     }
 
-    /// `disabled_at` is the one field Platform lets move after a key is added.
+    /// `disabled_at` is the one field Platform lets move on a V0 key.
     /// The stored copy is a snapshot from when the private half was saved, so a
     /// key disabled on chain since then must still match — disabling a key does
     /// not remove its private half from this device.
@@ -1901,7 +1903,7 @@ mod key_placement_tests {
 
     /// A key disabled on chain since its private half was saved is still the
     /// same key, so its placement is still answerable — `disabled_at` is the
-    /// one field Platform lets move.
+    /// one field Platform lets move on a V0 key.
     #[test]
     fn a_key_disabled_since_it_was_saved_still_has_a_placement() {
         let saved = key(2, Purpose::AUTHENTICATION, 0xAA);
@@ -2060,6 +2062,52 @@ mod key_resolution_tests {
                 "the bytes resolved are the ones filed under {filed_under:?}",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_held_v1_key_resolves_after_refresh_raises_its_budget() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let secret = crate::test_support::keys::secret_bytes();
+        let private_key =
+            dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(&secret, Network::Testnet)
+                .expect("valid private key");
+        let saved = identity_public_key(
+            3,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            private_key.public_key().to_bytes(),
+        )
+        .with_limits(Some(1_000), None);
+        let mut stored = masternode_with(&saved, &[(MAIN, PrivateKeyData::Clear(secret))]);
+        let held = stored.private_keys.entry_at(&(MAIN, saved.id())).cloned();
+        let mut fetched = stored.identity.clone();
+        fetched.add_public_key(saved.clone().with_limits(Some(5_000), None));
+
+        // refresh_identity replaces only the published identity, retaining the private-key snapshot.
+        stored.identity = crate::wallet_backend::fold_fetched_identity(
+            &stored.identity,
+            &fetched,
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 10,
+                ..Default::default()
+            },
+        );
+
+        let refreshed = stored.identity.get_public_key_by_id(saved.id()).unwrap();
+        assert_eq!(refreshed.total_budget(), Some(5_000));
+        assert_eq!(
+            stored.private_keys.entry_at(&(MAIN, saved.id())),
+            held.as_ref()
+        );
+        let (snapshot, resolved) = stored
+            .resolve_private_key_bytes(refreshed)
+            .await
+            .expect("resolution succeeds after refresh")
+            .expect("the held private key is still found");
+        assert_eq!(snapshot.identity_public_key.total_budget(), Some(1_000));
+        assert_eq!(*resolved, secret);
     }
 
     /// T5 — the fallthrough rule. A vault placeholder whose secret is gone can

@@ -6,7 +6,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
-use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentityWithMetadata;
@@ -125,14 +125,13 @@ impl AppContext {
             );
         }
 
-        qualified_identity.identity.set_balance(remaining_balance);
+        self.store_observed_balance(
+            &qualified_identity.identity.id(),
+            remaining_balance,
+            BalanceProvenance::ObservedAt(metadata.height),
+        );
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
-
-        self.update_local_qualified_identity_observed(
-            &mut qualified_identity,
-            BalanceProvenance::ObservedAt(metadata.height),
-        )
-        .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+        Ok(BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
     }
 }

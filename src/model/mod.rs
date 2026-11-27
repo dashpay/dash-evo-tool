@@ -34,6 +34,7 @@ pub mod request_type;
 pub mod secret;
 pub mod selected_identity;
 pub mod selected_wallet;
+pub mod send_route;
 pub mod settings;
 pub mod single_key;
 pub mod spend_limit;

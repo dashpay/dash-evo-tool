@@ -25,6 +25,7 @@ use std::time::Duration;
 #[ignore]
 async fn tc_012_generate_receive_address() {
     let ctx = harness::ctx().await;
+    let network = ctx.app_context.network();
     let seed_hash = ctx.framework_wallet_hash;
 
     let task1 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
@@ -43,12 +44,11 @@ async fn tc_012_generate_receive_address() {
         other => panic!("TC-012: expected GeneratedReceiveAddress, got: {:?}", other),
     };
 
-    // Testnet addresses start with 'y' or '8'
+    // Testnet and Devnet share the same Core address prefixes.
     let first_char = address1.chars().next().unwrap_or_default();
     assert!(
         first_char == 'y' || first_char == '8',
-        "TC-012: expected testnet address starting with 'y' or '8', got: {}",
-        address1
+        "TC-012: expected a {network} address starting with 'y' or '8', got: {address1}"
     );
 
     // Second call must still succeed and return a valid address.
@@ -74,8 +74,7 @@ async fn tc_012_generate_receive_address() {
     let first_char2 = address2.chars().next().unwrap_or_default();
     assert!(
         first_char2 == 'y' || first_char2 == '8',
-        "TC-012: second GenerateReceiveAddress must return a valid testnet address, got: {}",
-        address2
+        "TC-012: second GenerateReceiveAddress must return a valid {network} address, got: {address2}"
     );
 
     if address1 == address2 {
@@ -206,7 +205,11 @@ async fn tc_013_fetch_platform_address_balances_empty() {
             network,
         } => {
             assert_eq!(sh, seed_hash, "TC-013: seed_hash mismatch");
-            assert_eq!(network, e2e_network(), "TC-013: expected testnet network");
+            let expected_network = ctx.app_context.network();
+            assert_eq!(
+                network, expected_network,
+                "TC-013: expected {expected_network}"
+            );
             tracing::info!(
                 "TC-013 passed: {} platform addresses returned",
                 balances.len()
@@ -299,10 +302,10 @@ async fn step_fetch_balances(
             network,
         } => {
             assert_eq!(sh, seed_hash, "step_fetch_balances: seed_hash mismatch");
+            let expected_network = ctx.app_context.network();
             assert_eq!(
-                network,
-                e2e_network(),
-                "step_fetch_balances: expected testnet"
+                network, expected_network,
+                "step_fetch_balances: expected {expected_network}"
             );
             let specific_balance = balances.get(&expected_addr).map(|(b, _)| *b).unwrap_or(0);
             assert!(

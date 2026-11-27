@@ -94,8 +94,9 @@ version), which the network never returns, and opens a public vote on testnet.
 
 ### Masternode tests
 
-`identity_masternode_withdraw` needs a testnet masternode or evonode with funded
-Platform credits and its private keys. These are the only names the tests read:
+`identity_masternode_withdraw` needs a masternode or evonode on the selected
+network with funded Platform credits and its private keys. These are the only
+names the tests read:
 
 | Variable | Needed by | Description |
 |---|---|---|
@@ -197,10 +198,15 @@ devnet name hash for Devnet. If a slot is held by another process,
   gracefully.
 - SPV sync is faster on repeat runs because prior state may be cached.
 
-Clean the workdir manually if you need a fresh start:
+For a fresh start, stop any running backend E2E tests and remove their local
+workdirs. This also removes copied `.env` files, including any credentials in
+the legacy shared `dash-evo-e2e-devnet` workdir and any leftover reconnect or
+cold-boot workdirs. If the tests used a temporary directory other than `/tmp`,
+set `TMPDIR` to that directory for this command.
 
 ```bash
-rm -rf /tmp/dash-evo-e2e-testnet*
+rm -rf -- /tmp/dash-evo-e2e-devnet \
+  "${TMPDIR:-/tmp}"/dash-evo-e2e-{testnet,devnet,reconnect-,coldboot-}*
 ```
 
 ## Wallet architecture

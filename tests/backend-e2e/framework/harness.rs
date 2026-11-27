@@ -135,6 +135,17 @@ const MAX_WORKDIR_SLOTS: usize = 10;
 /// freed lower slot is still picked up.
 static WORKDIR_SLOT_FLOOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Initialize tracing for test output.
+pub fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("backend_e2e=info")),
+        )
+        .with_target(false)
+        .try_init();
+}
+
 /// Load the project .env before any workdir .env can change the process environment.
 pub fn load_project_env() {
     static PROJECT_ENV: OnceLock<()> = OnceLock::new();
@@ -328,6 +339,23 @@ pub fn write_workdir_env(workdir: &Path) -> Result<(), WorkdirEnvError> {
     )
 }
 
+/// Pass the resolved test configuration to a child that owns an isolated context.
+pub fn configure_cold_boot_child(
+    child: &mut std::process::Command,
+    workdir: &Path,
+) -> Result<(), WorkdirEnvError> {
+    write_workdir_env(workdir)?;
+    let settings = settings();
+    child
+        .env("E2E_NETWORK", settings.network.to_string())
+        .env("E2E_ENV_FILE", workdir.join(ENV_FILE))
+        .env(
+            "E2E_WALLET_MNEMONIC",
+            settings.mnemonic.as_deref().unwrap_or_default(),
+        );
+    Ok(())
+}
+
 fn prepare_workdir_env(
     workdir: &Path,
     contents: Option<&[u8]>,
@@ -501,14 +529,7 @@ impl BackendTestContext {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        // Initialize tracing for test output
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("backend_e2e=info")),
-            )
-            .with_target(false)
-            .try_init();
+        init_tracing();
 
         // E2E_WALLET_MNEMONIC is required. Read and parse it BEFORE any store is
         // opened: a bad value here is the most common init failure, and failing

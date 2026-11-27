@@ -244,6 +244,14 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    # A reusable workflow sees an environment secret only when its caller
+    # passes it; one left out resolves to an empty string without an error.
+    secrets:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
     with:
       weekly: true
       source_sha: ${{ needs.gate.outputs.source_sha }}

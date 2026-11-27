@@ -55,19 +55,21 @@ on:
         type: string
         default: ""
 
-    # Optional: the macOS signing job reads these from the release-signing
-    # environment, so callers need not hold them as repository secrets.
+    # The macOS signing job reads these through the release-signing
+    # environment, but a caller must still pass each one by name: a secret it
+    # leaves out resolves to an empty string without an error. Required makes
+    # a caller that forgets one fail instead.
     secrets:
       APPLE_CERTIFICATE:
-        required: false
+        required: true
       APPLE_CERTIFICATE_PASSWORD:
-        required: false
+        required: true
       APPLE_ID:
-        required: false
+        required: true
       APPLE_TEAM_ID:
-        required: false
+        required: true
       APPLE_APP_SPECIFIC_PASSWORD:
-        required: false
+        required: true
 
 permissions:
   contents: read

@@ -228,6 +228,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
             checkout["with"]["ref"], "${{ needs.gate.outputs.source_sha }}"
         )
 
+    def test_weekly_passes_each_signing_secret_to_the_release_build_by_name(self):
+        # An environment secret the caller does not pass is an empty string in
+        # the called workflow, so the weekly signing would fail silently.
+        names = (
+            "APPLE_CERTIFICATE",
+            "APPLE_CERTIFICATE_PASSWORD",
+            "APPLE_ID",
+            "APPLE_TEAM_ID",
+            "APPLE_APP_SPECIFIC_PASSWORD",
+        )
+        release = workflow("release.yml")
+        # PyYAML reads the `on` key as the boolean True.
+        declared = release[True]["workflow_call"]["secrets"]
+        self.assertEqual(set(declared), set(names))
+        for name in names:
+            with self.subTest(secret=name):
+                self.assertIs(declared[name]["required"], True)
+        passed = workflow("weekly-build.yml")["jobs"]["release"]["secrets"]
+        self.assertEqual(passed, {name: f"${{{{ secrets.{name} }}}}" for name in names})
+
     def test_release_builds_use_authorized_sha_and_authorization_code_is_trusted(self):
         jobs = workflow("release.yml")["jobs"]
         policy = jobs["authorize"]

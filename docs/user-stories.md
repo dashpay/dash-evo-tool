@@ -1822,7 +1822,7 @@ As a user with more than one wallet, I want every wallet picker to show each wal
 As a user whose app fails to start, I want a window that explains what happened so that I can fix it myself or ask for help with the right information.
 
 - When startup fails after the app window can open, the app shows a window instead of closing silently; the app itself does not open behind it.
-- An unexpected internal error while the app is being set up shows the same window with the general message.
+- An unexpected internal error while the app is being set up shows the same window with the general message. This includes building and first refreshing the opening screens after saved data is ready; the incomplete app is discarded and its background work is shut down.
 - When the app window itself cannot be opened, a system dialog says so with advice that fits the cause (updating the graphics drivers, or reconnecting to the desktop), names the log file when there is one, and links the issue page with a warning that it is public.
 - The window says in plain language what happened and what to try. A known cause (for example, a data folder other accounts can change) gets its own message; any other cause gets a general one.
 - It suggests reporting the problem on the project's issue page if the user cannot solve it, shows that address so it can be copied, and can open it in the browser.

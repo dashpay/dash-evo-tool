@@ -5,6 +5,7 @@
 
 use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::qualified_identity::IdentityType;
 use crate::model::request_type::RequestType;
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
@@ -15,10 +16,12 @@ use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
+use dash_sdk::dpp::consensus::signature::SignatureError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
@@ -308,6 +311,25 @@ impl fmt::Display for BackendTaskJoinError {
 }
 
 impl std::error::Error for BackendTaskJoinError {}
+
+/// Networks whose wallet data only v1.0.0-weekly.20261117 can still convert,
+/// displayed as the network chooser names them (e.g. `Testnet, Devnet`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeReleaseNetworks(pub Vec<Network>);
+
+impl fmt::Display for UpgradeReleaseNetworks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, network) in self.0.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(", ")?;
+            }
+            formatter.write_str(crate::ui::network_chooser_screen::chooser_network_label(
+                *network,
+            ))?;
+        }
+        Ok(())
+    }
+}
 
 /// Lets `?` on a joined task keep the panic message out of the error.
 impl From<tokio::task::JoinError> for TaskError {
@@ -829,12 +851,22 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
-    /// A pinned-PR wallet database could not be upgraded without losing data.
-    #[error(transparent)]
-    PlatformDatabaseUpgrade {
-        #[from]
-        source: crate::wallet_backend::platform_compatibility::UpgradeError,
-    },
+    /// Wallet stores of these networks were written by a test build pinned to
+    /// an unreleased storage layout. Only that release line's last build can
+    /// still convert them, one network at a time when it is opened; this build
+    /// never changes any store.
+    #[error(
+        "Your wallet data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that version, open each of these networks and wait until each one finishes syncing: {networks}. Then return to this version."
+    )]
+    WalletDataNeedsUpgradeRelease { networks: UpgradeReleaseNetworks },
+
+    /// Only the app database (no network store) was written by a test build
+    /// pinned to an unreleased storage layout; that release line's last build
+    /// converts it on start. This build never changes the file.
+    #[error(
+        "Your app data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, start it once, and then return to this version."
+    )]
+    AppDataNeedsUpgradeRelease { database: std::path::PathBuf },
 
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.
@@ -890,23 +922,6 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
-    /// The wallet database refused to open because a folder on its path can be
-    /// modified by another account on this computer (group/other-writable
-    /// without the sticky bit, or owned by another user). Distinct from
-    /// [`Self::WalletStorage`] because disk space and restarting are irrelevant:
-    /// only tightening the folder's permissions or ownership fixes it.
-    ///
-    /// The offending folder and the exact reason travel in `source` (the
-    /// upstream message names the folder and the command to run) for the
-    /// details panel and logs; the user-facing copy stays jargon-free.
-    #[error(
-        "Your wallet data folder, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your wallet data. Make these folders writable only by your own account, then restart the application."
-    )]
-    WalletDataFolderInsecure {
-        #[source]
-        source: Box<platform_wallet_storage::WalletStorageError>,
-    },
-
     /// A vault passphrase or a Tier-2 object password was longer than the
     /// vault's upstream ceiling.
     ///
@@ -949,18 +964,6 @@ pub enum TaskError {
         "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then open the app again."
     )]
     SecretStore {
-        #[source]
-        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
-    },
-
-    /// The seed vault's folder, or a folder above it, is writable by other
-    /// accounts or owned by one, so the vault is refused. Only fixing those
-    /// folders' permissions or owner helps; the folder and reason travel in
-    /// `source`.
-    #[error(
-        "The folder that holds your saved keys, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your keys. Make sure these folders belong to your account and that only your account can change them, then restart the application."
-    )]
-    SecretStoreFolderInsecure {
         #[source]
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
@@ -1859,6 +1862,22 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
+    /// The seed vault in the data folder may not be opened or written: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    SecretStoreAccessDenied {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// The wallet storage lock in the data folder may not be opened: same
+    /// cause and advice as [`Self::DataFolderAccessDenied`].
+    #[error("{DATA_FOLDER_ACCESS_DENIED}")]
+    WalletStorageLockAccessDenied {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A local filesystem operation failed (e.g. creating a data directory).
     #[error(
         "Could not access local files. Check available disk space and restart the application."
@@ -2030,6 +2049,27 @@ pub enum TaskError {
         "This withdrawal can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
     )]
     NoUsableWithdrawalKey,
+
+    #[error(
+        "This key has a spending limit or an expiry date, so it cannot create or update contracts. Choose a key without either restriction."
+    )]
+    ContractSigningKeyHasLimits,
+
+    #[error("The network's signing rules are not confirmed yet. Wait for the connection to refresh and try again.")]
+    ContractSigningProtocolUnconfirmed,
+
+    #[error("This key is disabled, expired or restricted to another action. Choose an active key allowed to sign this contract and try again.")]
+    ContractSigningKeyUnavailable,
+
+    /// No active key this app can sign with was available for a masternode or
+    /// evonode withdrawal, which may be signed with the payout (transfer) key
+    /// or, failing that, the owner key — the chosen key may have been disabled,
+    /// or neither is loaded for this identity. See
+    /// [`TaskError::no_usable_withdrawal_key`].
+    #[error(
+        "This withdrawal can't be signed because no active payout or owner key for this identity is available in this app. Load an active payout or owner key for this identity and try again."
+    )]
+    NoUsableNodeWithdrawalKey,
 
     /// No active key this app can sign with was available for the transfer —
     /// the chosen key may have been disabled, or no transfer key is loaded for
@@ -2823,6 +2863,37 @@ pub enum TaskError {
     )]
     ContactWalletSeedUnavailable,
 
+    /// The scanned text is not a DashPay contact QR code (DIP-15
+    /// `dash:?du=…&dapk=…`), as upstream platform-wallet's codecs read it.
+    #[error(
+        "This is not a DashPay contact QR code. Scan your contact's QR code again, or ask them for a new one."
+    )]
+    ContactQrInvalid {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The scanned contact QR code's auto-accept key has expired.
+    #[error("This contact QR code has expired. Ask your contact for a new one.")]
+    ContactQrExpired,
+
+    /// The identity has no wallet on this device whose recovery phrase can
+    /// derive its contact QR code's auto-accept key.
+    #[error(
+        "This identity's wallet is not on this device, so it cannot create a contact QR code. Import the wallet that created the identity and try again."
+    )]
+    ContactQrWalletMissing,
+
+    /// Upstream platform-wallet could not build the contact QR code, for
+    /// example because the identity has no username to put in it.
+    #[error(
+        "The contact QR code could not be created. Make sure this identity has a username, then try again."
+    )]
+    ContactQrBuildFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Deriving the per-contact encryption keys from the wallet's recovery
     /// phrase failed. The seam already proved the seed is present, so this is a
     /// derivation-math failure rather than a missing wallet.
@@ -2886,6 +2957,66 @@ pub enum TaskError {
          Open the Key Info screen for this identity, add a key whose private key you hold, then try again."
     )]
     NoWithdrawalSigningKey {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Signing key refusals (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The signing key's expiry time has passed.
+    #[error(
+        "The key used to sign this action expired and can no longer sign. Choose a different key, or add a new key to this identity, then try again."
+    )]
+    SigningKeyExpired {
+        key_id: KeyID,
+        /// When the key expired, in milliseconds since the Unix epoch.
+        expired_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The signing key has spent its whole budget.
+    #[error(
+        "The key used to sign this action has used up its spending limit and can no longer sign. Raise the key's spending limit or choose a different key, then try again."
+    )]
+    SigningKeyBudgetExhausted {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The action costs more than the signing key's remaining budget.
+    #[error(
+        "This action costs {required_dash}, but the key used to sign it has only {remaining_dash} of its spending limit left. Raise the key's spending limit or choose a different key, then try again.",
+        required_dash = format_credits_as_dash(*.required_budget),
+        remaining_dash = format_credits_as_dash(*.remaining_budget)
+    )]
+    SigningKeyBudgetExceeded {
+        key_id: KeyID,
+        remaining_budget: Credits,
+        required_budget: Credits,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed something outside its contract bounds.
+    #[error(
+        "The key used to sign this action is limited to other contracts or documents, so it cannot sign this one. Choose a different key, then try again."
+    )]
+    SigningKeyOutOfContractBounds {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed an action that is not a document or token
+    /// operation.
+    #[error(
+        "The key used to sign this action is limited to one contract, so it cannot sign this kind of action. Choose a key that is not limited to a contract, then try again."
+    )]
+    SigningKeyContractBoundForNonBatch {
+        key_id: KeyID,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -3675,6 +3806,26 @@ pub enum TaskError {
     #[error("The shielded pool is not available yet. Restart the application and try again.")]
     ShieldedNotConfigured,
 
+    /// The per-network shielded balance file could not be opened during storage preparation.
+    #[error(
+        "The app could not open the shielded balance file at \"{path}\". \
+        Your wallets and keys are still saved. \
+        Check that your disk has free space and that the app can write to its data folder, then try again. \
+        If it keeps failing and the file exists, first wait until every shielded payment, transfer, unshield and withdrawal you made recently has arrived, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
+        Do not send any of them again until the new file has synced and you have checked your shielded balances. \
+        Then close the app and back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
+        Delete the file and those matching files manually. \
+        Reopen the app, connect to the network and unlock your wallets if needed. \
+        The app will create a new file and sync your shielded balances again. \
+        Wait for the sync to finish, then check your shielded balances.",
+        path = .path.display()
+    )]
+    ShieldedStoreOpenFailed {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// A shielded operation was requested but this wallet's Orchard keys have
     /// not been bound. `bind_shielded` is triggered automatically on wallet
     /// unlock; this error surfaces when the operation races the bind (e.g. an
@@ -4044,11 +4195,13 @@ impl TaskError {
         }
         match &source {
             Step::Locate { .. } => Self::DataFolderNotFound { source },
+            // Windows reports a file above the folder as `AlreadyExists` too,
+            // so the folder's own path is checked before it is named.
             Step::CreateDataFolder { path, source: io }
                 if matches!(
                     io.kind(),
-                    ErrorKind::InvalidInput | ErrorKind::NotADirectory | ErrorKind::AlreadyExists
-                ) =>
+                    ErrorKind::InvalidInput | ErrorKind::AlreadyExists
+                ) && crate::app_dir::is_occupied_by_non_folder(path) =>
             {
                 Self::DataFolderNotADirectory {
                     path: path.clone(),
@@ -4208,16 +4361,13 @@ impl TaskError {
     /// - A migration refused by file permissions or a read-only disk is
     ///   surfaced as [`Self::WalletStorageAccessDenied`] so the user fixes
     ///   the folder instead of setting the databases aside.
-    /// - A folder on the database path that other accounts can modify is
-    ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
-    ///   user to tighten folder permissions.
     /// - A migration that failed on a recoverable resource (disk full, OS I/O
     ///   failure, out of memory) and every other storage failure keep the
     ///   generic, retryable disk/IO copy via [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`)
+    /// `WalletStorageError::Migration`)
     /// and the typed migration source chain, never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
@@ -4256,11 +4406,6 @@ impl TaskError {
                     source: other.into(),
                 }
             }
-            other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
-                Self::WalletDataFolderInsecure {
-                    source: other.into(),
-                }
-            }
             other => Self::WalletStorage {
                 source: other.into(),
             },
@@ -4284,9 +4429,7 @@ impl TaskError {
     }
 
     /// File permissions or a read-only disk blocked the migration. Uses the
-    /// shared [`StorageFailure`] policy, so it matches the staged-upgrade
-    /// `UpgradeError::AccessDenied` classification for SQLite codes and OS
-    /// error kinds alike.
+    /// shared [`StorageFailure`] policy for SQLite codes and OS error kinds alike.
     fn wallet_storage_error_is_access_denied(
         source: &platform_wallet_storage::WalletStorageError,
     ) -> bool {
@@ -4322,8 +4465,8 @@ impl TaskError {
 
 /// Wrap a vault failure in its caller's class variant, except the
 /// passphrase-length refusal, which becomes [`TaskError::PassphraseTooLong`],
-/// and an insecure vault folder, which becomes
-/// [`TaskError::SecretStoreFolderInsecure`], whichever class hit it.
+/// and denied or read-only vault I/O, which becomes
+/// [`TaskError::SecretStoreAccessDenied`], whichever class hit it.
 ///
 /// The class variants exist to give each secret kind its own banner copy, and
 /// that is right for a storage failure. It is wrong for an over-long password:
@@ -4341,9 +4484,13 @@ pub(crate) fn vault_error(
             max,
             source: Box::new(source),
         },
-        SecretStoreError::InsecureParentDir { .. } => TaskError::SecretStoreFolderInsecure {
-            source: Box::new(source),
-        },
+        SecretStoreError::Io(ref io)
+            if StorageFailure::of_io(&io.source) == Some(StorageFailure::AccessDenied) =>
+        {
+            TaskError::SecretStoreAccessDenied {
+                source: Box::new(source),
+            }
+        }
         source => class(Box::new(source)),
     }
 }
@@ -4672,6 +4819,20 @@ impl From<dashcore_rpc::Error> for TaskError {
 }
 
 impl TaskError {
+    /// The error for a withdrawal from an identity of `identity_type` that no
+    /// usable key can sign. A masternode or evonode may sign with its owner key
+    /// as well as its payout key, so it gets
+    /// [`TaskError::NoUsableNodeWithdrawalKey`], which names both; a user
+    /// identity gets [`TaskError::NoUsableWithdrawalKey`].
+    pub fn no_usable_withdrawal_key(identity_type: IdentityType) -> Self {
+        match identity_type {
+            IdentityType::User => TaskError::NoUsableWithdrawalKey,
+            IdentityType::Masternode | IdentityType::Evonode => {
+                TaskError::NoUsableNodeWithdrawalKey
+            }
+        }
+    }
+
     /// The error for a token operation of `operation` that failed with `source`.
     ///
     /// The source is classified like any broadcast error, so a proof failure is
@@ -5061,6 +5222,61 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(SignatureError::PublicKeyExpiredError(e)) => {
+                        let (key_id, expired_at_ms) = (e.public_key_id(), e.expires_at());
+                        Some(Box::new(move |source_error| TaskError::SigningKeyExpired {
+                            key_id,
+                            expired_at_ms,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::PublicKeyBudgetExhaustedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExhausted {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyBudgetExceededError(e),
+                    ) => {
+                        let (key_id, remaining_budget, required_budget) =
+                            (e.public_key_id(), e.remaining_budget(), e.required_budget());
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExceeded {
+                                key_id,
+                                remaining_budget,
+                                required_budget,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyOutOfBoundsError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyOutOfContractBounds {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyNonBatchError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyContractBoundForNonBatch {
+                                key_id,
+                                source_error,
+                            }
                         }))
                     }
                     ConsensusError::StateError(StateError::ContractUserBannedError(e)) => {
@@ -5463,6 +5679,85 @@ mod tests {
         );
     }
 
+    /// A file above the data folder is not reported as a file at the
+    /// folder's own path, which does not exist.
+    #[test]
+    fn data_folder_under_a_file_is_not_called_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file"), "").expect("write file");
+        let path = dir.path().join("file").join("data");
+        let source = crate::app_dir::ensure_data_dir_exists(&path)
+            .expect_err("a file blocks the data folder's path");
+        let error = TaskError::from_prepare_environment_error(
+            crate::boot::PrepareEnvironmentError::CreateDataFolder { path, source },
+        );
+        assert!(
+            matches!(error, TaskError::DataFolderSetupFailed { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// Windows reports a file above the data folder as `AlreadyExists` from
+    /// that ancestor. The data folder's own path is free, so it is not named
+    /// as the file to move: the general setup advice keeps the cause. A file
+    /// at the path itself is still named, whichever of the two kinds hit it.
+    #[test]
+    fn already_exists_names_the_data_folder_only_when_it_is_occupied() {
+        use crate::boot::PrepareEnvironmentError as Step;
+        use std::io::{Error, ErrorKind};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").expect("write file");
+        for kind in [ErrorKind::AlreadyExists, ErrorKind::InvalidInput] {
+            let below_a_file = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+                path: file.join("data"),
+                source: Error::from(kind),
+            });
+            assert!(
+                matches!(below_a_file, TaskError::DataFolderSetupFailed { .. }),
+                "{kind:?}: {below_a_file:?}"
+            );
+            let at_a_file = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
+                path: file.clone(),
+                source: Error::from(kind),
+            });
+            assert!(
+                matches!(at_a_file, TaskError::DataFolderNotADirectory { .. }),
+                "{kind:?}: {at_a_file:?}"
+            );
+        }
+    }
+
+    /// A vault the app may not open or write gets the data-folder permission
+    /// advice; a held lock and a wrong passphrase keep their own handling.
+    #[test]
+    fn vault_access_failures_get_the_data_folder_advice() {
+        use platform_wallet_storage::secrets::{IoError, SecretStoreError};
+        use std::io::ErrorKind;
+        let io = |kind| {
+            SecretStoreError::Io(IoError {
+                path: None,
+                source: std::io::Error::from(kind),
+            })
+        };
+        let class = |source| TaskError::SecretStore { source };
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::ReadOnlyFilesystem] {
+            let error = vault_error(io(kind), class);
+            assert!(
+                matches!(error, TaskError::SecretStoreAccessDenied { .. }),
+                "{error:?}"
+            );
+        }
+        for source in [
+            SecretStoreError::AlreadyLocked,
+            SecretStoreError::WrongPassphrase,
+            io(ErrorKind::WouldBlock),
+        ] {
+            let error = vault_error(source, class);
+            assert!(matches!(error, TaskError::SecretStore { .. }), "{error:?}");
+        }
+    }
+
     /// Each data folder step and failure kind gets advice that can fix it:
     /// no home folder, a file in the folder's place, a full disk.
     #[test]
@@ -5480,15 +5775,21 @@ mod tests {
         );
         assert!(locate.to_string().contains("home folder"), "{locate}");
 
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("det");
+        std::fs::write(&file, "").expect("write file");
         let occupied = TaskError::from_prepare_environment_error(Step::CreateDataFolder {
-            path: PathBuf::from("/data/det"),
+            path: file.clone(),
             source: Error::from(ErrorKind::InvalidInput),
         });
         assert!(
             matches!(occupied, TaskError::DataFolderNotADirectory { .. }),
             "{occupied:?}"
         );
-        assert!(occupied.to_string().contains("/data/det"), "{occupied}");
+        assert!(
+            occupied.to_string().contains(&file.display().to_string()),
+            "{occupied}"
+        );
         assert!(
             occupied.to_string().contains("Move or rename"),
             "{occupied}"
@@ -8102,14 +8403,18 @@ mod tests {
         })
     }
 
-    /// The protocol-version-14 refusals of contract and document authoring map
-    /// to their own variants, keep the SDK error as their source, and read as
-    /// complete sentences free of protocol jargon.
+    /// The protocol-version-14 refusals of signing keys and of contract and
+    /// document authoring map to their own variants, keep the SDK error as
+    /// their source, and read as complete sentences free of protocol jargon.
     #[test]
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
         use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
+        use dash_sdk::dpp::consensus::signature::{
+            ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
+            PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
+        };
         use dash_sdk::dpp::consensus::state::contract_moderation::{
             ContractUserBannedError, ContractUserSuspendedError,
         };
@@ -8118,6 +8423,7 @@ mod tests {
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
         use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
         use dash_sdk::dpp::consensus::state::token::{
             GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
         };
@@ -8126,6 +8432,45 @@ mod tests {
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
         type Expectation = fn(&TaskError) -> bool;
         let cases: Vec<(ConsensusError, Expectation)> = vec![
+            (PublicKeyExpiredError::new(3, 1_000, 2_000).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyExpired {
+                        key_id: 3,
+                        expired_at_ms: 1_000,
+                        ..
+                    }
+                )
+            }),
+            (PublicKeyBudgetExhaustedError::new(4).into(), |e| {
+                matches!(e, TaskError::SigningKeyBudgetExhausted { key_id: 4, .. })
+            }),
+            (
+                IdentityPublicKeyBudgetExceededError::new(identity_id, 5, 10, 20).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::SigningKeyBudgetExceeded {
+                            key_id: 5,
+                            remaining_budget: 10,
+                            required_budget: 20,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (ContractBoundedKeyOutOfBoundsError::new(6).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyOutOfContractBounds { key_id: 6, .. }
+                )
+            }),
+            (ContractBoundedKeyNonBatchError::new(7).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyContractBoundForNonBatch { key_id: 7, .. }
+                )
+            }),
             (
                 ContractUserBannedError::new(contract_id, identity_id).into(),
                 |e| matches!(e, TaskError::ContractUserBanned { .. }),
@@ -8340,6 +8685,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn budget_exceeded_names_both_amounts_in_dash() {
+        let error = TaskError::SigningKeyBudgetExceeded {
+            key_id: 1,
+            remaining_budget: 50_000_000_000,
+            required_budget: 100_000_000_000,
+            source_error: Box::new(SdkError::Generic("budget".to_string())),
+        };
+        let message = error.to_string();
+        assert!(message.contains("costs 1 DASH"), "got: {message}");
+        assert!(message.contains("only 0.5 DASH"), "got: {message}");
     }
 
     #[test]
@@ -8942,54 +9300,6 @@ mod tests {
         );
     }
 
-    /// A group-writable (or foreign-owned) ancestor of the wallet database maps
-    /// to `WalletDataFolderInsecure`, whose copy names the folder-permission
-    /// problem instead of the misleading disk-space advice. The path and mode
-    /// stay in the source chain, out of the user-facing message.
-    #[test]
-    fn insecure_parent_dir_maps_to_wallet_data_folder_insecure() {
-        let ancestor = std::path::PathBuf::from("/data/tmp/shared-scratch");
-        for reason in [
-            platform_wallet_storage::InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
-            platform_wallet_storage::InsecureAncestor::UntrustedOwner {
-                uid: 4242,
-                current_uid: 1000,
-            },
-        ] {
-            let upstream = platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                ancestor: ancestor.clone(),
-                reason,
-            };
-            let err = TaskError::from_wallet_storage_open_error(upstream);
-            assert!(
-                matches!(
-                    &err,
-                    TaskError::WalletDataFolderInsecure { source }
-                        if matches!(source.as_ref(), platform_wallet_storage::WalletStorageError::InsecureParentDir { ancestor: a, .. } if *a == ancestor)
-                ),
-                "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
-            );
-
-            let msg = err.to_string();
-            assert!(
-                msg.contains("folder") && msg.contains("other accounts"),
-                "Expected folder-permission guidance, got: {msg}"
-            );
-            assert!(
-                !msg.contains("disk space"),
-                "Folder-permission message must not mention disk space, got: {msg}"
-            );
-            assert!(
-                !msg.contains("shared-scratch") && !msg.contains("775") && !msg.contains("chmod"),
-                "Path, mode and commands must stay out of the user message, got: {msg}"
-            );
-            assert!(
-                std::error::Error::source(&err).is_some(),
-                "Expected source chain to be preserved"
-            );
-        }
-    }
-
     /// Builds a genuine divergent-version [`refinery::Error`] by applying a
     /// `V1__init` migration, then re-running with the same version/name but
     /// different SQL (which changes refinery's checksum) and
@@ -9292,6 +9602,29 @@ mod tests {
             assert!(
                 !msg.contains(jargon),
                 "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
+        }
+    }
+
+    /// A masternode or evonode withdrawal may also be signed with the owner
+    /// key, so its "no usable key" message must name both remedies; a user
+    /// identity, which can only use a transfer key, keeps its own message.
+    #[test]
+    fn no_usable_withdrawal_key_names_the_purposes_the_identity_type_allows() {
+        assert!(matches!(
+            TaskError::no_usable_withdrawal_key(IdentityType::User),
+            TaskError::NoUsableWithdrawalKey
+        ));
+        for node in [IdentityType::Masternode, IdentityType::Evonode] {
+            let error = TaskError::no_usable_withdrawal_key(node);
+            assert!(
+                matches!(error, TaskError::NoUsableNodeWithdrawalKey),
+                "{node:?} must get the node message, got {error:?}"
+            );
+            let msg = error.to_string();
+            assert!(
+                msg.contains("payout") && msg.contains("owner"),
+                "the node message must name both usable keys, got: {msg}"
             );
         }
     }

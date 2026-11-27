@@ -392,8 +392,8 @@ fn dry_run_asset_lock_amount(
 // `core_payment_builder`). The aggregate quotes still have a deadline because
 // they perform many individually bounded selections under a write lock.
 // Confirmed present: this crate's `Cargo.toml` pins `platform` to rev
-// 2651f7e2e11b491b4b2818aeb93d07f846856d78, whose workspace pins rust-dashcore
-// (`key-wallet`) to rev f6bb90cbbcae3d401bb3c9ebc4a9a26873a41404, and that
+// d6556f982cffbe1dc1e1a4e8e8eca1af4017b7d3, whose workspace pins rust-dashcore
+// (`key-wallet`) to rev f0ddfd45f78e639e0caed3312515ac72b28ea823, and that
 // rev's `key-wallet/src/wallet/managed_wallet_info/coin_selection.rs` carries
 // the prune and the budget. Re-verify whenever either pin moves — the
 // key-wallet reference is a rev, so it cannot drift on its own.
@@ -1457,7 +1457,7 @@ impl PooledScratch {
         // until one has a change address.
         let change_address = accounts.iter_mut().find_map(|(managed, account)| {
             managed
-                .next_change_address(Some(&account.account_xpub), true)
+                .next_change_address(Some(&account.account_xpub))
                 .ok()
         });
         Self {
@@ -1815,7 +1815,7 @@ mod tests {
                 .get_mut(&0)
                 .expect("managed BIP44 account");
             let funding_address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             for index in 0..payments {
                 let outpoint = OutPoint::new(Txid::from_byte_array([index as u8 + 1; 32]), 0);
@@ -1894,7 +1894,7 @@ mod tests {
             .expect("managed BIP44 account");
         for (tag, value) in [(1, COIN_DUFFS), (2, COIN_DUFFS), (3, DUST_DUFFS)] {
             let address = bip44_managed
-                .next_receive_address(Some(&bip44.account_xpub), true)
+                .next_receive_address(Some(&bip44.account_xpub))
                 .expect("BIP44 address");
             let (outpoint, utxo) = coin(address, tag, value);
             bip44_managed.utxos.insert(outpoint, utxo);
@@ -1905,7 +1905,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP32 account");
         let address = bip32_managed
-            .next_receive_address(Some(&bip32.account_xpub), true)
+            .next_receive_address(Some(&bip32.account_xpub))
             .expect("BIP32 address");
         let (outpoint, utxo) = coin(address, 4, COIN_DUFFS);
         bip32_managed.utxos.insert(outpoint, utxo);
@@ -1952,7 +1952,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2001,7 +2001,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2161,7 +2161,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2264,7 +2264,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let address = managed
-            .next_receive_address(Some(&bip44.account_xpub), true)
+            .next_receive_address(Some(&bip44.account_xpub))
             .expect("BIP44 address");
         let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
         let mut utxo = Utxo::new(
@@ -2368,7 +2368,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
 
         for (txid_byte, value, is_confirmed) in [
@@ -2531,7 +2531,7 @@ mod tests {
             .get_mut(&0)
             .expect("managed BIP44 account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
 
         let values = (0..LARGE_UTXO_COUNT)
@@ -2796,7 +2796,7 @@ mod tests {
                 .get_mut(&0)
                 .expect("managed account");
             let funding_address = managed_account
-                .next_receive_address(Some(&account.account_xpub), true)
+                .next_receive_address(Some(&account.account_xpub))
                 .expect("funding address");
             for index in 0..UTXO_COUNT {
                 let outpoint = OutPoint::new(Txid::from_byte_array([index as u8; 32]), index);
@@ -3108,7 +3108,7 @@ mod tests {
             .funds_account_mut(&account_type)
             .expect("managed funding account");
         let funding_address = managed_account
-            .next_receive_address(Some(&account.account_xpub), true)
+            .next_receive_address(Some(&account.account_xpub))
             .expect("funding address");
         for (index, value) in values.iter().enumerate() {
             let outpoint = OutPoint::new(Txid::from_byte_array([txid_byte; 32]), index as u32);

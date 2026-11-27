@@ -168,9 +168,8 @@ impl DashMcpService {
             let ctx_holder = self.ctx.clone();
             self.init_guard
                 .get_or_try_init(|| async {
-                    let app_context = init_app_context().await.map_err(|e| {
+                    let app_context = init_app_context_for_tool().await.inspect_err(|e| {
                         tracing::error!("MCP context initialization failed: {e}");
-                        McpToolError::Internal(e.message.into_owned())
                     })?;
                     ctx_holder.store(app_context);
                     Ok::<(), McpToolError>(())
@@ -348,20 +347,28 @@ impl ServerHandler for DashMcpService {
 /// for wallets to load -- individual tools wait for their specific wallet.
 #[cfg(feature = "cli")]
 pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
-    use crate::app_dir::{
-        app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
-    };
+    init_app_context_for_tool().await.map_err(Into::into)
+}
+
+#[cfg(feature = "cli")]
+async fn init_app_context_for_tool() -> Result<Arc<AppContext>, McpToolError> {
+    use crate::backend_task::error::TaskError;
+    let startup_error =
+        |source| McpToolError::StartupFailed(TaskError::from_prepare_environment_error(source));
+    let data_dir = crate::boot::ensure_data_folder().map_err(startup_error)?;
+    crate::boot::ensure_settings_file(&data_dir).map_err(startup_error)?;
+    init_app_context_in(data_dir).await
+}
+
+#[cfg(feature = "cli")]
+async fn init_app_context_in(
+    data_dir: std::path::PathBuf,
+) -> Result<Arc<AppContext>, McpToolError> {
+    use crate::app_dir::data_file_path;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::Database;
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
-
-    let data_dir = app_user_data_dir_path()
-        .map_err(|e| McpError::internal_error(format!("data dir: {e}"), None))?;
-    ensure_data_dir_exists(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("ensure data dir: {e}"), None))?;
-    ensure_env_file(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("write .env: {e}"), None))?;
 
     let env_path = data_dir.join(".env");
     if env_path.exists()
@@ -372,38 +379,37 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     }
 
     let db_file_path = data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)
-        .map_err(|e| McpError::internal_error(format!("db path: {e}"), None))?;
+        .map_err(|e| McpToolError::Internal(format!("db path: {e}")))?;
     let db = if db_file_path.exists() {
         Arc::new(
             Database::open_legacy_read_only(&db_file_path)
-                .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
+                .map_err(|e| McpToolError::Internal(format!("db open: {e}")))?,
         )
     } else {
         let db = Arc::new(
             Database::new(&db_file_path)
-                .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
+                .map_err(|e| McpToolError::Internal(format!("db open: {e}")))?,
         );
         db.initialize(&db_file_path)
-            .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
+            .map_err(|e| McpToolError::Internal(format!("db init: {e}")))?;
         db
     };
 
     let app_kv = AppContext::open_app_kv(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;
+        .map_err(|e| McpToolError::Internal(format!("app k/v open: {e}")))?;
     let secret_store = AppContext::open_secret_store(&data_dir).map_err(|e| {
         // A legacy passphrase-protected vault can only be unlocked through the
         // GUI's boot prompt — name the real cause and the path forward instead
         // of the generic "another copy is running" lock message.
         if e.is_secret_store_wrong_passphrase() {
-            McpError::internal_error(
+            McpToolError::Internal(
                 "Your saved keys are protected by a passphrase set in an earlier version. \
                  Open the Dash Evo Tool desktop app and enter the passphrase to unlock them, \
                  then run this command again."
                     .to_string(),
-                None,
             )
         } else {
-            McpError::internal_error(format!("secret store open: {e}"), None)
+            McpToolError::Internal(format!("secret store open: {e}"))
         }
     })?;
 
@@ -423,12 +429,11 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
                 error = ?e,
                 "Could not import preferences from the previous version — refusing to guess the network",
             );
-            return Err(McpError::internal_error(
+            return Err(McpToolError::Internal(
                 "Your network choice could not be restored from the previous version. \
                  Open the Dash Evo Tool desktop app and confirm the network, then run this \
                  command again."
                     .to_string(),
-                None,
             ));
         }
     }
@@ -447,16 +452,23 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     let connection_status = Arc::new(ConnectionStatus::new());
 
     let config = crate::config::Config::load_from(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("config load: {e}"), None))?;
+        .map_err(|e| McpToolError::Internal(format!("config load: {e}")))?;
+    if let Some(source) = config.network_settings_error(network) {
+        return Err(McpToolError::InvalidSettings(
+            crate::context::NetworkContextError::InvalidSettings {
+                network,
+                source: source.clone(),
+            },
+        ));
+    }
     if config.config_for_network(network).is_none() {
         let available = available_network_names(&config);
-        return Err(McpError::internal_error(
-            format!(
-                "no configuration found for network '{network:?}'. \
-                 Available: {available}. Check your .env file.",
-            ),
-            None,
-        ));
+        let rejected = rejected_network_names(&config);
+        return Err(McpToolError::Internal(format!(
+            "no configuration found for network '{network:?}'. \
+             Available: {available}. Networks with invalid settings: {rejected}. \
+             Check your .env file.",
+        )));
     }
 
     let app_context = AppContext::new(
@@ -470,7 +482,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         secret_store,
         crate::model::user_role::UserRoleCell::default(),
     )
-    .map_err(|e| McpError::internal_error(format!("app context: {e}"), None))?;
+    .map_err(|e| McpToolError::Internal(format!("app context: {e}")))?;
 
     // Seed the role from AppSettings — the single source of truth, matching the
     // GUI boot path, so a role chosen in the GUI is honoured here too.
@@ -510,6 +522,19 @@ pub(crate) fn network_display_name(network: dash_sdk::dpp::dashcore::Network) ->
         Network::Testnet => "testnet",
         Network::Devnet => "devnet",
         Network::Regtest => "local",
+    }
+}
+
+/// A comma-separated list of the networks whose saved settings were rejected.
+fn rejected_network_names(config: &crate::config::Config) -> String {
+    let names: Vec<&str> = config
+        .rejected_networks()
+        .map(network_display_name)
+        .collect();
+    if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
     }
 }
 

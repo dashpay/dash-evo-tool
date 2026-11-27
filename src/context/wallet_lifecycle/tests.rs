@@ -3139,12 +3139,16 @@ async fn clear_network_database_shielded_store_failure_explains_manual_recovery(
         let message = error.to_string();
         assert!(message.contains(&path.display().to_string()), "{message}");
         let (before_deletion, after_deletion) = message
-            .split_once("back up the file, then delete it manually")
+            .split_once("Delete the file and those matching files manually")
             .unwrap_or_else(|| panic!("missing backup and deletion advice: {message}"));
-        assert!(
-            before_deletion.contains("every shielded payment you sent is confirmed"),
-            "{message}"
-        );
+        for step in [
+            "every shielded payment, transfer and withdrawal",
+            "including those to your own wallets",
+            "Do not send any of them again",
+            "back up the file together with any matching files ending in -wal, -shm, or -journal",
+        ] {
+            assert!(before_deletion.contains(step), "{step}: {message}");
+        }
         assert!(after_deletion.contains("sync again"), "{message}");
         assert!(
             after_deletion.contains("then check your shielded balances"),

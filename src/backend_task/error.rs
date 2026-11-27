@@ -393,7 +393,10 @@ pub enum TaskError {
         "Clear Database stopped because the shielded balance file at \"{path}\" could not be reset. \
         Your wallets and keys are still saved. Some local shielded balance data may already have been removed. \
         Check that your disk has free space and that the app can write to its data folder. Restart the app and try clearing again. \
-        If it keeps failing, first wait until every shielded payment you sent is confirmed, because this file also keeps the records of shielded payments that are still pending. Then close the app, back up the file, then delete it manually. \
+        If it keeps failing, first wait until every shielded payment, transfer and withdrawal you made recently has arrived, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
+        Do not send any of them again until your shielded balances have synced again and you have checked them. \
+        Then close the app and back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
+        Delete the file and those matching files manually. \
         Deleting the file means your shielded balances must sync again. Reopen the app, connect to the network and unlock your wallets if needed. \
         Wait for the sync to finish, then check your shielded balances and clear your data again.",
         path = .path.display()
@@ -410,7 +413,10 @@ pub enum TaskError {
     #[error(
         "Clear Database stopped before deleting any data because the shielded balance file at \"{path}\" was unavailable. \
         Check that your disk has free space and that the app can write to its data folder. Restart the app and try clearing again. \
-        If it keeps failing, first wait until every shielded payment you sent is confirmed, because this file also keeps the records of shielded payments that are still pending. Then close the app. If the file exists, back up the file, then delete it manually. \
+        If it keeps failing, first wait until every shielded payment, transfer and withdrawal you made recently has arrived, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
+        Do not send any of them again until your shielded balances have synced again and you have checked them. \
+        Then close the app. If the file exists, back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
+        Delete the file and those matching files manually. \
         Deleting the file means your shielded balances must sync again. Reopen the app, connect to the network and unlock your wallets if needed. \
         Wait for the sync to finish, then check your shielded balances and clear your data again.",
         path = .path.display()

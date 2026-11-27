@@ -2591,12 +2591,12 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     }
 }
 
-/// While a shielded operation runs, upstream refuses the shielded reset. Clear
-/// Database must then delete nothing — no seed, no wallet record — and say
-/// to clear again once the operation has finished, instead of deleting the
-/// keys and leaving the shielded data behind.
+/// When upstream refuses the shielded reset because one of its own shielded
+/// operations runs, Clear Database must delete nothing — no seed, no wallet
+/// record — and say to clear again once the operation has finished, instead
+/// of deleting the keys and leaving the shielded data behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clear_network_database_deletes_nothing_while_a_shielded_operation_runs() {
+async fn clear_network_database_deletes_nothing_when_upstream_refuses_the_shielded_reset() {
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
@@ -2638,6 +2638,118 @@ async fn clear_network_database_deletes_nothing_while_a_shielded_operation_runs(
         wallet_loaded,
         "the wallet must stay loaded when nothing was cleared"
     );
+}
+
+/// While Clear Database excludes shielded operations, every DET shielded
+/// payment must wait for admission instead of running alongside the wipe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_payments_wait_while_clear_database_excludes_them() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        crate::test_support::keys::seed(),
+        Network::Testnet,
+        None,
+        None,
+    )
+    .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let path_index =
+        crate::wallet_backend::PlatformPathIndex::from_wallet(&wallet, Network::Testnet);
+    let orchard_keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
+        &crate::test_support::keys::seed(),
+        Network::Testnet,
+        0,
+    )
+    .expect("Orchard keys");
+    let orchard_raw = orchard_keys.address_at(0).to_raw_address_bytes();
+    let recipient = dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(&orchard_raw)
+        .expect("Orchard address");
+
+    type Payment =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send>>;
+    let payments: Vec<(&str, Payment)> = vec![
+        ("shield from an asset lock", {
+            let backend = Arc::clone(&backend);
+            let funding =
+                platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
+                    amount_duffs: 100_000,
+                    account_index: 0,
+                };
+            Box::pin(async move {
+                backend
+                    .shield_from_asset_lock(&seed_hash, funding, recipient, 0, None)
+                    .await
+            })
+        }),
+        ("shield from a balance", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shield_from_balance(&seed_hash, &path_index, 0, 0, 100_000)
+                    .await
+            })
+        }),
+        ("shielded transfer", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shielded_transfer(&seed_hash, 0, &orchard_raw, 100_000, [0; 36])
+                    .await
+            })
+        }),
+        ("unshield", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shielded_unshield(&seed_hash, 0, "unused", 100_000)
+                    .await
+            })
+        }),
+        ("shielded withdrawal", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shielded_withdraw(&seed_hash, 0, "unused", 100_000, 1)
+                    .await
+            })
+        }),
+    ];
+
+    let exclusion = backend
+        .try_exclude_shielded_operations()
+        .expect("no shielded operation runs yet");
+    let mut waiting = Vec::new();
+    for (name, payment) in payments {
+        let requests_before = backend.shielded_admission_requests();
+        let task = tokio::spawn(payment);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while backend.shielded_admission_requests() == requests_before {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the {name} must ask for shielded admission"));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !task.is_finished(),
+            "the {name} must wait while Clear Database excludes shielded operations"
+        );
+        waiting.push((name, task));
+    }
+    drop(exclusion);
+    for (name, task) in waiting {
+        // Only admission matters here: the payment then fails, because the
+        // test wallet is not loaded.
+        let _outcome = tokio::time::timeout(std::time::Duration::from_secs(30), task)
+            .await
+            .unwrap_or_else(|_| panic!("the {name} must go on once Clear Database ends"))
+            .expect("payment task");
+    }
+    backend.shutdown().await;
 }
 
 /// A shielded bind that already holds its wallet handle and seed when Clear
@@ -3142,7 +3254,7 @@ async fn clear_network_database_shielded_store_failure_explains_manual_recovery(
             .split_once("Delete the file and those matching files manually")
             .unwrap_or_else(|| panic!("missing backup and deletion advice: {message}"));
         for step in [
-            "every shielded payment, transfer and withdrawal",
+            "every shielded payment, transfer, unshield and withdrawal",
             "including those to your own wallets",
             "Do not send any of them again",
             "back up the file together with any matching files ending in -wal, -shm, or -journal",

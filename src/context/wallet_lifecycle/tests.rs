@@ -3138,12 +3138,20 @@ async fn clear_network_database_shielded_store_failure_explains_manual_recovery(
     for error in [reset_failure, unavailable] {
         let message = error.to_string();
         assert!(message.contains(&path.display().to_string()), "{message}");
-        let (_, after_deletion) = message
+        let (before_deletion, after_deletion) = message
             .split_once("back up the file, then delete it manually")
             .unwrap_or_else(|| panic!("missing backup and deletion advice: {message}"));
+        assert!(
+            before_deletion.contains("every shielded payment you sent is confirmed"),
+            "{message}"
+        );
         assert!(after_deletion.contains("sync again"), "{message}");
         assert!(
             after_deletion.contains("then check your shielded balances"),
+            "{message}"
+        );
+        assert!(
+            after_deletion.contains("clear your data again"),
             "{message}"
         );
     }

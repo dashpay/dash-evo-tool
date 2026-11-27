@@ -5,13 +5,12 @@
 //!         Then build an invalid state transition (wrong nonce) and assert Err(TaskError::...).
 
 use crate::framework::fixtures::shared_identity;
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -54,7 +53,7 @@ async fn step_broadcast_valid(
         let secret_key =
             dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
                 .expect("invalid secret key bytes");
-        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), e2e_network())
             .expect("valid secret key");
         pk.public_key().to_bytes()
     };
@@ -210,7 +209,7 @@ async fn step_broadcast_invalid(
         let secret_key =
             dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
                 .expect("invalid secret key bytes");
-        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), e2e_network())
             .expect("valid secret key");
         pk.public_key().to_bytes()
     };

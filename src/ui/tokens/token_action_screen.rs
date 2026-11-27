@@ -527,7 +527,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         );
         action |= add_tokens_subscreen_chooser_panel(ui, &self.common.app_context);
 
-        let central_panel_action = island_central_panel(ui, |ui| {
+        let content = |ui: &mut Ui| {
             if self.common.status == TokenActionStatus::Complete {
                 return self.show_success_screen(ui);
             }
@@ -730,6 +730,9 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
             ui.add_space(10.0);
             inner_action
+        };
+        let central_panel_action = island_central_panel(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, content).inner
         });
 
         action |= central_panel_action;
@@ -1361,6 +1364,85 @@ mod tests {
             screen,
             &[format!("Amount: {amount}")],
             "Sign Burn",
+        );
+    }
+
+    #[test]
+    fn a_locked_co_signer_scrolls_past_a_long_note_to_unlock() {
+        use egui_kittest::kittest::Queryable;
+        use std::cell::Cell;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        hold_key_in_a_locked_wallet(&mut info);
+        let amount = Amount::from_token(&info, 5);
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.action.amount = Some(amount);
+        screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.show_advanced_options = true;
+        let note = "A line of the public proposal note.\n".repeat(40);
+        assert!(note.len() <= 2048);
+        screen.common.public_note = Some(note.clone());
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+        let sent = Cell::new(false);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(viewport.size())
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    if matches!(screen.ui(ui), AppAction::BackendTasksWithContexts(..)) {
+                        sent.set(true);
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .common
+                .selected_wallet
+                .as_ref()
+                .is_some_and(wallet_needs_unlock)
+        );
+        assert!(
+            harness
+                .query_by_label("Sign Mint")
+                .is_none_or(|button| !viewport.contains_rect(button.rect()))
+        );
+        harness.event(egui::Event::PointerMoved(egui::pos2(1000.0, 500.0)));
+        for _ in 0..10 {
+            harness.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                source: egui::MouseWheelSource::Unknown,
+                delta: egui::vec2(0.0, -300.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            harness.run();
+        }
+
+        let sign = harness.get_by_role_and_label(egui::accesskit::Role::Button, "Sign Mint");
+        assert!(
+            viewport.contains_rect(sign.rect()),
+            "scroll must reveal Sign Mint: {:?}",
+            sign.rect()
+        );
+        let note_bottom = harness
+            .get_by_label(&format!("Note: {note}"))
+            .rect()
+            .center_bottom();
+        assert!(
+            viewport.contains(note_bottom),
+            "the end of the note must be readable"
+        );
+        sign.click();
+        harness.run();
+        assert!(harness.state().common.wallet_unlock_popup.is_open());
+        assert!(harness.state().common.confirmation_dialog.is_none());
+        assert!(
+            !sent.get(),
+            "scrolling and unlocking must not submit the proposal"
         );
     }
 

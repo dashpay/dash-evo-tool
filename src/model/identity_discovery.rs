@@ -130,7 +130,10 @@ impl DiscoveryReadiness {
     pub fn assess(proofs_ready: bool, spv_status: SpvStatus) -> Self {
         if proofs_ready {
             Self::Ready
-        } else if spv_status.is_active() {
+        } else if matches!(
+            spv_status,
+            SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running
+        ) {
             Self::Syncing
         } else {
             Self::SyncStopped
@@ -149,6 +152,7 @@ mod tests {
             SpvStatus::Starting,
             SpvStatus::Syncing,
             SpvStatus::Running,
+            SpvStatus::Stopping,
             SpvStatus::Stopped,
             SpvStatus::Error,
         ] {
@@ -165,7 +169,12 @@ mod tests {
                 "running sync without proofs is still syncing ({status:?})",
             );
         }
-        for status in [SpvStatus::Idle, SpvStatus::Stopped, SpvStatus::Error] {
+        for status in [
+            SpvStatus::Idle,
+            SpvStatus::Stopping,
+            SpvStatus::Stopped,
+            SpvStatus::Error,
+        ] {
             assert_eq!(
                 DiscoveryReadiness::assess(false, status),
                 DiscoveryReadiness::SyncStopped,

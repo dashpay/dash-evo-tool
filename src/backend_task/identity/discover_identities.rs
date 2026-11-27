@@ -76,8 +76,10 @@ impl AppContext {
     ///
     /// A pass with failed lookups has not searched every index, so it returns
     /// the first such error once it has stored what it found. A lookup refused
-    /// because the network is still syncing ends the pass at once. A complete
-    /// pass removes the wallet's "cannot search yet" notice.
+    /// because it needs sync to finish ends the pass at once. Cancelling a
+    /// password prompt also ends the pass immediately and reports how many
+    /// identities were stored.
+    /// A complete pass removes the wallet's "cannot search yet" notice.
     ///
     /// `intent` is a separate question from `allow_prompt` — whether the user
     /// asked for these identities, which decides whether a pass may store one
@@ -131,6 +133,7 @@ impl AppContext {
         let mut highest_found = seed_window;
         let mut current_index = 0u32;
         let mut lookup_error: Option<TaskError> = None;
+        let mut unconfirmed_saves = false;
 
         while should_continue_scan(current_index, highest_found) {
             if let Some(sender) = progress {
@@ -174,6 +177,12 @@ impl AppContext {
                             "Skipping locked wallet during background identity discovery"
                         );
                         return Err(TaskError::AuthKeyUnlockRequired);
+                    }
+                    Err(TaskError::SecretPromptCancelled) => {
+                        return Err(TaskError::WalletIdentityDiscoveryCancelled {
+                            stored: summary.stored,
+                            unconfirmed_saves,
+                        });
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -248,7 +257,17 @@ impl AppContext {
                         identity_id = %identity_id,
                         "Discovered identity left unstored"
                     ),
-                    Err(e) => self.report_discovered_identity_store_failure(identity_id, &e),
+                    Err(TaskError::SecretPromptCancelled) => {
+                        return Err(TaskError::WalletIdentityDiscoveryCancelled {
+                            stored: summary.stored,
+                            unconfirmed_saves,
+                        });
+                    }
+                    Err(e) => {
+                        // A failed store may already have written the identity record.
+                        unconfirmed_saves = true;
+                        self.report_discovered_identity_store_failure(identity_id, &e);
+                    }
                 }
             }
 
@@ -277,10 +296,10 @@ impl AppContext {
         Ok(summary)
     }
 
-    /// Report a discovered identity that could not be stored. A pass keeps
-    /// scanning either way; most failures are logged only. A refresh blocked
-    /// by partial password protection needs the user to act, and a background
-    /// pass has no screen to report it, so it also raises a warning banner
+    /// Report a discovered identity that could not be stored. Most failures
+    /// are logged only. A refresh blocked by partial password protection
+    /// needs the user to act. A background pass has no screen to report it,
+    /// so it also raises a warning banner
     /// that stays until dismissed (SEC-003).
     fn report_discovered_identity_store_failure(
         &self,
@@ -553,8 +572,7 @@ mod tests {
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
-    /// Only a network that verifies proofs admits an explicit search; otherwise
-    /// the refusal says whether waiting or connecting is the way forward.
+    /// Only a network that verifies proofs admits an explicit search.
     #[test]
     fn explicit_search_admission_names_the_way_forward() {
         assert!(discovery_admission(DiscoveryReadiness::Ready).is_ok());

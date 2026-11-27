@@ -27,10 +27,10 @@ pub(super) fn unlock_discovery_notice(
     match readiness {
         DiscoveryReadiness::Ready => None,
         DiscoveryReadiness::Syncing => Some(format!(
-            "Identities in wallet “{wallet_name}” cannot be searched while the network is syncing. Once sync has finished, search again: Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
+            "Identities in wallet “{wallet_name}” cannot be searched yet. Connect to the wallet's network if needed. Once sync finishes, go to Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
         )),
         DiscoveryReadiness::SyncStopped => Some(format!(
-            "Identities in wallet “{wallet_name}” cannot be searched while network sync is stopped. Connect to the network, then search again: Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
+            "Identities in wallet “{wallet_name}” cannot be searched yet. Make sure you are connected to the wallet's network. Once sync finishes, go to Identities > Add > Load an existing identity > From my wallet > Search Wallet for Identities."
         )),
     }
 }

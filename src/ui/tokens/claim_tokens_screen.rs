@@ -1,14 +1,15 @@
+use super::TokenSigningKey;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::token::once_per_identity_amount;
-use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
+use crate::ui::state::PendingRequest;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -27,12 +28,12 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use eframe::egui::{self, Color32, Frame, Margin, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::wallet::Wallet;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -56,15 +57,18 @@ pub enum ClaimTokensStatus {
 pub struct ClaimTokensScreen {
     pub identity: Option<QualifiedIdentity>,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
-    selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
     pub public_note: Option<String>,
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
     status: ClaimTokensStatus,
+    /// The claim in flight; only its own result or error ends the wait.
+    claim_request: PendingRequest,
     refresh_banner: Option<BannerHandle>,
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     /// The open claim confirmation and the claim it was opened for.
     confirmation_dialog: Option<PendingClaim>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -103,22 +107,8 @@ impl ClaimTokensScreen {
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
-            let identity_inner = &id.identity;
-            let key = identity_inner
-                .get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
-                .or_else(|| {
-                    identity_inner.get_first_public_key_matching(
-                        Purpose::TRANSFER,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
-                })
+            let key = id
+                .single_token_transition_key(identity_token_basic_info.contract_id)
                 .cloned();
 
             let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);
@@ -153,17 +143,23 @@ impl ClaimTokensScreen {
         let once_per_identity_claimed_at =
             load_once_per_identity_claim(app_context, &identity_token_basic_info);
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_basic_info.identity_id,
+        );
         Self {
             identity,
             identity_token_basic_info,
-            selected_key,
+            selected_key: TokenSigningKey::automatic(selected_key),
             show_advanced_options: false,
             public_note: None,
             token_contract,
             token_configuration,
             distribution_type,
             status: ClaimTokensStatus::NotStarted,
+            claim_request: PendingRequest::default(),
             refresh_banner: None,
+            token_action_availability,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -199,7 +195,7 @@ impl ClaimTokensScreen {
             .is_some();
         let show_once_per_identity = once_per_identity_amount(&self.token_configuration).is_some();
         ui.horizontal(|ui| {
-            ui.label("Select Distribution Type:");
+            let type_label = ui.label("Select Distribution Type:");
             egui::ComboBox::from_id_salt("claim_distribution_type_selector")
                 .selected_text(match &self.distribution_type {
                     Some(TokenDistributionType::Perpetual) => "Perpetual".to_string(),
@@ -232,7 +228,9 @@ impl ClaimTokensScreen {
                             "Once per identity",
                         );
                     }
-                });
+                })
+                .response
+                .labelled_by(type_label.id);
         });
     }
 
@@ -308,7 +306,7 @@ impl ClaimTokensScreen {
             self.status = ClaimTokensStatus::Error;
             return;
         };
-        let Some(signing_key) = self.selected_key.clone() else {
+        let Some(signing_key) = self.selected_key.as_ref().cloned() else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "No signing key selected",
@@ -317,20 +315,17 @@ impl ClaimTokensScreen {
             self.status = ClaimTokensStatus::Error;
             return;
         };
-        let action = AppAction::BackendTasks(
-            vec![
-                BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
-                    data_contract: Arc::new(self.token_contract.contract.clone()),
-                    token_position: self.identity_token_basic_info.token_position,
-                    actor_identity: identity,
-                    distribution_type,
-                    signing_key,
-                    public_note: self.public_note.clone(),
-                })),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-            ],
-            BackendTasksExecutionMode::Sequential,
-        );
+        let claim = BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
+            data_contract: Arc::new(self.token_contract.contract.clone()),
+            token_position: self.identity_token_basic_info.token_position,
+            actor_identity: identity,
+            distribution_type,
+            signing_key,
+            public_note: self.public_note.clone(),
+        }));
+        let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        let action =
+            AppAction::BackendTasks(vec![claim, refresh], BackendTasksExecutionMode::Sequential);
         self.confirmation_dialog = Some(PendingClaim {
             dialog: ConfirmationDialog::new(
                 "Confirm Claim".to_string(),
@@ -364,6 +359,12 @@ impl ClaimTokensScreen {
         let Some(pending) = self.confirmation_dialog.take() else {
             return AppAction::None;
         };
+        if self.claim_request.is_pending() {
+            return AppAction::None;
+        }
+        let action = self
+            .claim_request
+            .dispatch_action_on(*pending.action, self.app_context.network);
         self.status = ClaimTokensStatus::WaitingForResult;
         self.refresh_banner.take_and_clear();
         let handle = MessageBanner::set_global(
@@ -373,13 +374,14 @@ impl ClaimTokensScreen {
         );
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
-        *pending.action
+        action
     }
 
     /// Whether Claim may be pressed for the selected distribution.
     fn claim_allowed(&self) -> bool {
-        !(self.once_per_identity_refused
-            && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
+        !self.claim_request.is_pending()
+            && !(self.once_per_identity_refused
+                && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
@@ -401,18 +403,27 @@ impl ScreenLike for ClaimTokensScreen {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.claim_request.settle(context);
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        // After the claim's own outcome, a later error (its balance refresh) changes nothing.
+        if !self.claim_request.is_pending()
+            && self.status != ClaimTokensStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.status = ClaimTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        self.refresh_banner.take_and_clear();
         match backend_task_success_result {
             BackendTaskSuccessResult::ClaimedTokens(fee_result) => {
+                self.claim_request.clear();
+                self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.status = ClaimTokensStatus::Complete;
                 // A successful once-per-identity claim records its hint.
@@ -445,6 +456,10 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_basic_info.identity_id,
+        );
         if let Some(current) = &self.identity
             && let Ok(all) = self.app_context.load_local_qualified_identities()
             && let Some(updated) = all
@@ -452,6 +467,18 @@ impl ScreenLike for ClaimTokensScreen {
                 .find(|id| id.identity.id() == current.identity.id())
         {
             self.identity = Some(updated);
+        }
+        if let Some(identity) = &self.identity
+            && self.selected_key.refresh_with_wallet(
+                &self.app_context,
+                identity,
+                TransactionType::TokenClaim,
+                self.identity_token_basic_info.contract_id,
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            )
+        {
+            self.confirmation_dialog = None;
         }
         self.once_per_identity_claimed_at =
             load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
@@ -501,28 +528,47 @@ impl ScreenLike for ClaimTokensScreen {
             ui.heading("Claim Tokens");
             ui.add_space(10.0);
 
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !identity.identity.public_keys().is_empty()
-            } else {
-                match identity.identity_type {
-                    IdentityType::User => !identity
-                        .available_authentication_keys_with_critical_security_level()
-                        .is_empty(),
-                    IdentityType::Masternode | IdentityType::Evonode => {
-                        !identity.available_transfer_keys().is_empty()
-                    }
-                }
-            };
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_basic_info.identity_id,
+                &mut self.token_action_availability,
+            );
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
 
-            if !has_keys {
-                ui.colored_label(
-                    Color32::RED,
+            // Check if user has any auth keys
+            let followed = self.selected_key.follow_automatic_with_wallet(
+                &self.app_context,
+                identity,
+                TransactionType::TokenClaim,
+                self.identity_token_basic_info.contract_id,
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            );
+            let key_status = followed.status;
+            if followed.changed {
+                // A pending confirmation was for the previous key.
+                self.confirmation_dialog = None;
+            }
+
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.show_advanced_options = true;
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
+                    "No key on this device can sign this token claim. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
+                } else {
                     format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        identity.identity_type,
-                    ),
-                );
+                        "No CRITICAL authentication or transfer key is loaded for this {identity_type} identity.",
+                        identity_type = identity.identity_type,
+                    )
+                };
+                ui.colored_label(Color32::RED, message);
                 ui.add_space(10.0);
 
                 let first_key = identity.identity.get_first_public_key_matching(
@@ -592,12 +638,18 @@ impl ScreenLike for ClaimTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Claim transition");
                     ui.add_space(10.0);
-                    add_key_chooser(
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         identity,
-                        &mut self.selected_key,
                         TransactionType::TokenClaim,
+                        self.identity_token_basic_info.contract_id,
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                 }
@@ -612,12 +664,16 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.heading("2. Public note (optional)");
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.label("Public note (optional):").info_tooltip(
+                    let note_label = ui.label("Public note (optional):").info_tooltip(
                         "A note about the transaction that can be seen by the public.",
                     );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
+                    if ui
+                        .text_edit_singleline(&mut txt)
+                        .labelled_by(note_label.id)
+                        .changed()
+                    {
                         self.public_note = Some(txt);
                     }
                 });
@@ -721,7 +777,7 @@ impl ScreenLike for ClaimTokensScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
@@ -745,9 +801,21 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                if ComponentStyles::add_primary_button_enabled(ui, self.claim_allowed(), "Claim")
-                    .clicked()
-                {
+                let claim_allowed = self.claim_allowed();
+                let has_key = self.selected_key.as_ref().is_some();
+                let claim = ComponentStyles::add_primary_button_enabled(
+                    ui,
+                    claim_allowed && has_key,
+                    "Claim",
+                );
+                let claim = if self.claim_request.is_pending() {
+                    claim.disabled_tooltip("Wait for the current claim to finish.")
+                } else if claim_allowed && !has_key {
+                    claim.disabled_tooltip(super::CHOOSE_SIGNING_KEY)
+                } else {
+                    claim
+                };
+                if claim.clicked() {
                     if self.distribution_type.is_none() {
                         MessageBanner::set_global(
                             ctx,
@@ -829,11 +897,12 @@ fn load_once_per_identity_claim(
 mod tests {
     use super::*;
     use crate::context::test_support::identity_public_key;
-    use crate::model::qualified_identity::IdentityStatus;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
     use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -888,7 +957,7 @@ mod tests {
             status: IdentityStatus::Active,
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         });
-        screen.selected_key = Some(identity_public_key(
+        screen.selected_key.selected = Some(identity_public_key(
             1,
             Purpose::AUTHENTICATION,
             SecurityLevel::CRITICAL,
@@ -930,10 +999,10 @@ mod tests {
         screen.open_claim_confirmation();
         screen.distribution_type = Some(TokenDistributionType::Perpetual);
 
-        let AppAction::BackendTasks(tasks, _) = screen.confirm_claim() else {
+        let AppAction::BackendTasksWithContexts(tasks, _) = screen.confirm_claim() else {
             panic!("the confirmed claim is sent");
         };
-        let Some(BackendTask::TokenTask(task)) = tasks.first() else {
+        let Some((BackendTask::TokenTask(task), _)) = tasks.first() else {
             panic!("the claim comes first");
         };
         let TokenTask::ClaimTokens {
@@ -943,6 +1012,124 @@ mod tests {
             panic!("a claim was confirmed");
         };
         assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
+
+    #[test]
+    fn token_claim_confirmation_cannot_send_with_a_replaced_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        let initial = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000), None);
+        screen.identity = Some(identity_holding(std::slice::from_ref(&initial)));
+        screen.selected_key = TokenSigningKey::automatic(Some(initial.clone()));
+        screen.open_claim_confirmation();
+        screen.refresh();
+        assert!(screen.confirmation_dialog.is_some());
+
+        store_identity_with_wallet_key(
+            &screen.app_context,
+            identity_holding(&[initial, auth_key(2, SecurityLevel::CRITICAL)]),
+            2,
+        );
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+        assert!(matches!(screen.confirm_claim(), AppAction::None));
+
+        screen.open_claim_confirmation();
+        let AppAction::BackendTasksWithContexts(tasks, _) = screen.confirm_claim() else {
+            panic!("the new confirmation sends the claim");
+        };
+        let Some((BackendTask::TokenTask(task), _)) = tasks.first() else {
+            panic!("the claim comes first");
+        };
+        assert!(matches!(
+            task.as_ref(),
+            TokenTask::ClaimTokens { signing_key, .. } if signing_key.id() == 2
+        ));
+    }
+
+    /// The lower of two expiry-limited keys, chosen automatically, expires
+    /// while the claim confirmation is open: the next frame moves to the
+    /// other key and drops the confirmation, so the expired key never signs.
+    #[test]
+    fn an_automatic_key_expiring_under_the_confirmation_is_not_submitted() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        screen.identity = Some(identity_holding(&[expired.clone(), live]));
+        screen.selected_key = TokenSigningKey::automatic(Some(expired));
+        screen.open_claim_confirmation();
+        assert!(screen.confirmation_dialog.is_some());
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(2);
+        let screen = harness.state_mut();
+
+        let sent = screen.confirm_claim();
+        assert!(matches!(sent, AppAction::None), "{sent:?}");
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+    }
+
+    /// A claim is charged, so a second confirmation while the first is in
+    /// flight must not send it again.
+    #[test]
+    fn a_claim_in_flight_is_never_sent_twice() {
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.open_claim_confirmation();
+        assert!(
+            matches!(
+                screen.confirm_claim(),
+                AppAction::BackendTasksWithContexts(..)
+            ),
+            "the first confirmation sends the claim"
+        );
+        screen.open_claim_confirmation();
+        assert!(
+            matches!(screen.confirm_claim(), AppAction::None),
+            "a second confirmation while waiting must not send it again"
+        );
+    }
+
+    /// Only the claim's own outcome ends the wait: dismissing the note, or
+    /// another task's error, neither opens Claim again nor clears the claim's
+    /// progress banner, while the claim's own error does.
+    #[test]
+    fn only_the_claim_itself_releases_the_claim_button() {
+        use crate::backend_task::BackendTaskContext;
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.open_claim_confirmation();
+        let request = match screen.confirm_claim() {
+            AppAction::BackendTasksWithContexts(tasks, _) => tasks.first().map(|(_, c)| c.clone()),
+            _ => None,
+        };
+
+        screen.display_task_result(BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(
+            screen.claim_note_pair(),
+        ));
+        let other =
+            BackendTaskContext::for_dispatch_on(&BackendTask::None, screen.app_context.network);
+        screen.display_backend_task_error(&other, &TaskError::WalletStateInconsistent);
+        screen.display_message("Dismissing the note failed", MessageType::Error);
+        assert!(!screen.claim_allowed(), "the claim is still in flight");
+        assert!(screen.refresh_banner.is_some(), "its progress stays shown");
+
+        let request = request.expect("the claim is sent with its own context");
+        screen.display_backend_task_error(&request, &TaskError::WalletStateInconsistent);
+        screen.display_message("The claim failed", MessageType::Error);
+        assert!(screen.claim_allowed(), "a failed claim can be tried again");
+        assert!(screen.refresh_banner.is_none());
     }
 
     /// Regression: a refused second claim left Claim enabled with no note, so
@@ -1028,5 +1215,231 @@ mod tests {
             pair,
         ));
         assert_eq!(screen.once_per_identity_claimed_at, None);
+    }
+
+    /// Regression: the claim key falls back to a CRITICAL TRANSFER key, but
+    /// the gate in front of the form counted only CRITICAL AUTHENTICATION
+    /// keys for a user identity, so one holding only a transfer key was told
+    /// it had no key.
+    #[test]
+    fn the_claim_gate_admits_the_keys_the_claim_signs_with() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let mut transfer = auth_key(1, SecurityLevel::CRITICAL);
+        transfer.set_purpose(Purpose::TRANSFER);
+        let identity = identity_holding(&[transfer]);
+        assert_eq!(identity.identity_type, IdentityType::User);
+        let contract_id = Identifier::new([0x70; 32]);
+        assert_eq!(
+            identity.single_token_transition_key_status(contract_id),
+            SigningKeyStatus::Usable
+        );
+
+        assert_eq!(
+            identity_holding(&[auth_key(1, SecurityLevel::HIGH)])
+                .single_token_transition_key_status(contract_id),
+            SigningKeyStatus::NoneHeld
+        );
+    }
+
+    /// Regression: the claim gate counted any filed CRITICAL key, while the
+    /// claim signs only with a live key valid for the token's contract whose
+    /// private half this device can read, so an identity holding only an
+    /// expired, elsewhere-bound or unreadable key got the form with Claim
+    /// disabled. The gate and the claim's key choice now agree.
+    #[test]
+    fn the_claim_gate_refuses_keys_the_claim_cannot_sign_with() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let expired =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let elsewhere = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::SingleContract {
+                id: Identifier::new([0x09; 32]),
+            },
+        )]);
+        let key = auth_key(1, SecurityLevel::CRITICAL);
+        let mut unreadable = identity_holding(std::slice::from_ref(&key));
+        unreadable.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (
+                QualifiedIdentityPublicKey {
+                    identity_public_key: key,
+                    in_wallet_at_derivation_path: None,
+                },
+                PrivateKeyData::Encrypted(vec![1; 48]),
+            ),
+        );
+        for (case, identity) in [
+            ("expired", expired),
+            ("bound elsewhere", elsewhere),
+            ("not readable here", unreadable),
+        ] {
+            assert!(
+                identity.single_token_transition_key(contract_id).is_none(),
+                "{case}"
+            );
+            assert_eq!(
+                identity.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}"
+            );
+        }
+    }
+
+    /// Regression: the claim key was picked only when the screen opened, so
+    /// once the identity's key became usable (expiry extended, key added or
+    /// its wallet loaded) a refresh opened the form with no key to sign.
+    /// A refresh picks it then, with its wallet.
+    #[test]
+    fn a_refresh_picks_the_claim_key_that_became_usable() {
+        use crate::ui::tokens::tests::{
+            identity_with_expired_key, store_identity_with_usable_wallet_key,
+        };
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        screen.identity = Some(identity_with_expired_key());
+        screen.selected_key.selected = None;
+        screen.selected_wallet = None;
+        let seed_hash = store_identity_with_usable_wallet_key(&screen.app_context);
+
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        let wallet = screen.selected_wallet.as_ref().expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+    }
+
+    /// Regression: a claim whose only key is bound to a contract group closed
+    /// before the key chooser. The form now opens its own Advanced Options
+    /// with a note saying why, and leaves the app's role as it was.
+    #[test]
+    fn a_contract_group_key_opens_the_claims_chooser_with_a_note() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::Queryable;
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        let role = screen.app_context.user_role();
+        screen.identity = Some(identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]));
+        screen.selected_key.selected = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.state().show_advanced_options);
+        assert!(
+            harness
+                .query_by_label(super::super::CONTRACT_GROUP_KEY_NOTE)
+                .is_some()
+        );
+        assert_eq!(harness.state().app_context.user_role(), role);
+    }
+
+    /// Regression: a node's claim gate counted any filed transfer key, while
+    /// the claim signs with the key `single_token_transition_key` picks, so a
+    /// node holding only an expired one got a form that could not sign.
+    #[test]
+    fn a_nodes_claim_gate_follows_the_claims_key_choice() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let contract_id = Identifier::new([0x70; 32]);
+        let transfer = |expires_at| {
+            let mut key = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, expires_at);
+            key.set_purpose(Purpose::TRANSFER);
+            key
+        };
+        for identity_type in [IdentityType::Masternode, IdentityType::Evonode] {
+            let mut expired = identity_holding(&[transfer(Some(1))]);
+            expired.identity_type = identity_type;
+            assert_eq!(
+                expired.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{identity_type:?}"
+            );
+            let mut live = identity_holding(&[transfer(None)]);
+            live.identity_type = identity_type;
+            assert_eq!(
+                live.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::Usable,
+                "{identity_type:?}"
+            );
+        }
+    }
+
+    /// A failed balance refresh after the claim went through must not bring
+    /// the claim form back.
+    #[test]
+    fn a_completed_claim_stays_complete_when_its_balance_refresh_fails() {
+        use crate::ui::tokens::mint_tokens_screen::tests::{report_error, unrelated_request};
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        screen.display_task_result(BackendTaskSuccessResult::ClaimedTokens(
+            crate::backend_task::FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        ));
+        let refresh = unrelated_request(screen.app_context.network);
+        report_error(&mut screen, &refresh);
+        assert!(screen.status == ClaimTokensStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) Claim stayed enabled, and pressing it only then
+    /// reported that no key was selected.
+    #[test]
+    fn a_claim_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        screen.identity = Some(identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]));
+        screen.selected_key.selected = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        let claim = harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Claim")
+            .last()
+            .expect("the Claim button");
+        assert!(
+            !claim
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click),
+            "a claim cannot be sent without a key"
+        );
+        claim.hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
     }
 }

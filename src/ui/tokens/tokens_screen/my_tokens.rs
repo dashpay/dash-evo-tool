@@ -6,6 +6,7 @@ use crate::model::amount::Amount;
 use crate::model::identity_name::shorten_id;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::copyable_id::copy_with_confirmation;
 use crate::ui::helpers::clicked_outside_window_after_open;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
@@ -23,11 +24,15 @@ use crate::ui::tokens::tokens_screen::{
     TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
     get_available_token_actions_for_identity,
 };
-use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
+use crate::ui::tokens::transfer_tokens_screen::{
+    DISABLED_BALANCE_UNKNOWN, DISABLED_NOT_TRANSFERABLE, DISABLED_NOTHING_TO_SEND, SEND_LABEL,
+    TransferTokensScreen,
+};
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{MessageType, Screen, ScreenType};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
@@ -167,6 +172,14 @@ impl TokensScreen {
     }
 
     pub(super) fn render_my_tokens_subscreen(&mut self, ui: &mut Ui) -> AppAction {
+        // A wallet that finishes loading sends no cache notice.
+        for (identity_id, availability) in &mut self.token_action_availability {
+            crate::ui::tokens::recheck_token_action_availability(
+                &self.app_context,
+                identity_id,
+                availability,
+            );
+        }
         let mut action = AppAction::None;
         if self.all_known_tokens.is_empty() {
             // If no tokens, show a "no tokens found" message
@@ -463,6 +476,17 @@ impl TokensScreen {
                                     body.row(30.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
+                                            if let Some(reason) = self
+                                                .token_action_availability
+                                                .get(&itb.identity_id)
+                                                .and_then(|availability| availability.unavailable_reason())
+                                            {
+                                                ui.label(
+                                                    RichText::new("View only")
+                                                        .color(DashColors::muted_color(ui.style().visuals.dark_mode)),
+                                                )
+                                                .info_tooltip(reason);
+                                            }
                                         });
                                         row.col(|ui| {
                                             short_id_cell(
@@ -691,6 +715,10 @@ impl TokensScreen {
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
         let dark_mode = ui.style().visuals.dark_mode;
+        let blocked = self
+            .token_action_availability
+            .get(&itb.identity_id)
+            .and_then(|availability| availability.unavailable_reason());
 
         for (pos, row_action) in token_row_actions(&itb.available_actions).enumerate() {
             if !range.contains(&pos) {
@@ -700,7 +728,7 @@ impl TokensScreen {
                 TokenRowAction::Transfer => {
                     if itb.available_actions.can_transfer {
                         if let Some(balance) = itb.balance
-                            && ui.button("Transfer").clicked()
+                            && token_action_button(ui, SEND_LABEL, blocked).clicked()
                         {
                             action = AppAction::AddScreen(Screen::TransferTokensScreen(
                                 TransferTokensScreen::new(
@@ -710,23 +738,21 @@ impl TokensScreen {
                             ));
                         }
                     } else {
-                        // Disabled, grayed-out Transfer button
-                        let reason = if token_info.token_configuration.is_transferable() {
-                            "Transfer not available"
-                        } else {
-                            "This token cannot be sent to other identities."
-                        };
+                        let reason = send_disabled_reason(
+                            itb.balance,
+                            token_info.token_configuration.is_transferable(),
+                        );
                         ui.add_enabled(
                             false,
                             egui::Button::new(
-                                RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
+                                RichText::new(SEND_LABEL).color(DashColors::muted_color(dark_mode)),
                             ),
                         )
                         .disabled_tooltip(reason);
                     }
                 }
                 TokenRowAction::Claim => {
-                    if ui.button("Claim").clicked() {
+                    if token_action_button(ui, "Claim", blocked).clicked() {
                         match self.app_context.get_contract_by_token_id(&itb.token_id) {
                             Ok(Some(contract)) => {
                                 action = AppAction::AddScreen(Screen::ClaimTokensScreen(
@@ -758,28 +784,29 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Mint => {
-                    if ui.button("Mint").clicked() {
+                    if token_action_button(ui, "Mint", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::MintTokensScreen(MintTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::Burn => {
-                    if ui.button("Burn").clicked() {
+                    if token_action_button(ui, "Burn", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::BurnTokensScreen(BurnTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::Freeze => {
-                    if ui.button("Freeze").clicked() {
+                    if token_action_button(ui, "Freeze", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::FreezeTokensScreen(FreezeTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::DestroyFrozenFunds => {
-                    if ui.button("Destroy Frozen Identity Tokens").clicked() {
+                    if token_action_button(ui, "Destroy Frozen Identity Tokens", blocked).clicked()
+                    {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
                                 info,
@@ -789,7 +816,7 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Unfreeze => {
-                    if ui.button("Unfreeze").clicked() {
+                    if token_action_button(ui, "Unfreeze", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::UnfreezeTokensScreen(UnfreezeTokensScreen::new(
                                 info,
@@ -799,14 +826,14 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Pause => {
-                    if ui.button("Pause").clicked() {
+                    if token_action_button(ui, "Pause", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::PauseTokensScreen(PauseTokensScreen::new(info, app_context))
                         });
                     }
                 }
                 TokenRowAction::Resume => {
-                    if ui.button("Resume").clicked() {
+                    if token_action_button(ui, "Resume", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::ResumeTokensScreen(ResumeTokensScreen::new(info, app_context))
                         });
@@ -821,7 +848,7 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::UpdateConfig => {
-                    if ui.button("Update Config").clicked() {
+                    if token_action_button(ui, "Update Config", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::UpdateTokenConfigScreen(Box::new(UpdateTokenConfigScreen::new(
                                 info,
@@ -831,10 +858,10 @@ impl TokensScreen {
                     }
                 }
                 TokenRowAction::Purchase => {
-                    action |= self.render_purchase_action(itb, dark_mode, ui);
+                    action |= self.render_purchase_action(itb, dark_mode, blocked, ui);
                 }
                 TokenRowAction::SetPrice => {
-                    if ui.button("Set Price").clicked() {
+                    if token_action_button(ui, "Set Price", blocked).clicked() {
                         action = self.open_with_token_info(itb, ui, |info, app_context| {
                             Screen::SetTokenPriceScreen(SetTokenPriceScreen::new(info, app_context))
                         });
@@ -876,6 +903,7 @@ impl TokensScreen {
         &self,
         itb: &IdentityTokenMaybeBalanceWithActions,
         dark_mode: bool,
+        blocked: Option<&'static str>,
         ui: &mut Ui,
     ) -> AppAction {
         // Check if we have pricing data
@@ -913,7 +941,7 @@ impl TokensScreen {
 
             if has_credits {
                 // Purchase button enabled
-                if ui.button("Purchase").clicked() {
+                if token_action_button(ui, "Purchase", blocked).clicked() {
                     return self.open_with_token_info(itb, ui, |info, app_context| {
                         Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(info, app_context))
                     });
@@ -1033,6 +1061,19 @@ impl TokensScreen {
     }
 }
 
+/// Why a holder cannot send this token right now, in terms of the balance the
+/// app has: a cached zero may never have been fetched, so neither reason
+/// claims what the identity holds.
+fn send_disabled_reason(balance: Option<TokenAmount>, transferable: bool) -> &'static str {
+    if !transferable {
+        DISABLED_NOT_TRANSFERABLE
+    } else if balance.is_none() {
+        DISABLED_BALANCE_UNKNOWN
+    } else {
+        DISABLED_NOTHING_TO_SEND
+    }
+}
+
 /// Confirmation shown after a table cell copies an ID.
 const ID_COPIED: &str = "Copied to clipboard";
 
@@ -1052,8 +1093,7 @@ fn short_id_cell(ui: &mut Ui, id: Identifier, is_contract_owner: bool) {
         .clickable_tooltip(tooltip)
         .clicked()
     {
-        ui.ctx().copy_text(full);
-        MessageBanner::set_global(ui.ctx(), ID_COPIED, MessageType::Success);
+        copy_with_confirmation(ui.ctx(), &full, ID_COPIED);
     }
 }
 
@@ -1098,6 +1138,17 @@ fn token_row_actions(
     ]
     .into_iter()
     .filter_map(|(offered, row_action)| offered.then_some(row_action))
+}
+
+/// A token-action button, disabled with `blocked_reason` as its tooltip when
+/// the identity cannot send token transactions.
+fn token_action_button(
+    ui: &mut Ui,
+    label: &str,
+    blocked_reason: Option<&'static str>,
+) -> egui::Response {
+    ui.add_enabled(blocked_reason.is_none(), egui::Button::new(label))
+        .disabled_tooltip(blocked_reason.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -1239,6 +1290,54 @@ mod tests {
         );
     }
 
+    /// An identity waiting for its wallet gets its token actions back on the
+    /// next frame once the wallet has loaded; registration sends no cache
+    /// notice, so My Tokens re-checks waiting entries as it draws.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn my_tokens_offers_token_actions_once_the_wallet_loads() {
+        use crate::model::token::TokenActionAvailability;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let seed_hash =
+            crate::model::wallet::Wallet::new_from_seed(seed, context.network, None, None)
+                .expect("build wallet")
+                .seed_hash();
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([0x63; 32]),
+            context.network,
+        );
+        context
+            .insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("link the identity to the wallet");
+        let id = identity.identity.id();
+        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        assert_eq!(
+            screen.token_action_availability.get(&id),
+            Some(&TokenActionAvailability::WalletNotOpen)
+        );
+
+        context
+            .wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut TokensScreen| {
+                screen.render_my_tokens_subscreen(ui);
+            },
+            screen,
+        );
+        harness.run();
+
+        assert_eq!(
+            harness.state().token_action_availability.get(&id),
+            Some(&TokenActionAvailability::Available)
+        );
+    }
+
     /// A shortened ID is copied from the keyboard (Tab, then Enter) as well as
     /// by mouse, and the copy is confirmed, since the cell itself shows no change.
     #[test]
@@ -1278,9 +1377,28 @@ mod tests {
         actions: IdentityTokenAvailableActions,
         range: Range<usize>,
     ) -> Vec<String> {
+        rendered_actions(actions, range, None)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect()
+    }
+
+    /// The buttons `render_actions` draws for `actions` within `range`, in
+    /// order, with whether each is enabled, for an identity whose token
+    /// actions have `availability`.
+    fn rendered_actions(
+        actions: IdentityTokenAvailableActions,
+        range: Range<usize>,
+        availability: Option<crate::model::token::TokenActionAvailability>,
+    ) -> Vec<(String, bool)> {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        if let Some(availability) = availability {
+            screen
+                .token_action_availability
+                .insert(Identifier::from([1; 32]), availability);
+        }
         let token_id = Identifier::from([42; 32]);
         let token_configuration: dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration =
             TokenConfigurationV0::default_most_restrictive().into();
@@ -1319,8 +1437,40 @@ mod tests {
         use egui_kittest::kittest::NodeT;
         harness
             .query_all_by_role(egui::accesskit::Role::Button)
-            .filter_map(|button| button.accesskit_node().label())
+            .filter_map(|button| {
+                let node = button.accesskit_node();
+                Some((node.label()?, !node.is_disabled()))
+            })
             .collect()
+    }
+
+    /// While the identity's wallet is not open, every transaction button of
+    /// its row is disabled; viewing claims sends nothing and stays enabled.
+    #[test]
+    fn every_token_transaction_button_waits_for_the_identitys_wallet() {
+        let all = IdentityTokenAvailableActions {
+            can_claim: true,
+            can_estimate: false,
+            can_mint: true,
+            can_burn: true,
+            can_freeze: true,
+            can_unfreeze: true,
+            can_destroy: true,
+            can_do_emergency_action: true,
+            can_maybe_purchase: false,
+            can_set_price: true,
+            can_transfer: true,
+            can_update_config: true,
+        };
+        let shown = rendered_actions(
+            all,
+            0..128,
+            Some(crate::model::token::TokenActionAvailability::WalletNotOpen),
+        );
+        assert_eq!(shown.len(), 12, "{shown:?}");
+        for (label, enabled) in shown {
+            assert_eq!(enabled, label == "View Claims", "{label}");
+        }
     }
 
     /// Regression: Pause and Resume took a position only when shown, so with
@@ -1351,7 +1501,7 @@ mod tests {
         };
         assert_eq!(
             rendered_action_labels(claim_and_emergency, 0..3),
-            ["Transfer", "Claim", "Pause"]
+            ["Send", "Claim", "Pause"]
         );
         assert_eq!(
             rendered_action_labels(claim_and_emergency, 3..128),
@@ -1372,12 +1522,12 @@ mod tests {
             ..none
         };
         let mut shown = rendered_action_labels(all, 0..3);
-        assert_eq!(shown, ["Transfer", "Claim", "Mint"]);
+        assert_eq!(shown, ["Send", "Claim", "Mint"]);
         shown.extend(rendered_action_labels(all, 3..128));
         assert_eq!(
             shown,
             [
-                "Transfer",
+                "Send",
                 "Claim",
                 "Mint",
                 "Burn",
@@ -1505,6 +1655,34 @@ mod tests {
         assert!(
             positions[0] < positions[1] && positions[1] < positions[2],
             "updated names use ID tie-breaks"
+        );
+    }
+
+    /// The cached balance can be a placeholder that was never fetched, and a
+    /// missing one does not mean a fetch is running (dashpay/platform#5771):
+    /// each reason says what the screen shows and names the action that
+    /// loads the balance again.
+    #[test]
+    fn a_disabled_send_points_to_the_balance_actions() {
+        assert!(DISABLED_BALANCE_UNKNOWN.contains("Use Check or Refresh"));
+        assert!(DISABLED_NOTHING_TO_SEND.contains("Use Refresh"));
+        for reason in [DISABLED_BALANCE_UNKNOWN, DISABLED_NOTHING_TO_SEND] {
+            assert!(!reason.contains("holds none"), "{reason}");
+            assert!(!reason.contains("once the balance is checked"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_disabled_send_never_calls_an_unknown_balance_zero() {
+        assert_eq!(send_disabled_reason(None, true), DISABLED_BALANCE_UNKNOWN);
+        assert_eq!(
+            send_disabled_reason(Some(0), true),
+            DISABLED_NOTHING_TO_SEND
+        );
+        assert_eq!(send_disabled_reason(None, false), DISABLED_NOT_TRANSFERABLE);
+        assert_eq!(
+            send_disabled_reason(Some(5), false),
+            DISABLED_NOT_TRANSFERABLE
         );
     }
 }

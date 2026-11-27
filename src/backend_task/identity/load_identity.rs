@@ -1,5 +1,5 @@
 use super::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{IdentitySaveWarning, TaskError};
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::context::AppContext;
@@ -73,6 +73,14 @@ enum IdentityRecordWrite {
     Import,
     /// Scoped update of a listed identity; never restores a removed one.
     UpdateListed,
+}
+
+/// A loaded identity's wallet link as stored, and what the save left for the
+/// requester to know.
+#[derive(Debug)]
+struct StoredLoad {
+    wallet_info: Option<(WalletSeedHash, u32)>,
+    warning: Option<IdentitySaveWarning>,
 }
 
 impl AppContext {
@@ -288,6 +296,17 @@ impl AppContext {
                     };
 
                     let key = select_voting_key(&voter_identity, &voting_address)
+                        .or_else(|| {
+                            voter_identity
+                                .public_keys()
+                                .values()
+                                .find(|key| {
+                                    key.purpose() == dash_sdk::dpp::identity::Purpose::VOTING
+                                        && key.key_type() == KeyType::ECDSA_HASH160
+                                        && key.data().as_slice() == voting_address
+                                })
+                                .cloned()
+                        })
                         .ok_or(TaskError::MasternodeVotingKeyNotUsable)?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -430,7 +449,10 @@ impl AppContext {
         // Recheck the scoped load and merge the current stored keys under the
         // record guard before any seal or write: removal and protection changes
         // may have happened while the network requests were in flight.
-        let wallet_info = self.finish_identity_load_storage(
+        let StoredLoad {
+            wallet_info,
+            warning,
+        } = self.finish_identity_load_storage(
             &mut qualified_identity,
             load_mode,
             merge_seal_password.as_ref(),
@@ -453,7 +475,10 @@ impl AppContext {
         // left the insert behind — reported `Failed` when the guard dropped.
         load_guard.loaded();
 
-        Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+        Ok(BackendTaskSuccessResult::LoadedIdentity {
+            identity: qualified_identity,
+            warning,
+        })
     }
 
     /// Store a fetched identity under its record lock, after confirming that
@@ -470,7 +495,7 @@ impl AppContext {
         load_guard: &crate::context::identity_load_registry::IdentityLoadGuard,
         encryption_password: Option<&crate::model::secret::Secret>,
         balance_provenance: BalanceProvenance,
-    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
+    ) -> Result<StoredLoad, TaskError> {
         if let Some(password) = encryption_password {
             validate_protection_password(password)?;
         }
@@ -558,6 +583,7 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let existing = self.get_local_qualified_identity(&identity_id)?;
         self.persist_merged_identity_locked(qi, existing, password, IdentityRecordWrite::Import)
+            .map(|stored| stored.wallet_info)
     }
 
     /// Merge the newly supplied keys of `qi` into `existing` and seal them under
@@ -568,7 +594,7 @@ impl AppContext {
         existing: Option<QualifiedIdentity>,
         password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
         write: IdentityRecordWrite,
-    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
+    ) -> Result<StoredLoad, TaskError> {
         let identity_id = qi.identity.id();
         let published = existing.is_some();
         if let Some(existing) = existing {
@@ -613,8 +639,11 @@ impl AppContext {
         let wallet_info = qi
             .determine_wallet_info()
             .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
-        self.write_loaded_identity_locked(qi, &wallet_info, write)?;
-        Ok(wallet_info)
+        let warning = self.write_loaded_identity_locked(qi, &wallet_info, write)?;
+        Ok(StoredLoad {
+            wallet_info,
+            warning,
+        })
     }
 
     /// Store a loaded identity, taking the record lock itself.
@@ -641,6 +670,7 @@ impl AppContext {
             load_mode,
             IdentityRecordWrite::Import,
         )
+        .map(|stored| stored.wallet_info)
     }
 
     /// Store a loaded identity, sealing every key under `password` before the
@@ -653,7 +683,7 @@ impl AppContext {
         password: Option<&crate::model::secret::Secret>,
         load_mode: IdentityLoadMode,
         write: IdentityRecordWrite,
-    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
+    ) -> Result<StoredLoad, TaskError> {
         let identity_id = qi.identity.id();
         if load_mode == IdentityLoadMode::RejectIfExists && existing.is_some() {
             return Err(TaskError::DuplicateProTxHash { identity_id });
@@ -668,8 +698,11 @@ impl AppContext {
             let wallet_info = qi
                 .determine_wallet_info()
                 .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
-            self.write_loaded_identity_locked(qi, &wallet_info, write)?;
-            return Ok(wallet_info);
+            let warning = self.write_loaded_identity_locked(qi, &wallet_info, write)?;
+            return Ok(StoredLoad {
+                wallet_info,
+                warning,
+            });
         };
         let mut relevant_keys = qi.private_keys.keys_set();
         relevant_keys.extend(self.retained_identity_import_keys(&identity_id)?);
@@ -749,8 +782,11 @@ impl AppContext {
         let wallet_info = qi
             .determine_wallet_info()
             .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
-        self.write_loaded_identity_locked(qi, &wallet_info, write)?;
-        Ok(wallet_info)
+        let warning = self.write_loaded_identity_locked(qi, &wallet_info, write)?;
+        Ok(StoredLoad {
+            wallet_info,
+            warning,
+        })
     }
 
     fn write_loaded_identity_locked(
@@ -758,12 +794,14 @@ impl AppContext {
         qi: &QualifiedIdentity,
         wallet_info: &Option<(WalletSeedHash, u32)>,
         write: IdentityRecordWrite,
-    ) -> Result<(), TaskError> {
+    ) -> Result<Option<IdentitySaveWarning>, TaskError> {
         match write {
             IdentityRecordWrite::Import => {
                 self.insert_local_qualified_identity_under_lock(qi, wallet_info)
             }
-            IdentityRecordWrite::UpdateListed => self.write_local_qualified_identity_locked(qi),
+            IdentityRecordWrite::UpdateListed => self
+                .write_local_qualified_identity_locked(qi)
+                .map(|()| None),
         }
     }
 
@@ -978,7 +1016,8 @@ impl AppContext {
                     KeyDerivationType::ECDSA,
                     identity_index,
                     index,
-                );
+                )
+                .ok()?;
 
                 let wallet_derivation_path = WalletDerivationPath {
                     wallet_seed_hash,
@@ -1114,7 +1153,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn node_voting_key_disabled_on_the_network_is_refused() {
+    async fn interop_disabled_voting_key_imports_without_enabling_votes() {
         let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
             rand::random(),
             rand::random(),
@@ -1148,6 +1187,9 @@ mod tests {
             .expect_fetch(voter, Some(voter_identity))
             .await
             .unwrap();
+        sdk.mock().expect_fetch_many::<Identifier, dash_sdk::platform::Document, _, dash_sdk::query_types::Documents>(
+            staged.ctx.owned_dpns_names_query(staged.id), Some(dash_sdk::query_types::Documents::default()),
+        ).await.unwrap();
         let input = IdentityInputToLoad {
             identity_id_input: staged.id.to_string(Encoding::Hex),
             identity_type: IdentityType::Masternode,
@@ -1163,21 +1205,34 @@ mod tests {
             load_token: None,
         };
 
-        let error = staged.ctx.load_identity(&sdk, input).await.unwrap_err();
-
-        assert!(
-            matches!(error, TaskError::MasternodeVotingKeyNotUsable),
-            "a voting key the network disabled must be refused as such, got {error:?}"
-        );
+        staged
+            .ctx
+            .load_identity(&sdk, input)
+            .await
+            .expect("import matching disabled key");
         let after = staged
             .ctx
             .get_local_qualified_identity(&staged.id)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            after.associated_voter_identity,
-            before.associated_voter_identity
+        let (published_voter, selected_key) = after
+            .associated_voter_identity
+            .as_ref()
+            .expect("the voter identity remains readable");
+        assert_eq!(published_voter.id(), voter);
+        assert_eq!(selected_key.id(), 0);
+        assert!(selected_key.is_disabled());
+        assert!(
+            after
+                .private_keys
+                .held_private_key_data(selected_key)
+                .is_some()
         );
+        assert!(
+            !after.can_cast_masternode_vote(),
+            "historical key cannot sign new votes"
+        );
+        assert!(select_voting_key(published_voter, &address.to_byte_array()).is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3200,5 +3255,298 @@ mod tests {
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_limited_identity_import_refresh_and_keys_view_keep_all_public_keys() {
+        use crate::backend_task::{CacheDomain, IdentityTask, TaskResult};
+        use crate::context::test_support::{
+            auth_key, bound_to, identity_holding, mock_sdk_at_for, set_sdk_protocol_version,
+            wired_test_app_context,
+        };
+        use crate::model::{identity_key_usability::now_ms, user_role::UserRole};
+        use crate::ui::{ScreenLike, identity::keys::keys_screen::KeysScreen};
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+        use dash_sdk::dpp::identity::identity_public_key::{
+            accessors::v1::IdentityPublicKeyGettersV1, contract_bounds::ContractBounds,
+        };
+        use dash_sdk::platform::Document;
+        use dash_sdk::query_types::Documents;
+        use egui_kittest::{Harness, kittest::Queryable};
+        use std::collections::BTreeMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = wired_test_app_context(dir.path()).await;
+        set_sdk_protocol_version(&ctx, 14);
+        ctx.set_user_role(UserRole::Power);
+        let secret = |id: u64| crate::test_support::keys::labelled_secret("pv14-key-read", id);
+        let public_key = |id: u32, level| {
+            let mut key = auth_key(id, level);
+            let public_data = KeyType::ECDSA_SECP256K1
+                .public_key_data_from_private_key_data(&secret(u64::from(id)), Network::Testnet)
+                .expect("generated key");
+            key.set_data(public_data.into());
+            key
+        };
+        let now = now_ms();
+        let expiry = now + 86_400_000;
+        let limited =
+            public_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000_000_000), Some(expiry));
+        let expired = public_key(2, SecurityLevel::HIGH).with_limits(None, Some(now - 86_400_000));
+        let bounded = bound_to(
+            public_key(3, SecurityLevel::HIGH),
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let mut disabled =
+            public_key(4, SecurityLevel::HIGH).with_limits(Some(1_000_000_000), None);
+        disabled.set_disabled_at(now - 1_000);
+        let keys = BTreeMap::from([
+            (0, public_key(0, SecurityLevel::MASTER)),
+            (1, limited.clone()),
+            (2, expired),
+            (3, bounded),
+            (4, disabled),
+        ]);
+        let mut remote = identity_holding(&[]).identity;
+        remote.set_public_keys(keys.clone());
+        let id = remote.id();
+        let mut sdk = mock_sdk_at_for(&ctx, 14);
+        sdk.mock()
+            .expect_fetch(id, Some(remote.clone()))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.owned_dpns_names_query(id),
+                Some(Documents::default()),
+            )
+            .await
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let input = IdentityInputToLoad {
+            identity_id_input: id.to_string(Encoding::Base58),
+            identity_type: IdentityType::User,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::default(),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: (1..=4)
+                .map(|id| Secret::new(hex::encode(secret(id))))
+                .collect(),
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::Overwrite,
+            load_token: None,
+        };
+        let result = ctx
+            .run_identity_task(IdentityTask::LoadIdentity(input), &sdk, sender.clone())
+            .await
+            .expect("load a PV14 identity");
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::LoadedIdentity { .. }
+        ));
+        let loaded = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(loaded.identity.public_keys(), &keys);
+        assert!(!loaded.private_keys.has(&(M, 0)));
+        for id in 1..=4 {
+            assert!(loaded.private_keys.has(&(M, id)));
+        }
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 840.0))
+            .build_ui_state(
+                |ui, screen: &mut KeysScreen| {
+                    let _ = screen.ui(ui);
+                },
+                KeysScreen::new(loaded.clone(), &ctx),
+            );
+        harness.run_steps(4);
+        for id in 0..=4 {
+            assert!(
+                harness
+                    .query_by_label_contains(&format!("Key {id} · AUTHENTICATION"))
+                    .is_some()
+            );
+        }
+        assert!(
+            harness
+                .query_by_label("Authentication key (disabled) ›")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("This key is not saved on this device.")
+                .is_some()
+        );
+
+        let raised = limited.with_limits(Some(2_000_000_000), Some(expiry + 86_400_000));
+        let mut keys = keys;
+        keys.insert(1, raised);
+        keys.insert(
+            5,
+            public_key(5, SecurityLevel::HIGH).with_limits(None, Some(expiry)),
+        );
+        remote.set_public_keys(keys.clone());
+        let mut refresh_sdk = mock_sdk_at_for(&ctx, 14);
+        refresh_sdk
+            .mock()
+            .expect_fetch(id, Some(remote))
+            .await
+            .unwrap();
+        let result = ctx
+            .run_identity_task(IdentityTask::RefreshIdentity(loaded), &refresh_sdk, sender)
+            .await
+            .expect("refresh a PV14 identity");
+        let BackendTaskSuccessResult::RefreshedIdentity(fresh) = result else {
+            panic!("identity refresh result");
+        };
+        assert_eq!(fresh.identity.public_keys(), &keys);
+        let stored = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        let key = &stored.identity.public_keys()[&1];
+        assert_eq!(key.total_budget(), Some(2_000_000_000));
+        assert_eq!(key.expires_at(), Some(expiry + 86_400_000));
+        assert!(stored.private_keys.held_private_key_data(key).is_some());
+        let TaskResult::CacheUpdated(update) = rx.try_recv().expect("identity cache notification")
+        else {
+            panic!("cache event");
+        };
+        assert_eq!(update.domain, CacheDomain::Identities);
+        harness.state_mut().cached_data_changed(update);
+        harness.run_steps(4);
+        for id in 0..=5 {
+            assert!(
+                harness
+                    .query_by_label_contains(&format!("Key {id} · AUTHENTICATION"))
+                    .is_some()
+            );
+        }
+        assert!(
+            harness
+                .query_by_label("Authentication key (disabled) ›")
+                .is_some()
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// Load a stored masternode through the MCP dispatcher while the wallet
+    /// store cannot be read. Returns the load's result and the GUI's banners.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    async fn mcp_load_with_unreadable_wallet_store(
+        wallet_link: Option<(WalletSeedHash, u32)>,
+    ) -> (Result<BackendTaskSuccessResult, TaskError>, Vec<String>) {
+        use crate::backend_task::BackendTask;
+        use crate::backend_task::identity::IdentityTask;
+        use dash_sdk::dpp::document::DocumentV0Getters;
+        use dash_sdk::platform::Document;
+        use dash_sdk::query_types::Documents;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(temp_dir.path()).await;
+        let backend = ctx.wallet_backend().expect("wired backend");
+        let mut node = crate::context::test_support::bare_user_identity(
+            Identifier::random(),
+            Network::Testnet,
+        );
+        node.identity_type = IdentityType::Masternode;
+        let node_id = node.identity.id();
+        ctx.insert_local_qualified_identity(&node, &wallet_link)
+            .expect("the node is stored");
+        let name = crate::context::test_support::dpns_name_document(
+            node_id,
+            "node",
+            dash_sdk::dpp::platform_value::Value::Bytes32(node_id.to_buffer()),
+        );
+        // Installed first, at the version a fetch would raise it to: the names
+        // query carries the DPNS contract at the context's SDK version. A
+        // clone shares the mock's expectations.
+        let mut sdk = crate::context::test_support::mock_sdk_at_for(
+            &ctx,
+            PlatformVersion::latest().protocol_version,
+        );
+        ctx.sdk.store(Arc::new(sdk.clone()));
+        sdk.mock()
+            .expect_fetch(node_id, Some(node.identity.clone()))
+            .await
+            .expect("identity expectation");
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.owned_dpns_names_query(node_id),
+                Some(Documents::from_iter([(name.id(), Some(name))])),
+            )
+            .await
+            .expect("owned names expectation");
+        let input = IdentityInputToLoad {
+            identity_id_input: node_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::default(),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::Overwrite,
+            load_token: None,
+        };
+
+        backend.set_unowned_read_test_failure(true);
+        let result = crate::mcp::dispatch::dispatch_task(
+            &ctx,
+            BackendTask::IdentityTask(IdentityTask::LoadIdentity(input)),
+        )
+        .await;
+        backend.set_unowned_read_test_failure(false);
+
+        let banners = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+        backend.shutdown().await;
+        (result, banners)
+    }
+
+    /// A load an MCP client requested reports its save warning to that client
+    /// alone: the result carries it, and a GUI hosting the server shows no
+    /// banner for a request its user did not start.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_mcp_load_returns_its_save_warning_and_raises_no_gui_banner() {
+        let (result, banners) = mcp_load_with_unreadable_wallet_store(None).await;
+
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::LoadedIdentity {
+                    warning: Some(IdentitySaveWarning::WalletFreeUnconfirmed { .. }),
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+        assert!(banners.is_empty(), "{banners:?}");
+    }
+
+    /// The same for a node whose record keeps its wallet link: the client is
+    /// told why, in the wallet store's own words, and the GUI shows nothing.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_mcp_load_that_keeps_a_wallet_link_returns_it_and_raises_no_gui_banner() {
+        let (result, banners) = mcp_load_with_unreadable_wallet_store(Some(([7; 32], 0))).await;
+
+        let Ok(BackendTaskSuccessResult::LoadedIdentity {
+            warning: Some(warning @ IdentitySaveWarning::WalletLinkKept { .. }),
+            ..
+        }) = result
+        else {
+            panic!("expected a kept-link warning, got {result:?}");
+        };
+        assert_eq!(
+            warning.to_string(),
+            TaskError::WalletStorageNotReady.to_string()
+        );
+        assert!(banners.is_empty(), "{banners:?}");
     }
 }

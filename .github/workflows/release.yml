@@ -60,7 +60,10 @@ jobs:
             target: "aarch64-unknown-linux-gnu"
             platform: "linux-arm64"
           - name: "Windows"
-            runs-on: "ubuntu-22.04"
+            # Bundled SQLite 3.54+ needs Windows Vista APIs (GetTickCount64);
+            # ubuntu-22.04's MinGW defaults to an older _WIN32_WINNT, while
+            # 26.04's targets Windows 10. Linux legs stay on 22.04 for glibc.
+            runs-on: "ubuntu-26.04"
             target: "x86_64-pc-windows-gnu"
             platform: "windows"
             ext: ".exe"

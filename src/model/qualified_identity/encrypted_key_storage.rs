@@ -23,88 +23,110 @@ use zeroize::Zeroizing;
 pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 
 /// Whether a `stored` public half is the same key as the `live` one, ignoring
-/// only `disabled_at`.
+/// only the fields Platform lets move after the key is added.
 ///
-/// Every field of an `IdentityPublicKey` is immutable once the key is added, with
-/// that single exception: disabling a key rewrites it. The stored copy is a
-/// snapshot taken when the private half was saved, so plain `==` stops matching
-/// as soon as a key is disabled or rotated, and a key this device demonstrably
+/// Every identifying field of an `IdentityPublicKey` is immutable once the key
+/// is added. The exceptions are state, not identity: disabling a key rewrites
+/// `disabled_at`, and an `IdentityKeyLimitsUpdate` (protocol version 14) raises
+/// a V1 key's `total_budget` and moves its `expires_at` later. The stored copy
+/// is a snapshot taken when the private half was saved, so plain `==` stops
+/// matching as soon as any of those move, and a key this device demonstrably
 /// holds gets reported as missing.
 ///
 /// Comparing only the id and the key material would fix that and open a worse
 /// hole the other way. A main identity's voting key and a linked voter identity's
 /// key can carry identical `data` under the same `id`, leaving `purpose` as the
 /// only thing telling them apart — and a lookup that conflates them can hand out,
-/// or delete, material the requested key does not own. So this excludes the one
-/// field that legitimately moves and nothing else.
+/// or delete, material the requested key does not own. So this excludes the
+/// fields that legitimately move and nothing else.
 ///
-/// V1 keys (budget/expiry limits) exist only from protocol 14; DET runs protocol
-/// 13, so they are compared strictly apart from `disabled_at`. Upstream writes a
-/// key without limits as V0, so a V1 key is never the same key as a V0 one.
-// TODO(pv14): `IdentityKeyLimitsUpdate` raises `total_budget` and moves
-// `expires_at`; decide whether those amounts identify a key once DET supports
-// protocol 14.
+/// Whether a key has a budget and whether it has an expiry is identity too: a
+/// limit can only be raised, never added or removed, so that shape is fixed for
+/// the key's life. The key version is not — upstream writes a V1 key without
+/// limits as V0 — so a V0 key and a limit-less V1 key with the same fields are
+/// the same key.
+// TODO(dashpay/platform#6294): use rs-dpp's `IdentityPublicKey::is_same_key`
+// once it exists.
 pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
+    key_identity(stored) == key_identity(live)
+}
+
+/// The fields of `key` that identify it: everything except the state Platform
+/// lets move (see [`same_key`]).
+///
+/// Destructured exhaustively, and without `..`, on purpose: a field added
+/// upstream must break this build rather than be silently ignored. A new field
+/// that distinguishes two keys would otherwise leave [`same_key`] reporting a
+/// match where there is none — which is how one key's private material ends up
+/// attributed to another. Whoever adds it decides here whether it identifies a
+/// key or, like `disabled_at`, only describes its state.
+fn key_identity(key: &IdentityPublicKey) -> KeyIdentity<'_> {
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
 
-    // Destructured exhaustively, and without `..`, on purpose: a field added
-    // upstream must break this build rather than be silently ignored. A new field
-    // that distinguishes two keys would otherwise leave this reporting a match
-    // where there is none — which is how one key's private material ends up
-    // attributed to another. Whoever adds it decides here whether it identifies a
-    // key or, like `disabled_at`, only describes its state.
-    match (stored, live) {
-        (IdentityPublicKey::V0(stored), IdentityPublicKey::V0(live)) => {
-            let IdentityPublicKeyV0 {
-                id,
-                purpose,
-                security_level,
-                contract_bounds,
-                key_type,
-                read_only,
-                data,
-                // The one field Platform lets move after a key is added: disabling
-                // a key rewrites it, and the stored snapshot predates that.
-                disabled_at: _,
-            } = stored;
-
-            *id == live.id
-                && *purpose == live.purpose
-                && *security_level == live.security_level
-                && *contract_bounds == live.contract_bounds
-                && *key_type == live.key_type
-                && *read_only == live.read_only
-                && *data == live.data
-        }
-        (IdentityPublicKey::V1(stored), IdentityPublicKey::V1(live)) => {
-            let IdentityPublicKeyV1 {
-                id,
-                purpose,
-                security_level,
-                contract_bounds,
-                key_type,
-                read_only,
-                data,
-                // Moves when the key is disabled, as for V0.
-                disabled_at: _,
-                total_budget,
-                expires_at,
-            } = stored;
-
-            *id == live.id
-                && *purpose == live.purpose
-                && *security_level == live.security_level
-                && *contract_bounds == live.contract_bounds
-                && *key_type == live.key_type
-                && *read_only == live.read_only
-                && *data == live.data
-                && *total_budget == live.total_budget
-                && *expires_at == live.expires_at
-        }
-        (IdentityPublicKey::V0(_), IdentityPublicKey::V1(_))
-        | (IdentityPublicKey::V1(_), IdentityPublicKey::V0(_)) => false,
+    match key {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level,
+            contract_bounds,
+            key_type,
+            read_only,
+            data,
+            // Moves when the key is disabled; the stored snapshot predates that.
+            disabled_at: _,
+        }) => KeyIdentity {
+            id: *id,
+            purpose: *purpose,
+            security_level: *security_level,
+            contract_bounds: contract_bounds.as_ref(),
+            key_type: *key_type,
+            read_only: *read_only,
+            data: data.as_slice(),
+            has_budget: false,
+            has_expiry: false,
+        },
+        IdentityPublicKey::V1(IdentityPublicKeyV1 {
+            id,
+            purpose,
+            security_level,
+            contract_bounds,
+            key_type,
+            read_only,
+            data,
+            // Moves when the key is disabled.
+            disabled_at: _,
+            // The amounts move with `IdentityKeyLimitsUpdate`; only whether the
+            // key has each limit is fixed.
+            total_budget,
+            expires_at,
+        }) => KeyIdentity {
+            id: *id,
+            purpose: *purpose,
+            security_level: *security_level,
+            contract_bounds: contract_bounds.as_ref(),
+            key_type: *key_type,
+            read_only: *read_only,
+            data: data.as_slice(),
+            has_budget: total_budget.is_some(),
+            has_expiry: expires_at.is_some(),
+        },
     }
+}
+
+/// The identifying fields of an identity public key, whatever its version.
+#[derive(PartialEq, Eq)]
+struct KeyIdentity<'a> {
+    id: KeyID,
+    purpose: Purpose,
+    security_level: SecurityLevel,
+    contract_bounds:
+        Option<&'a dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds>,
+    key_type: dash_sdk::dpp::identity::KeyType,
+    read_only: bool,
+    data: &'a [u8],
+    has_budget: bool,
+    has_expiry: bool,
 }
 
 /// A `(target, key_id)` map key paired with the raw 32-byte private key the
@@ -716,8 +738,8 @@ impl KeyStorage {
     ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
     ///   never replaced by a derivation path: no protection downgrade, and the
     ///   vault secret stays referenced. Its public key is still refreshed from
-    ///   the rebuild, so an on-chain `disabled_at` is not pinned stale, and a
-    ///   missing wallet path is taken from the rebuild.
+    ///   the rebuild, so an on-chain disable or raised limit is not pinned
+    ///   stale, and a missing wallet path is taken from the rebuild.
     ///
     /// A held stored entry whose public key differs from the rebuild's
     /// (on-chain) key at the same id is a stale local entry, such as a
@@ -762,7 +784,7 @@ impl KeyStorage {
                     continue;
                 }
                 // Same key: keep the held private half, but take the
-                // rebuild's public key (only `disabled_at` can differ) and the
+                // rebuild's public key (only the key's state can differ) and the
                 // wallet path it found for a key imported before the wallet.
                 entry.0.identity_public_key = on_chain.identity_public_key.clone();
                 if entry.0.in_wallet_at_derivation_path.is_none() {
@@ -1346,9 +1368,9 @@ mod tests {
 
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
-    /// `disabled_at` is the one field Platform lets move after a key is added,
-    /// so a key disabled on chain since its private half was saved must still
-    /// match the stored snapshot — otherwise a key the device demonstrably
+    /// `disabled_at` is the one field Platform lets move on a V0 key, so a key
+    /// disabled on chain since its private half was saved must still match the
+    /// stored snapshot — otherwise a key the device demonstrably
     /// holds is reported missing the moment it is retired.
     #[test]
     fn same_key_ignores_a_key_being_disabled() {
@@ -1426,9 +1448,22 @@ mod tests {
         ));
     }
 
-    /// A V1 key disabled since its snapshot was taken is still the same key.
+    /// A V1 key's budget and expiry are raised by `IdentityKeyLimitsUpdate`, so
+    /// a snapshot taken before the raise still names the key.
     #[test]
-    fn same_key_ignores_a_v1_key_being_disabled() {
+    fn same_key_ignores_raised_limits() {
+        let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let stored = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(9_000_000));
+
+        assert!(same_key(&stored, &raised), "raised limits keep the key");
+        assert!(same_key(&raised, &stored), "in either direction");
+    }
+
+    /// A limited key is disabled the same way any other key is, and the state
+    /// it carries is no more identifying for having limits beside it.
+    #[test]
+    fn same_key_ignores_a_limited_key_being_disabled() {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 
         let stored = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
@@ -1440,31 +1475,128 @@ mod tests {
         assert!(same_key(&disabled_since, &stored));
     }
 
-    /// A V1 key carries limits a V0 key cannot, so the two are never the same
-    /// key, and V1 limits are compared strictly — `total_budget` and
-    /// `expires_at` each on their own, so dropping either conjunct fails here.
+    /// Whether a key has a budget or an expiry is fixed when it is added: a
+    /// limit can be raised but never added or removed. A disagreement on the
+    /// presence of a limit is a different key.
     #[test]
-    fn same_key_rejects_a_v1_key_against_v0_or_other_limits() {
+    fn same_key_rejects_a_different_limit_shape() {
+        let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let budget_only = base.clone().with_limits(Some(1_000), None);
+        let expiry_only = base.clone().with_limits(None, Some(1_800_000));
+        let limits_none = base.clone().with_limits(None, None);
+
+        assert!(!same_key(&budget_only, &expiry_only));
+        assert!(
+            !same_key(&budget_only, &limits_none),
+            "a budget alone tells two keys apart"
+        );
+        assert!(
+            !same_key(&expiry_only, &limits_none),
+            "and so does an expiry alone"
+        );
+        assert!(
+            !same_key(&base, &budget_only),
+            "a V0 key never gains a budget"
+        );
+        assert!(!same_key(&expiry_only, &base), "nor an expiry");
+    }
+
+    /// `IdentityKeyLimitsUpdate` raises a V1 key's `total_budget` and moves its
+    /// `expires_at` without changing the key, so a snapshot taken before the
+    /// update still names it, whichever side moved.
+    #[test]
+    fn same_key_ignores_raised_key_limits() {
+        let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let limited = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.clone().with_limits(Some(5_000), Some(1_800_000));
+        let expiring_later = base.clone().with_limits(Some(1_000), Some(2_400_000));
+
+        assert!(
+            same_key(&limited, &raised),
+            "a raised budget is the same key"
+        );
+        assert!(same_key(&raised, &limited));
+        assert!(
+            same_key(&limited, &expiring_later),
+            "a moved expiry is the same key"
+        );
+        assert!(same_key(&expiring_later, &limited));
+    }
+
+    /// A limits update only raises existing limits and preserves the key's
+    /// version, so a V1 key never matches a V0 snapshot.
+    #[test]
+    fn same_key_rejects_a_v1_key_against_a_v0_key() {
         let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
         let limited = base.clone().with_limits(Some(1_000), None);
-        let raised = base.clone().with_limits(Some(5_000), None);
-        // Same budget as `limited`, differing only in when the key expires.
-        let expiring = base.clone().with_limits(Some(1_000), Some(1_800_000));
-        let expiring_later = base.clone().with_limits(Some(1_000), Some(2_400_000));
 
         assert!(!same_key(&base, &limited));
         assert!(!same_key(&limited, &base));
-        assert!(!same_key(&limited, &raised));
+    }
+
+    /// A V1 key's identifying fields still identify it: `read_only` stands for
+    /// the seven, here alongside a raised budget.
+    #[test]
+    fn same_key_rejects_a_v1_disagreement_outside_its_state() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        altered.read_only = !altered.read_only;
 
         assert!(
-            !same_key(&limited, &expiring),
-            "an expiry added since the snapshot is a different key"
+            !same_key(&limited, &IdentityPublicKey::V1(altered)),
+            "a key differing outside its state is not this key"
         );
-        assert!(!same_key(&expiring, &limited));
-        assert!(
-            !same_key(&expiring, &expiring_later),
-            "a moved expiry is a different key, at an identical budget"
-        );
+    }
+
+    /// Upstream writes a V1 key without limits as V0, so the two encodings of
+    /// one key must still compare equal.
+    #[test]
+    fn same_key_treats_a_limitless_v1_key_as_its_v0_form() {
+        let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let limits_none = base.clone().with_limits(None, None);
+
+        assert!(same_key(&base, &limits_none));
+        assert!(same_key(&limits_none, &base));
+    }
+
+    #[test]
+    fn same_key_rejects_a_v1_purpose_mismatch_despite_a_raised_budget() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        altered.purpose = if altered.purpose == Purpose::AUTHENTICATION {
+            Purpose::VOTING
+        } else {
+            Purpose::AUTHENTICATION
+        };
+        let altered = IdentityPublicKey::V1(altered);
+
+        assert!(!same_key(&limited, &altered));
+        assert!(!same_key(&altered, &limited));
+    }
+
+    #[test]
+    fn same_key_rejects_a_v1_data_mismatch_despite_a_raised_budget() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        let mut data = altered.data.to_vec();
+        data[0] ^= 1;
+        altered.data = data.into();
+        let altered = IdentityPublicKey::V1(altered);
+
+        assert!(!same_key(&limited, &altered));
+        assert!(!same_key(&altered, &limited));
     }
 
     /// A storage filing one key under several placements, each with the given
@@ -1841,6 +1973,84 @@ mod tests {
             Some(1_700_000_000),
             "the on-chain disabled_at replaces the stale snapshot"
         );
+    }
+
+    /// Re-entering a key's private half after its limits were raised fills
+    /// the slot its earlier snapshot holds, with the raised public half.
+    #[test]
+    fn a_private_key_entered_after_a_limits_raise_fills_the_keys_own_slot() {
+        let base = IdentityPublicKey::random_key(3, Some(31), PlatformVersion::latest());
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let mut ks = filed_under(
+            &saved,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x01)),
+            )],
+        );
+        let secret = crate::test_support::keys::secret_bytes();
+
+        ks.insert_non_encrypted(
+            (MAIN, 3),
+            (QualifiedIdentityPublicKey::from(raised.clone()), secret),
+        )
+        .expect("a raised limit does not make the slot another key's");
+
+        let (public_key, data) = ks.entry_at(&(MAIN, 3)).expect("key filed");
+        assert!(matches!(data, PrivateKeyData::Clear(bytes) if *bytes == secret));
+        assert_eq!(public_key.identity_public_key, raised);
+    }
+
+    /// A wallet rescan finding a key whose limits were raised since its held
+    /// private half was saved leaves that entry as it is.
+    #[test]
+    fn a_wallet_derived_key_after_a_limits_raise_keeps_the_held_entry() {
+        let base = IdentityPublicKey::random_key(3, Some(31), PlatformVersion::latest());
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let mut ks = filed_under(&saved, &[(MAIN, PrivateKeyData::InVault)]);
+
+        ks.insert_wallet_derived(
+            (MAIN, 3),
+            QualifiedIdentityPublicKey::from(raised),
+            derivation_path(0x01),
+        )
+        .expect("a raised limit does not make the slot another key's");
+
+        let (public_key, data) = ks.entry_at(&(MAIN, 3)).expect("key kept");
+        assert!(matches!(data, PrivateKeyData::InVault));
+        assert_eq!(public_key.identity_public_key, saved);
+    }
+
+    /// A held stored secret whose key's limits were raised since the save
+    /// keeps its private half and takes the rebuild's raised limits.
+    #[test]
+    fn a_held_stored_secret_takes_the_rebuilds_raised_limits() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let pv = PlatformVersion::latest();
+        let base = IdentityPublicKey::random_key(3, Some(31), pv);
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let stored = filed_under(&saved, &[(MAIN, PrivateKeyData::InVault)]);
+        let mut rebuilt = filed_under(
+            &raised,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            )],
+        );
+
+        rebuilt.retain_local_keys_from(stored);
+
+        let (public_key, data) = rebuilt.entry_at(&(MAIN, 3)).expect("key kept");
+        assert!(
+            matches!(data, PrivateKeyData::InVault),
+            "the held private half survives"
+        );
+        assert_eq!(public_key.identity_public_key, raised);
+        assert_eq!(public_key.identity_public_key.total_budget(), Some(5_000));
     }
 
     /// A stored derivation path never displaces a private half the rebuild

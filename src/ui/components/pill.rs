@@ -109,7 +109,7 @@ pub fn accent_pill_button(
 }
 
 /// A pill's fill (12% of `accent`) and ring color.
-fn pill_colors(accent: Color32) -> (Color32, Color32) {
+pub(crate) fn pill_colors(accent: Color32) -> (Color32, Color32) {
     let fill =
         Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (0.12 * 255.0) as u8);
     let ring = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 180);

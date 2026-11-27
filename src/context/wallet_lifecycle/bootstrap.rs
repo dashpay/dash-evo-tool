@@ -2,7 +2,7 @@
 //! managed identities, warming auth-key caches, and queuing identity discovery.
 
 use super::*;
-use crate::model::identity_discovery::DiscoveryIntent;
+use crate::model::identity_discovery::{DiscoveryIntent, DiscoveryReadiness};
 
 /// How often a queued wallet identity discovery re-checks whether the
 /// masternode list has synced.
@@ -642,10 +642,16 @@ impl AppContext {
                         )
                         .await
                     {
-                        tracing::warn!(
-                            %error,
-                            "Automatic identity discovery failed for a wallet"
-                        );
+                        if matches!(error, TaskError::AuthKeyUnlockRequired) {
+                            tracing::info!(
+                                "Automatic identity discovery skipped a wallet that must be unlocked first"
+                            );
+                        } else {
+                            tracing::warn!(
+                                %error,
+                                "Automatic identity discovery failed for a wallet"
+                            );
+                        }
                     }
                 });
         }
@@ -681,8 +687,10 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
     ) {
-        if !self.connection_status.masternodes_ready() {
+        let readiness = self.wallet_identity_discovery_readiness();
+        if readiness != DiscoveryReadiness::Ready {
             tracing::debug!(
+                ?readiness,
                 "Platform not ready yet; deferring unlocked-wallet identity discovery to the all-wallets sweep"
             );
             return;
@@ -766,6 +774,12 @@ impl AppContext {
         let status = self.migration_status();
         let total = wallets.len() as u32;
         for (index, wallet) in wallets.iter().enumerate() {
+            // Closing the app stops the pass between wallets, never inside
+            // one: a wallet's bootstrap writes upstream registration and key
+            // bindings, and the next start runs the whole pass again.
+            if self.subtasks.cancellation_token.is_cancelled() {
+                break;
+            }
             status.set_wallet_load(Some((index as u32 + 1, total)));
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }

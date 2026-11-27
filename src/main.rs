@@ -11,6 +11,10 @@ use crate::logging::{
     install_panic_hook, report_startup_failure,
 };
 
+/// How long the process may outlive the closed window for blocking work that
+/// is still running. See the call site in [`main`].
+const POST_CLOSE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn main() -> ExitCode {
     // First, so a panic in environment setup, before the logger exists, does
     // not reach the default hook, which prints the formatted panic message.
@@ -19,7 +23,8 @@ fn main() -> ExitCode {
     // below, where the logger's `Once` guard makes the repeat a no-op. A
     // failure here is shown in the startup failure window and named on the
     // terminal; the I/O error carries no secrets.
-    let environment = prepare_environment();
+    let environment = prepare_environment()
+        .map_err(crate::backend_task::error::TaskError::from_prepare_environment_error);
     // Redirect stderr into det.log so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio
@@ -61,12 +66,17 @@ fn main() -> ExitCode {
     // still reported if eframe fails before the app is created.
     let outcome = crate::boot::StartupOutcome::default();
     let result = runtime.block_on(start(&mut startup, outcome.clone()));
+    // Dropping the runtime would wait without limit for blocking work the app's
+    // own shutdown already gave up on, leaving a process with no window that
+    // can still hold the secret vault's lock and block a relaunch. Anything
+    // still running here has overrun its shutdown budget, and SQLite rolls
+    // back a transaction that process exit cuts short.
+    runtime.shutdown_timeout(POST_CLOSE_SHUTDOWN_TIMEOUT);
     if let Err(e) = &result {
         tracing::error!(error = ?e, "Dash Evo Tool failed to start");
-        // Free the vault and database first: the dialog blocks, and a restart
-        // while it is up must not find them held.
+        // Free the vault and database before the dialog below: it blocks, and
+        // a restart while it is up must not find them held.
         startup.release();
-        crate::boot::show_window_failure_dialog();
     }
     if result.is_err() || outcome.failed() {
         // Notice to the real terminal, independent of tracing (fd 2 is
@@ -84,6 +94,14 @@ fn main() -> ExitCode {
             causes.push(error);
         }
         report_startup_failure(&causes);
+        // Only now: the dialog points the user to the log, which holds the
+        // causes once they are reported. It explains a window that never
+        // opened, so an eframe error after the app was built gets none.
+        if let Err(error) = &result
+            && !outcome.window_opened()
+        {
+            crate::boot::show_window_failure_dialog(error);
+        }
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

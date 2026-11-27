@@ -252,20 +252,22 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable or insecure data folder, or
-/// a compatibility upgrade that fails the same way on every attempt). These
+/// newer/incompatible app build, an unwritable data folder, or data only an
+/// earlier release can upgrade). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
 /// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    match error {
+    matches!(
+        error,
         TaskError::WalletDataTooNew { .. }
-        | TaskError::WalletDataIncompatible { .. }
-        | TaskError::WalletStorageAccessDenied { .. }
-        | TaskError::WalletDataFolderInsecure { .. } => true,
-        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
-        _ => false,
-    }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletStorageAccessDenied { .. }
+            | TaskError::WalletStorageLockAccessDenied { .. }
+            | TaskError::SecretStoreAccessDenied { .. }
+            | TaskError::WalletDataNeedsUpgradeRelease { .. }
+            | TaskError::AppDataNeedsUpgradeRelease { .. }
+    )
 }
 
 /// Information about fees for a platform state transition.
@@ -1296,7 +1298,9 @@ pub enum BackendTaskSuccessResult {
     ClaimedTokens(FeeResult),
     /// The once-per-identity claim note of this pair was forgotten.
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
-    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
+    /// The config item that was updated, the fee, and whether the update took
+    /// effect or was recorded as a group proposal.
+    UpdatedTokenConfig(String, FeeResult, crate::model::token::ConfigUpdateOutcome),
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
     /// running, so no second pass was started.
@@ -1337,7 +1341,11 @@ pub enum BackendTaskSuccessResult {
         cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
-    LoadedIdentity(QualifiedIdentity),
+    LoadedIdentity {
+        identity: QualifiedIdentity,
+        /// What the requester needs to know about a save that landed.
+        warning: Option<error::IdentitySaveWarning>,
+    },
     /// This identity's keys were sealed under a password (opt-in).
     /// The `count` keys newly sealed (0 when the task was an idempotent re-run
     /// over an already-protected identity).
@@ -1666,7 +1674,7 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build, or an insecure data folder) is terminal — retrying won't
+            // build, or an unwritable data folder) is terminal — retrying won't
             // help and the generic "deferred" banner is misleading. Surface
             // those variants so the user sees the actionable message; every
             // other init error is a transient deferral the cold-boot bridge
@@ -1806,8 +1814,20 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        // Closing the app cancels the token, which this process does only at
+        // exit. The switch then stops between its steps instead of holding the
+        // exit for the task manager's whole shutdown budget: the test hold
+        // point and the wallet backend build stop at their next await, and a
+        // backend that was built is torn down through the upstream shutdown,
+        // never a plain drop.
+        let cancellation_token = self.subtasks.cancellation_token.clone();
+
         #[cfg(feature = "testing")]
-        drop(self.test_network_switch_gate.lock().await);
+        tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => return Err(TaskError::TaskManagerShuttingDown),
+            gate = self.test_network_switch_gate.lock() => drop(gate),
+        }
 
         // Create a new AppContext for the target network, reusing shared
         // resources (db, subtasks, connection_status) from the current context.
@@ -1837,16 +1857,35 @@ impl AppContext {
                 user_role,
             )
         })
-        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        .map_err(|source| TaskError::NetworkContextCreationFailed {
+            network,
+            source: Box::new(source),
+        })?;
+        // Never shown: shutdown drains task results without displaying them.
+        if cancellation_token.is_cancelled() {
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
         new_ctx.install_secret_prompt(self.secret_prompt());
         // The switch runs on the frame loop of the context it leaves; the new
         // context reports to the same one, and its backend is built on it
         // below, before anyone else is handed the context.
         new_ctx.install_frame_loop(sender.clone());
 
-        let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+        // Stops on its own when the app closes, tearing down a backend it had
+        // not finished building.
+        let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
+        if cancellation_token.is_cancelled() {
+            if let Ok(backend) = new_ctx.wallet_backend() {
+                backend.shutdown_bounded().await;
+            }
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
+
+        let backend_wired = match wiring {
             Ok(()) => {
+                // Registering the context is the frame loop's, whoever requested the switch.
                 if let Err(error) = sender
+                    .unfiltered()
                     .send(TaskResult::unattributed_success(
                         BackendTaskSuccessResult::NetworkContextRegistered {
                             network,
@@ -1873,7 +1912,6 @@ impl AppContext {
             }
         };
 
-        let cancellation_token = self.subtasks.cancellation_token.clone();
         let mut spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
             tokio::select! {
                 biased;
@@ -1901,8 +1939,7 @@ impl AppContext {
         if cancellation_token.is_cancelled()
             && let Ok(backend) = new_ctx.wallet_backend()
         {
-            backend.forget_all_secrets();
-            backend.shutdown().await;
+            backend.shutdown_bounded().await;
             spv_started = false;
         }
         Ok(BackendTaskSuccessResult::NetworkContextCreated {
@@ -2064,6 +2101,64 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::context::feature_gate::FeatureGate;
+
+    /// A switch requested through the MCP server reports through a sender
+    /// that passes only cache changes. The context it creates is still
+    /// registered with the frame loop, and that context's frame loop and
+    /// wallet backend pass every report.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_switch_through_a_filtered_sender_installs_the_frame_loop_unfiltered() {
+        use crate::context::test_support::test_app_context;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let filtered = SenderAsync::new(tx, context.egui_ctx().clone())
+            .keeping_only(|report| matches!(report, TaskResult::CacheUpdated(_)));
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                filtered,
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: new_context,
+            ..
+        } = completed
+        else {
+            panic!("expected the created network context");
+        };
+        let is_registration = |report: &TaskResult| {
+            matches!(report, TaskResult::Success { result, .. }
+                if matches!(**result, BackendTaskSuccessResult::NetworkContextRegistered { .. }))
+        };
+        let mut drain = || std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(drain().iter().any(is_registration));
+
+        let registration = || {
+            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextRegistered {
+                network: Network::Mainnet,
+                context: Arc::clone(&new_context),
+            })
+        };
+        new_context
+            .frame_loop_sender()
+            .send(registration())
+            .await
+            .expect("frame loop");
+        let backend = new_context.wallet_backend().expect("wired backend");
+        backend
+            .frame_loop_for_test()
+            .send(registration())
+            .await
+            .expect("backend frame loop");
+        assert_eq!(drain().iter().filter(|r| is_registration(r)).count(), 2);
+        backend.shutdown().await;
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_keeps_registration_queued_after_completion() {
@@ -2256,6 +2351,14 @@ mod tests {
         assert!(
             !secret_access.is_session_cached(&scope),
             "cancellation teardown clears secrets on the registered backend"
+        );
+        assert_eq!(
+            completed_context
+                .test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "cancellation teardown runs the bounded upstream shutdown"
         );
     }
 
@@ -2843,13 +2946,13 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
-        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+        use crate::sdk_wrapper::MIN_PLATFORM_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         crate::context::test_support::prove_protocol_version(
             &ctx,
-            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+            MIN_PLATFORM_VERSION.protocol_version,
         );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -2884,9 +2987,8 @@ mod tests {
     /// its stored balance is read back after the task; reads name nobody.
     #[test]
     fn paid_tasks_name_the_identity_that_pays_for_them() {
-        use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
         use crate::backend_task::tokens::TokenContractParams;
-        use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+        use crate::model::dashpay::{ContactInfoUpdate, ContactQr, UnreadableContactInfoPolicy};
         use crate::model::qualified_contract::QualifiedContract;
         use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
         use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -3147,13 +3249,16 @@ mod tests {
             dashpay(DashPayTask::SendContactRequestWithProof {
                 identity: payer.clone(),
                 signing_key: key.clone(),
-                to_identity_id: other,
-                account_label: None,
-                qr_auto_accept: AutoAcceptProofData {
-                    identity_id: other,
-                    proof_key: [0; 32],
-                    account_reference: 0,
-                    expires_at: 0,
+                qr: {
+                    use platform_wallet::wallet::identity::crypto::auto_accept::{
+                        encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+                    };
+                    let key = crate::test_support::keys::secret_key();
+                    let uri = encode_dashpay_contact_uri(
+                        "bob",
+                        &encode_auto_accept_key_blob(&key, u32::MAX),
+                    );
+                    ContactQr::parse(&uri, 0).expect("a contact QR code")
                 },
             }),
             dashpay(DashPayTask::AcceptContactRequest {
@@ -3577,7 +3682,7 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build, or an insecure data folder) are terminal; every other init
+    /// build, or an unwritable data folder) are terminal; every other init
     /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
@@ -3596,17 +3701,6 @@ mod tests {
             }
         ));
         assert!(is_terminal_storage_open_error(
-            &TaskError::WalletDataFolderInsecure {
-                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                    ancestor: std::path::PathBuf::from("/shared"),
-                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                        mode: 0o777,
-                    },
-                }
-                .into(),
-            }
-        ));
-        assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
                     std::io::ErrorKind::PermissionDenied,
@@ -3614,17 +3708,33 @@ mod tests {
                 .into(),
             }
         ));
-        use crate::wallet_backend::platform_compatibility::UpgradeError;
-        assert!(
-            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::Verification,
-            }),
-            "a deterministic upgrade failure must surface instead of re-running"
-        );
-        // A user-clearable upgrade failure keeps offering a retry.
-        assert!(!is_terminal_storage_open_error(
-            &TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
+        // A data folder the app may not open the wallet lock or the seed
+        // vault in fails the same way on every retry.
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageLockAccessDenied {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::SecretStoreAccessDenied {
+                source: Box::new(platform_wallet_storage::secrets::SecretStoreError::Io(
+                    platform_wallet_storage::secrets::IoError {
+                        path: None,
+                        source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    },
+                )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataNeedsUpgradeRelease {
+                networks: crate::backend_task::error::UpgradeReleaseNetworks(vec![
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                ]),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::AppDataNeedsUpgradeRelease {
+                database: std::path::PathBuf::from("det-app.sqlite"),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

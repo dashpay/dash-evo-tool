@@ -690,6 +690,40 @@ fn a_retryable_failure_offers_try_again_and_close() {
     });
 }
 
+#[test]
+fn shielded_store_startup_failure_shows_recovery_advice_and_both_actions() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let data_dir = std::env::var_os("DASH_EVO_DATA_DIR").expect("the isolated data dir");
+        let path = std::path::PathBuf::from(data_dir).join("det-mainnet-shielded.sqlite");
+        std::fs::write(&path, b"not a SQLite database").expect("write corrupt shielded store");
+
+        let mut harness = Harness::builder().build_eframe(|ctx| {
+            AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while harness.query_by_label("Try again").is_none() {
+            assert!(Instant::now() < deadline, "startup did not offer a retry");
+            harness.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let path = path.display().to_string();
+        assert!(harness.query_by_label_contains(path.as_str()).is_some());
+        for step in [
+            "every shielded payment, transfer, unshield and withdrawal",
+            "matching files ending in -wal, -shm, or -journal",
+            "Delete the file and those matching files manually",
+        ] {
+            assert!(harness.query_by_label_contains(step).is_some(), "{step}");
+        }
+        assert!(harness.query_by_label("Close the app").is_some());
+    });
+}
+
 /// The retry button's *behaviour*, not its label: clicking "Try again" must
 /// clear the stale terminal status and dispatch a real preparation.
 ///
@@ -1374,6 +1408,49 @@ fn a_connect_during_a_pending_switch_is_refused() {
         assert_chain_sync_stays_off(
             &mut harness,
             "on the destination: the refused Connect did not lift the Disconnect",
+        );
+    });
+}
+
+/// Closing the app while a first-visit switch is still building the new
+/// network's context stops the switch instead of waiting for it. The exit
+/// otherwise sat out the whole background-task budget (two 10 s phases)
+/// before the window could close.
+///
+/// Drives the exit through `on_exit`, the blocking fallback; the window-close
+/// path drains the same task manager.
+#[test]
+fn closing_the_app_during_a_pending_switch_does_not_wait_for_it() {
+    // Well under one 10 s shutdown phase, so a switch that ignores the exit
+    // still fails, with headroom for a slow CI runner.
+    const EXIT_BOUND: Duration = Duration::from_secs(5);
+
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+
+        // Pin the switch before it builds the new network's context: it stays
+        // in flight for as long as the guard lives.
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        harness.step();
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            first,
+            "precondition: the switch is still pending",
+        );
+
+        let started = Instant::now();
+        eframe::App::on_exit(harness.state_mut());
+        let exit_took = started.elapsed();
+        drop(pending_switch);
+
+        assert!(
+            exit_took < EXIT_BOUND,
+            "closing the app waited {exit_took:?} for the pending switch (bound {EXIT_BOUND:?})",
         );
     });
 }

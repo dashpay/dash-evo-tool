@@ -99,6 +99,9 @@ pub struct MasternodeIdentityLoadOutput {
     /// any.
     payout_address: Option<String>,
     dpns_names: Vec<String>,
+    /// Set when the identity was saved but the wallet store could not
+    /// confirm it as belonging to no wallet; says what to do next.
+    warning: Option<String>,
 }
 
 impl ToolBase for MasternodeIdentityLoad {
@@ -198,7 +201,11 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             .await
             .map_err(McpToolError::TaskFailed)?;
 
-        let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+        let BackendTaskSuccessResult::LoadedIdentity {
+            identity: qi,
+            warning,
+        } = result
+        else {
             return Err(McpToolError::Internal(format!(
                 "Unexpected task result: {result:?}"
             )));
@@ -239,6 +246,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
                 .masternode_payout_address(ctx.network())
                 .map(|addr| addr.to_string()),
             dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
+            warning: warning.map(|warning| warning.to_string()),
         })
     }
 }

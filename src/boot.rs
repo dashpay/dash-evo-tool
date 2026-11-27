@@ -20,6 +20,7 @@
 //! keyless open and surfaces the typed error instead of popping a dialog.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
@@ -28,7 +29,7 @@ use platform_wallet_storage::secrets::{SecretStore, SecretString};
 use crate::app::AppState;
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::model::error_report::StartupFailure;
+use crate::model::error_report::{StartupFailure, WindowFailureKind, window_failure_text};
 use crate::ui::components::passphrase_modal::{
     PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
@@ -77,6 +78,15 @@ fn catch_boot_panic<T>(build: impl FnOnce() -> Result<T, BootError>) -> Result<T
 /// `Once` guard makes the second call a no-op, so this stays the single place
 /// the sequence is written.
 pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
+    let data_dir = ensure_data_folder()?;
+    // Logging first, so a failure to write the settings file is logged too.
+    crate::logging::initialize_logger();
+    ensure_settings_file(&data_dir)?;
+    Ok(data_dir)
+}
+
+/// Locate the app data folder and create it if it is missing.
+pub(crate) fn ensure_data_folder() -> Result<PathBuf, PrepareEnvironmentError> {
     use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists};
     let data_dir =
         app_user_data_dir_path().map_err(|source| PrepareEnvironmentError::Locate { source })?;
@@ -86,9 +96,6 @@ pub fn prepare_environment() -> Result<PathBuf, PrepareEnvironmentError> {
             source,
         }
     })?;
-    // Logging first, so a failure to write the settings file is logged too.
-    crate::logging::initialize_logger();
-    ensure_settings_file(&data_dir)?;
     Ok(data_dir)
 }
 
@@ -352,9 +359,11 @@ impl eframe::App for BootApp {
 /// Tell the user in a system dialog that the app window could not be opened,
 /// so a launch without a terminal does not end silently. Best effort: without
 /// a dialog service (e.g. no zenity or kdialog on Linux) only the log remains.
-pub fn show_window_failure_dialog() {
-    let text =
-        crate::model::error_report::window_failure_text(crate::logging::log_file_path().as_deref());
+pub fn show_window_failure_dialog(error: &eframe::Error) {
+    let text = window_failure_text(
+        window_failure_kind(error),
+        crate::logging::log_file_path().as_deref(),
+    );
     if let Err(error) = native_dialog::DialogBuilder::message()
         .set_level(native_dialog::MessageLevel::Error)
         .set_title(crate::ui::components::startup_error_dialog::STARTUP_ERROR_TITLE)
@@ -366,6 +375,18 @@ pub fn show_window_failure_dialog() {
             ?error,
             "Could not show the system dialog about the window failure"
         );
+    }
+}
+
+/// Which layer kept eframe from opening the window, so the dialog gives
+/// advice that fits: winit talks to the desktop, wgpu to the graphics driver.
+fn window_failure_kind(error: &eframe::Error) -> WindowFailureKind {
+    match error {
+        eframe::Error::Winit(_) | eframe::Error::WinitEventLoop(_) => {
+            WindowFailureKind::DesktopSession
+        }
+        eframe::Error::Wgpu(_) => WindowFailureKind::Graphics,
+        eframe::Error::AppCreation(_) => WindowFailureKind::Other,
     }
 }
 
@@ -514,6 +535,7 @@ impl Startup {
     /// Build the boot app. Successful steps are handed over and the startup
     /// becomes [`Self::Spent`]; a failure stays here for the terminal notice.
     pub fn boot(&mut self, ctx: egui::Context, outcome: &StartupOutcome) -> BootApp {
+        outcome.window_opened.store(true, Ordering::Release);
         crate::ui::primary_selection_guard::PrimarySelectionGuard::install(&ctx);
         match std::mem::replace(self, Self::Spent) {
             Self::Prepared {
@@ -539,9 +561,16 @@ impl Startup {
 pub struct StartupOutcome {
     shown: Arc<Mutex<Option<FailureNotice>>>,
     held_vault: Arc<Mutex<Option<Arc<SecretStore>>>>,
+    window_opened: Arc<AtomicBool>,
 }
 
 impl StartupOutcome {
+    /// Whether eframe opened the window and built the app. An eframe error
+    /// after that is not a failure to open the window.
+    pub fn window_opened(&self) -> bool {
+        self.window_opened.load(Ordering::Acquire)
+    }
+
     fn mark_failed(&self, failure: &StartupFailure) {
         *self.shown.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(FailureNotice(failure.clone()));
@@ -712,6 +741,11 @@ mod tests {
     use super::*;
     use crate::model::error_report::GENERIC_STARTUP_FAILURE;
     use crate::wallet_backend::single_key::open_secret_store;
+
+    /// A passphrase generated at run time for vaults a test only needs sealed.
+    fn throwaway_passphrase() -> SecretString {
+        SecretString::new(hex::encode(crate::test_support::keys::secret_bytes()))
+    }
 
     /// A non-passphrase failure while unlocking shows the dialog instead of
     /// closing the window.
@@ -940,7 +974,7 @@ mod tests {
     }
 
     fn passphrase_vault(dir: &std::path::Path) {
-        AppContext::open_secret_store_with_passphrase(dir, SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(dir, throwaway_passphrase())
             .expect("create passphrase vault");
     }
 
@@ -1058,6 +1092,17 @@ mod tests {
         assert!(!startup.persist_window());
     }
 
+    /// A graphics failure and an app-creation failure each get their own kind
+    /// of advice, not one fixed text for every window failure.
+    #[test]
+    fn window_failure_kind_follows_the_failing_layer() {
+        let graphics = eframe::Error::Wgpu(eframe::egui_wgpu::WgpuError::NoSurfaceFormatsAvailable);
+        assert_eq!(window_failure_kind(&graphics), WindowFailureKind::Graphics);
+
+        let creation = eframe::Error::AppCreation(Box::new(std::io::Error::other("x")));
+        assert_eq!(window_failure_kind(&creation), WindowFailureKind::Other);
+    }
+
     /// Releasing a successful preparation frees the vault for another launch,
     /// so a restart while the window failure dialog is up is not refused.
     #[test]
@@ -1116,11 +1161,13 @@ mod tests {
     #[test]
     fn spent_startup_does_not_prepare_again() {
         let outcome = StartupOutcome::default();
+        assert!(!outcome.window_opened());
         assert!(matches!(
             Startup::Spent.boot(egui::Context::default(), &outcome),
             BootApp::Failed(_)
         ));
         assert!(outcome.failed());
+        assert!(outcome.window_opened());
     }
 
     /// A normal keyless vault classifies as ready — the happy path never gates.
@@ -1143,7 +1190,7 @@ mod tests {
     #[test]
     fn classify_open_unlock_for_passphrase_vault() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), throwaway_passphrase())
             .expect("create passphrase vault");
 
         let decision = classify_open(tmp.path()).expect("classify");
@@ -1178,7 +1225,7 @@ mod tests {
     fn keyless_open_of_passphrase_vault_is_the_gated_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
-        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), throwaway_passphrase())
             .expect("create passphrase vault");
 
         let err = open_secret_store(&vault).expect_err("keyless open must fail");

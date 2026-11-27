@@ -3041,20 +3041,6 @@ pub enum TaskError {
     )]
     IdentityKeyNotFound { key_id: KeyID },
 
-    /// Key limits were requested on a network whose protocol version does not
-    /// support them yet.
-    #[error(
-        "This network does not support spending limits or expiry for keys yet. Add the key without limits, or try again after the network upgrades."
-    )]
-    KeyLimitsNotSupported,
-
-    /// Remaining key budgets were requested from a network whose protocol
-    /// version does not track them yet.
-    #[error(
-        "This network does not track key spending limits yet. Try again after the network upgrades."
-    )]
-    KeyRemainingBudgetsNotSupported,
-
     /// No key this device holds may sign a key limits update: that takes a
     /// MASTER key, or a CRITICAL authentication key with no limits and no
     /// contract bounds.

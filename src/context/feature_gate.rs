@@ -1,21 +1,5 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
-use dash_sdk::dpp::version::feature_initial_protocol_versions::IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION;
-
-/// Whether the protocol version the connected network has proven is one this
-/// build defines and is at least `activation`.
-///
-/// Every capability reads the version through this, so it fails closed both
-/// before the network proves a version and for a version newer than any this
-/// build knows ([`dash_sdk::ProtocolVersionInfo::newer_protocol_available`]):
-/// this build cannot tell what an unknown version's rules allow.
-fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
-    let info = ctx.protocol_version_info();
-    !info.newer_protocol_available
-        && info
-            .verified_version
-            .is_some_and(|version| version >= activation)
-}
 
 /// A feature that has not stabilised yet (the stability axis). Distinct from
 /// role: when such a feature stabilises, its check is removed and it unlocks
@@ -60,7 +44,6 @@ impl Check {
 }
 
 /// Named feature gate. Role and experimental checks must all pass.
-/// Identity key limits additionally require a proven network capability.
 ///
 /// Adding a new gate:
 /// 1. Add a variant here
@@ -97,14 +80,10 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
-    /// Adding a key with a budget or an expiry, and raising those limits.
-    /// Offered only where the connected network accepts them.
-    IdentityKeyLimits,
 }
 
 impl FeatureGate {
     /// Role and experimental checks that must all pass for this feature.
-    /// Network capability checks are evaluated separately in `is_available`.
     fn checks(self) -> &'static [Check] {
         match self {
             FeatureGate::Shielded => &[],
@@ -115,20 +94,12 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
-            FeatureGate::IdentityKeyLimits => &[],
         }
     }
 
     /// Evaluate whether this feature is available in the current context.
     pub fn is_available(self, ctx: &AppContext) -> bool {
-        let capability_met = match self {
-            FeatureGate::IdentityKeyLimits => known_protocol_version_at_least(
-                ctx,
-                IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION,
-            ),
-            _ => true,
-        };
-        capability_met && self.checks().iter().all(|c| c.is_met(ctx))
+        self.checks().iter().all(|c| c.is_met(ctx))
     }
 
     /// The first role or experimental check that fails, if any.
@@ -140,7 +111,7 @@ impl FeatureGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::test_support::{prove_protocol_version, test_app_context};
+    use crate::context::test_support::test_app_context;
     use std::sync::Arc;
 
     const ROLES: [UserRole; 3] = [UserRole::Everyday, UserRole::Power, UserRole::Developer];
@@ -227,52 +198,6 @@ mod tests {
                 role.at_least(UserRole::Power)
             );
             assert!(FeatureGate::Shielded.is_available(&ctx));
-        }
-    }
-
-    /// Protocol version 14 features stay closed below version 14 and before
-    /// the network's version is known, whatever the role.
-    #[test]
-    fn protocol_v14_gates_follow_the_connected_version() {
-        // One entry per protocol version 14 gate this build offers.
-        let gates = [FeatureGate::IdentityKeyLimits];
-        for role in ROLES {
-            for gate in gates {
-                // A proven version only rises, so each gate gets a fresh context.
-                let (_tmp, ctx) = ctx_with_role(role);
-                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-                prove_protocol_version(&ctx, 13);
-                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-                prove_protocol_version(&ctx, 14);
-                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
-            }
-        }
-    }
-
-    /// A protocol version this build does not define closes every protocol
-    /// capability: nothing here knows that version's rules. The newest
-    /// version this build defines keeps them open.
-    #[test]
-    fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
-        use dash_sdk::dpp::version::LATEST_VERSION;
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [FeatureGate::IdentityKeyLimits];
-
-        prove_protocol_version(&ctx, LATEST_VERSION);
-        for capability in capabilities {
-            assert!(
-                capability.is_available(&ctx),
-                "{capability:?} on protocol {LATEST_VERSION}"
-            );
-        }
-
-        prove_protocol_version(&ctx, LATEST_VERSION + 1);
-        for capability in capabilities {
-            assert!(
-                !capability.is_available(&ctx),
-                "{capability:?} on unknown protocol {}",
-                LATEST_VERSION + 1
-            );
         }
     }
 }

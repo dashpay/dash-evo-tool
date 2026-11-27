@@ -3,7 +3,6 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_limits::{
@@ -510,24 +509,13 @@ impl AddKeyScreen {
         if !self.limits_offered() {
             return;
         }
-        let available = FeatureGate::IdentityKeyLimits.is_available(&self.app_context);
-        let unavailable_hint =
-            "Key limits need a network that supports them. Connect to such a network to use them.";
 
         ui.label("Spending Limit:");
         ui.horizontal(|ui| {
-            let checkbox = ui.add_enabled(
-                available,
-                egui::Checkbox::new(&mut self.enable_budget, ""),
+            ui.checkbox(&mut self.enable_budget, "").on_hover_text(
+                "The most this key can ever spend in total. Once used up, the key can no longer sign.",
             );
-            if available {
-                checkbox.on_hover_text(
-                    "The most this key can ever spend in total. Once used up, the key can no longer sign.",
-                );
-            } else {
-                checkbox.on_disabled_hover_text(unavailable_hint);
-            }
-            if available && self.enable_budget {
+            if self.enable_budget {
                 let input = self.budget_input.get_or_insert_with(|| {
                     AmountInput::new(Amount::new_dash(0.0)).with_hint_text("0.1")
                 });
@@ -539,14 +527,9 @@ impl AddKeyScreen {
 
         ui.label("Expires After (days):");
         ui.horizontal(|ui| {
-            let checkbox =
-                ui.add_enabled(available, egui::Checkbox::new(&mut self.enable_expiry, ""));
-            if available {
-                checkbox.on_hover_text("After this many days the key can no longer sign.");
-            } else {
-                checkbox.on_disabled_hover_text(unavailable_hint);
-            }
-            if available && self.enable_expiry {
+            ui.checkbox(&mut self.enable_expiry, "")
+                .on_hover_text("After this many days the key can no longer sign.");
+            if self.enable_expiry {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.validity_days_input)
                         .hint_text("30")
@@ -569,11 +552,6 @@ impl AddKeyScreen {
             ui.label("");
             ui.colored_label(DashColors::VALIDATION_WARNING, error);
             ui.end_row();
-        }
-
-        if !available {
-            self.enable_budget = false;
-            self.enable_expiry = false;
         }
     }
 
@@ -2185,6 +2163,36 @@ mod derived_key_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limit_fields_stay_available_before_protocol_verification() {
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        assert_eq!(context.protocol_version_info().verified_version, None);
+        let identity = crate::context::test_support::bare_user_identity(
+            dash_sdk::platform::Identifier::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+        let mut screen = AddKeyScreen::new(identity, &context);
+        screen.purpose = Purpose::AUTHENTICATION;
+        screen.security_level = SecurityLevel::HIGH;
+        screen.enable_budget = true;
+        screen.enable_expiry = true;
+        screen.validity_days_input = "30".to_string();
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                egui::Grid::new("limits").show(ui, |ui| screen.render_limits_rows(ui));
+            },
+            screen,
+        );
+        harness.run();
+        assert!(harness.state().enable_budget);
+        assert!(harness.state().enable_expiry);
+        assert!(harness.query_by_label("Spending Limit:").is_some());
+        assert!(harness.query_by_label("Expires After (days):").is_some());
+    }
 
     /// Regression: a mistyped number of days surfaced as a global error banner
     /// that put the whole screen into its error state, instead of a note

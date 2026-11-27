@@ -860,9 +860,10 @@ As a user, I want to remove an identity from this device from the identity's own
 As a user handing a key to an app or a helper, I want to cap how much that key can ever spend and when it stops working, so that a leaked or forgotten key can do limited damage.
 
 - The Add Key screen offers "Spending Limit" and "Expires After (days)" for authentication keys below the master level.
-- On a network that does not support key limits yet, both options are shown disabled with an explanation.
+- Spending limits and expiry are available before the network version is verified, like other features supported by the app's minimum Platform version.
 - A zero limit, zero days, or an expiry too far in the future is refused before anything is sent.
 - The Key Info screen shows the limit with how much is left of it, and the expiry date; an expired or used-up key is marked.
+- If the remaining budget cannot be read, the budget row asks the user to refresh; the passive read does not raise a global error banner.
 
 ### IDN-023: Raise a key's spending limit or extend its expiry [Implemented]
 **Persona:** Priya, Jordan

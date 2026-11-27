@@ -39,7 +39,7 @@ impl DomainFeedback for IdentityFeedback {
     ) -> bool {
         finish_top_up(feedback.ctx, context, false, true);
         clear_profile_saving_banner_after_error(feedback.ctx, context);
-        false
+        context.key_remaining_budgets_identity().is_some()
     }
 }
 

@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_limits::{
     KeyLimitsError, KeyLimitsRaise, ReviewedSignerUnusable, reviewed_key_limits_signer,
@@ -40,11 +39,6 @@ impl AppContext {
         identity_id: Identifier,
         key_ids: Vec<KeyID>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // A network below protocol version 14 answers this query on no node,
-        // so a request would exhaust the SDK's address pool.
-        if !FeatureGate::IdentityKeyLimits.is_available(self) {
-            return Err(TaskError::KeyRemainingBudgetsNotSupported);
-        }
         if key_ids.is_empty() {
             return Ok(BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
                 identity_id,
@@ -84,9 +78,6 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         raise: KeyLimitsRaise,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        if !FeatureGate::IdentityKeyLimits.is_available(self) {
-            return Err(TaskError::KeyLimitsNotSupported);
-        }
         let identity_id = qualified_identity.identity.id();
         let key_id = raise.key_id;
         let identity = Identity::fetch_by_identifier(sdk, identity_id)
@@ -251,9 +242,6 @@ mod tests {
         ));
     }
 
-    /// Protocol versions below 14: not known yet (0), and mainnet's 13.
-    const PRE_V14_PROTOCOL_VERSIONS: [u32; 2] = [0, 13];
-
     /// A raise the network accepted stores the rewritten key and the balance
     /// read after it, so the stored balance reflects the update's fee.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -392,53 +380,43 @@ mod tests {
         );
     }
 
-    /// Before protocol version 14 is confirmed, no limits update is built or
-    /// broadcast: an older network cannot decode it.
     #[tokio::test]
-    async fn raising_limits_is_refused_until_the_network_supports_them() {
+    async fn raising_limits_reaches_platform_before_protocol_verification() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = Sdk::new_mock();
-
-        for version in PRE_V14_PROTOCOL_VERSIONS {
-            crate::context::test_support::prove_protocol_version(&ctx, version);
-            let raise = KeyLimitsRaise {
-                key_id: 1,
-                seen_total_budget: Some(1),
-                seen_expires_at: None,
-                total_budget: Some(2),
-                expires_at: None,
-                signing_key_id: 0,
-            };
-            let result = ctx.raise_key_limits(&sdk, user_identity(), raise).await;
-
-            assert!(
-                matches!(result, Err(TaskError::KeyLimitsNotSupported)),
-                "protocol {version}: got {result:?}"
-            );
-        }
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
+        let identity = user_identity();
+        let identity_id = identity.identity.id();
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(identity_id, None::<Identity>)
+            .await
+            .unwrap();
+        let raise = KeyLimitsRaise {
+            key_id: 1,
+            seen_total_budget: Some(1),
+            seen_expires_at: None,
+            total_budget: Some(2),
+            expires_at: None,
+            signing_key_id: 0,
+        };
+        let result = ctx.raise_key_limits(&sdk, identity, raise).await;
+        assert!(
+            matches!(result, Err(TaskError::IdentityMissingOnNetwork { identity_id: id }) if id == identity_id)
+        );
     }
 
-    /// Before protocol version 14 is confirmed, the remaining-budget query is
-    /// not sent: an older network does not answer it, on any node.
     #[tokio::test]
-    async fn remaining_budgets_are_not_queried_until_the_network_supports_them() {
+    async fn an_empty_budget_request_needs_no_protocol_verification() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = Sdk::new_mock();
-
-        for version in PRE_V14_PROTOCOL_VERSIONS {
-            crate::context::test_support::prove_protocol_version(&ctx, version);
-            for key_ids in [vec![1, 2], vec![]] {
-                let result = ctx
-                    .fetch_key_remaining_budgets(&sdk, Identifier::random(), key_ids)
-                    .await;
-                assert!(
-                    matches!(result, Err(TaskError::KeyRemainingBudgetsNotSupported)),
-                    "protocol {version}: got {result:?}"
-                );
-            }
-        }
+        let identity_id = Identifier::random();
+        let result = ctx
+            .fetch_key_remaining_budgets(&Sdk::new_mock(), identity_id, vec![])
+            .await;
+        assert!(
+            matches!(result, Ok(BackendTaskSuccessResult::IdentityKeyRemainingBudgets { identity_id: id, budgets }) if id == identity_id && budgets.is_empty())
+        );
     }
 
     /// A failed raise must reach the screen it came from, keyed by identity

@@ -2,7 +2,6 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::derived_identity_key::{
     derivation_index_limit, derivation_wallet, is_derivable_key_type, occupied_indices,
 };
@@ -40,13 +39,9 @@ impl AppContext {
         &self,
         public_key_to_add: &QualifiedIdentityPublicKey,
     ) -> Result<(), TaskError> {
-        // Key limits (protocol version 14) are checked before anything is
-        // prompted for or broadcast: an older network cannot decode such a
-        // key, and a limit Platform refuses would still be charged.
+        // Validate before prompting or broadcasting: a limit Platform refuses
+        // would still be charged.
         if public_key_to_add.identity_public_key.has_limits() {
-            if !FeatureGate::IdentityKeyLimits.is_available(self) {
-                return Err(TaskError::KeyLimitsNotSupported);
-            }
             validate_key_limits(&public_key_to_add.identity_public_key, now_ms())?;
         }
 
@@ -1971,28 +1966,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_key_with_limits_needs_a_network_that_supports_them() {
+    #[test]
+    fn a_key_with_limits_is_valid_before_protocol_verification() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = dash_sdk::Sdk::new_mock();
-
-        // Not known yet (0), and mainnet's 13.
-        for version in [0, 13] {
-            crate::context::test_support::prove_protocol_version(&ctx, version);
-            let identity = crate::context::test_support::bare_user_identity(
-                Identifier::random(),
-                dash_sdk::dpp::dashcore::Network::Testnet,
-            );
-            let result = ctx
-                .add_key_to_identity(&sdk, identity, key_with_limits(Some(1)), [1; 32])
-                .await;
-
-            assert!(
-                matches!(result, Err(TaskError::KeyLimitsNotSupported)),
-                "protocol {version}: got {result:?}"
-            );
-        }
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
+        let mut key = key_with_limits(Some(1));
+        key.identity_public_key = key.identity_public_key.with_limits(Some(1), None);
+        ctx.validate_added_key_configuration(&key)
+            .expect("valid limits");
     }
 
     #[tokio::test]

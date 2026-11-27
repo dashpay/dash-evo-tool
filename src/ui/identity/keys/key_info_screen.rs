@@ -4,7 +4,6 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::amount::Amount;
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -1163,9 +1162,8 @@ impl KeyInfoScreen {
     }
 
     /// The Raise Limits section for a key with a spending limit or an expiry:
-    /// add to the limit and/or extend the expiry. Shown only when the network
-    /// supports key limits and this device holds a key allowed to sign the
-    /// change; otherwise it says which of the two is missing.
+    /// add to the limit and/or extend the expiry. Requires a key on this device
+    /// allowed to sign the change; otherwise it says which key to import.
     fn render_raise_limits(&mut self, ui: &mut egui::Ui, text_primary: Color32) {
         let key = self.limits_key().clone();
         if !key.has_limits() {
@@ -1179,15 +1177,6 @@ impl KeyInfoScreen {
         ui.heading(RichText::new("Raise Limits").color(text_primary));
         ui.add_space(6.0);
 
-        if !FeatureGate::IdentityKeyLimits.is_available(&self.app_context) {
-            ui.label(
-                RichText::new(
-                    "Raising key limits needs a network that supports them. Connect to such a network to raise this key's limits.",
-                )
-                .color(DashColors::text_secondary(dark_mode)),
-            );
-            return;
-        }
         if key.disabled_at().is_some() {
             ui.label(
                 RichText::new("This key is disabled, so its limits cannot be raised.")
@@ -3362,6 +3351,118 @@ mod tests {
                 ..
             }
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn opening_key_info_reads_the_budget_before_protocol_verification() {
+        use dash_sdk::platform::identity_keys_remaining_budgets::{
+            IdentityKeysRemainingBudgets, IdentityKeysRemainingBudgetsQuery,
+        };
+
+        let (app_context, _dir) = offline_ctx().await;
+        assert_eq!(app_context.protocol_version_info().verified_version, None);
+        let key = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(
+            0xB9,
+            &[(key.clone(), crate::test_support::keys::secret_bytes())],
+        );
+        let mut sdk = dash_sdk::Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch::<IdentityKeysRemainingBudgets, _>(
+                IdentityKeysRemainingBudgetsQuery {
+                    identity_id: identity.identity.id(),
+                    key_ids: vec![key.id()],
+                },
+                Some([(key.id(), Some(3_000))].into_iter().collect()),
+            )
+            .await
+            .expect("budget response");
+        let mut screen = KeyInfoScreen::new(identity, key, None, &app_context);
+        let AppAction::BackendTaskWithContext {
+            task: BackendTask::IdentityTask(task),
+            ..
+        } = screen.queued_requests(AppAction::None)
+        else {
+            panic!("opening Key Info must request the budget");
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let result = app_context
+            .run_identity_task(
+                task,
+                &sdk,
+                SenderAsync::new(tx, app_context.egui_ctx().clone()),
+            )
+            .await;
+        let result = result.expect("an unverified version must not reject the budget read");
+        screen.display_task_result(result);
+        assert_eq!(screen.remaining_budget, RemainingBudget::Known(Some(3_000)));
+        assert!(
+            crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx())
+                .is_empty()
+        );
+        app_context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_budget_read_is_inline_without_hiding_paid_task_errors() {
+        use crate::ui::task_feedback::{Feedback, ResultDelivery};
+        use egui_kittest::kittest::Queryable;
+
+        let (app_context, _dir) = offline_ctx().await;
+        let key = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(
+            0xBA,
+            &[(key.clone(), crate::test_support::keys::secret_bytes())],
+        );
+        let mut screen = KeyInfoScreen::new(identity.clone(), key, None, &app_context);
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.queued_requests(AppAction::None)
+        else {
+            panic!("budget request");
+        };
+        let error = TaskError::IdentityNotFoundLocally;
+        let paid =
+            BackendTaskContext::from(&BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
+                identity: Box::new(identity),
+                raise: KeyLimitsRaise {
+                    key_id: 1,
+                    seen_total_budget: Some(5_000),
+                    seen_expires_at: None,
+                    total_budget: Some(10_000),
+                    expires_at: None,
+                    signing_key_id: 0,
+                },
+            }));
+        for (sender_in_view, sender_gone) in [(true, false), (false, false), (false, true)] {
+            let feedback = Feedback {
+                ctx: app_context.egui_ctx(),
+                contexts: &BTreeMap::new(),
+                delivery: ResultDelivery {
+                    sender_in_view,
+                    sender_gone,
+                },
+            };
+            assert!(crate::ui::task_feedback::on_error(
+                &feedback, &context, &error
+            ));
+            assert!(!crate::ui::task_feedback::on_error(
+                &feedback, &paid, &error
+            ));
+        }
+        screen.display_backend_task_error(&context, &error);
+        assert_eq!(screen.remaining_budget, RemainingBudget::Unavailable);
+        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
+            egui::Grid::new("budget").show(ui, |ui| {
+                screen.render_key_limits_rows(ui, Color32::BLACK);
+            });
+        });
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Refresh to try again.")
+                .is_some()
+        );
+        app_context.wallet_backend().unwrap().shutdown().await;
     }
 
     /// The Raise Limits progress banner stays while the raise is in flight and

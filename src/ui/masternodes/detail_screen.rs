@@ -536,7 +536,8 @@ impl MasternodeDetailView {
         let votes_reserve = self
             .votes_height
             .unwrap_or(f32::INFINITY)
-            .min(available * (1.0 - PINNED_MAX_SHARE));
+            .min(available * (1.0 - PINNED_MAX_SHARE))
+            .max(0.0);
         let pinned = egui::ScrollArea::vertical()
             .id_salt("masternode_detail_pinned")
             .max_height((available - votes_reserve).max(0.0))
@@ -564,8 +565,9 @@ impl MasternodeDetailView {
                 ui.add_space(8.0);
                 self.render_danger_zone(ui, dark_mode);
             });
-        // From the pinned area's edge, so the spacing after it counts too.
-        let votes_top = pinned.inner_rect.bottom();
+        // From the auto-shrunk edge, so the spacing after it counts too.
+        let votes_top =
+            pinned.inner_rect.top() + pinned.inner_rect.height().min(pinned.content_size.y);
         ui.add_space(12.0);
         if let Some(node) = self.render_votes_heading(ui, dark_mode) {
             outcome = DetailOutcome::VoteWithNode(node);
@@ -1057,6 +1059,7 @@ impl MasternodeDetailView {
         let node = self.identity.identity.id();
         egui::ScrollArea::vertical()
             .id_salt("masternode_detail_vote_rows")
+            .min_scrolled_height(0.0)
             .auto_shrink([false, false])
             .show(ui, |ui| match &self.node_votes {
                 None => {

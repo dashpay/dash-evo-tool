@@ -1610,6 +1610,72 @@ fn vote_rows_scroll_under_a_pinned_heading() {
     });
 }
 
+/// Check the painted text's clip as well as the full accessible widget bounds.
+fn assert_detail_label_unclipped(harness: &App, label: &str) {
+    let rect = harness.get_by_label(label).rect();
+    let clip = harness.output().shapes.iter().find_map(|clipped| {
+        if let egui::Shape::Text(text) = &clipped.shape
+            && text.galley.text() == label
+        {
+            Some(clipped.clip_rect)
+        } else {
+            None
+        }
+    });
+    assert!(
+        clip.is_some_and(|clip| clip.contains_rect(rect)),
+        "{label} must be fully painted: bounds={rect:?}, clip={clip:?}"
+    );
+}
+
+#[test]
+fn last_vote_row_is_fully_visible_at_the_scroll_limit_in_a_short_window() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness =
+            open_detail_with_vote_rows(0xBB, "mn-short-01", 30, egui::vec2(800.0, 600.0));
+        harness.set_size(egui::vec2(800.0, 520.0));
+        harness.run_steps(6);
+        let first = harness.get_by_label("row00.dash").rect();
+        let last_before = harness.get_by_label("row29.dash").rect();
+        harness.hover_at(first.center());
+        harness.run_steps(3);
+        for _ in 0..8 {
+            wheel_down(&mut harness);
+        }
+        let last = harness.get_by_label("row29.dash").rect();
+        wheel_down(&mut harness);
+        assert_eq!(
+            last,
+            harness.get_by_label("row29.dash").rect(),
+            "at the scroll limit"
+        );
+        assert!(
+            last.top() < last_before.top(),
+            "the rows scrolled: first={first:?}, last_before={last_before:?}, last={last:?}"
+        );
+        assert_detail_label_unclipped(&harness, "row29.dash");
+    });
+}
+
+#[test]
+fn votes_heading_and_button_are_unclipped_on_the_first_frame_after_resize() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let mut harness =
+            open_detail_with_vote_rows(0xBC, "mn-resize-01", 3, egui::vec2(1260.0, 1000.0));
+        toggle_detail_section(&mut harness, "Keys");
+        toggle_detail_section(&mut harness, "Danger zone");
+        harness.run_steps(6);
+        harness.set_size(egui::vec2(800.0, 480.0));
+        harness.run_steps(1);
+        assert_detail_label_unclipped(&harness, "This node's votes");
+        assert_detail_label_unclipped(&harness, "Vote with this node");
+    });
+}
+
 /// With Keys and the Danger zone open in a small window, the pinned area is
 /// capped and scrolls on its own, while the votes heading stays put and the
 /// vote rows keep room of their own.

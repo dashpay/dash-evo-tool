@@ -319,6 +319,10 @@ fn platform_compatibility_prune_expired_backups_by_age() {
 #[test]
 fn platform_compatibility_prune_keeps_unreadable_snapshots() {
     use std::os::unix::fs::PermissionsExt;
+    if !crate::test_support::file_modes_deny_access() {
+        eprintln!("skipped: file modes do not deny this process access");
+        return;
+    }
     let (_dir, path) = fixture();
     let older = backup(&path);
     let newest = backup(&path);
@@ -326,7 +330,7 @@ fn platform_compatibility_prune_keeps_unreadable_snapshots() {
     set_mtime(&newest, -100 * 24 * 60 * 60);
     std::fs::set_permissions(&newest, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::File::open(&newest).is_ok() {
-        // Running as root: permissions cannot make it unreadable.
+        // The process can bypass read permissions independently of write permissions.
         return;
     }
 

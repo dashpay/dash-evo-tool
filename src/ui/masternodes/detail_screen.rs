@@ -12,7 +12,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::collapsing_header::{CollapsingState, paint_default_icon};
+use eframe::egui::collapsing_header::paint_default_icon;
 use eframe::egui::{self, Color32, RichText, Ui};
 
 #[cfg(test)]
@@ -56,7 +56,7 @@ use crate::wallet_backend::secret_seam::SecretScheme;
 const REMOVE_MASTERNODE_CONFIRMATION: &str = "This removes the node and its voting identity, including their private keys, from this device. To load the node again, you need its ProTxHash and a backup of its private keys.";
 const DANGER_ZONE_NOTE: &str =
     "This action affects this device only. The masternode stays on the network.";
-const MISSING_VOTING_KEY_SUMMARY: &str = "This node has no voting key loaded.";
+const MISSING_VOTING_KEY_SUMMARY: &str = "This node has no voting key loaded. Open Keys to add it.";
 const MISSING_VOTING_KEY: &str =
     "This node has no voting key loaded. Add its voting private key to cast votes.";
 const PROTECTION_UNAVAILABLE: &str = "Key protection status is unavailable. Refresh to try again.";
@@ -128,6 +128,9 @@ pub struct MasternodeDetailView {
     node_id_short: String,
     key_presence: MasternodeKeyPresence,
     remove_dialog: Option<ConfirmationDialog>,
+    /// Never remembered beyond this view, so every visit to the node starts with
+    /// Remove out of reach.
+    danger_zone_open: bool,
     voter_key_prompt: Option<PasswordInput>,
     /// The `Add voting key` merge this view dispatched and has not yet seen
     /// finish. Gates Save so a re-click cannot discard the key typed into a
@@ -203,21 +206,21 @@ impl MasternodeDetailView {
     }
 }
 
-/// A bordered section, collapsed until the user opens it. The title toggles it;
-/// `summary` renders beside the title while collapsed. A `danger` section turns
+/// A bordered section, open while `open` holds. Its header (`id`) toggles it;
+/// `summary` renders beside the header while collapsed. A `danger` section turns
 /// its border and title red while open. Returns the body's output when open.
 fn collapsible_section<R>(
     ui: &mut Ui,
     id: egui::Id,
+    open: &mut bool,
     title: &str,
     danger: bool,
     summary: impl FnOnce(&mut Ui),
     body: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
     let dark_mode = ui.style().visuals.dark_mode;
-    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
-    let (stroke, title_color) = if danger && state.is_open() {
-        (DashColors::ERROR, DashColors::ERROR)
+    let (stroke, title_color) = if danger && *open {
+        (DashColors::ERROR, DashColors::error_color(dark_mode))
     } else {
         (
             DashColors::border(dark_mode),
@@ -232,24 +235,71 @@ fn collapsible_section<R>(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                state.show_toggle_button(ui, paint_default_icon);
-                let title = egui::Button::new(RichText::new(title).strong().color(title_color))
-                    .frame(false);
-                if ui.add(title).clicked() {
-                    state.toggle(ui);
-                }
-                if !state.is_open() {
+                section_header(ui, id, title, title_color, open);
+                if !*open {
                     summary(ui);
                 }
             });
-            state
-                .show_body_unindented(ui, |ui| {
-                    ui.add_space(4.0);
-                    body(ui)
-                })
-                .map(|body| body.inner)
+            open.then(|| {
+                ui.add_space(4.0);
+                body(ui)
+            })
         })
         .inner
+}
+
+/// A section header: arrow and title as one control — one keyboard stop, named
+/// by the title, reporting whether the section is expanded.
+fn section_header(ui: &mut Ui, id: egui::Id, title: &str, color: Color32, open: &mut bool) {
+    let galley = egui::WidgetText::from(RichText::new(title).strong().color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let padding = ui.spacing().button_padding;
+    let indent = ui.spacing().indent;
+    let size = egui::vec2(
+        indent + galley.size().x + padding.x,
+        galley.size().y + 2.0 * padding.y,
+    )
+    .max(ui.spacing().interact_size);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let response = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
+        *open = !*open;
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::DisclosureTriangle,
+            ui.is_enabled(),
+            galley.text(),
+        )
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_expanded(*open));
+    if ui.is_rect_visible(rect) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                egui::CornerRadius::same(4),
+                ComponentStyles::focus_stroke(dark_mode),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let (mut icon_rect, _) = ui.spacing().icon_rectangles(rect);
+        icon_rect.set_center(egui::pos2(rect.left() + indent / 2.0, rect.center().y));
+        let openness = if *open { 1.0 } else { 0.0 };
+        paint_default_icon(ui, openness, &response.clone().with_new_rect(icon_rect));
+        let text_pos = egui::pos2(
+            rect.left() + indent,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(text_pos, galley, color);
+    }
 }
 
 /// `Roles:` and the V/O/P presence letters (glyph, not colour-only — NFR-6).
@@ -313,6 +363,7 @@ impl MasternodeDetailView {
             node_id_short,
             key_presence,
             remove_dialog: None,
+            danger_zone_open: false,
             voter_key_prompt: None,
             pending_voter_key_load: None,
             recovery,
@@ -679,10 +730,14 @@ impl MasternodeDetailView {
         };
         let presence = self.key_presence;
         let missing_voter = !self.identity.can_cast_masternode_vote();
+        // Remembered per node, unlike the Danger zone: an open Keys section
+        // exposes nothing destructive.
         let id = egui::Id::unique("masternode_detail_keys").with(self.identity.identity.id());
-        collapsible_section(
+        let mut open = ui.data_mut(|data| data.get_persisted::<bool>(id).unwrap_or(false));
+        let action = collapsible_section(
             ui,
             id,
+            &mut open,
             "Keys",
             false,
             |ui| {
@@ -694,13 +749,14 @@ impl MasternodeDetailView {
                     ui.label(
                         RichText::new(MISSING_VOTING_KEY_SUMMARY)
                             .color(DashColors::warning_color(dark_mode)),
-                    )
-                    .on_hover_text(MISSING_VOTING_KEY);
+                    );
                 }
             },
             |ui| self.render_keys_body(ui, dark_mode, tier),
         )
-        .flatten()
+        .flatten();
+        ui.data_mut(|data| data.insert_persisted(id, open));
+        action
     }
 
     fn render_keys_body(
@@ -727,7 +783,7 @@ impl MasternodeDetailView {
                     // vertically centered with the voter-identity label.
                     if ui
                         .small_button("Copy")
-                        .on_hover_text("Copy voter identity ID")
+                        .clickable_tooltip("Copy voter identity ID")
                         .clicked()
                     {
                         ui.ctx().copy_text(voter_full.clone());
@@ -1025,6 +1081,7 @@ impl MasternodeDetailView {
         let remove_clicked = collapsible_section(
             ui,
             id,
+            &mut self.danger_zone_open,
             "Danger zone",
             true,
             |ui| {
@@ -1043,7 +1100,7 @@ impl MasternodeDetailView {
                     !migration_in_progress,
                     ComponentStyles::danger_button("Remove masternode"),
                 )
-                .on_disabled_hover_text(
+                .disabled_tooltip(
                     "Wait for the storage update to finish before removing this masternode.",
                 )
                 .clicked()

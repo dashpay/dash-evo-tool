@@ -893,13 +893,13 @@ fn detail_view_opens_from_card_with_sections_and_back() {
         );
         assert!(
             harness
-                .query_by_role_and_label(Role::Button, "Keys")
+                .query_by_role_and_label(Role::DisclosureTriangle, "Keys")
                 .is_some(),
             "Keys section"
         );
         assert!(
             harness
-                .query_by_role_and_label(Role::Button, "Danger zone")
+                .query_by_role_and_label(Role::DisclosureTriangle, "Danger zone")
                 .is_some(),
             "Danger zone section"
         );
@@ -1342,21 +1342,32 @@ fn add_password_protection_opens_confirmation_dialog() {
     });
 }
 
-/// Click a button of the open node detail. The pinned area scrolls on its own
-/// once its content outgrows its share of the window, so the button is first
+/// Click a control of the open node detail. The pinned area scrolls on its own
+/// once its content outgrows its share of the window, so the control is first
 /// scrolled into view, as a user would.
-fn click_detail_button(harness: &mut App, label: &str) {
-    harness
-        .get_by_role_and_label(Role::Button, label)
-        .scroll_to_me();
+fn click_detail_control(harness: &mut App, role: Role, label: &str) {
+    harness.get_by_role_and_label(role, label).scroll_to_me();
     harness.run_steps(3);
-    harness.get_by_role_and_label(Role::Button, label).click();
+    harness.get_by_role_and_label(role, label).click();
     harness.run_steps(3);
 }
 
-/// Toggle a collapsible section of the open node detail by clicking its title.
+fn click_detail_button(harness: &mut App, label: &str) {
+    click_detail_control(harness, Role::Button, label);
+}
+
+/// Toggle a collapsible section of the open node detail by clicking its header.
 fn toggle_detail_section(harness: &mut App, title: &str) {
-    click_detail_button(harness, title);
+    click_detail_control(harness, Role::DisclosureTriangle, title);
+}
+
+/// Whether the section header `title` reports itself expanded.
+fn section_expanded(harness: &App, title: &str) -> Option<bool> {
+    harness
+        .get_by_role_and_label(Role::DisclosureTriangle, title)
+        .accesskit_node()
+        .data()
+        .is_expanded()
 }
 
 /// Whether a clickable `Remove masternode` button is on screen. The collapsed
@@ -1423,9 +1434,9 @@ fn detail_sections_start_collapsed_with_a_keys_summary() {
         );
         assert!(
             harness
-                .query_by_label("This node has no voting key loaded.")
+                .query_by_label("This node has no voting key loaded. Open Keys to add it.")
                 .is_some(),
-            "the collapsed Keys summary warns that the voting key is missing"
+            "the collapsed Keys summary warns that the voting key is missing and where to add it"
         );
         assert!(
             harness.query_by_label("Manage keys").is_none(),
@@ -1448,9 +1459,11 @@ fn detail_sections_start_collapsed_with_a_keys_summary() {
             "the collapsed Danger zone must not offer Remove"
         );
 
-        let keys = harness.get_by_role_and_label(Role::Button, "Keys").rect();
+        let keys = harness
+            .get_by_role_and_label(Role::DisclosureTriangle, "Keys")
+            .rect();
         let danger = harness
-            .get_by_role_and_label(Role::Button, "Danger zone")
+            .get_by_role_and_label(Role::DisclosureTriangle, "Danger zone")
             .rect();
         let votes = harness.get_by_label("This node's votes").rect();
         assert!(
@@ -1638,6 +1651,85 @@ fn a_tall_pinned_area_scrolls_on_its_own_and_leaves_room_for_vote_rows() {
             top_of(&harness, "This node's votes"),
             heading.top(),
             "the votes heading must stay put while the pinned area scrolls"
+        );
+    });
+}
+
+/// Each section header is one named control that reports whether it is
+/// expanded, and one keyboard stop: Tab from the Keys header lands on the
+/// Danger zone header, with no unnamed stop for the arrow between them.
+#[test]
+fn section_headers_are_single_named_disclosures_with_expanded_state() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0xB7, "mn-a11y-01", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-a11y-01").click();
+        harness.run_steps(3);
+
+        for title in ["Keys", "Danger zone"] {
+            assert_eq!(
+                harness.query_all_by_label(title).count(),
+                1,
+                "the {title} header is a single named control"
+            );
+            assert_eq!(section_expanded(&harness, title), Some(false));
+        }
+        toggle_detail_section(&mut harness, "Keys");
+        assert_eq!(section_expanded(&harness, "Keys"), Some(true));
+        toggle_detail_section(&mut harness, "Keys");
+
+        harness
+            .get_by_role_and_label(Role::DisclosureTriangle, "Keys")
+            .focus();
+        harness.run_steps(3);
+        harness.key_press(egui::Key::Tab);
+        harness.run_steps(3);
+        let focused = harness
+            .query_by(|node| node.is_focused())
+            .expect("Tab moves focus to a control");
+        assert_eq!(
+            focused.accesskit_node().label().as_deref(),
+            Some("Danger zone"),
+            "Tab from the Keys header must land on the Danger zone header"
+        );
+    });
+}
+
+/// The Danger zone starts collapsed on every visit to a node, so Remove is
+/// never left one click away from an earlier visit.
+#[test]
+fn the_danger_zone_starts_collapsed_on_every_visit() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0xB8,
+            "mn-revisit-01",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-revisit-01").click();
+        harness.run_steps(3);
+        toggle_detail_section(&mut harness, "Danger zone");
+        assert!(remove_button_present(&harness));
+
+        harness.get_by_label("‹ All masternodes").click();
+        harness.run_steps(3);
+        harness.get_by_label("Open mn-revisit-01").click();
+        harness.run_steps(3);
+        assert_eq!(section_expanded(&harness, "Danger zone"), Some(false));
+        assert!(
+            !remove_button_present(&harness),
+            "a new visit must not reopen the Danger zone"
         );
     });
 }

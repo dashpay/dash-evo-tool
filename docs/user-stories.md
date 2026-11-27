@@ -1924,7 +1924,7 @@ As a masternode operator, I want to open a node, see its votes, and jump to voti
 
 As a masternode operator, I want to remove a masternode from DET, so that I can stop tracking a node I no longer operate.
 
-- The detail view's "Remove masternode" action sits in a "Danger zone" section, collapsed by default, which when opened turns red and states that the action affects this device only and the masternode stays on the network. The action shows a confirmation dialog before proceeding.
+- The detail view's "Remove masternode" action sits in a "Danger zone" section, collapsed on every visit to the node, which when opened turns red and states that the action affects this device only and the masternode stays on the network. The action shows a confirmation dialog before proceeding.
 - The confirmation explains that removal deletes local private keys and that loading the node again requires its ProTxHash and a private-key backup.
 - Confirming forgets the masternode and its associated voter identity, and the card disappears from the list.
 - Removal completes off the UI thread. Its outcome and any cleanup warnings remain visible after navigation, identify the affected network, and update the retained node view without affecting another network's nodes.

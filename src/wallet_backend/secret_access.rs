@@ -373,19 +373,43 @@ impl SecretAccess {
             .expect("infallible metadata load");
     }
 
-    /// Replace the identity prompt-copy index. Used at hydration time and
-    /// after an opt-in migration so the sign-time prompt for a protected
-    /// identity shows its label and password hint. Display-only — never
-    /// gates whether a prompt fires (the vault scheme does). Poison-safe: a
-    /// poisoned lock is recovered so the index can self-heal after a panicked
-    /// reader.
-    pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], PromptMeta>) {
+    /// Upsert the prompt copy of freshly loaded identities and drop every
+    /// entry whose identity is no longer in `roster`, in one step. A filtered
+    /// load then refreshes only what it read and keeps the rest. Display-only —
+    /// never gates whether a prompt fires (the vault scheme does). Poison-safe.
+    /// `roster` must be sorted by identity ID.
+    pub fn merge_identity_prompt_index(
+        &self,
+        roster: &[[u8; 32]],
+        loaded: BTreeMap<[u8; 32], PromptMeta>,
+    ) {
         let mut guard = self
             .inner
             .identity_prompt_index
             .write()
             .unwrap_or_else(|poison| poison.into_inner());
-        *guard = index;
+        guard.retain(|identity_id, _| roster.binary_search(identity_id).is_ok());
+        guard.extend(loaded);
+    }
+
+    /// Drop the prompt copy of a removed identity.
+    pub fn forget_identity_prompt(&self, identity_id: &[u8; 32]) {
+        self.inner
+            .identity_prompt_index
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(identity_id);
+    }
+
+    /// The prompt copy indexed for `identity_id`, if any.
+    #[cfg(test)]
+    pub(crate) fn identity_prompt_meta(&self, identity_id: &[u8; 32]) -> Option<PromptMeta> {
+        self.inner
+            .identity_prompt_index
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(identity_id)
+            .cloned()
     }
 
     /// Run `f` with the plaintext secret for `scope`, obtaining it
@@ -1225,7 +1249,8 @@ mod tests {
     /// of these byte sequences appears in an error, log, or Debug output,
     /// the chokepoint leaked a secret.
     const SENTINEL_PASSPHRASE: &str = "correct-horse-battery-staple-SENTINEL";
-    const SENTINEL_SEED: [u8; HD_SEED_LEN] = [0x5A; HD_SEED_LEN];
+    static SENTINEL_SEED: std::sync::LazyLock<[u8; HD_SEED_LEN]> =
+        std::sync::LazyLock::new(crate::test_support::keys::seed);
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         let path = dir.join("secrets.pwsvault");
@@ -1285,7 +1310,7 @@ mod tests {
     #[test]
     fn protected_single_key_import_and_rename_refresh_prompt_copy() {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+        use dash_sdk::dpp::dashcore::hashes::sha256;
 
         use crate::model::wallet::alias::AliasSource;
         use crate::wallet_backend::single_key::ImportPassphrase;
@@ -1417,7 +1442,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
         let matched = sa
             .with_secret(&scope, |pt| {
-                Ok(pt.expose_hd_seed().copied() == Some(SENTINEL_SEED))
+                Ok(pt.expose_hd_seed().copied() == Some(*SENTINEL_SEED))
             })
             .await
             .expect("with_secret");
@@ -1449,7 +1474,7 @@ mod tests {
         assert!(sa.is_session_cached(&scope), "promoted to session cache");
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1530,7 +1555,7 @@ mod tests {
         let sa = access(store, Arc::new(NullSecretPrompt));
         let scope = SecretScope::HdSeed { seed_hash };
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1550,7 +1575,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1594,7 +1619,7 @@ mod tests {
         // without a prompt.
         sa.remember_session(
             &protected_scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            SecretPlaintext::HdSeed(&Zeroizing::new(*SENTINEL_SEED)),
             RememberPolicy::UntilAppClose,
         );
         assert!(
@@ -1619,7 +1644,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1690,14 +1715,14 @@ mod tests {
         // None is a no-op.
         sa.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            SecretPlaintext::HdSeed(&Zeroizing::new(*SENTINEL_SEED)),
             RememberPolicy::None,
         );
         assert!(!sa.is_session_cached(&scope), "None ⇒ not cached");
 
         sa.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            SecretPlaintext::HdSeed(&Zeroizing::new(*SENTINEL_SEED)),
             RememberPolicy::UntilAppClose,
         );
         assert!(sa.is_session_cached(&scope), "promoted to session cache");
@@ -1728,15 +1753,13 @@ mod tests {
         imported.address
     }
 
+    /// A testnet WIF that is stable for the whole test process.
     fn known_testnet_wif() -> String {
-        use dash_sdk::dpp::dashcore::PrivateKey;
-        use dash_sdk::dpp::secp256k1::SecretKey;
-        let mut bytes = [0u8; 32];
-        bytes[31] = 1;
-        let sk = SecretKey::from_secret_bytes(bytes).unwrap();
-        PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
-            .expect("valid secret key")
-            .to_wif()
+        crate::test_support::keys::labelled_wif(
+            "wallet_backend::secret_access::known_testnet_wif",
+            0,
+            Network::Testnet,
+        )
     }
 
     /// Write a legacy DET AES-GCM `SingleKeyEntry` straight to the vault Tier-1 —
@@ -1874,8 +1897,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let addr_a = "single-key-address-A".to_string();
         let addr_b = "single-key-address-B".to_string();
-        let key_a = [0xA7u8; 32];
-        let key_b = [0xB8u8; 32];
+        let key_a = crate::test_support::keys::secret_bytes();
+        let key_b = crate::test_support::keys::secret_bytes();
         let pw_a = SecretString::new("single-key-A-pwpwpwpw");
         let pw_b = SecretString::new("single-key-B-pwpwpwpw");
         let seam = SecretSeam::new(&store);
@@ -1965,7 +1988,7 @@ mod tests {
 
         let display = err.to_string();
         let debug = format!("{err:?}");
-        let sentinel_seed_hex = hex::encode(SENTINEL_SEED);
+        let sentinel_seed_hex = hex::encode(*SENTINEL_SEED);
         for (label, haystack) in [("display", &display), ("debug", &debug)] {
             assert!(
                 !haystack.contains(SENTINEL_PASSPHRASE),
@@ -2003,7 +2026,7 @@ mod tests {
         let store = fresh_store(dir.path());
         let seed_a: WalletSeedHash = [0xA1; 32];
         let seed_b: WalletSeedHash = [0xB2; 32];
-        let seed_b_bytes = [0x77u8; 64];
+        let seed_b_bytes = crate::test_support::keys::seed();
         store_protected_hd(&store, &seed_a, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
         store_protected_hd(&store, &seed_b, &seed_b_bytes, SENTINEL_PASSPHRASE);
 
@@ -2025,7 +2048,8 @@ mod tests {
         let sa_inner = sa.clone();
         let both = sa
             .with_secret_session(&scope_a, async move |session| {
-                let outer_ok = session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED);
+                let outer_ok =
+                    session.plaintext().expose_hd_seed().copied() == Some(*SENTINEL_SEED);
                 // Re-enter the chokepoint for scope B from inside scope A's
                 // live session. If the outer call still held the cache lock,
                 // this would deadlock.
@@ -2063,7 +2087,7 @@ mod tests {
             .with_secret_session(&scope, async |session| {
                 let mut matches = 0;
                 for _ in 0..3 {
-                    if session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED) {
+                    if session.plaintext().expose_hd_seed().copied() == Some(*SENTINEL_SEED) {
                         matches += 1;
                     }
                 }
@@ -2107,7 +2131,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x33u8; 32];
-        let key = [0xC7u8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         store_identity_key(
             &store,
             identity_id,
@@ -2190,7 +2214,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x51u8; 32];
-        let key = [0xD4u8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         store_identity_key_protected(
             &store,
             identity_id,
@@ -2244,7 +2268,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x52u8; 32];
-        let key = [0xE5u8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         store_identity_key_protected(
             &store,
             identity_id,
@@ -2280,6 +2304,7 @@ mod tests {
     /// still resolves headless (covered by TS-FAST-01).
     #[tokio::test]
     async fn ts_t2_ik_03_headless_protected_identity_key_is_unavailable() {
+        let secret_f6 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x53u8; 32];
@@ -2288,7 +2313,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0xF6u8; 32],
+            &secret_f6,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2318,8 +2343,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let id_a = [0xA1u8; 32];
         let id_b = [0xB2u8; 32];
-        let key_a = [0x1Au8; 32];
-        let key_b = [0x2Bu8; 32];
+        let key_a = crate::test_support::keys::secret_bytes();
+        let key_b = crate::test_support::keys::secret_bytes();
         store_identity_key_protected(
             &store,
             id_a,
@@ -2387,11 +2412,43 @@ mod tests {
         assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
     }
 
+    /// A merge refreshes the identities it loaded, keeps the other identities
+    /// still in the roster, and drops those that left it.
+    #[test]
+    fn merging_prompt_copy_upserts_loaded_and_drops_delisted_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let sa = access(fresh_store(dir.path()), Arc::new(TestPrompt::never()));
+        let meta = |alias: &str| PromptMeta {
+            alias: Some(alias.to_string()),
+            password_hint: None,
+        };
+        let alias_of = |id: &[u8; 32]| sa.identity_prompt_meta(id).and_then(|m| m.alias);
+        let (kept, refreshed, delisted) = ([0x01; 32], [0x02; 32], [0x03; 32]);
+        sa.merge_identity_prompt_index(
+            &[kept, refreshed, delisted],
+            BTreeMap::from([
+                (kept, meta("kept")),
+                (refreshed, meta("old")),
+                (delisted, meta("gone")),
+            ]),
+        );
+
+        sa.merge_identity_prompt_index(
+            &[kept, refreshed],
+            BTreeMap::from([(refreshed, meta("new"))]),
+        );
+
+        assert_eq!(alias_of(&kept).as_deref(), Some("kept"));
+        assert_eq!(alias_of(&refreshed).as_deref(), Some("new"));
+        assert_eq!(alias_of(&delisted), None);
+    }
+
     /// The sign-time prompt for a protected identity carries the alias and
     /// password hint from the identity prompt-index (display-only). An empty
     /// index degrades to a generic label, never an error.
     #[tokio::test]
     async fn protected_identity_key_prompt_uses_identity_prompt_index() {
+        let secret_77 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x54u8; 32];
@@ -2400,19 +2457,22 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             1,
-            &[0x77u8; 32],
+            &secret_77,
             SENTINEL_PASSPHRASE,
         );
 
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(store, prompt.clone());
-        sa.set_identity_prompt_index(BTreeMap::from([(
-            identity_id,
-            PromptMeta {
-                alias: Some("alice.dash".to_string()),
-                password_hint: Some("the usual".to_string()),
-            },
-        )]));
+        sa.merge_identity_prompt_index(
+            &[identity_id],
+            BTreeMap::from([(
+                identity_id,
+                PromptMeta {
+                    alias: Some("alice.dash".to_string()),
+                    password_hint: Some("the usual".to_string()),
+                },
+            )]),
+        );
         let scope = SecretScope::IdentityKey {
             identity_id,
             target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
@@ -2430,6 +2490,7 @@ mod tests {
     /// fails, and it unseals to the exact bytes under the same password.
     #[tokio::test]
     async fn seal_new_identity_key_seals_tier2_under_verified_password() {
+        let secret_10 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x61u8; 32];
@@ -2439,10 +2500,10 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x10u8; 32],
+            &secret_10,
             SENTINEL_PASSPHRASE,
         );
-        let new_key = [0x20u8; 32];
+        let new_key = crate::test_support::keys::secret_bytes();
 
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(Arc::clone(&store), prompt.clone());
@@ -2492,6 +2553,8 @@ mod tests {
     /// (`SecretPromptUnavailable`) and writes NOTHING — no keyless key lands.
     #[tokio::test]
     async fn seal_new_identity_key_headless_fails_closed() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_20 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x62u8; 32];
@@ -2500,7 +2563,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x11u8; 32],
+            &secret_11,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2516,7 +2579,7 @@ mod tests {
                 &verify,
                 &PrivateKeyTarget::PrivateKeyOnMainIdentity,
                 5,
-                &[0x20u8; 32],
+                &secret_20,
             )
             .await
             .expect_err("headless cannot seal");
@@ -2540,6 +2603,8 @@ mod tests {
     /// then seals the new key on the correct password.
     #[tokio::test]
     async fn seal_new_identity_key_wrong_password_reasks() {
+        let secret_12 = crate::test_support::keys::secret_bytes();
+        let secret_20 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x63u8; 32];
@@ -2548,7 +2613,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x12u8; 32],
+            &secret_12,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2567,7 +2632,7 @@ mod tests {
             &verify,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             5,
-            &[0x20u8; 32],
+            &secret_20,
         )
         .await
         .expect("retry then seal");
@@ -2594,6 +2659,7 @@ mod tests {
     /// halves usable around an intervening on-chain broadcast.
     #[tokio::test]
     async fn verify_up_front_then_seal_after_broadcast_one_prompt() {
+        let secret_13 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x64u8; 32];
@@ -2602,10 +2668,10 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x13u8; 32],
+            &secret_13,
             SENTINEL_PASSPHRASE,
         );
-        let new_key = [0x21u8; 32];
+        let new_key = crate::test_support::keys::secret_bytes();
 
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(Arc::clone(&store), prompt.clone());
@@ -2659,6 +2725,7 @@ mod tests {
     /// the on-chain state transition — no on-chain/local divergence.
     #[tokio::test]
     async fn verify_identity_object_password_headless_fails_closed_before_seal() {
+        let secret_14 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x65u8; 32];
@@ -2667,7 +2734,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x14u8; 32],
+            &secret_14,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2733,7 +2800,7 @@ mod tests {
         let sa = access(store, prompt.clone());
         let scope = SecretScope::HdSeed { seed_hash };
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2750,9 +2817,9 @@ mod tests {
         let store = fresh_store(dir.path());
         let seed_hash: WalletSeedHash = [0x5E; 32];
         // Legacy holds one seed; raw holds a DIFFERENT one — proving which won.
-        let legacy_seed = [0x11u8; 64];
+        let legacy_seed = crate::test_support::keys::seed();
         store_unprotected_hd(&store, &seed_hash, &legacy_seed);
-        let raw_seed = [0x99u8; 64];
+        let raw_seed = crate::test_support::keys::seed();
         WalletSeedView::new(&store)
             .set_raw(&seed_hash, &raw_seed)
             .unwrap();
@@ -2790,7 +2857,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2809,7 +2876,7 @@ mod tests {
         let pw = SecretString::new(SENTINEL_PASSPHRASE);
         assert_eq!(
             view.get_protected(&seed_hash, &pw).unwrap().map(|z| *z),
-            Some(SENTINEL_SEED)
+            Some(*SENTINEL_SEED)
         );
         // ... and NOT without it (a raw read sees a protected blob).
         assert!(
@@ -2838,7 +2905,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2922,7 +2989,7 @@ mod tests {
         let sa = access(store, prompt.clone());
         let scope = SecretScope::HdSeed { seed_hash };
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2940,8 +3007,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let hash_a: WalletSeedHash = [0xAA; 32];
         let hash_b: WalletSeedHash = [0xBB; 32];
-        let seed_a = [0xA1u8; 64];
-        let seed_b = [0xB2u8; 64];
+        let seed_a = crate::test_support::keys::seed();
+        let seed_b = crate::test_support::keys::seed();
         let pw_a = SecretString::new("password-A-aaaaaaaaaa");
         let pw_b = SecretString::new("password-B-bbbbbbbbbb");
         let view = WalletSeedView::new(&store);

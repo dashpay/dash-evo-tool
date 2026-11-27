@@ -128,10 +128,14 @@ pub(super) fn spawn(
             handle.block_on(async move {
                 let requests = tasks
                     .into_iter()
-                    .map(|(task, _)| {
+                    .map(|(task, context)| {
                         let app_context = app_context.clone();
                         let sender = worker_sender.clone();
-                        async move { app_context.run_backend_task(task, sender).await }
+                        // The request runs as its context, so a report it
+                        // sends mid-task can name it.
+                        crate::backend_task::as_request(context, async move {
+                            app_context.run_backend_task(task, sender).await
+                        })
                     })
                     .collect();
                 let results: Vec<Result<BackendTaskSuccessResult, TaskError>> =

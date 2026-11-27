@@ -88,7 +88,7 @@ impl ScheduledVoteEditor {
             ctx,
             ModalChromeConfig {
                 title: "Edit scheduled vote".into(),
-                overlay_id: egui::Id::new("edit_scheduled_vote"),
+                overlay_id: egui::Id::unique("edit_scheduled_vote"),
                 overlay_order: egui::Order::Middle,
                 window_order: egui::Order::Foreground,
                 resizable: false,

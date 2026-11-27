@@ -40,6 +40,44 @@ impl Database {
     }
 }
 
+/// Stores a password-protected imported key the way the earlier version
+/// saved it, so it awaits its old password.
+#[cfg(test)]
+pub(crate) fn seed_legacy_protected_key(db: &Database) {
+    use crate::model::wallet::encryption::EncryptedEnvelope;
+    use crate::model::wallet::single_key::ClosedSingleKey;
+    use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey};
+
+    let raw_key = crate::test_support::keys::secret_bytes();
+    let EncryptedEnvelope {
+        ciphertext,
+        salt,
+        nonce,
+    } = ClosedSingleKey::encrypt_private_key(&raw_key, "old-legacy-password").expect("encrypt");
+    let public_key = PrivateKey::from_byte_array(&raw_key, Network::Testnet)
+        .expect("private key")
+        .public_key();
+    let path = db.db_file_path().expect("data.db path");
+    rusqlite::Connection::open(path)
+        .expect("open data.db")
+        .execute(
+            "INSERT INTO single_key_wallet
+                (key_hash, encrypted_private_key, salt, nonce, public_key,
+                 address, alias, uses_password, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 1, ?7)",
+            rusqlite::params![
+                ClosedSingleKey::compute_key_hash(&raw_key).as_slice(),
+                ciphertext,
+                salt,
+                nonce,
+                public_key.inner.to_compressed().to_vec(),
+                Address::p2pkh(&public_key, Network::Testnet).to_string(),
+                Network::Testnet.to_string(),
+            ],
+        )
+        .expect("insert legacy protected key");
+}
+
 /// Decision-#7 single-key carve-out regression lane (release-blocking).
 ///
 /// Pins the Decision-#7 stub error so a regression that silently re-enables

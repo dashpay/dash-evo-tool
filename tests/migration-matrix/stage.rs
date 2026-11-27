@@ -14,7 +14,7 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use crate::manifest::Fixture;
+use crate::manifest::{Fixture, IN_REPO_ROOT};
 
 /// Archive extensions tried when the manifest carries no explicit pointer.
 const ARCHIVE_SUFFIXES: &[&str] = &[".tar.zst", ".tar.gz", ".tgz", ".tar.xz", ".tar"];
@@ -77,9 +77,18 @@ impl StagedFixture {
     }
 }
 
-/// Stages `fixture` from `fixtures_dir` into a fresh sandbox.
+/// Stages `fixture` from the repository or `fixtures_dir` into a fresh sandbox.
 pub fn stage(fixtures_dir: &Path, fixture: &Fixture) -> Result<StagedFixture, String> {
-    let source = resolve_source(fixtures_dir, fixture)?;
+    stage_from(fixtures_dir, Path::new(IN_REPO_ROOT), fixture)
+}
+
+/// [`stage`] with in-repo archive paths resolved below `in_repo_root`.
+fn stage_from(
+    fixtures_dir: &Path,
+    in_repo_root: &Path,
+    fixture: &Fixture,
+) -> Result<StagedFixture, String> {
+    let source = resolve_source(fixtures_dir, in_repo_root, fixture)?;
     let sandbox = tempfile::Builder::new()
         .prefix("det-migration-matrix-")
         .tempdir()
@@ -134,9 +143,26 @@ enum Source {
     Archive(PathBuf),
 }
 
-/// Resolves the fixture bytes: the manifest pointer if present, otherwise a
-/// directory or archive named after the fixture id.
-fn resolve_source(fixtures_dir: &Path, fixture: &Fixture) -> Result<Source, String> {
+/// Resolves the fixture bytes: the in-repo archive, else the downloaded one
+/// the manifest names, else a directory or archive named after the fixture id.
+fn resolve_source(
+    fixtures_dir: &Path,
+    in_repo_root: &Path,
+    fixture: &Fixture,
+) -> Result<Source, String> {
+    if let Some(archive) = &fixture.archive {
+        let path = archive
+            .locate(in_repo_root)
+            .map_err(|e| format!("fixture '{}': {e}", fixture.id))?;
+        return match path.is_file() {
+            true => Ok(Source::Archive(path)),
+            false => Err(format!(
+                "fixture '{}' names in-repo archive {}, which is not a file",
+                fixture.id,
+                path.display()
+            )),
+        };
+    }
     if let Some(name) = fixture.artifact.archive.as_deref() {
         let path = fixtures_dir.join(name);
         return match path.metadata() {
@@ -188,11 +214,25 @@ fn describe_dir(dir: &Path) -> String {
 }
 
 fn verify_checksum(archive: &Path, fixture: &Fixture) -> Result<(), String> {
-    let Some(expected) = fixture.artifact.sha256.as_deref() else {
+    let (expected, size) = match &fixture.archive {
+        Some(in_repo) => (Some(in_repo.sha256.as_str()), Some(in_repo.bytes)),
+        None => (fixture.artifact.sha256.as_deref(), None),
+    };
+    let Some(expected) = expected else {
         return Ok(());
     };
     let bytes = fs::read(archive)
         .map_err(|e| format!("could not read fixture archive {}: {e}", archive.display()))?;
+    if let Some(size) = size
+        && bytes.len() as u64 != size
+    {
+        return Err(format!(
+            "fixture '{}' archive {} has {} bytes, manifest expects {size}",
+            fixture.id,
+            archive.display(),
+            bytes.len()
+        ));
+    }
     let actual = hex::encode(Sha256::digest(&bytes));
     if !actual.eq_ignore_ascii_case(expected.trim()) {
         return Err(format!(
@@ -506,5 +546,75 @@ mod tests {
         let error = stage(fixtures.path(), &fixture).expect_err("a bad checksum must be rejected");
 
         assert!(error.contains("sha256"), "{error}");
+    }
+
+    /// Packs a minimal data directory below `root` and returns the manifest
+    /// entry naming it as an in-repo archive with `bytes` and `sha256` as
+    /// given, or the archive's own when `None`.
+    fn in_repo_fixture(root: &Path, bytes: Option<u64>, sha256: Option<&str>) -> Fixture {
+        let profile = tempfile::tempdir().expect("profile dir");
+        fs::write(profile.path().join(".env"), b"MCP_API_KEY=\n").expect("write .env");
+        fs::create_dir_all(root.join("archives")).expect("archives dir");
+        let archive = root.join("archives/profile.tar");
+        let status = Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(profile.path())
+            .arg(".")
+            .status()
+            .expect("tar runs");
+        assert!(status.success(), "tar packs the profile");
+        let content = fs::read(&archive).expect("read archive");
+        let digest = hex::encode(Sha256::digest(&content));
+        serde_json::from_value(serde_json::json!({
+            "id": "in-repo", "network": "testnet",
+            "archive": {
+                "path": "archives/profile.tar",
+                "sha256": sha256.unwrap_or(&digest),
+                "bytes": bytes.unwrap_or(content.len() as u64),
+            },
+            "artifact": { "archive": "downloaded.tar" },
+        }))
+        .expect("fixture json")
+    }
+
+    #[test]
+    fn an_in_repo_archive_is_staged_from_the_repository_not_the_fixtures_dir() {
+        let repo = tempfile::tempdir().expect("repo dir");
+        let fixtures = tempfile::tempdir().expect("fixtures dir");
+        let fixture = in_repo_fixture(repo.path(), None, None);
+
+        let staged = stage_from(fixtures.path(), repo.path(), &fixture).expect("stage");
+
+        assert!(staged.data_dir().join(".env").is_file());
+    }
+
+    #[test]
+    fn an_in_repo_archive_of_another_size_or_digest_is_rejected() {
+        let repo = tempfile::tempdir().expect("repo dir");
+        let fixtures = tempfile::tempdir().expect("fixtures dir");
+        for (fixture, field) in [
+            (in_repo_fixture(repo.path(), Some(1), None), "bytes"),
+            (in_repo_fixture(repo.path(), None, Some("00")), "sha256"),
+        ] {
+            let error = stage_from(fixtures.path(), repo.path(), &fixture)
+                .expect_err("a mismatched archive must be rejected");
+            assert!(error.contains(field), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_missing_in_repo_archive_fails_without_falling_back() {
+        let packed_in = tempfile::tempdir().expect("repo the archive is packed in");
+        let repo = tempfile::tempdir().expect("repo without the archive");
+        let fixtures = tempfile::tempdir().expect("fixtures dir");
+        let fixture = in_repo_fixture(packed_in.path(), None, None);
+        fs::write(fixtures.path().join("downloaded.tar"), b"x").expect("write decoy");
+
+        let error = stage_from(fixtures.path(), repo.path(), &fixture)
+            .expect_err("a missing in-repo archive must fail");
+
+        assert!(error.contains("archives/profile.tar"), "{error}");
     }
 }

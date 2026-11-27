@@ -21,8 +21,8 @@ use super::identity_picker_card::{CARD_HEIGHT, CARD_MIN_WIDTH};
 use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
-    self, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Response, RichText, Sense,
-    Stroke, Ui, Vec2, WidgetInfo, WidgetType,
+    self, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Response, RichText, Role,
+    Sense, Stroke, Ui, Vec2, WidgetInfo,
 };
 
 /// Border style currently applied to the add card. Exposed primarily for the
@@ -169,7 +169,7 @@ impl IdentityPickerAddCard {
         });
 
         let rect = inner.response.rect;
-        let id = ui.id().with("identity-picker-add-card");
+        let id = ui.scope_id().with("identity-picker-add-card");
         let response: Response = ui
             .interact(rect, id, Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -202,7 +202,7 @@ impl IdentityPickerAddCard {
         }
 
         response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, true, "Add a new identity".to_string())
+            WidgetInfo::labeled(Role::Button, true, "Add a new identity".to_string())
         });
 
         IdentityPickerAddCardResponse::new(response.clicked(), rect)

@@ -10,7 +10,6 @@ use crate::model::identity_key_limits::{
     KeyLimitsError, key_with_limits, limits_allowed, new_key_limits, parse_key_validity_days,
 };
 use crate::model::identity_key_usability::now_ms;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::key_input::decode_hex_secret;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -155,12 +154,11 @@ pub struct AddKeyScreen {
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &[SecurityLevel::MASTER],
-            SigningScope::NonBatch,
-        ));
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -206,12 +204,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &[SecurityLevel::MASTER],
-            SigningScope::NonBatch,
-        ));
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -262,12 +259,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &[SecurityLevel::MASTER],
-            SigningScope::NonBatch,
-        ));
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        let selected_key = identity_clone.identity_update_signing_key();
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         let derivation = DerivedKeyChooser::new(app_context, &identity, KeyType::ECDSA_SECP256K1);
@@ -622,7 +618,7 @@ impl AddKeyScreen {
 
     fn show_derivation_index(&mut self, ui: &mut Ui) {
         self.derivation_visible = true;
-        ui.label("Wallet key slot:");
+        let slot_label = ui.label("Wallet key slot:");
         ui.vertical(|ui| {
             match self.derivation.status() {
                 // Unreachable while "Create from wallet" is on; kept for totality.
@@ -664,7 +660,7 @@ impl AddKeyScreen {
                         "All wallet key slots available to this identity are in use. Turn off Create from wallet to enter a private key instead.",
                     );
                 }
-                ChooserStatus::Ready => self.show_slot_list(ui),
+                ChooserStatus::Ready => self.show_slot_list(ui, slot_label.id),
             }
             if self.derivation.identity_protected() {
                 ui.label(
@@ -675,7 +671,7 @@ impl AddKeyScreen {
         ui.end_row();
     }
 
-    fn show_slot_list(&mut self, ui: &mut Ui) {
+    fn show_slot_list(&mut self, ui: &mut Ui, label_id: egui::Id) {
         let limit = self.derivation.limit();
         let selected = self.derivation.selected_index();
         egui::ComboBox::from_id_salt("derived_key_index")
@@ -695,7 +691,9 @@ impl AddKeyScreen {
                         .inner
                         .disabled_tooltip("This slot is already used by a key on this identity.");
                 }
-            });
+            })
+            .response
+            .labelled_by(label_id);
         if let Some(suggested) = self.derivation.suggested_index() {
             ui.label(format!(
                 "Other wallet apps restore this key most reliably from slot {suggested}. Choose slot {suggested} unless you need a different one."
@@ -836,7 +834,7 @@ impl AddKeyScreen {
                 }
             });
         ui.add_space(20.0);
-        if ui.button("Back to Identities Screen").clicked() {
+        if ui.button("Back").clicked() {
             action = AppAction::PopScreenAndRefresh;
         }
         action
@@ -863,7 +861,7 @@ impl AddKeyScreen {
                 );
             });
         ui.add_space(20.0);
-        if ui.button("Back to Identities Screen").clicked() {
+        if ui.button("Back").clicked() {
             action = AppAction::PopScreenAndRefresh;
         }
         action
@@ -874,10 +872,7 @@ impl AddKeyScreen {
             ui,
             "Key Added Successfully!".to_string(),
             vec![
-                (
-                    "Back to Identities Screen".to_string(),
-                    AppAction::PopScreenAndRefresh,
-                ),
+                ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
                     "Add another key".to_string(),
                     AppAction::Custom("add_another".to_string()),
@@ -1213,7 +1208,7 @@ impl ScreenLike for AddKeyScreen {
                         // Use interact with hover sense to detect hover on disabled widget
                         let hover_response = ui.interact(
                             inner_response.response.rect,
-                            egui::Id::new("security_level_tooltip"),
+                            egui::Id::unique("security_level_tooltip"),
                             egui::Sense::hover(),
                         );
                         hover_response.info_tooltip(format!(
@@ -1398,7 +1393,9 @@ mod derived_key_tests {
     /// A staged context plus the derivation fixture's identity; the public-key
     /// cache is warm when `warm` is set.
     async fn staged_screen_parts(warm: bool) -> (StagedIdentity, QualifiedIdentity) {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let (identity, cache, seed_hash, _) = fixture();
         if warm {
             staged
@@ -1420,7 +1417,7 @@ mod derived_key_tests {
         let task = BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
             screen.identity.clone(),
             key,
-            [0x11; 32],
+            crate::test_support::keys::secret_bytes(),
         ));
         let AppAction::BackendTaskWithContext { context, .. } = screen.dispatch_add(task) else {
             unreachable!("an add is always dispatched with its context");
@@ -1841,6 +1838,7 @@ mod derived_key_tests {
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
         use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+        let secret_9 = crate::test_support::keys::secret_bytes();
 
         let (staged, mut identity) = staged_screen_parts(true).await;
         identity.identity.set_id(staged.id);
@@ -1871,7 +1869,7 @@ mod derived_key_tests {
         let mut refreshed = identity.clone();
         let mut foreign = identity.identity.public_keys()[&0].clone();
         foreign.set_id(1);
-        let secret = SecretKey::from_secret_bytes([9; 32]).unwrap();
+        let secret = SecretKey::from_secret_bytes(secret_9).unwrap();
         foreign.set_data(
             PublicKey::from_secret_key(&secret)
                 .serialize()
@@ -1898,6 +1896,8 @@ mod derived_key_tests {
     /// the form field afterwards cannot change the key the user copies.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_rescued_key_is_the_submitted_key_not_the_live_field() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut harness = source_harness(AddKeyScreen::new(identity, &staged.ctx));
         harness.run();
@@ -1906,7 +1906,7 @@ mod derived_key_tests {
         let mut screen = harness.into_state();
         assert!(!screen.derivation.derived());
 
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         screen.private_key_input.set_text(submitted.clone());
         let AppAction::BackendTaskWithContext {
             task: BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(..)),
@@ -1917,7 +1917,7 @@ mod derived_key_tests {
         };
         screen.add_key_status = AddKeyStatus::WaitingForResult;
         // A stray edit lands in the form after the submit.
-        screen.private_key_input.set_text(hex::encode([0x22; 32]));
+        screen.private_key_input.set_text(hex::encode(secret_22));
 
         // An unrelated task fails while the add is still running.
         let unrelated = TaskError::WalletLocked;
@@ -1974,10 +1974,11 @@ mod derived_key_tests {
     /// drop the key it would rescue if its own add then fails.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_foreign_add_success_does_not_complete_this_add() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
         let own_add = pending_add(&mut screen);
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         screen.submitted_private_key.set_text(submitted.clone());
 
         for foreign in [
@@ -2024,13 +2025,15 @@ mod derived_key_tests {
     /// pending submission nor clear the key its rescue view offers.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stale_same_identity_add_success_does_not_settle_this_add() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut closed = AddKeyScreen::new(identity.clone(), &staged.ctx);
-        let stale_context = submit_entered_key(&mut closed, &hex::encode([0x33; 32]));
+        let stale_context = submit_entered_key(&mut closed, &hex::encode(secret_33));
         drop(closed);
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         let own_context = submit_entered_key(&mut screen, &submitted);
         let stale_success = || BackendTaskSuccessResult::AddedKeyToIdentity(FeeResult::new(1, 1));
 
@@ -2059,13 +2062,15 @@ mod derived_key_tests {
     /// neither while its add is pending nor once its rescue view is shown.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stale_same_identity_add_error_does_not_settle_this_add() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut closed = AddKeyScreen::new(identity.clone(), &staged.ctx);
-        let stale_context = submit_entered_key(&mut closed, &hex::encode([0x33; 32]));
+        let stale_context = submit_entered_key(&mut closed, &hex::encode(secret_33));
         drop(closed);
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         let own_context = submit_entered_key(&mut screen, &submitted);
         let derived_not_saved = || TaskError::DerivedIdentityKeyAddedButNotSaved {
             source: Box::new(TaskError::IdentityKeySlotOccupied),
@@ -2131,11 +2136,7 @@ mod derived_key_tests {
         harness.run();
         assert!(harness.query_by_label("Copy private key").is_none());
         assert!(harness.query_by_label("Private Key:").is_none());
-        assert!(
-            harness
-                .query_by_label("Back to Identities Screen")
-                .is_some()
-        );
+        assert!(harness.query_by_label("Back").is_some());
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
         let own_add = pending_add(&mut screen);
@@ -2147,6 +2148,37 @@ mod derived_key_tests {
         let mut harness = not_saved_harness(screen);
         harness.run();
         assert!(harness.query_by_label("Copy private key").is_some());
+    }
+
+    #[test]
+    fn add_key_returns_to_its_caller() {
+        use crate::context::test_support::{identity_holding, test_app_context};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        for status in [
+            AddKeyStatus::Complete,
+            AddKeyStatus::KeyOnNetworkNotSaved,
+            AddKeyStatus::DerivedKeyOnNetworkNotSaved,
+        ] {
+            let mut screen = AddKeyScreen::new(identity_holding(&[]), &ctx);
+            screen.add_key_status = status;
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, (screen, action): &mut (AddKeyScreen, AppAction)| {
+                        let frame_action = screen.ui(ui);
+                        if frame_action != AppAction::None {
+                            *action = frame_action;
+                        }
+                    },
+                    (screen, AppAction::None),
+                );
+            harness.run();
+            harness.get_by_label("Back").click();
+            harness.run();
+            assert_eq!(harness.state().1, AppAction::PopScreenAndRefresh);
+        }
     }
 }
 

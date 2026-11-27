@@ -40,11 +40,11 @@ use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
+use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
@@ -731,7 +731,13 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                                 self.render_sign_input(ui);
                             } else if self.wallet_open {
-                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                let notice = wallet_key_notice(
+                                    self.selected_wallet
+                                        .as_ref()
+                                        .map(|wallet| wallet.read_recover())
+                                        .as_deref(),
+                                );
+                                ui.label(RichText::new(notice).color(text_primary));
                                 ui.add_space(10.0);
 
                                 if ui.button("View Private Key").clicked() {
@@ -753,7 +759,13 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                                 self.render_sign_input(ui);
                             } else {
-                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                let notice = wallet_key_notice(
+                                    self.selected_wallet
+                                        .as_ref()
+                                        .map(|wallet| wallet.read_recover())
+                                        .as_deref(),
+                                );
+                                ui.label(RichText::new(notice).color(text_primary));
                                 ui.add_space(10.0);
 
                                 if ui.button("View Private Key").clicked() {
@@ -858,7 +870,7 @@ impl ScreenLike for KeyInfoScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("identity_key_sign_message_info_popup"),
+                        egui::Id::unique("identity_key_sign_message_info_popup"),
                         "Sign Message Info",
                         &show_pop_up_info_text,
                     );
@@ -1606,13 +1618,14 @@ impl KeyInfoScreen {
         });
         ui.add_space(5.0);
 
-        ui.label(RichText::new("Enter message to sign:").color(text_primary));
+        let message_label = ui.label(RichText::new("Enter message to sign:").color(text_primary));
         ui.add_space(5.0);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_input)
                 .desired_width(f32::INFINITY)
                 .desired_rows(3),
-        );
+        )
+        .labelled_by(message_label.id);
         ui.add_space(5.0);
 
         if ui.button("Sign Message").clicked() {
@@ -1627,13 +1640,15 @@ impl KeyInfoScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
+            let signed_label =
+                ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
                     .desired_width(f32::INFINITY)
                     .desired_rows(3),
-            );
+            )
+            .labelled_by(signed_label.id);
         }
     }
 
@@ -2197,6 +2212,20 @@ fn raise_confirmation_text(raise: &KeyLimitsRaise) -> String {
     sentences.join(" ")
 }
 
+/// Where a wallet-derived key's private key comes from, phrased for the
+/// wallet's actual protection: only a password wallet is called protected.
+fn wallet_key_notice(wallet: Option<&Wallet>) -> &'static str {
+    match wallet {
+        Some(wallet) if wallet.requires_password_unlock() => {
+            "The private key is in your password-protected wallet. Unlock the wallet to view it."
+        }
+        Some(wallet) if wallet.uses_password => {
+            "The private key is in your password-protected wallet."
+        }
+        _ => "The private key is derived from your wallet's recovery phrase.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2242,6 +2271,43 @@ mod tests {
     const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
+    fn wallet_with_password(protected: bool) -> Wallet {
+        use crate::test_support::keys;
+        let password = protected.then(|| Secret::new(hex::encode(keys::secret_bytes())));
+        Wallet::new_from_seed(keys::seed(), Network::Testnet, None, password.as_ref())
+            .expect("wallet")
+    }
+
+    #[test]
+    fn a_passwordless_wallet_key_is_not_called_password_protected() {
+        let wallet = wallet_with_password(false);
+
+        assert_eq!(
+            wallet_key_notice(Some(&wallet)),
+            "The private key is derived from your wallet's recovery phrase."
+        );
+        assert_eq!(
+            wallet_key_notice(None),
+            "The private key is derived from your wallet's recovery phrase."
+        );
+    }
+
+    #[test]
+    fn a_password_wallet_key_asks_for_an_unlock_only_while_locked() {
+        let mut wallet = wallet_with_password(true);
+        assert_eq!(
+            wallet_key_notice(Some(&wallet)),
+            "The private key is in your password-protected wallet."
+        );
+
+        wallet.wallet_seed.close();
+
+        assert_eq!(
+            wallet_key_notice(Some(&wallet)),
+            "The private key is in your password-protected wallet. Unlock the wallet to view it."
+        );
+    }
+
     #[test]
     fn identity_password_form_names_the_identity_credential_when_too_long() {
         use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
@@ -2263,7 +2329,7 @@ mod tests {
     async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -2332,6 +2398,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protection_status_includes_retained_import_keys() {
+        let secret_9 = crate::test_support::keys::secret_bytes();
         let (ctx, _dir) = offline_ctx().await;
         let key = public_key(9, Purpose::AUTHENTICATION);
         let qi = identity_with(0x5C, &[]);
@@ -2347,7 +2414,7 @@ mod tests {
                 .store_protected(
                     &MAIN,
                     9,
-                    &[9; 32],
+                    &secret_9,
                     &platform_wallet_storage::secrets::SecretString::new(
                         "synthetic-protection-password",
                     ),
@@ -2425,6 +2492,8 @@ mod tests {
     /// private half, leaving the key the user asked about still on the device.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_one_key_leaves_a_different_key_sharing_its_id_alone() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         // Same id, different keys: purpose is what tells them apart.
@@ -2437,12 +2506,12 @@ mod tests {
             BinaryData::new(vec![0xEE; 20]),
         );
 
-        let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
+        let mut stored = identity_with(0x5A, &[(on_screen.clone(), secret_11)]);
         stored.private_keys.insert_at(
             (VOTER, other.id()),
             (
                 QualifiedIdentityPublicKey::from(other.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
+                PrivateKeyData::Clear(secret_22),
             ),
         );
         app_context
@@ -2483,10 +2552,11 @@ mod tests {
     /// reads its delete set from that same map.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_a_key_also_removes_its_vault_secret() {
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen = public_key(3, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x7C, &[(on_screen.clone(), [0x33; 32])]);
+        let stored = identity_with(0x7C, &[(on_screen.clone(), secret_33)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2500,7 +2570,7 @@ mod tests {
                 .expect("vault read")
                 .as_deref()
                 .copied(),
-            Some([0x33; 32]),
+            Some(secret_33),
             "saving the key put its bytes in the vault",
         );
 
@@ -2551,10 +2621,11 @@ mod tests {
     /// right after a banner said they were back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_finished_restore_refreshes_the_identity_this_screen_writes_back() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2593,10 +2664,11 @@ mod tests {
     /// with no error to show for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restore_that_landed_off_screen_survives_the_next_key_edit() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2748,10 +2820,11 @@ mod tests {
     /// the screen was open — for a private key, silently and irreversibly.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_write_behind_the_screen_survives_a_removal() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x52, &[(on_screen.clone(), [0x11; 32])]);
+        let stored = identity_with(0x52, &[(on_screen.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2788,7 +2861,7 @@ mod tests {
     /// A key and the private key that opens it, so the paste path's validation
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
-        let secret_bytes = rand::random::<[u8; 32]>();
+        let secret_bytes = crate::test_support::keys::secret_bytes();
         let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
         let data = PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
@@ -2857,12 +2930,13 @@ mod tests {
         sealed: &IdentityPublicKey,
         also_published: &[IdentityPublicKey],
     ) -> QualifiedIdentity {
+        let secret_31 = crate::test_support::keys::secret_bytes();
         let identifier = Identifier::from([id_byte; 32]);
         crate::wallet_backend::SecretSeam::new(&app_context.secret_store())
             .put_secret_protected(
                 &platform_wallet_storage::secrets::WalletId::from(identifier.to_buffer()),
                 &crate::wallet_backend::SecretScope::identity_key_label(&MAIN, sealed.id()),
-                &platform_wallet_storage::secrets::SecretBytes::from_slice(&[0x31; 32]),
+                &platform_wallet_storage::secrets::SecretBytes::from_slice(&secret_31),
                 &platform_wallet_storage::secrets::SecretString::new("identity-object-password"),
             )
             .expect("seal the existing key Tier-2");
@@ -3109,17 +3183,18 @@ mod tests {
     /// it still holds rather than declaring anything removed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_removal_that_cannot_persist_keeps_the_key_held() {
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         // Deliberately never inserted: the record is gone by the time the
         // removal runs, the way another screen's identity removal leaves it.
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let identity = identity_with(0x7D, &[(on_screen.clone(), [0x22; 32])]);
+        let identity = identity_with(0x7D, &[(on_screen.clone(), secret_22)]);
 
         let mut screen = KeyInfoScreen::new(
             identity,
             on_screen.clone(),
-            Some((PrivateKeyData::Clear([0x22; 32]), None)),
+            Some((PrivateKeyData::Clear(secret_22), None)),
             &app_context,
         );
         let error = screen
@@ -3229,10 +3304,11 @@ mod tests {
     /// "restored to this identity" about an identity that is not on screen.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_completion_for_another_identity_is_ignored() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), secret_11)]);
         let on_screen_id = on_screen.identity.id();
         app_context
             .insert_local_qualified_identity(&on_screen, &None)
@@ -3453,10 +3529,11 @@ mod tests {
     /// failure may return the offer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_this_restores_own_failure_returns_it_to_its_offer() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), secret_11)]);
         let on_screen_id = on_screen.identity.id();
         app_context
             .insert_local_qualified_identity(&on_screen, &None)

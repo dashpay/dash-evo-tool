@@ -108,6 +108,8 @@ Reference: `AmountInput` in `src/ui/components/amount_input.rs`.
 - Input border: unfocused (`input_stroke()`), focused (`input_stroke_focused()`), validation error (`input_stroke_error()`)
 - Styled text edits: `styled_text_edit_singleline()` / `styled_text_edit_multiline()`
 - **Input border helpers**: `ComponentStyles::input_stroke()`, `input_stroke_focused()`, `input_stroke_error()` are the canonical helpers -- never construct input strokes manually
+- **Focus ring for custom clickables**: a hand-painted clickable (card, chip) is allocated once with `Sense::click()` (allocating for hover and then calling `interact` drops keyboard focus every frame) and draws `ComponentStyles::focus_stroke(dark_mode)` while it has focus
+- **Accessible names**: every input widget needs a name for screen readers; kittest fails a test on unnamed widgets. Point a field at its visible label with `response.labelled_by(label.id)`; when there is no visible label, set `response.accessible_name(...)` to a short phrase
 - Follow Component pattern: lazy init, private fields, builder API, `ComponentResponse` trait (see `docs/COMPONENT_DESIGN_PATTERN.md`)
 
 ### Password Inputs

@@ -187,3 +187,21 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
 
     Ok(fonts)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::fonts;
+
+    #[test]
+    fn every_font_in_a_family_has_its_data_bundled() {
+        let fonts = fonts().expect("bundled fonts load");
+        for (family, names) in &fonts.families {
+            for name in names {
+                assert!(
+                    fonts.font_data.contains_key(name),
+                    "font family {family:?} names {name:?}, which has no bundled font data"
+                );
+            }
+        }
+    }
+}

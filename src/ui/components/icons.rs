@@ -9,7 +9,7 @@ struct Assets;
 /// Load a raster icon from the embedded `icons/` assets, caching the resulting
 /// texture in the egui context so repeated frames reuse it.
 pub(crate) fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
+    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::unique(path)))
         .or_else(|| {
             let content = Assets::get(path).or_else(|| {
                 error!("Image not found in embedded assets at path: {}", path);
@@ -24,7 +24,7 @@ pub(crate) fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
                         egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
                         egui::TextureOptions::LINEAR,
                     );
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(path), texture.clone()));
                     Some(texture)
                 }
                 Err(e) => {
@@ -39,7 +39,7 @@ pub(crate) fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 /// and cached per dimension in the egui context.
 pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Option<TextureHandle> {
     let cache_key = format!("{}_{}_{}", path, width, height);
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(&cache_key)))
+    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::unique(&cache_key)))
         .or_else(|| {
             let content = Assets::get(path).or_else(|| {
                 error!("SVG not found in embedded assets at path: {}", path);
@@ -76,7 +76,7 @@ pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Opti
                 ),
                 egui::TextureOptions::LINEAR,
             );
-            ctx.data_mut(|d| d.insert_temp(egui::Id::new(&cache_key), texture.clone()));
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique(&cache_key), texture.clone()));
             Some(texture)
         })
 }

@@ -61,6 +61,14 @@ impl AsyncTool<DashMcpService> for NetworkTool {
 
         let config = crate::config::Config::load_from(ctx.data_dir())
             .map_err(|e| McpToolError::Internal(format!("config load: {e}")))?;
+        if let Some(source) = config.network_settings_error(ctx.network()) {
+            return Err(McpToolError::InvalidSettings(
+                crate::context::NetworkContextError::InvalidSettings {
+                    network: ctx.network(),
+                    source: source.clone(),
+                },
+            ));
+        }
         let available = collect_available(&config)
             .into_iter()
             .map(|s| s.to_owned())
@@ -283,6 +291,36 @@ mod tests {
     use crate::wallet_backend::{IdentityKeyView, SecretPrompt};
     use platform_wallet_storage::secrets::SecretString;
 
+    /// `network_info` on a running server re-reads the settings file: once the
+    /// active network's settings are rejected, it reports that instead of an
+    /// empty list of networks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn network_info_reports_settings_rejected_while_running() {
+        if crate::test_support::run_test_in_child(
+            "mcp::tools::network::tests::network_info_reports_settings_rejected_while_running",
+            &[],
+        ) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        let service = DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::from(ctx)));
+        NetworkTool::invoke(&service, EmptyParams {})
+            .await
+            .expect("valid settings");
+
+        std::fs::write(tmp.path().join(".env"), "TESTNET_core_rpc_port=invalid\n").unwrap();
+        let error = NetworkTool::invoke(&service, EmptyParams {}).await;
+        service.shutdown_wallet_backend().await;
+        let error = error.err().expect("rejected settings are reported");
+        assert!(
+            error
+                .to_string()
+                .contains("A setting saved for testnet has a value that is not valid"),
+            "{error}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_network_save_keeps_the_active_context() {
         use crate::context::test_support::test_app_context_with_kv;
@@ -355,7 +393,7 @@ mod tests {
         let identity_id = [0x92; 32];
         let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
         let key_id = 8;
-        let key = [0xb6; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let password = "mcp-network-switch-password";
         let secret_store = ctx.secret_store();
         IdentityKeyView::new(&secret_store, identity_id)

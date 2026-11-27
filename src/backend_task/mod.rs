@@ -38,6 +38,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 pub use events::{CacheDomain, CacheUpdate, TaskResult};
+pub(crate) use events::{as_request, in_current_request};
 use futures::future::join_all;
 use grovestark::GroveSTARKTask;
 use migration::MigrationTask;
@@ -251,20 +252,22 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable or insecure data folder, or
-/// a compatibility upgrade that fails the same way on every attempt). These
+/// newer/incompatible app build, an unwritable data folder, or data only an
+/// earlier release can upgrade). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
 /// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    match error {
+    matches!(
+        error,
         TaskError::WalletDataTooNew { .. }
-        | TaskError::WalletDataIncompatible { .. }
-        | TaskError::WalletStorageAccessDenied { .. }
-        | TaskError::WalletDataFolderInsecure { .. } => true,
-        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
-        _ => false,
-    }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletStorageAccessDenied { .. }
+            | TaskError::WalletStorageLockAccessDenied { .. }
+            | TaskError::SecretStoreAccessDenied { .. }
+            | TaskError::WalletDataNeedsUpgradeRelease { .. }
+            | TaskError::AppDataNeedsUpgradeRelease { .. }
+    )
 }
 
 /// Information about fees for a platform state transition.
@@ -331,6 +334,124 @@ pub enum BackendTask {
     None,
 }
 
+impl BackendTask {
+    /// The identity whose credits pay for this task, for tasks whose handler
+    /// does not store the payer's new balance itself.
+    // TODO: interim. Remove `fee_payer` (and the balance read it drives) once
+    // DET's paid operations run through platform-wallet `IdentityWallet`
+    // methods, which persist the proven owner balance, and upstream syncs
+    // identity credit balances periodically.
+    // Known limit: two overlapping paid tasks for the same payer can store
+    // the older read last; there is no ordering guard until that migration.
+    pub(crate) fn fee_payer(&self) -> Option<Identifier> {
+        let payer = match self {
+            Self::TokenTask(task) => match task.as_ref() {
+                TokenTask::RegisterTokenContract { identity, .. }
+                | TokenTask::PurchaseTokens { identity, .. }
+                | TokenTask::SetDirectPurchasePrice { identity, .. } => identity,
+                TokenTask::MintTokens {
+                    sending_identity, ..
+                }
+                | TokenTask::TransferTokens {
+                    sending_identity, ..
+                } => sending_identity,
+                TokenTask::BurnTokens { owner_identity, .. } => owner_identity,
+                TokenTask::DestroyFrozenFunds { actor_identity, .. }
+                | TokenTask::FreezeTokens { actor_identity, .. }
+                | TokenTask::UnfreezeTokens { actor_identity, .. }
+                | TokenTask::PauseTokens { actor_identity, .. }
+                | TokenTask::ResumeTokens { actor_identity, .. }
+                | TokenTask::ClaimTokens { actor_identity, .. } => actor_identity,
+                TokenTask::UpdateTokenConfig {
+                    identity_token_info,
+                    ..
+                } => &identity_token_info.identity,
+                TokenTask::QueryMyTokenBalances
+                | TokenTask::QueryIdentityTokenBalance(_)
+                | TokenTask::StopTrackingTokenBalance(_)
+                | TokenTask::ClearOncePerIdentityClaimHint(_)
+                | TokenTask::QueryDescriptionsByKeyword(..)
+                | TokenTask::FetchTokenByContractId(_)
+                | TokenTask::FetchTokenByTokenId(_)
+                | TokenTask::SaveTokenLocally(_)
+                | TokenTask::QueryTokenPricing(_)
+                | TokenTask::EstimatePerpetualTokenRewardsWithExplanation { .. } => return None,
+            },
+            Self::ContractTask(task) => match task.as_ref() {
+                ContractTask::RegisterDataContract(_, _, identity, _)
+                | ContractTask::UpdateDataContract(_, identity, _) => identity,
+                ContractTask::FetchContracts(_)
+                | ContractTask::FetchContractsWithDescriptions(_)
+                | ContractTask::FetchActiveGroupActions(..)
+                | ContractTask::RemoveContract(_)
+                | ContractTask::SaveDataContract(..) => return None,
+            },
+            Self::DocumentTask(task) => match task.as_ref() {
+                DocumentTask::BroadcastDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::DeleteDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::ReplaceDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::TransferDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::PurchaseDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::SetDocumentPrice {
+                    qualified_identity, ..
+                } => qualified_identity,
+                DocumentTask::FetchDocuments(_) | DocumentTask::FetchDocumentsPage(_) => {
+                    return None;
+                }
+            },
+            Self::DashPayTask(task) => match task.as_ref() {
+                DashPayTask::UpdateProfile { identity, .. }
+                | DashPayTask::SendContactRequest { identity, .. }
+                | DashPayTask::SendContactRequestWithProof { identity, .. }
+                | DashPayTask::AcceptContactRequest { identity, .. }
+                | DashPayTask::RejectContactRequest { identity, .. }
+                | DashPayTask::CancelContactRequest { identity, .. }
+                | DashPayTask::UpdateContactInfo { identity, .. } => identity,
+                // A contact payment is paid from the wallet's Core funds.
+                DashPayTask::SendPaymentToContact { .. }
+                | DashPayTask::LoadProfile { .. }
+                | DashPayTask::LoadContacts { .. }
+                | DashPayTask::LoadContactsOffline { .. }
+                | DashPayTask::LoadContactRequests { .. }
+                | DashPayTask::FetchContactProfile { .. }
+                | DashPayTask::FetchAvatar { .. }
+                | DashPayTask::SearchProfiles { .. }
+                | DashPayTask::LoadPaymentHistory { .. }
+                | DashPayTask::RegisterDashPayAddresses { .. }
+                | DashPayTask::DetectIncomingContactPayments { .. }
+                | DashPayTask::GenerateAutoAcceptQrCode { .. } => return None,
+            },
+            // Identity tasks store the new balance themselves; a raw state
+            // transition does not name its payer without decoding it.
+            Self::IdentityTask(_)
+            | Self::BroadcastStateTransition(_)
+            | Self::ContestedResourceTask(_)
+            | Self::CoreTask(_)
+            | Self::SystemTask(_)
+            | Self::PlatformInfo(_)
+            | Self::GroveSTARKTask(_)
+            | Self::WalletTask(_)
+            | Self::ShieldedTask(_)
+            | Self::MigrationTask(_)
+            | Self::ReinitCoreClientAndSdk
+            | Self::SwitchNetwork { .. }
+            | Self::DiscoverDapiNodes { .. }
+            | Self::None => return None,
+        };
+        Some(payer.identity.id())
+    }
+}
+
 /// Identifies the operation that produced a backend-task error without retaining
 /// the complete [`BackendTask`] in the UI result channel. Document operations
 /// retain their query because the visible screen needs it for exact matching.
@@ -376,6 +497,8 @@ pub enum BackendTaskContext {
     RestoreFromPreviousVersion,
     /// Saving the upgrade-backup retention policy.
     UpdateBackupRetention,
+    /// The Settings "Refresh DAPI endpoints" run.
+    DapiNodeDiscovery,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// The background contest + vote-state refresh; its failures are logged,
@@ -393,6 +516,12 @@ pub enum BackendTaskContext {
     AssetLockMaxAmount {
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
+        request_id: u64,
+    },
+    /// Spending-limit quote for one wallet and operation kind.
+    SpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
         request_id: u64,
     },
     /// One HD-wallet or imported-key alias update.
@@ -428,6 +557,22 @@ pub enum BackendTaskContext {
     LegacyRecoveryOnNetwork {
         network: Network,
         operation: Box<BackendTaskContext>,
+    },
+    /// An event one network's wallet backend raised from chain sync — a
+    /// received payment, a balance push, Platform becoming reachable — rather
+    /// than from a request. The backend outlives a switch away from its
+    /// network, so this is the only record of the network the event belongs to.
+    WalletSync { network: Network },
+    /// A report `request` sent while still running on `network` — progress,
+    /// a partial result, or one step's failure. It has no dispatch id of its
+    /// own, so the request's sender stays on record until the request's own
+    /// result arrives, and no screen's wait for that request ends on it:
+    /// [`Self::operation`] leaves it wrapped, so it matches no request's
+    /// context. `request` is `Unknown` when the report was sent outside a
+    /// dispatch.
+    Interim {
+        network: Network,
+        request: Box<BackendTaskContext>,
     },
     /// Building the context of a network the app switches to. Every failure
     /// of the switch, including a task that stops without a result, must
@@ -481,12 +626,34 @@ impl BackendTaskContext {
         }
     }
 
-    /// The network a scheduled-vote sweep runs on, or `None` for every other
-    /// operation. The app starts sweeps itself, undispatched, so this is the
-    /// only record of the network their outcome belongs to.
-    pub(crate) fn scheduled_vote_sweep_network(&self) -> Option<Network> {
+    /// The network an operation no screen dispatched runs on, or `None` when
+    /// the context does not name one. The app's own sweeps and background
+    /// refreshes, and the wallet backend's chain-sync events, have no sender
+    /// on record, so this is the only record of the network their results
+    /// belong to.
+    pub(crate) fn undispatched_network(&self) -> Option<Network> {
         match self {
-            Self::ScheduledVoteSweep { network } => Some(*network),
+            Self::ScheduledVoteSweep { network }
+            | Self::DpnsBackgroundRefresh { network }
+            | Self::WalletSync { network }
+            | Self::Interim { network, .. } => Some(*network),
+            _ => None,
+        }
+    }
+
+    /// The context of a report sent by a request still running: see
+    /// [`Self::Interim`].
+    pub(crate) fn interim(network: Network, request: BackendTaskContext) -> Self {
+        Self::Interim {
+            network,
+            request: Box::new(request),
+        }
+    }
+
+    /// The request an interim report was sent from, or `None` for a result.
+    pub(crate) fn interim_request(&self) -> Option<&BackendTaskContext> {
+        match self {
+            Self::Interim { request, .. } => Some(request),
             _ => None,
         }
     }
@@ -513,6 +680,9 @@ impl BackendTaskContext {
         match self {
             Self::Dispatched { dispatch_id, .. } => Some(*dispatch_id),
             Self::LegacyRecoveryOnNetwork { operation, .. } => operation.dispatch_id(),
+            // A mid-task report is not the request's arrival: the request's
+            // sender stays on record until its own result takes it.
+            Self::Interim { .. } => None,
             _ => None,
         }
     }
@@ -629,6 +799,23 @@ impl BackendTaskContext {
                 snapshot_generation,
                 request_id,
             } => Some((*seed_hash, *snapshot_generation, *request_id)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn spend_limit_request(
+        &self,
+    ) -> Option<(
+        WalletSeedHash,
+        crate::model::spend_limit::SpendLimitKind,
+        u64,
+    )> {
+        match self.operation() {
+            Self::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            } => Some((*seed_hash, *kind, *request_id)),
             _ => None,
         }
     }
@@ -798,6 +985,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::DiscoverDapiNodes { .. } => Self::DapiNodeDiscovery,
             BackendTask::ContestedResourceTask(
                 ContestedResourceTask::SubmitDpnsVoteOperation {
                     operation, network, ..
@@ -835,6 +1023,15 @@ impl From<&BackendTask> for BackendTaskContext {
                 snapshot_generation: *snapshot_generation,
                 request_id: *request_id,
             },
+            BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            }) => Self::SpendLimit {
+                seed_hash: *seed_hash,
+                kind: *kind,
+                request_id: *request_id,
+            },
             BackendTask::WalletTask(
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
@@ -859,10 +1056,12 @@ pub enum BackendTaskSuccessResult {
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
-    /// By convention, the app routes `Progress` results to the visible screen's
-    /// `display_task_result` without creating a global banner at the app level
-    /// (unlike `Message`). Screens may create a banner handle on first receipt
-    /// and update it in-place on subsequent updates to avoid stacking.
+    /// Sent mid-task with [`TaskResult::interim_success`], so the app routes
+    /// them to the screen that started the task, in view or not, and to no
+    /// screen once that screen is closed or its network switched away from —
+    /// without creating a global banner at the app level (unlike `Message`).
+    /// Screens may create a banner handle on first receipt and update it
+    /// in-place on subsequent updates to avoid stacking.
     Progress {
         /// Human-readable progress message
         message: String,
@@ -1027,6 +1226,17 @@ pub enum BackendTaskSuccessResult {
         observed_inputs: crate::wallet_backend::AssetLockInputState,
         is_partial: bool,
     },
+    /// The largest amount, in credits, the upstream builder for `kind`
+    /// accepts from the wallet.
+    SpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
+        request_id: u64,
+        max_credits: u64,
+        /// For a Core send, what the Max was proven against; prices the fee
+        /// shown beside it.
+        core_fee: Option<crate::model::spend_limit::CoreSendQuoteFee>,
+    },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
@@ -1128,7 +1338,9 @@ pub enum BackendTaskSuccessResult {
     ClaimedTokens(FeeResult),
     /// The once-per-identity claim note of this pair was forgotten.
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
-    UpdatedTokenConfig(String, FeeResult), // The config item that was updated
+    /// The config item that was updated, the fee, and whether the update took
+    /// effect or was recorded as a group proposal.
+    UpdatedTokenConfig(String, FeeResult, crate::model::token::ConfigUpdateOutcome),
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
     /// running, so no second pass was started.
@@ -1169,7 +1381,11 @@ pub enum BackendTaskSuccessResult {
         cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
-    LoadedIdentity(QualifiedIdentity),
+    LoadedIdentity {
+        identity: QualifiedIdentity,
+        /// What the requester needs to know about a save that landed.
+        warning: Option<error::IdentitySaveWarning>,
+    },
     /// This identity's keys were sealed under a password (opt-in).
     /// The `count` keys newly sealed (0 when the task was an idempotent re-run
     /// over an already-protected identity).
@@ -1257,7 +1473,12 @@ pub enum BackendTaskSuccessResult {
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,
-    RefreshedDpnsContests,
+    /// A contest refresh on `network` stored fresh contests and vote states.
+    /// Sent mid-task, without the dispatch context, so the network is the
+    /// only record of where it belongs.
+    RefreshedDpnsContests {
+        network: Network,
+    },
     RefreshedOwnedDpnsNames,
 
     // Identity username results (Stream U)
@@ -1265,6 +1486,9 @@ pub enum BackendTaskSuccessResult {
     UsernameAvailability {
         label: String,
         availability: crate::model::dpns_usernames::UsernameAvailability,
+        /// The community vote fee registering `label` pays now, in credits;
+        /// 0 when it opens or joins no vote.
+        contest_fund: u64,
     },
     /// Every loaded identity's username requests were refreshed and stored.
     MyUsernameRequestsRefreshed,
@@ -1344,6 +1568,16 @@ pub enum BackendTaskSuccessResult {
 }
 
 impl BackendTaskSuccessResult {
+    /// The network a contest refresh ran on, or `None` for every other
+    /// result. The refresh sends this result mid-task, without its dispatch
+    /// context, so it is how the app tells a previous network's refresh apart.
+    pub(crate) fn dpns_contests_refresh_network(&self) -> Option<Network> {
+        match self {
+            Self::RefreshedDpnsContests { network } => Some(*network),
+            _ => None,
+        }
+    }
+
     fn contains_dapi_reachability_failure(&self) -> bool {
         match self {
             Self::RefreshedWallet { warning } => warning
@@ -1365,6 +1599,25 @@ impl BackendTaskSuccessResult {
 }
 
 impl AppContext {
+    /// Tell screens that cached data of `domain` changed on this network.
+    /// Never fails the task behind it: the task's own result follows whatever
+    /// happens here, and a frame loop gone at shutdown or after a network
+    /// switch is no reason to report work the network has already accepted
+    /// as failed. A lost notification is logged.
+    pub(crate) async fn notify_cache_changed(
+        &self,
+        domain: CacheDomain,
+        sender: &SenderAsync<TaskResult>,
+    ) {
+        let update = CacheUpdate {
+            network: self.network,
+            domain,
+        };
+        if sender.send(TaskResult::CacheUpdated(update)).await.is_err() {
+            tracing::warn!(?update, "No frame loop took the cache notification");
+        }
+    }
+
     /// Run backend tasks sequentially
     pub async fn run_backend_tasks_sequential(
         self: &Arc<Self>,
@@ -1407,9 +1660,15 @@ impl AppContext {
             BackendTask::WalletTask(_) | BackendTask::ShieldedTask(_)
         );
         let task_sdk = self.sdk.load_full();
+        let fee_payer = task.fee_payer();
         let result = self
-            .run_backend_task_inner(task, sender, task_sdk.as_ref())
+            .run_backend_task_inner(task, sender.clone(), task_sdk.as_ref())
             .await;
+        // The inner run has dropped every guard and claim the task held, so the
+        // balance read below delays neither the result nor a retry of the action.
+        if let (Ok(_), Some(payer)) = (&result, fee_payer) {
+            self.spawn_fee_payer_balance_refresh(Arc::clone(&task_sdk), payer, sender);
+        }
 
         if uses_wallet_backend_sdk {
             result
@@ -1471,7 +1730,7 @@ impl AppContext {
             && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
             // A storage-open failure (data written by a newer/incompatible app
-            // build, or an insecure data folder) is terminal — retrying won't
+            // build, or an unwritable data folder) is terminal — retrying won't
             // help and the generic "deferred" banner is misleading. Surface
             // those variants so the user sees the actionable message; every
             // other init error is a transient deferral the cold-boot bridge
@@ -1611,8 +1870,20 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        // Closing the app cancels the token, which this process does only at
+        // exit. The switch then stops between its steps instead of holding the
+        // exit for the task manager's whole shutdown budget: the test hold
+        // point and the wallet backend build stop at their next await, and a
+        // backend that was built is torn down through the upstream shutdown,
+        // never a plain drop.
+        let cancellation_token = self.subtasks.cancellation_token.clone();
+
         #[cfg(feature = "testing")]
-        drop(self.test_network_switch_gate.lock().await);
+        tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => return Err(TaskError::TaskManagerShuttingDown),
+            gate = self.test_network_switch_gate.lock() => drop(gate),
+        }
 
         // Create a new AppContext for the target network, reusing shared
         // resources (db, subtasks, connection_status) from the current context.
@@ -1642,12 +1913,35 @@ impl AppContext {
                 user_role,
             )
         })
-        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        .map_err(|source| TaskError::NetworkContextCreationFailed {
+            network,
+            source: Box::new(source),
+        })?;
+        // Never shown: shutdown drains task results without displaying them.
+        if cancellation_token.is_cancelled() {
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
         new_ctx.install_secret_prompt(self.secret_prompt());
+        // The switch runs on the frame loop of the context it leaves; the new
+        // context reports to the same one, and its backend is built on it
+        // below, before anyone else is handed the context.
+        new_ctx.install_frame_loop(sender.clone());
 
-        let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+        // Stops on its own when the app closes, tearing down a backend it had
+        // not finished building.
+        let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
+        if cancellation_token.is_cancelled() {
+            if let Ok(backend) = new_ctx.wallet_backend() {
+                backend.shutdown_bounded().await;
+            }
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
+
+        let backend_wired = match wiring {
             Ok(()) => {
+                // Registering the context is the frame loop's, whoever requested the switch.
                 if let Err(error) = sender
+                    .unfiltered()
                     .send(TaskResult::unattributed_success(
                         BackendTaskSuccessResult::NetworkContextRegistered {
                             network,
@@ -1674,7 +1968,6 @@ impl AppContext {
             }
         };
 
-        let cancellation_token = self.subtasks.cancellation_token.clone();
         let mut spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
             tokio::select! {
                 biased;
@@ -1702,8 +1995,7 @@ impl AppContext {
         if cancellation_token.is_cancelled()
             && let Ok(backend) = new_ctx.wallet_backend()
         {
-            backend.forget_all_secrets();
-            backend.shutdown().await;
+            backend.shutdown_bounded().await;
             spv_started = false;
         }
         Ok(BackendTaskSuccessResult::NetworkContextCreated {
@@ -1786,6 +2078,19 @@ impl AppContext {
                     observed_inputs: quote.observed_inputs,
                     is_partial: quote.is_partial,
                 }),
+            WalletTask::GetSpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            } => backend.spend_limit(&seed_hash, kind).await.map(|quote| {
+                BackendTaskSuccessResult::SpendLimit {
+                    seed_hash,
+                    kind,
+                    request_id,
+                    max_credits: quote.max_credits,
+                    core_fee: quote.core_fee,
+                }
+            }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }
@@ -1853,6 +2158,64 @@ mod tests {
     use super::*;
     use crate::context::feature_gate::FeatureGate;
 
+    /// A switch requested through the MCP server reports through a sender
+    /// that passes only cache changes. The context it creates is still
+    /// registered with the frame loop, and that context's frame loop and
+    /// wallet backend pass every report.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_switch_through_a_filtered_sender_installs_the_frame_loop_unfiltered() {
+        use crate::context::test_support::test_app_context;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let filtered = SenderAsync::new(tx, context.egui_ctx().clone())
+            .keeping_only(|report| matches!(report, TaskResult::CacheUpdated(_)));
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                filtered,
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: new_context,
+            ..
+        } = completed
+        else {
+            panic!("expected the created network context");
+        };
+        let is_registration = |report: &TaskResult| {
+            matches!(report, TaskResult::Success { result, .. }
+                if matches!(**result, BackendTaskSuccessResult::NetworkContextRegistered { .. }))
+        };
+        let mut drain = || std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(drain().iter().any(is_registration));
+
+        let registration = || {
+            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextRegistered {
+                network: Network::Mainnet,
+                context: Arc::clone(&new_context),
+            })
+        };
+        new_context
+            .frame_loop_sender()
+            .send(registration())
+            .await
+            .expect("frame loop");
+        let backend = new_context.wallet_backend().expect("wired backend");
+        backend
+            .frame_loop_for_test()
+            .send(registration())
+            .await
+            .expect("backend frame loop");
+        assert_eq!(drain().iter().filter(|r| is_registration(r)).count(), 2);
+        backend.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_keeps_registration_queued_after_completion() {
         use crate::context::test_support::test_app_context;
@@ -1897,11 +2260,86 @@ mod tests {
             .await;
     }
 
+    /// A cache notification goes to the frame loop when one listens, and is
+    /// dropped without error when none does: the result of the task behind
+    /// it must never be lost to the notification.
+    #[tokio::test]
+    async fn a_cache_notification_never_fails_the_task_behind_it() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let listening = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .notify_cache_changed(CacheDomain::Identities, &listening)
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TaskResult::CacheUpdated(CacheUpdate {
+                network,
+                domain: CacheDomain::Identities,
+            })) if network == context.network
+        ));
+
+        let (tx, _) = tokio::sync::mpsc::channel(1);
+        let unheard = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .notify_cache_changed(CacheDomain::Tokens, &unheard)
+            .await;
+    }
+
+    /// A network switch installs the frame loop it runs on as the new
+    /// context's, and builds the context's wallet backend on it, before the
+    /// context is registered or returned: a request reaching the new context
+    /// through MCP reports to the same frame loop as the GUI.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_installs_the_frame_loop_on_the_new_context() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        context.install_frame_loop(SenderAsync::new(tx, context.egui_ctx().clone()));
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                context.frame_loop_sender(),
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: new_context,
+            ..
+        } = completed
+        else {
+            panic!("expected completed network context");
+        };
+        while rx.try_recv().is_ok() {}
+
+        new_context
+            .frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the new context reports to the frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+        let backend = new_context.wallet_backend().expect("wired backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_registers_wired_backend_before_cancellation_teardown() {
         use crate::context::test_support::test_app_context;
         use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
         use zeroize::Zeroizing;
+        let seed_7b = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = test_app_context(temp_dir.path());
@@ -1945,7 +2383,7 @@ mod tests {
         };
         secret_access.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new([0x7b; 64])),
+            SecretPlaintext::HdSeed(&Zeroizing::new(seed_7b)),
             RememberPolicy::UntilAppClose,
         );
         assert!(secret_access.is_session_cached(&scope));
@@ -1969,6 +2407,14 @@ mod tests {
         assert!(
             !secret_access.is_session_cached(&scope),
             "cancellation teardown clears secrets on the registered backend"
+        );
+        assert_eq!(
+            completed_context
+                .test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "cancellation teardown runs the bounded upstream shutdown"
         );
     }
 
@@ -2081,7 +2527,7 @@ mod tests {
         let identity_id = [0x91; 32];
         let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
         let key_id = 7;
-        let key = [0xa5; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let password = "network-switch-password";
         let secret_store = ctx.secret_store();
         IdentityKeyView::new(&secret_store, identity_id)
@@ -2247,6 +2693,25 @@ mod tests {
     }
 
     #[test]
+    fn backend_task_context_preserves_spend_limit_request_identity() {
+        let seed_hash = [0x3a; 32];
+        let task = BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            seed_hash,
+            kind: crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+            request_id: 43,
+        });
+
+        assert_eq!(
+            BackendTaskContext::from(&task).spend_limit_request(),
+            Some((
+                seed_hash,
+                crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+                43
+            ))
+        );
+    }
+
+    #[test]
     fn backend_task_context_identifies_network_database_clear() {
         let task = BackendTask::SystemTask(SystemTask::ClearNetworkDatabase);
 
@@ -2280,6 +2745,7 @@ mod tests {
         use crate::backend_task::core::{PaymentRecipient, WalletPaymentRequest};
         use crate::model::wallet::Wallet;
         use std::sync::RwLock;
+        let seed_7 = crate::test_support::keys::seed();
 
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
@@ -2288,8 +2754,7 @@ mod tests {
             }],
             override_fee: None,
         };
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, None, None).expect("wallet");
         let direct = BackendTask::CoreTask(CoreTask::SendWalletPayment {
             wallet: Arc::new(RwLock::new(wallet)),
             request,
@@ -2347,6 +2812,27 @@ mod tests {
             None
         );
         assert_eq!(BackendTaskContext::Unknown.dispatch_id(), None);
+    }
+
+    /// A report a request sends mid-task names the request without taking
+    /// its place: it has no dispatch id, matches no request's operation, and
+    /// names the network it runs on.
+    #[test]
+    fn an_interim_report_names_its_request_without_its_dispatch_id() {
+        let refresh = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
+            ContestedResourceTask::QueryDPNSContests,
+        ));
+        let interim = BackendTaskContext::interim(Network::Testnet, refresh.clone());
+
+        assert_eq!(interim.dispatch_id(), None);
+        assert_eq!(interim.interim_request(), Some(&refresh));
+        assert_eq!(interim.undispatched_network(), Some(Network::Testnet));
+        assert!(refresh.is_dpns_contest_refresh());
+        assert!(
+            !interim.is_dpns_contest_refresh(),
+            "the report matches no request's context"
+        );
+        assert_eq!(refresh.interim_request(), None);
     }
 
     /// `is_wallet_touching` covers every task family that funnels
@@ -2516,13 +3002,13 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
-        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+        use crate::sdk_wrapper::MIN_PLATFORM_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         crate::context::test_support::prove_protocol_version(
             &ctx,
-            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+            MIN_PLATFORM_VERSION.protocol_version,
         );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -2551,6 +3037,519 @@ mod tests {
         if let Ok(backend) = ctx.wallet_backend() {
             backend.shutdown().await;
         }
+    }
+
+    /// Every task paid from an identity's credits names that identity, so
+    /// its stored balance is read back after the task; reads name nobody.
+    #[test]
+    fn paid_tasks_name_the_identity_that_pays_for_them() {
+        use crate::backend_task::tokens::TokenContractParams;
+        use crate::model::dashpay::{ContactInfoUpdate, ContactQr, UnreadableContactInfoPolicy};
+        use crate::model::qualified_contract::QualifiedContract;
+        use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+        use dash_sdk::dpp::data_contract::TokenConfiguration;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+        use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+        use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::document::DocumentV0;
+        use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::IdentityPublicKey;
+
+        // Every other identity-typed field holds a different identity, so a
+        // payer read from the wrong field fails the comparison.
+        let payer = qualified_identity(0x21);
+        let payer_id = payer.identity.id();
+        let bystander = qualified_identity(0x22);
+        let other = Identifier::from([0x31; 32]);
+        let contract = Arc::new(
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("DPNS contract"),
+        );
+        let document_type = contract
+            .document_type_cloned_for_name("domain")
+            .expect("domain type");
+        let document = Document::V0(DocumentV0::default());
+        let key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+        let config = TokenConfigurationV0::default_most_restrictive();
+        let rules = config.manual_minting_rules.clone();
+        let params = TokenContractParams {
+            token_names: Vec::new(),
+            contract_keywords: Vec::new(),
+            token_description: None,
+            should_capitalize: false,
+            decimals: 0,
+            base_supply: 0,
+            max_supply: None,
+            start_paused: false,
+            allow_transfers_to_frozen_identities: false,
+            keeps_history: config.keeps_history,
+            main_control_group: None,
+            manual_minting_rules: rules.clone(),
+            manual_burning_rules: rules.clone(),
+            freeze_rules: rules.clone(),
+            unfreeze_rules: rules.clone(),
+            destroy_frozen_funds_rules: rules.clone(),
+            emergency_action_rules: rules.clone(),
+            max_supply_change_rules: rules.clone(),
+            conventions_change_rules: rules.clone(),
+            main_control_group_change_authorized: AuthorizedActionTakers::NoOne,
+            distribution_rules: config.distribution_rules.clone(),
+            groups: BTreeMap::new(),
+            document_schemas: None,
+            marketplace_rules: rules,
+            transferable: true,
+        };
+        let token = |task: TokenTask| BackendTask::TokenTask(Box::new(task));
+        let contract_task = |task: ContractTask| BackendTask::ContractTask(Box::new(task));
+        let document_task = |task: DocumentTask| BackendTask::DocumentTask(Box::new(task));
+        let dashpay = |task: DashPayTask| BackendTask::DashPayTask(Box::new(task));
+
+        let paid = [
+            token(TokenTask::RegisterTokenContract {
+                identity: payer.clone(),
+                signing_key: Box::new(key.clone()),
+                params: Box::new(params),
+            }),
+            token(TokenTask::MintTokens {
+                sending_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                amount: 1,
+                recipient_id: Some(other),
+                group_info: None,
+            }),
+            token(TokenTask::TransferTokens {
+                sending_identity: payer.clone(),
+                recipient_id: other,
+                amount: 1,
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+            }),
+            token(TokenTask::BurnTokens {
+                owner_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                amount: 1,
+                group_info: None,
+            }),
+            token(TokenTask::DestroyFrozenFunds {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                frozen_identity: other,
+                group_info: None,
+            }),
+            token(TokenTask::FreezeTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                freeze_identity: other,
+                group_info: None,
+            }),
+            token(TokenTask::UnfreezeTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                unfreeze_identity: other,
+                group_info: None,
+            }),
+            token(TokenTask::PauseTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                group_info: None,
+            }),
+            token(TokenTask::ResumeTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                group_info: None,
+            }),
+            token(TokenTask::ClaimTokens {
+                data_contract: contract.clone(),
+                token_position: 0,
+                actor_identity: payer.clone(),
+                distribution_type: TokenDistributionType::OncePerIdentity,
+                signing_key: key.clone(),
+                public_note: None,
+            }),
+            token(TokenTask::UpdateTokenConfig {
+                identity_token_info: Box::new(IdentityTokenInfo {
+                    token_id: other,
+                    token_alias: String::new(),
+                    identity: payer.clone(),
+                    data_contract: QualifiedContract {
+                        contract: contract.as_ref().clone(),
+                        alias: None,
+                    },
+                    token_config: TokenConfiguration::V0(config.clone()),
+                    token_position: 0,
+                }),
+                change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
+                signing_key: key.clone(),
+                public_note: None,
+                group_info: None,
+            }),
+            token(TokenTask::PurchaseTokens {
+                identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                amount: 1,
+                total_agreed_price: 1,
+            }),
+            token(TokenTask::SetDirectPurchasePrice {
+                identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                token_pricing_schedule: None,
+                public_note: None,
+                group_info: None,
+            }),
+            contract_task(ContractTask::RegisterDataContract(
+                contract.as_ref().clone(),
+                String::new(),
+                payer.clone(),
+                key.clone(),
+            )),
+            contract_task(ContractTask::UpdateDataContract(
+                contract.as_ref().clone(),
+                payer.clone(),
+                key.clone(),
+            )),
+            document_task(DocumentTask::BroadcastDocument {
+                document: document.clone(),
+                token_payment_info: None,
+                entropy: [0; 32],
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+            }),
+            document_task(DocumentTask::DeleteDocument {
+                document_id: other,
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::ReplaceDocument {
+                document,
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::TransferDocument {
+                document_id: other,
+                new_owner_id: bystander.identity.id(),
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::PurchaseDocument {
+                price: 1,
+                document_id: other,
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::SetDocumentPrice {
+                price: 1,
+                document_id: other,
+                document_type,
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            dashpay(DashPayTask::UpdateProfile {
+                identity: payer.clone(),
+                display_name: Some("QA".to_string()),
+                bio: None,
+                avatar_url: None,
+            }),
+            dashpay(DashPayTask::SendContactRequest {
+                identity: payer.clone(),
+                signing_key: key.clone(),
+                to_username: "bob.dash".to_string(),
+                account_label: None,
+            }),
+            dashpay(DashPayTask::SendContactRequestWithProof {
+                identity: payer.clone(),
+                signing_key: key.clone(),
+                qr: {
+                    use platform_wallet::wallet::identity::crypto::auto_accept::{
+                        encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+                    };
+                    let key = crate::test_support::keys::secret_key();
+                    let uri = encode_dashpay_contact_uri(
+                        "bob",
+                        &encode_auto_accept_key_blob(&key, u32::MAX),
+                    );
+                    ContactQr::parse(&uri, 0).expect("a contact QR code")
+                },
+            }),
+            dashpay(DashPayTask::AcceptContactRequest {
+                identity: payer.clone(),
+                request_id: other,
+            }),
+            dashpay(DashPayTask::RejectContactRequest {
+                identity: payer.clone(),
+                request_id: other,
+                unreadable: UnreadableContactInfoPolicy::Abort,
+            }),
+            dashpay(DashPayTask::CancelContactRequest {
+                identity: payer.clone(),
+                request_id: other,
+                unreadable: UnreadableContactInfoPolicy::Abort,
+            }),
+            dashpay(DashPayTask::UpdateContactInfo {
+                identity: payer.clone(),
+                contact_id: other,
+                update: ContactInfoUpdate::visibility(true),
+            }),
+        ];
+        for (index, task) in paid.iter().enumerate() {
+            assert_eq!(task.fee_payer(), Some(payer_id), "paid task #{index}");
+        }
+
+        let free = [
+            token(TokenTask::QueryMyTokenBalances),
+            contract_task(ContractTask::FetchContracts(vec![contract.id()])),
+            contract_task(ContractTask::FetchActiveGroupActions(
+                QualifiedContract {
+                    contract: contract.as_ref().clone(),
+                    alias: None,
+                },
+                payer.clone(),
+            )),
+            dashpay(DashPayTask::LoadProfile {
+                identity: payer.clone(),
+            }),
+            dashpay(DashPayTask::SendPaymentToContact {
+                identity: payer.clone(),
+                contact_id: other,
+                amount_duffs: 1,
+                memo: None,
+            }),
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(payer)),
+            BackendTask::SystemTask(SystemTask::ClearNetworkDatabase),
+        ];
+        for (index, task) in free.iter().enumerate() {
+            assert_eq!(task.fee_payer(), None, "free task #{index}");
+        }
+    }
+
+    /// Regression: after a paid task the Identity hub kept showing the
+    /// pre-fee balance. A paid task run through `run_backend_task` stores the
+    /// payer's balance read back afterwards, and announces it. The read runs
+    /// after the result is returned and the task's claim is released, so a
+    /// slow balance read delays neither. Accepting an already answered
+    /// contact request succeeds without a broadcast, so a mock SDK can drive it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paid_task_run_through_dispatch_stores_the_payers_new_balance() {
+        use dash_sdk::dpp::document::DocumentV0;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::drive::query::{WhereClause, WhereOperator};
+        use dash_sdk::query_types::IdentityBalance;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .ensure_wallet_backend(sender.clone())
+            .await
+            .expect("wire wallet backend");
+
+        // The mock reports the latest protocol version, and the system
+        // contracts the queries carry follow it; start the SDK at that version
+        // and prove it before building them.
+        let sdk = crate::context::test_support::mock_sdk_at_for(
+            &context,
+            dash_sdk::dpp::version::LATEST_VERSION,
+        );
+        let mut mock = sdk.clone();
+        context.sdk.store(Arc::new(sdk));
+        crate::context::test_support::prove_protocol_version(
+            &context,
+            dash_sdk::dpp::version::LATEST_VERSION,
+        );
+
+        let mut payer = qualified_identity(0x21);
+        payer.identity.set_balance(43_600_388_314);
+        context
+            .update_local_qualified_identity(&payer)
+            .expect("store payer");
+        let payer_id = payer.identity.id();
+        let requester = Identifier::from([0x22; 32]);
+        let request_id = Identifier::from([0x23; 32]);
+        let request_document = |id: Identifier, owner: Identifier, to: Identifier| {
+            let mut document = DocumentV0 {
+                id,
+                owner_id: owner,
+                ..Default::default()
+            };
+            document
+                .properties
+                .insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
+            Document::V0(document)
+        };
+        let contact_requests = || {
+            DocumentQuery::new(context.dashpay_contract(), "contactRequest")
+                .expect("contactRequest query")
+        };
+        let mut answered = contact_requests()
+            .with_where(WhereClause {
+                field: "$ownerId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(payer_id.to_buffer()),
+            })
+            .with_where(WhereClause {
+                field: "toUserId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(requester.to_buffer()),
+            });
+        answered.limit = 1;
+        let reply_id = Identifier::from([0x24; 32]);
+        let reply: Documents = [(
+            reply_id,
+            Some(request_document(reply_id, payer_id, requester)),
+        )]
+        .into_iter()
+        .collect();
+
+        mock.mock()
+            .expect_fetch(
+                DocumentQuery::with_document_id(contact_requests(), &request_id),
+                Some(request_document(request_id, requester, payer_id)),
+            )
+            .await
+            .expect("incoming request expectation");
+        mock.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(answered, Some(reply))
+            .await
+            .expect("existing reply expectation");
+        mock.mock()
+            .expect_fetch::<IdentityBalance, _>(payer_id, Some(3_400_000_000))
+            .await
+            .expect("balance expectation");
+
+        // Holding the gate keeps the balance read from starting: a read
+        // slower than anything the task itself waits for.
+        let slow_read = context.test_fee_payer_refresh_gate.lock().await;
+        let result = context
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                    identity: payer,
+                    request_id,
+                })),
+                sender,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished { .. })
+            ),
+            "{result:?}"
+        );
+        let stored_balance = || {
+            context
+                .get_local_qualified_identity(&payer_id)
+                .expect("read payer")
+                .expect("payer stored")
+                .identity
+                .balance()
+        };
+        assert_eq!(
+            stored_balance(),
+            43_600_388_314,
+            "read ran before the result"
+        );
+        assert!(
+            context
+                .try_claim_contact_request_action(request_id)
+                .is_some(),
+            "the request's claim is released before the balance is read"
+        );
+
+        drop(slow_read);
+        let announced = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await {
+                    Some(TaskResult::CacheUpdated(update)) => break update,
+                    Some(_) => continue,
+                    None => panic!("channel closed before the balance was announced"),
+                }
+            }
+        })
+        .await
+        .expect("balance refresh announced");
+        assert_eq!(
+            announced,
+            CacheUpdate {
+                network: context.network,
+                domain: CacheDomain::Identities,
+            }
+        );
+        assert_eq!(stored_balance(), 3_400_000_000);
+    }
+
+    /// A failed paid task reads no balance back: nothing was necessarily paid.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_paid_task_reads_no_balance_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        context.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let payer = qualified_identity(0x21);
+
+        // A spawned read would wait here, still active, for the test to look.
+        let _gate = context.test_fee_payer_refresh_gate.lock().await;
+        let result = context
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                    identity: payer,
+                    request_id: Identifier::from([0x23; 32]),
+                })),
+                sender,
+            )
+            .await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(!context.subtasks.is_active("fee_payer_balance_refresh"));
     }
 
     fn qualified_identity(byte: u8) -> crate::model::qualified_identity::QualifiedIdentity {
@@ -2739,7 +3738,7 @@ mod tests {
     }
 
     /// Only the storage-open variants (data from a newer/incompatible
-    /// build, or an insecure data folder) are terminal; every other init
+    /// build, or an unwritable data folder) are terminal; every other init
     /// error is a transient deferral.
     #[test]
     fn terminal_storage_open_errors_are_classified() {
@@ -2753,37 +3752,45 @@ mod tests {
             &TaskError::WalletDataIncompatible {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
-                )),
-            }
-        ));
-        assert!(is_terminal_storage_open_error(
-            &TaskError::WalletDataFolderInsecure {
-                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                    ancestor: std::path::PathBuf::from("/shared"),
-                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                        mode: 0o777,
-                    },
-                },
+                ))
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
                     std::io::ErrorKind::PermissionDenied,
+                ))
+                .into(),
+            }
+        ));
+        // A data folder the app may not open the wallet lock or the seed
+        // vault in fails the same way on every retry.
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageLockAccessDenied {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::SecretStoreAccessDenied {
+                source: Box::new(platform_wallet_storage::secrets::SecretStoreError::Io(
+                    platform_wallet_storage::secrets::IoError {
+                        path: None,
+                        source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    },
                 )),
             }
         ));
-        use crate::wallet_backend::platform_compatibility::UpgradeError;
-        assert!(
-            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::Verification,
-            }),
-            "a deterministic upgrade failure must surface instead of re-running"
-        );
-        // A user-clearable upgrade failure keeps offering a retry.
-        assert!(!is_terminal_storage_open_error(
-            &TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataNeedsUpgradeRelease {
+                networks: crate::backend_task::error::UpgradeReleaseNetworks(vec![
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                ]),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::AppDataNeedsUpgradeRelease {
+                database: std::path::PathBuf::from("det-app.sqlite"),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

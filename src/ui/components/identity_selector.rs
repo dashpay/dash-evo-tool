@@ -176,7 +176,8 @@ impl<'a> IdentitySelector<'a> {
         self
     }
 
-    /// Set an optional label to display before the selector
+    /// Set an optional label to display before the selector. It also names the
+    /// selector for screen readers, which otherwise hear "Identity".
     pub fn label(mut self, label: impl Into<WidgetText>) -> Self {
         self.label = Some(label.into());
         self
@@ -240,13 +241,14 @@ impl<'a> Widget for IdentitySelector<'a> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         ui.horizontal(|ui| {
             // Display label if present, with centered vertical alignment
-            if let Some(label) = &self.label {
+            let label_id = self.label.as_ref().map(|label| {
                 ui.vertical(|ui| {
                     // FIXME we add space because vertical alignment is not working as expected
                     ui.add_space(15.0);
-                    ui.add(egui::Label::new(label.clone()));
-                });
-            }
+                    ui.add(egui::Label::new(label.clone())).id
+                })
+                .inner
+            });
 
             // Seed from the app-scoped selection (opt-in) before the
             // first-identity fallback, so the user's active identity wins.
@@ -321,12 +323,18 @@ impl<'a> Widget for IdentitySelector<'a> {
 
                     combo_changed
                 });
+            match label_id {
+                Some(label_id) => combo_response.response.labelled_by(label_id),
+                None => combo_response.response.accessible_name("Identity"),
+            };
 
             // Text edit field for manual entry (only show if other_option is enabled)
             let text_response = if self.other_option {
                 ui.vertical(|ui| {
                     ui.add_space(13.0);
-                    TextEdit::singleline(self.identity_str).ui(ui)
+                    TextEdit::singleline(self.identity_str)
+                        .ui(ui)
+                        .accessible_name("Identity ID")
                 })
                 .inner
             } else {
@@ -423,7 +431,7 @@ mod tests {
         let data_dir = std::path::PathBuf::from(
             std::env::var("DASH_EVO_DATA_DIR").expect("with_isolated_dir sets DASH_EVO_DATA_DIR"),
         );
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");

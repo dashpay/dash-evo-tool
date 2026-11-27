@@ -32,7 +32,7 @@ set -euo pipefail
 
 # Branch the pin must descend from. Override with MIGRATION_PIN_TARGET_BRANCH to
 # try a repin against a different line before editing this file.
-TARGET_BRANCH="${MIGRATION_PIN_TARGET_BRANCH:-v5.1-dev}"
+TARGET_BRANCH="${MIGRATION_PIN_TARGET_BRANCH:-v5.2-dev}"
 
 PLATFORM_REMOTE="${MIGRATION_PIN_REMOTE:-https://github.com/dashpay/platform.git}"
 

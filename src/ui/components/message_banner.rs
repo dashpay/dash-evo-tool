@@ -73,6 +73,8 @@ impl ComponentResponse for MessageBannerResponse {
 #[derive(Clone)]
 struct BannerState {
     key: u64,
+    /// Changes when the banner is reset without changing its handle key.
+    reset_generation: u64,
     /// Set when the cap drops this banner to make room. Shared with every
     /// [`BannerHandle`] naming it, so the attribution lives exactly as long
     /// as someone still holds a handle to ask — no bounded log to age out
@@ -107,6 +109,7 @@ impl BannerState {
     fn new(key: u64, text: String, message_type: MessageType) -> Self {
         Self {
             key,
+            reset_generation: 0,
             evicted: Arc::new(AtomicBool::new(false)),
             text,
             message_type,
@@ -124,6 +127,7 @@ impl BannerState {
     /// Reset an existing banner's content, keeping its key.
     /// Resets timestamps, clears details/suggestion, resets logged flag.
     fn reset_to(&mut self, text: String, message_type: MessageType) {
+        self.reset_generation = self.reset_generation.wrapping_add(1);
         self.text = text;
         self.message_type = message_type;
         self.created_at = Instant::now();
@@ -574,13 +578,26 @@ impl MessageBanner {
     pub fn show_global(ui: &mut egui::Ui) {
         // Rendering needs the context, so it works on a copy and merges the
         // outcome back by key: banners raised or changed meanwhile survive.
-        let mut shown = get_banners(ui.ctx());
+        let shown = get_banners(ui.ctx());
         if shown.is_empty() {
             return;
         }
-        let statuses: Vec<_> = shown.iter_mut().map(|b| process_banner(ui, b)).collect();
-        update_banners(ui.ctx(), |banners| {
-            for (rendered, status) in shown.into_iter().zip(statuses) {
+        let rendered = shown
+            .into_iter()
+            .map(|mut banner| {
+                let status = process_banner(ui, &mut banner);
+                (banner, status)
+            })
+            .collect();
+        Self::merge_rendered_banners(ui.ctx(), rendered);
+    }
+
+    fn merge_rendered_banners(
+        ctx: &egui::Context,
+        rendered_banners: Vec<(BannerState, BannerStatus)>,
+    ) {
+        update_banners(ctx, |banners| {
+            for (rendered, status) in rendered_banners {
                 let Some(index) = banners.iter().position(|b| b.key == rendered.key) else {
                     continue;
                 };
@@ -588,7 +605,9 @@ impl MessageBanner {
                 match status {
                     // A banner reset meanwhile keeps its fresh state.
                     BannerStatus::Visible => {
-                        if current.text == rendered.text {
+                        if current.reset_generation == rendered.reset_generation
+                            && current.text == rendered.text
+                        {
                             current.details_expanded = rendered.details_expanded;
                             current.logged |= rendered.logged;
                         }
@@ -872,25 +891,29 @@ pub(crate) fn global_banner_texts(ctx: &egui::Context) -> Vec<String> {
 }
 
 /// Reads, changes and writes the global banner list under one context lock,
-/// so a banner raised or cleared on another thread is never lost. Removes the
-/// entry entirely when the list ends up empty. `change` must not use `ctx`.
+/// so a banner raised or cleared on another thread is never lost. Enforces
+/// the capacity limit, then logs any eviction outside the context lock.
+/// `change` must not use `ctx`.
 fn update_banners<R>(ctx: &egui::Context, change: impl FnOnce(&mut Vec<BannerState>) -> R) -> R {
-    update_list(ctx, BANNER_STATE_ID, change)
+    let (result, evicted_type) = update_list(ctx, BANNER_STATE_ID, |banners| {
+        let result = change(banners);
+        let evicted_type = (banners.len() > MAX_BANNERS).then(|| {
+            let evicted = banners.remove(0);
+            evicted.evicted.store(true, Ordering::Relaxed);
+            evicted.message_type
+        });
+        (result, evicted_type)
+    });
+    if let Some(message_type) = evicted_type {
+        warn!("Banner evicted (capacity {MAX_BANNERS}): {message_type:?}");
+    }
+    result
 }
 
-/// Appends `raised` to `banners`, evicting the oldest past [`MAX_BANNERS`].
-/// Returns the eviction cell of the raised banner.
+/// Appends `raised` to `banners` and returns its eviction cell for the handle.
 fn push_banner(banners: &mut Vec<BannerState>, raised: BannerState) -> Arc<AtomicBool> {
     let lifecycle = raised.evicted.clone();
     banners.push(raised);
-    if banners.len() > MAX_BANNERS {
-        let evicted = banners.remove(0);
-        warn!(
-            "Banner evicted (capacity {}): {:?}",
-            MAX_BANNERS, evicted.message_type,
-        );
-        evicted.evicted.store(true, Ordering::Relaxed);
-    }
     lifecycle
 }
 
@@ -1070,6 +1093,29 @@ impl OptionBannerExt for Option<BannerHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_text_replacement_keeps_fresh_flags_after_render_merge() {
+        let ctx = egui::Context::default();
+        MessageBanner::set_global(&ctx, "Warning", MessageType::Warning);
+        let mut rendered = get_banners(&ctx).pop().expect("banner present");
+        rendered.logged = true;
+        rendered.details_expanded = true;
+
+        MessageBanner::replace_global(&ctx, "Warning", "Warning", MessageType::Warning);
+        MessageBanner::merge_rendered_banners(&ctx, vec![(rendered, BannerStatus::Visible)]);
+
+        let banners = get_banners(&ctx);
+        assert_eq!(banners.len(), 1);
+        assert!(
+            !banners[0].logged,
+            "the replacement still needs to be logged"
+        );
+        assert!(
+            !banners[0].details_expanded,
+            "the replacement starts collapsed"
+        );
+    }
 
     /// TC-MIG-005 (unit) — `with_action` records `(label, id)` on the
     /// banner state. `take_action` is initially empty until the user

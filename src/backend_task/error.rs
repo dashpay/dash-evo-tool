@@ -3383,13 +3383,25 @@ pub enum TaskError {
     /// A wallet identity search was started before the network could verify
     /// identity lookups.
     #[error(
-        "Identities in this wallet cannot be searched while the network is syncing. Wait for sync to finish, then search again."
+        "Identities in this wallet cannot be searched yet. Connect to the wallet's network if needed, then search again once sync finishes."
     )]
     WalletIdentityDiscoveryNotReady,
 
-    /// A wallet identity search was started while network sync is stopped.
-    #[error("Network sync is stopped. Connect to the network, then search again.")]
+    /// A wallet identity search was started before proofs were ready and the
+    /// shared sync status showed no progress toward readiness.
+    #[error(
+        "Identities in this wallet cannot be searched yet. Make sure you are connected to the wallet's network, then search again once sync finishes."
+    )]
     WalletIdentityDiscoverySyncStopped,
+
+    /// The user cancelled a password prompt during a wallet identity scan.
+    /// `stored` counts successful inserts or refreshes before cancellation.
+    /// A failed store may have written the record before returning its error.
+    #[error("{}", wallet_identity_discovery_cancelled_message(*.stored, *.unconfirmed_saves))]
+    WalletIdentityDiscoveryCancelled {
+        stored: u32,
+        unconfirmed_saves: bool,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
@@ -5399,6 +5411,21 @@ fn wallet_already_imported_message(alias: Option<&str>) -> String {
             "This wallet has already been imported for this network as \"{alias}\". Open it from the Wallets screen, or enter a different recovery phrase."
         ),
         None => "This wallet has already been imported for this network. Open it from the Wallets screen, or enter a different recovery phrase.".to_owned(),
+    }
+}
+
+fn wallet_identity_discovery_cancelled_message(stored: u32, unconfirmed_saves: bool) -> String {
+    match (stored, unconfirmed_saves) {
+        (0, false) => "Wallet identity search was cancelled. No identities were saved. Search again when you are ready.".to_owned(),
+        (1, false) => "Wallet identity search was cancelled. One identity was saved. Search again when you are ready.".to_owned(),
+        (count, false) => format!(
+            "Wallet identity search was cancelled. {count} identities were saved. Search again when you are ready."
+        ),
+        (0, true) => "Wallet identity search was cancelled. A save could not be confirmed. Check your identities before searching again.".to_owned(),
+        (1, true) => "Wallet identity search was cancelled. At least one identity was saved. Check your identities before searching again.".to_owned(),
+        (count, true) => format!(
+            "Wallet identity search was cancelled. At least {count} identities were saved. Check your identities before searching again."
+        ),
     }
 }
 

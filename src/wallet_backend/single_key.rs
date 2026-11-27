@@ -948,12 +948,18 @@ pub fn open_secret_store_with_passphrase(
 /// to `0700` before the vault is opened or created.
 fn prepare_vault_dir(path: &std::path::Path) -> Result<(), SecretStoreError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
+        let io_error = |source| {
+            SecretStoreError::Io(platform_wallet_storage::secrets::IoError {
+                path: Some(parent.to_path_buf()),
+                source,
+            })
+        };
+        std::fs::create_dir_all(parent).map_err(io_error)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| SecretStoreError::MalformedVault)?;
+                .map_err(io_error)?;
         }
     }
     Ok(())
@@ -1026,6 +1032,45 @@ mod tests {
     use super::*;
     use crate::model::wallet::passphrase::MIN_SINGLE_KEY_PASSPHRASE_LEN;
 
+    /// A vault folder that cannot be created keeps its file-system cause.
+    #[test]
+    fn open_secret_store_keeps_the_folder_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("file"), "").expect("write file");
+        let Err(error) = open_secret_store(&dir.path().join("file").join("vault")) else {
+            panic!("a file blocks the vault folder");
+        };
+        assert!(
+            matches!(error, SecretStoreError::Io(ref io) if matches!(io.source.kind(),
+                std::io::ErrorKind::NotADirectory | std::io::ErrorKind::AlreadyExists)),
+            "{error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_secret_store_keeps_denied_parent_io_error() {
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000))
+            .expect("deny access");
+        let error = open_secret_store(&parent.join("secrets/vault")).err();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).expect("restore");
+        let error = error.expect("denied parent");
+        assert!(
+            matches!(&error, SecretStoreError::Io(io)
+            if io.source.kind() == std::io::ErrorKind::PermissionDenied
+                && io.path.as_deref() == Some(parent.join("secrets").as_path())),
+            "{error:?}"
+        );
+    }
+
     /// The hand-written `ImportPassphrase` `Debug` must redact the
     /// passphrase so it can never leak through `{:?}` into logs or panic
     /// backtraces.
@@ -1057,7 +1102,7 @@ mod tests {
         let path = dir.path().join("secrets").join("det-secrets.pwsvault");
         let scope = single_key_namespace_id();
         let label = "single_key_priv.roundtrip";
-        let secret = [7u8; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         // Seed a passphrase-protected vault, then release its exclusive lock.
         {
@@ -1097,7 +1142,11 @@ mod tests {
         {
             let store = open_secret_store(&path).expect("create keyless vault");
             store
-                .set(&scope, "k", &SecretBytes::from_slice(&[1u8; 32]))
+                .set(
+                    &scope,
+                    "k",
+                    &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
+                )
                 .expect("write");
         }
         // Re-open keyless — the default boot path is unchanged.
@@ -1119,11 +1168,17 @@ mod tests {
         (store, index, network)
     }
 
+    /// A testnet WIF that is stable for the whole test process, so a test can
+    /// import the same key twice.
     fn known_wif() -> &'static str {
-        // Testnet WIF with deterministic, all-zero-except-last-byte key
-        // bytes. Generated locally with `PrivateKey::new(SecretKey::from_secret_bytes([0;31].chain(&[1])).unwrap(), Testnet).to_wif()`
-        // and pinned here to keep tests offline + reproducible.
-        "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
+        static WIF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        WIF.get_or_init(|| {
+            crate::test_support::keys::labelled_wif(
+                "wallet_backend::single_key::known_wif",
+                0,
+                Network::Testnet,
+            )
+        })
     }
 
     #[test]
@@ -2085,13 +2140,14 @@ mod tests {
         assert_eq!(view.list()[0].alias.as_deref(), Some("old name"));
     }
 
-    /// A deterministic throwaway testnet WIF distinct per `byte`.
+    /// A throwaway testnet WIF, distinct per `byte` and stable within the
+    /// test process.
     fn wif_for_byte(byte: u8) -> String {
-        let secret = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([byte; 32])
-            .expect("valid scalar");
-        PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
-            .expect("valid secret key")
-            .to_wif()
+        crate::test_support::keys::labelled_wif(
+            "wallet_backend::single_key::wif_for_byte",
+            byte.into(),
+            Network::Testnet,
+        )
     }
 
     fn transient_view<'a>(

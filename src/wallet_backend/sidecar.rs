@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::base58;
+use dash_sdk::dpp::platform_value::string_encoding::{Encoding, decode as decode_string};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -44,7 +44,7 @@ pub(crate) fn sidecar_key(network: Network, infix: &str, id: &SidecarId) -> Stri
 /// corrupt keys.
 fn parse_id(key: &str, prefix: &str) -> Option<SidecarId> {
     let rest = key.strip_prefix(prefix)?;
-    base58::decode(rest).ok()?.try_into().ok()
+    decode_string(rest, Encoding::Base58).ok()?.try_into().ok()
 }
 
 /// Which k/v partition a sidecar's entries live in.

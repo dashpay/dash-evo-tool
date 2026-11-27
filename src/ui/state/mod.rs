@@ -20,10 +20,14 @@ pub mod hub_selection;
 pub mod identity_home;
 pub mod legacy_recovery;
 pub mod masternodes_view;
+pub mod own_receive_addresses;
 pub mod pending_request;
+pub mod send_form;
+pub mod spend_limit;
 pub mod tracked_asset_lock_cache;
 
 pub use asset_lock_balance::AssetLockBalanceCache;
 pub use avatar_cache::AvatarCache;
 pub use pending_request::PendingRequest;
+pub use spend_limit::SpendLimitCache;
 pub use tracked_asset_lock_cache::TrackedAssetLockCache;

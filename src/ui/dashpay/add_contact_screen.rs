@@ -351,6 +351,13 @@ impl ScreenLike for AddContactScreen {
                         if !matches!(key_action, AppAction::None) {
                             inner_action = key_action;
                         }
+                        // A key chosen here signs with its own wallet.
+                        crate::ui::identity::sync_signing_wallet(
+                            Some(identity),
+                            self.selected_key.as_ref(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
+                        );
                     }
                 }
             });
@@ -613,7 +620,7 @@ impl ScreenLike for AddContactScreen {
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
                     let mut popup = InfoPopup::new(
-                        egui::Id::new("dashpay_add_contact_info_popup"),
+                        egui::Id::unique("dashpay_add_contact_info_popup"),
                         "About Contact Requests",
                         CONTACT_REQUEST_INFO_TEXT,
                     );

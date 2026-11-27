@@ -195,7 +195,7 @@ impl ConfirmationDialog {
             ui.ctx(),
             ModalChromeConfig {
                 title: self.title.clone(),
-                overlay_id: egui::Id::new("confirmation_dialog_overlay"),
+                overlay_id: egui::Id::unique("confirmation_dialog_overlay"),
                 overlay_order: egui::Order::Background,
                 window_order: if self.blocks_input {
                     egui::Order::Foreground

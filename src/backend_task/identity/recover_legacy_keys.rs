@@ -451,7 +451,7 @@ mod tests {
         async fn new(prompt: Option<Arc<dyn SecretPrompt>>) -> Self {
             let data_dir_guard = tempfile::tempdir().expect("tempdir");
             let data_dir = data_dir_guard.path().to_path_buf();
-            ensure_env_file(&data_dir);
+            ensure_env_file(&data_dir).expect("write .env");
             let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
             let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
             let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
@@ -536,10 +536,11 @@ mod tests {
         }
     }
 
-    /// A key pair for `purpose`, keyed by `secret_byte`.
-    fn test_key(id: KeyID, purpose: Purpose, secret_byte: u8) -> TestKey {
+    /// A key pair for `purpose`; the same `label` gives the same key.
+    fn test_key(id: KeyID, purpose: Purpose, label: u8) -> TestKey {
         let key_type = KeyType::ECDSA_HASH160;
-        let secret = [secret_byte; 32];
+        let secret =
+            crate::test_support::keys::labelled_secret("recover_legacy_keys", u64::from(label));
         let data = key_type
             .public_key_data_from_private_key_data(&secret, Network::Testnet)
             .expect("derive the public half");

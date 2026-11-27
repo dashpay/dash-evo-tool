@@ -60,10 +60,13 @@ pub enum ShieldedTask {
     },
 }
 
+/// How long a shield from Platform waits for the address sync pass it starts
+/// before reporting success; a slower pass finishes in the background.
+const POST_SHIELD_ADDRESS_SYNC_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(super) fn shielded_operations_unavailable_error(ctx: &AppContext) -> Option<TaskError> {
     match FeatureGate::ShieldedOperations.first_unmet_check(ctx) {
         None => None,
-        Some(Check::Capability(_)) => Some(TaskError::ShieldedOperationsNetworkUnavailable),
         Some(Check::MinRole(_) | Check::Experimental(_)) => {
             Some(TaskError::ShieldedOperationsRoleUnavailable)
         }
@@ -145,11 +148,21 @@ impl AppContext {
                 // The upstream op selects the funding platform addresses; DET
                 // only supplies the wallet's address→path index for signing.
                 let path_index = self.platform_path_index(&seed_hash)?;
-                backend
-                    .shield_from_balance(&seed_hash, &path_index, 0, 0, amount)
-                    .await?;
-
-                self.refresh_shielded_balance_snapshot(&seed_hash).await;
+                self.shield_from_platform_then_sync(
+                    backend,
+                    &seed_hash,
+                    backend.shield_from_balance(
+                        &seed_hash,
+                        &path_index,
+                        0,
+                        crate::wallet_backend::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT,
+                        amount,
+                    ),
+                    // The spent credits stay in both the planner's and DET's
+                    // Platform balances until a pass reads them back.
+                    backend.sync_platform_addresses_after_spend(POST_SHIELD_ADDRESS_SYNC_WAIT),
+                )
+                .await?;
 
                 Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
             }
@@ -225,6 +238,32 @@ impl AppContext {
     /// Keeps the UI balance current immediately after a spend, without waiting
     /// for the next `on_shielded_sync_completed` push from the 60-second sync
     /// loop. Best-effort — a failed read leaves the previous snapshot in place.
+    /// Run `shield`, a shield from `seed_hash`'s Platform balance, then
+    /// `sync`, the pass that reads its spend back, with the wallet's shield
+    /// guard held across both: until the pass lands, the live Platform
+    /// balances still show the spent credits, so no shield Max is quoted.
+    /// The guard drops on every exit, including a failed shield.
+    ///
+    /// The window narrows but does not close: `sync` gives up waiting after
+    /// [`POST_SHIELD_ADDRESS_SYNC_WAIT`] and the guard drops with it, so a
+    /// slower pass leaves the balances stale for a while longer. A shield Max
+    /// quoted then can still be refused by the shield's own planner check.
+    /// The guard is deliberately not held for the background pass, which has
+    /// no bound.
+    async fn shield_from_platform_then_sync(
+        self: &Arc<Self>,
+        backend: &crate::wallet_backend::WalletBackend,
+        seed_hash: &WalletSeedHash,
+        shield: impl std::future::Future<Output = Result<(), TaskError>>,
+        sync: impl std::future::Future<Output = ()>,
+    ) -> Result<(), TaskError> {
+        let _shielding = backend.begin_platform_shield(seed_hash);
+        shield.await?;
+        self.refresh_shielded_balance_snapshot(seed_hash).await;
+        sync.await;
+        Ok(())
+    }
+
     async fn refresh_shielded_balance_snapshot(self: &Arc<Self>, seed_hash: &WalletSeedHash) {
         let backend = match self.wallet_backend() {
             Ok(backend) => backend,
@@ -277,6 +316,15 @@ impl AppContext {
         // Zero would still size a funding the network accepts under some
         // protocol versions, paying the fee to shield nothing asked for.
         validate_nonzero_amount(amount_duffs).map_err(|_| TaskError::ShieldedZeroAmount)?;
+        // The lock is broadcast before Platform can refuse the shield, and an
+        // older network's fee is not the one this build sizes it with.
+        if let Some(verified_version) = self
+            .protocol_version_info()
+            .verified_version
+            .filter(|version| *version < crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version)
+        {
+            return Err(TaskError::PlatformNetworkTooOld { verified_version });
+        }
         let (version_at_sizing, platform_version) = self.shield_from_core_protocol_version();
         let shield = self
             .fee_estimator()
@@ -307,14 +355,14 @@ mod tests {
     use crate::backend_task::BackendTask;
     use crate::backend_task::TaskResult;
     use crate::context::test_support::test_app_context;
-    use crate::model::user_role::UserRole;
     use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::platform::DataContract;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mcp_style_direct_dispatch_rejects_unavailable_shielded_write() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_user_role(UserRole::Developer);
         assert!(FeatureGate::Shielded.is_available(&ctx));
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
 
@@ -328,23 +376,20 @@ mod tests {
         let result = ctx.run_backend_task(task, sender).await;
 
         assert!(
-            matches!(
-                &result,
-                Err(TaskError::ShieldedOperationsNetworkUnavailable)
-            ),
+            matches!(&result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
             "a direct backend dispatch must reject unsupported shielded writes before moving funds: {result:?}"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shielded_handler_reports_role_gate_before_touching_the_backend() {
-        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+        use crate::sdk_wrapper::MIN_PLATFORM_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         crate::context::test_support::prove_protocol_version(
             &ctx,
-            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+            MIN_PLATFORM_VERSION.protocol_version,
         );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         assert!(ctx.wallet_backend().is_err(), "precondition");
@@ -375,7 +420,6 @@ mod tests {
     async fn shielded_pre_check_refuses_without_wiring_the_wallet_backend() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_user_role(UserRole::Developer);
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         assert!(
             ctx.wallet_backend().is_err(),
@@ -392,10 +436,7 @@ mod tests {
         let result = ctx.run_backend_task(task, sender).await;
 
         assert!(
-            matches!(
-                &result,
-                Err(TaskError::ShieldedOperationsNetworkUnavailable)
-            ),
+            matches!(&result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
             "the pre-check must reject the shielded write: {result:?}"
         );
         assert!(
@@ -409,8 +450,8 @@ mod tests {
     #[test]
     fn shield_from_core_reports_the_amount_when_the_version_did_not_move() {
         assert_eq!(
-            shielded_amount_to_report(100_000_800, 13, 13),
-            Some(100_000_800)
+            shielded_amount_to_report(100_000_000, 14, 14),
+            Some(100_000_000)
         );
     }
 
@@ -419,13 +460,13 @@ mod tests {
     /// not name a figure.
     #[test]
     fn shield_from_core_reports_no_amount_when_the_version_moved() {
-        assert_eq!(shielded_amount_to_report(100_000_800, 13, 14), None);
+        assert_eq!(shielded_amount_to_report(100_000_000, 14, 15), None);
     }
 
     /// The transfer runs on the wallet backend's connection, which keeps its
     /// own protocol version once the app's connection has been rebuilt. The
-    /// funding must be sized with the backend's version: 212 852 duffs of fee
-    /// under protocol 13, not the 164 140 of protocol 14.
+    /// funding must be sized with the backend's version, even after the app
+    /// connection upgrades to another supported version.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shield_from_core_is_sized_with_the_wallet_backend_version() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -435,24 +476,101 @@ mod tests {
             .await
             .expect("wallet backend");
         let backend = ctx.wallet_backend().expect("wallet backend");
-        assert_eq!(backend.sdk().protocol_version_number(), 13);
+        assert_eq!(backend.sdk().protocol_version_number(), 14);
 
-        let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
+        let pv15 = dash_sdk::dpp::version::PlatformVersion::get(15).expect("PV15");
         ctx.sdk.store(Arc::new(
             dash_sdk::SdkBuilder::new_mock()
-                .with_version(pv14)
+                .with_version(pv15)
                 .build()
                 .expect("mock sdk"),
         ));
 
         let (shield, version_at_sizing) = ctx.plan_shield_from_core(100_000).expect("known fee");
 
-        assert_eq!(version_at_sizing, 13);
-        assert_eq!(shield.lock_duffs, 100_000 + 212_852);
-        assert_eq!(shield.shielded_credits, 100_000_800);
+        assert_eq!(version_at_sizing, 14);
+        assert_eq!(shield.lock_duffs, 100_000 + 164_140);
+        assert_eq!(shield.shielded_credits, 100_000_000);
     }
 
-    /// A context whose wallet backend runs on protocol 13.
+    /// The shield guard is held from before the shield until the post-spend
+    /// sync pass returns: the key moves when the shield opens, stays put
+    /// through the sync, and moves again only once the sync is done.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_platform_holds_the_shield_guard_through_the_sync_pass() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash: WalletSeedHash = [0x5e; 32];
+        let before = backend.platform_shield_quote_revision(&seed_hash);
+        let during_shield = std::sync::Mutex::new(None);
+        let during_sync = std::sync::Mutex::new(None);
+
+        ctx.shield_from_platform_then_sync(
+            &backend,
+            &seed_hash,
+            async {
+                *during_shield.lock().expect("lock") =
+                    Some(backend.platform_shield_quote_revision(&seed_hash));
+                Ok(())
+            },
+            async {
+                *during_sync.lock().expect("lock") =
+                    Some(backend.platform_shield_quote_revision(&seed_hash));
+            },
+        )
+        .await
+        .expect("shield");
+        let after = backend.platform_shield_quote_revision(&seed_hash);
+
+        let during_shield = during_shield
+            .into_inner()
+            .expect("lock")
+            .expect("shield ran");
+        let during_sync = during_sync.into_inner().expect("lock").expect("sync ran");
+        assert_ne!(during_shield, before, "the guard opens before the shield");
+        assert_eq!(
+            during_sync, during_shield,
+            "the guard is still open in the sync"
+        );
+        assert_ne!(after, during_sync, "the guard closes after the sync");
+    }
+
+    /// A failed shield skips the sync and still closes the guard.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_shield_from_platform_closes_the_shield_guard() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash: WalletSeedHash = [0x5f; 32];
+        let during_shield = std::sync::Mutex::new(None);
+        let synced = std::sync::atomic::AtomicBool::new(false);
+
+        let result = ctx
+            .shield_from_platform_then_sync(
+                &backend,
+                &seed_hash,
+                async {
+                    *during_shield.lock().expect("lock") =
+                        Some(backend.platform_shield_quote_revision(&seed_hash));
+                    Err(TaskError::WalletLocked)
+                },
+                async { synced.store(true, std::sync::atomic::Ordering::SeqCst) },
+            )
+            .await;
+
+        assert!(matches!(result, Err(TaskError::WalletLocked)), "{result:?}");
+        assert!(!synced.load(std::sync::atomic::Ordering::SeqCst));
+        let during_shield = during_shield
+            .into_inner()
+            .expect("lock")
+            .expect("shield ran");
+        assert_ne!(
+            backend.platform_shield_quote_revision(&seed_hash),
+            during_shield,
+            "the guard closes when the shield fails"
+        );
+    }
+
+    /// A context whose wallet backend runs on protocol 14.
     async fn ctx_with_backend(
         dir: &std::path::Path,
     ) -> (Arc<AppContext>, Arc<crate::wallet_backend::WalletBackend>) {
@@ -462,28 +580,42 @@ mod tests {
             .await
             .expect("wallet backend");
         let backend = ctx.wallet_backend().expect("wallet backend");
-        assert_eq!(backend.sdk().protocol_version_number(), 13);
+        assert_eq!(backend.sdk().protocol_version_number(), 14);
         (ctx, backend)
     }
 
-    /// Tell `sdk` the network runs protocol `version`, the way a response
-    /// from the network does.
-    fn network_reports_protocol_version(sdk: &dash_sdk::Sdk, version: u32) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_millis() as u64;
-        sdk.verify_response_metadata(
-            "test",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                height: 1,
-                time_ms: now_ms,
-                protocol_version: version,
-                ..Default::default()
-            },
-        )
-        .expect("fresh metadata");
-        assert_eq!(sdk.protocol_version_number(), version);
+    /// A context whose wallet backend runs on a mock connection at protocol 14
+    /// that answers the DPNS-contract fetch, so a test can move the backend's
+    /// version mid-transfer ([`network_raises_protocol_version`]).
+    async fn ctx_with_mock_backend(
+        dir: &std::path::Path,
+    ) -> (Arc<AppContext>, Arc<crate::wallet_backend::WalletBackend>) {
+        let ctx = test_app_context(dir);
+        let mut sdk = crate::context::test_support::mock_sdk_at_for(&ctx, 14);
+        let dpns = ctx.dpns_contract();
+        sdk.mock()
+            .expect_fetch(dpns.id(), Some(DataContract::clone(&dpns)))
+            .await
+            .expect("register DPNS contract response");
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, egui::Context::default()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        assert_eq!(backend.sdk().protocol_version_number(), 14);
+        (ctx, backend)
+    }
+
+    /// Have the network move `sdk` past protocol 14, the way a response from
+    /// the network does: a fetch answered by the mock raises the version the
+    /// SDK builds transitions at (to the newest this build defines).
+    async fn network_raises_protocol_version(ctx: &AppContext, sdk: &dash_sdk::Sdk) {
+        use dash_sdk::platform::Fetch;
+        DataContract::fetch(sdk, ctx.dpns_contract().id())
+            .await
+            .expect("mocked DPNS contract fetch");
+        assert!(sdk.protocol_version_number() > 14, "the version moved");
     }
 
     /// The version moves while the transfer is under way, and the transfer
@@ -493,13 +625,13 @@ mod tests {
     async fn shield_from_core_task_succeeds_without_an_amount_when_the_version_moves_mid_transfer()
     {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let (ctx, backend) = ctx_with_mock_backend(tmp.path()).await;
         let seed_hash = WalletSeedHash::default();
 
         let result = ctx
             .shield_from_core_with(seed_hash, 100_000, async |funding| {
-                assert_eq!(funding.lock_duffs, 100_000 + 212_852);
-                network_reports_protocol_version(backend.sdk(), 14);
+                assert_eq!(funding.lock_duffs, 100_000 + 164_140);
+                network_raises_protocol_version(&ctx, backend.sdk()).await;
                 Ok(())
             })
             .await;
@@ -515,8 +647,7 @@ mod tests {
     }
 
     /// With the version unchanged across the transfer the task reports what
-    /// was shielded, including the 800 credits that rounding the fee up to
-    /// whole duffs adds under protocol 13.
+    /// was shielded at that version's fee.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shield_from_core_task_reports_the_amount_when_the_version_holds() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -531,7 +662,7 @@ mod tests {
             matches!(
                 &result,
                 Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
-                    amount: Some(100_000_800),
+                    amount: Some(100_000_000),
                     ..
                 })
             ),
@@ -557,6 +688,37 @@ mod tests {
         );
     }
 
+    /// A network proved older than the supported minimum is refused before
+    /// the Core asset lock is sized or broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_core_refuses_a_network_proved_below_the_minimum() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let old_version = crate::sdk_wrapper::MIN_PLATFORM_VERSION.protocol_version - 1;
+        crate::context::test_support::prove_protocol_version(&ctx, old_version);
+        let transfer_started = std::sync::atomic::AtomicBool::new(false);
+
+        let result = ctx
+            .shield_from_core_with(WalletSeedHash::default(), 100_000, async |_funding| {
+                transfer_started.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::PlatformNetworkTooOld { verified_version })
+                    if *verified_version == old_version
+            ),
+            "got {result:?}"
+        );
+        assert!(
+            !transfer_started.load(std::sync::atomic::Ordering::SeqCst),
+            "an older network must not reach the asset lock"
+        );
+    }
+
     /// Run a zero shield through the task and require that it is refused
     /// without the transfer ever being started.
     async fn assert_zero_shield_is_refused(ctx: &AppContext) {
@@ -578,27 +740,15 @@ mod tests {
         );
     }
 
-    /// Under protocols 12 and 13 the fee is not a whole number of duffs, so a
-    /// zero amount sizes a funding just large enough to be accepted: the fee
-    /// would be paid for shielding the 800 credits of rounding. The task must
-    /// refuse zero itself, before the transfer.
+    /// A zero shield is refused before the transfer on every supported version.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shield_from_core_task_refuses_a_zero_amount_before_the_transfer() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (ctx, _backend) = ctx_with_backend(tmp.path()).await;
         assert_zero_shield_is_refused(&ctx).await;
-
-        // Protocol 12, through the app's own SDK: no backend is wired here.
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        let pv12 = dash_sdk::dpp::version::PlatformVersion::get(12).expect("PV12");
-        ctx.sdk.store(Arc::new(
-            dash_sdk::SdkBuilder::new_mock()
-                .with_version(pv12)
-                .build()
-                .expect("mock sdk"),
-        ));
-        assert_eq!(ctx.shield_from_core_protocol_version().0, 12);
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 15);
         assert_zero_shield_is_refused(&ctx).await;
     }
 }

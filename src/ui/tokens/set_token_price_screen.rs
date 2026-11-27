@@ -1,11 +1,12 @@
+use super::TokenSigningKey;
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
@@ -20,10 +21,11 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, show_wallet_lock_gate,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::identity::{follow_signing_key_wallet, get_selected_wallet};
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -91,7 +93,7 @@ pub enum SetTokenPriceStatus {
 // fit "set/change price" grammatically.
 pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
-    selected_key: Option<IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
     pub public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
@@ -112,6 +114,7 @@ pub struct SetTokenPriceScreen {
 
     /// Basic references
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
 
     /// Confirmation popup
     show_confirmation_popup: bool,
@@ -125,12 +128,54 @@ pub struct SetTokenPriceScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<BannerHandle>,
+    /// The price change in flight; only its own result or error ends the wait.
+    set_price_request: PendingRequest,
 }
 
 /// 1 Dash = 100,000,000,000 credits
 pub const CREDITS_PER_DASH: Credits = 100_000_000_000;
 
 impl SetTokenPriceScreen {
+    fn render_pricing_fields(&mut self, ui: &mut Ui, key_chooser_visible: bool) {
+        let pricing_step = if key_chooser_visible { 2 } else { 1 };
+        let group_proposal = self.group_action_id.is_some();
+        ui.heading(format!("{pricing_step}. Pricing Configuration"));
+        ui.add_space(5.0);
+        if group_proposal {
+            ui.label(format!("Schedule: {}", self.token_pricing_schedule));
+        } else {
+            self.render_pricing_input(ui);
+        }
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        ui.heading(format!("{}. Public note (optional)", pricing_step + 1));
+        ui.add_space(5.0);
+        if group_proposal {
+            ui.label(format!(
+                "Note: {}",
+                self.public_note.as_deref().unwrap_or("None")
+            ));
+        } else {
+            ui.horizontal(|ui| {
+                let note_label = ui
+                    .label("Public note (optional):")
+                    .info_tooltip("A note about the transaction that can be seen by the public.");
+                ui.add_space(10.0);
+                let mut note = self.public_note.clone().unwrap_or_default();
+                if ui
+                    .text_edit_singleline(&mut note)
+                    .labelled_by(note_label.id)
+                    .changed()
+                {
+                    self.public_note = (!note.is_empty()).then_some(note);
+                }
+            });
+        }
+    }
+
     fn token_decimal_divisor(&self) -> u64 {
         10u64.pow(
             self.identity_token_info
@@ -256,17 +301,22 @@ impl SetTokenPriceScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key).unwrap_or_else(
-                |e| {
-                    set_error_banner(&e);
-                    None
-                },
-            );
+        let selected_wallet = possible_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
+                set_error_banner(&e);
+                None
+            });
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
         Self {
             identity_token_info: identity_token_info.clone(),
-            selected_key: possible_key.cloned(),
+            selected_key: TokenSigningKey::automatic(possible_key.cloned()),
             show_advanced_options: false,
             public_note: None,
             group,
@@ -278,6 +328,7 @@ impl SetTokenPriceScreen {
             single_price_input: None,
             tiered_prices: vec![(None, None)],
             status: SetTokenPriceStatus::NotStarted,
+            token_action_availability,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             confirmation_dialog: None,
@@ -286,6 +337,7 @@ impl SetTokenPriceScreen {
             wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
+            set_price_request: PendingRequest::default(),
         }
     }
 
@@ -715,6 +767,9 @@ impl SetTokenPriceScreen {
     fn confirmation_ok(&mut self) -> AppAction {
         self.show_confirmation_popup = false;
         self.confirmation_dialog = None; // Reset the dialog for next use
+        if self.set_price_request.is_pending() {
+            return AppAction::None;
+        }
 
         // Validate user input and create pricing schedule
         let token_pricing_schedule_opt = match self.create_pricing_schedule() {
@@ -761,21 +816,21 @@ impl SetTokenPriceScreen {
         };
 
         // Create and return the backend task
-        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-            TokenTask::SetDirectPurchasePrice {
-                identity: self.identity_token_info.identity.clone(),
-                data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
-                token_position: self.identity_token_info.token_position,
-                signing_key,
-                public_note: if self.group_action_id.is_some() {
-                    None
-                } else {
-                    self.public_note.clone()
-                },
-                token_pricing_schedule: token_pricing_schedule_opt,
-                group_info,
+        let task = BackendTask::TokenTask(Box::new(TokenTask::SetDirectPurchasePrice {
+            identity: self.identity_token_info.identity.clone(),
+            data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
+            token_position: self.identity_token_info.token_position,
+            signing_key,
+            public_note: if self.group_action_id.is_some() {
+                None
+            } else {
+                self.public_note.clone()
             },
-        )))
+            token_pricing_schedule: token_pricing_schedule_opt,
+            group_info,
+        }));
+        self.set_price_request
+            .dispatch_on(task, self.app_context.network)
     }
 
     /// Handle the cancel action when user clicks Cancel or closes dialog
@@ -837,9 +892,16 @@ impl ScreenLike for SetTokenPriceScreen {
             self.refresh();
         }
     }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.set_price_request.settle(context);
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+        if !self.set_price_request.is_pending()
+            && self.status != SetTokenPriceStatus::Complete
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
             self.refresh_banner.take_and_clear();
             self.status = SetTokenPriceStatus::Error;
         }
@@ -847,6 +909,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
+            self.set_price_request.clear();
             self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = SetTokenPriceStatus::Complete;
@@ -854,13 +917,28 @@ impl ScreenLike for SetTokenPriceScreen {
     }
 
     fn refresh(&mut self) {
-        // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_info.identity.identity.id(),
+        );
+        if let Ok(all_identities) = self.app_context.load_local_qualified_identities()
             && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
         {
             self.identity_token_info.identity = updated_identity;
+        }
+        let contract_id = self.identity_token_info.data_contract.contract.id();
+        if self.selected_key.refresh_with_wallet(
+            &self.app_context,
+            &self.identity_token_info.identity,
+            TransactionType::TokenAction,
+            contract_id,
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.show_confirmation_popup = false;
+            self.confirmation_dialog = None;
         }
     }
 
@@ -921,14 +999,37 @@ impl ScreenLike for SetTokenPriceScreen {
             });
             ui.add_space(10.0);
 
-            // Open the form only when the action's key choice picks a key.
-            let key_status = super::token_action_key_status(
+            super::recheck_token_action_availability(
+                &self.app_context,
+                &self.identity_token_info.identity.identity.id(),
+                &mut self.token_action_availability,
+            );
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
+
+            let followed = self.selected_key.follow_automatic_with_wallet(
                 &self.app_context,
                 &self.identity_token_info.identity,
+                TransactionType::TokenAction,
                 self.identity_token_info.data_contract.contract.id(),
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
             );
-
-            if key_status != SigningKeyStatus::Usable {
+            let key_status = followed.status;
+            if followed.changed {
+                // A pending confirmation was for the previous key.
+                self.show_confirmation_popup = false;
+                self.confirmation_dialog = None;
+            }
+            let signing_available = matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            );
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                self.show_advanced_options = true;
+            }
+            if !signing_available {
                 ui.colored_label(
                     Color32::DARK_RED,
                     super::token_action_key_message(key_status, &self.identity_token_info.identity),
@@ -965,85 +1066,43 @@ impl ScreenLike for SetTokenPriceScreen {
                         &self.app_context,
                     )));
                 }
-            } else {
+            }
 
-                // Key selection (only in advanced mode)
-                if self.show_advanced_options {
+            if self.group_action_id.is_some() || signing_available {
+                let key_chooser_visible = signing_available && self.show_advanced_options;
+                if key_chooser_visible {
                     ui.heading("1. Select the key to sign the Set Price transaction");
                     ui.add_space(10.0);
-                    add_key_chooser(
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         &self.identity_token_info.identity,
-                        &mut self.selected_key,
                         TransactionType::TokenAction,
-                        SigningScope::ContractWide {
-                            contract_id: self.identity_token_info.data_contract.contract.id(),
-                        },
-                    );
-                    follow_signing_key_wallet(
-                        &self.identity_token_info.identity,
-                        self.selected_key.as_ref(),
+                        self.identity_token_info.data_contract.contract.id(),
                         &mut self.selected_wallet,
                         &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();
                 }
-                if show_wallet_lock_gate(
+                let wallet_locked = signing_available && show_wallet_lock_gate(
                     ui,
                     &self.app_context,
                     self.selected_wallet.as_ref(),
                     &mut self.wallet_open_attempted,
                     &mut self.wallet_unlock_popup,
-                ) {
+                );
+                let signing_controls_visible = signing_available && !wallet_locked;
+                if wallet_locked && self.group_action_id.is_none() {
+                    self.confirmation_cancel();
                     return;
                 }
                 ui.add_space(10.0);
-
-                // Pricing schedule
-                let step_num = if self.show_advanced_options { 2 } else { 1 };
-                ui.heading(format!("{}. Pricing Configuration", step_num));
-                ui.add_space(5.0);
-                if self.group_action_id.is_some() {
-                    ui.label(
-                        "You are signing an existing group SetPrice so you are not allowed to choose the pricing schedule.",
-                    );
-                    ui.add_space(5.0);
-                    ui.label(format!("Schedule: {}", self.token_pricing_schedule));
-                } else {
-                    self.render_pricing_input(ui);
-                }
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Render text input for the public note
-                let step_num = if self.show_advanced_options { 3 } else { 2 };
-                ui.heading(format!("{}. Public note (optional)", step_num));
-                ui.add_space(5.0);
-                if self.group_action_id.is_some() {
-                    ui.label(
-                        "You are signing an existing group SetPrice so you are not allowed to put a note.",
-                    );
-                    ui.add_space(5.0);
-                    ui.label(format!(
-                        "Note: {}",
-                        self.public_note.clone().unwrap_or("None".to_string())
-                    ));
-                } else {
-                    ui.horizontal(|ui| {
-                        ui.label("Public note (optional):").info_tooltip(
-                            "A note about the transaction that can be seen by the public.",
-                        );
-                        ui.add_space(10.0);
-                        let mut txt = self.public_note.clone().unwrap_or_default();
-                        if ui.text_edit_singleline(&mut txt).changed() {
-                            self.public_note = if !txt.is_empty() { Some(txt) } else { None };
-                        }
-                    });
-                }
+                self.render_pricing_fields(ui, key_chooser_visible);
 
                 let set_price_text = if let Some((_, group)) = self.group.as_ref() {
                     let your_power = group
@@ -1075,10 +1134,17 @@ impl ScreenLike for SetTokenPriceScreen {
                     ui.add_space(10.0);
                     if let Some(your_power) = your_power {
                         if *your_power >= group.required_power() {
-                            ui.label(format!("Even though this is a group action, you are able to unilaterally approve it because your power ({}) in the group exceeds the required amount : {}", *your_power,  group.required_power()));
+                            ui.label(format!(
+                                "Even though this is a group action, you are able to unilaterally approve it because your power ({}) in the group exceeds the required amount : {}",
+                                *your_power,
+                                group.required_power(),
+                            ));
                             "Set Price"
                         } else {
-                            ui.label(format!("You will need at least {} voting power for this action to go through. Contact other group members to let them know to authorize this action after you have initiated it.", group.required_power()));
+                            ui.label(format!(
+                                "You will need at least {} voting power for this action to go through. Contact other group members to let them know to authorize this action after you have initiated it.",
+                                group.required_power(),
+                            ));
                             "Initiate Group SetPrice"
                         }
                     } else {
@@ -1090,7 +1156,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
@@ -1114,22 +1180,37 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 ui.add_space(10.0);
 
+                if !signing_controls_visible {
+                    self.confirmation_cancel();
+                    return;
+                }
+
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
-                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult);
+                let in_flight = self.set_price_request.is_pending();
+                let button_active =
+                    validation_result.is_ok() && self.selected_key.as_ref().is_some() && !in_flight;
 
                 let button_response =
                     ComponentStyles::add_primary_button_enabled(ui, button_active, set_price_text);
 
                 if let Err(hover_message) = validation_result {
                     button_response.disabled_tooltip(hover_message);
+                } else if in_flight {
+                    button_response.disabled_tooltip("Wait for the current price change to finish.");
+                } else if self.selected_key.as_ref().is_none() {
+                    button_response.disabled_tooltip(super::CHOOSE_SIGNING_KEY);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }
 
                 // If the user pressed "Set Price," show a popup
                 if self.show_confirmation_popup {
-                    action |= self.show_confirmation_popup(ui);
+                    if button_active {
+                        action |= self.show_confirmation_popup(ui);
+                    } else {
+                        self.confirmation_cancel();
+                    }
                 }
 
                 // Show in-progress or error messages
@@ -1148,6 +1229,8 @@ impl ScreenLike for SetTokenPriceScreen {
                         // handled above
                     }
                 }
+            } else {
+                self.confirmation_cancel();
             }
             }); // end of ScrollArea
         });
@@ -1165,5 +1248,151 @@ impl ScreenLike for SetTokenPriceScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, bound_to, identity_holding, test_app_context};
+    use crate::model::qualified_contract::QualifiedContract;
+    use crate::ui::tokens::mint_tokens_screen::tests::{
+        report_error, sent_request, signing_key, token_info, unrelated_request,
+    };
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::group::v0::GroupV0;
+    use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+    use egui_kittest::kittest::Queryable;
+
+    /// The lower of two expiry-limited keys, chosen automatically, expires
+    /// while the price confirmation is open: the next frame moves to the
+    /// other key and closes both pieces of pending confirmation state.
+    #[test]
+    fn an_automatic_key_expiring_under_the_confirmation_closes_it() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::new([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(&[expired.clone(), live]),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = SetTokenPriceScreen::new(info, &context);
+        screen.selected_key = TokenSigningKey::automatic(Some(expired));
+        screen.show_confirmation_popup = true;
+
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut SetTokenPriceScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(2);
+
+        let screen = harness.state();
+        assert!(!screen.show_confirmation_popup);
+        assert!(screen.confirmation_dialog.is_none());
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+    }
+
+    #[test]
+    fn token_group_price_proposal_remains_visible_without_a_signing_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::SingleContract {
+                id: Identifier::new([9; 32]),
+            },
+        )]);
+        let mut contract = context.dpns_contract().as_ref().clone();
+        let group = Group::V0(GroupV0 {
+            members: [(identity.identity.id(), 1), (Identifier::new([8; 32]), 1)].into(),
+            required_power: 2,
+        });
+        contract.set_groups([(0, group)].into());
+        let mut token_config = TokenConfigurationV0::default_most_restrictive();
+        token_config
+            .distribution_rules_mut()
+            .change_direct_purchase_pricing_rules_mut()
+            .set_authorized_to_make_change_action_takers(AuthorizedActionTakers::Group(0));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::new([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config: token_config.into(),
+            token_position: 0,
+        };
+        let schedule = Some(TokenPricingSchedule::SinglePrice(1234));
+        let mut screen = SetTokenPriceScreen::new(info, &context).with_schedule(schedule.clone());
+        assert!(screen.group.is_some());
+        screen.group_action_id = Some(Identifier::new([7; 32]));
+        screen.token_pricing_schedule = format!("{schedule:?}");
+        screen.public_note = Some("New price for December".into());
+        screen.show_confirmation_popup = true;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut SetTokenPriceScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        harness.get_by_label("Schedule: Some(SinglePrice(1234))");
+        harness.get_by_label("Note: New price for December");
+        harness.get_by_label("Estimated fee:");
+        assert!(
+            harness
+                .query_by_label("Confirm pricing schedule update")
+                .is_none()
+        );
+        assert!(!harness.state().show_confirmation_popup);
+        assert!(harness.query_by_label("Initiate Group SetPrice").is_none());
+        assert!(harness.query_by_label("Single Price").is_none());
+    }
+
+    /// A price change cannot be undone, so while one is in flight another
+    /// task's error must not let Set Price send it again; only its own
+    /// outcome ends the wait.
+    #[test]
+    fn only_the_price_change_itself_releases_set_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = SetTokenPriceScreen::new(token_info(&context, None, false), &context);
+        screen.selected_key = TokenSigningKey::automatic(Some(signing_key()));
+
+        let request = sent_request(&screen.confirmation_ok()).expect("the price change is sent");
+        report_error(&mut screen, &unrelated_request(context.network));
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_none(),
+            "another task's error does not end the wait"
+        );
+        report_error(
+            &mut screen,
+            &request.expect("the price change's own context"),
+        );
+        assert!(
+            sent_request(&screen.confirmation_ok()).is_some(),
+            "a failed price change can be sent again"
+        );
     }
 }

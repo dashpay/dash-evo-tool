@@ -86,13 +86,8 @@ impl AppContext {
         .await??;
         let result = Self::token_balance_sync_result(outcome);
         if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            sender
-                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                    network: self.network,
-                    domain: crate::backend_task::CacheDomain::Tokens,
-                }))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+                .await;
         }
         Ok(result)
     }
@@ -126,13 +121,8 @@ impl AppContext {
         .await??;
         let result = Self::token_balance_sync_result(outcome);
         if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            sender
-                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                    network: self.network,
-                    domain: crate::backend_task::CacheDomain::Tokens,
-                }))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+                .await;
         }
         Ok(result)
     }
@@ -154,13 +144,8 @@ impl AppContext {
             .await;
         self.mark_token_balance_untracked(pair)?;
         self.remove_token_balance(pair)?;
-        sender
-            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: self.network,
-                domain: crate::backend_task::CacheDomain::Tokens,
-            }))
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
@@ -285,7 +270,7 @@ mod tests {
     async fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let data_dir = dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
+        ensure_env_file(&data_dir).expect("write .env");
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");

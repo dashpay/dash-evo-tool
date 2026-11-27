@@ -26,7 +26,9 @@ use dash_sdk::{
 
 use crate::{
     context::AppContext,
-    model::{qualified_identity::QualifiedIdentity, wallet::Wallet},
+    model::{
+        identity_key_usability::SigningScope, qualified_identity::QualifiedIdentity, wallet::Wallet,
+    },
 };
 
 pub mod activity;
@@ -177,27 +179,51 @@ pub fn wallet_for_signing_key(
         .flatten()
 }
 
-/// Keeps `wallet`, the wallet a screen offers to unlock, on the wallet that
-/// derives `key`, the key the screen will sign with, whether the key was
-/// chosen automatically or under Advanced. Clears `open_attempted` only when
-/// the wallet changes, so the no-password open is tried once for the new
-/// wallet. Cheap enough to call every frame, after the key chooser.
+/// Follows the chosen key's wallet, retrying its no-password open only on change.
 pub fn follow_signing_key_wallet(
     qualified_identity: &QualifiedIdentity,
     key: Option<&IdentityPublicKey>,
     wallet: &mut Option<Arc<RwLock<Wallet>>>,
     open_attempted: &mut bool,
 ) {
-    let chosen = wallet_for_signing_key(qualified_identity, key);
-    let changed = match (wallet.as_ref(), chosen.as_ref()) {
-        (Some(current), Some(chosen)) => !Arc::ptr_eq(current, chosen),
+    sync_signing_wallet(Some(qualified_identity), key, wallet, open_attempted);
+}
+
+/// Follow the selected signing key and return whether its wallet changed.
+pub(crate) fn sync_signing_wallet(
+    identity: Option<&QualifiedIdentity>,
+    key: Option<&IdentityPublicKey>,
+    selected_wallet: &mut Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: &mut bool,
+) -> bool {
+    let next = identity.and_then(|identity| wallet_for_signing_key(identity, key));
+    let changed = match (&*selected_wallet, &next) {
+        (Some(previous), Some(next)) => !Arc::ptr_eq(previous, next),
         (None, None) => false,
         _ => true,
     };
     if changed {
-        *wallet = chosen;
-        *open_attempted = false;
+        *wallet_open_attempted = false;
     }
+    *selected_wallet = next;
+    changed
+}
+
+/// Keeps `selected` while `identity` can still sign a non-batch transition
+/// with it; otherwise takes `fallback`. Returns whether the key changed.
+pub(crate) fn reselect_unusable_key(
+    identity: &QualifiedIdentity,
+    selected: &mut Option<IdentityPublicKey>,
+    fallback: Option<&IdentityPublicKey>,
+) -> bool {
+    if selected.as_ref().is_some_and(|key| {
+        crate::ui::helpers::signable_key_now(identity, key, SigningScope::NonBatch).is_some()
+    }) {
+        return false;
+    }
+    let changed = selected.as_ref() != fallback;
+    *selected = fallback.cloned();
+    changed
 }
 
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
@@ -490,8 +516,10 @@ mod tests {
     /// offers no unlock for a wallet it needs.
     #[test]
     fn a_wallet_is_found_under_a_later_placement_too() {
+        let seed_11 = crate::test_support::keys::seed();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let seed_hash = [0x66; 32];
-        let wallet = Wallet::new_from_seed([0x11; 64], Network::Testnet, None, None)
+        let wallet = Wallet::new_from_seed(seed_11, Network::Testnet, None, None)
             .expect("build a test wallet");
         let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
 
@@ -500,7 +528,7 @@ mod tests {
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
+                PrivateKeyData::Clear(secret_22),
             ),
         );
         private_keys.insert_at(

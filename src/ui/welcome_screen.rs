@@ -4,9 +4,9 @@ use crate::model::user_role::UserRole;
 use crate::ui::components::icons::load_svg_icon;
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
+use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::{MessageType, RootScreenType, ScreenType};
-use egui::{Response, RichText, ScrollArea, Stroke, Vec2, WidgetInfo, WidgetType};
+use egui::{Response, RichText, Role, ScrollArea, Stroke, Vec2, WidgetInfo};
 use std::sync::Arc;
 
 const ROLE_OPTIONS: [UserRole; 3] = [UserRole::Everyday, UserRole::Power, UserRole::Developer];
@@ -160,7 +160,7 @@ impl WelcomeScreen {
                 DashColors::background(dark_mode)
             };
             let stroke = if card.response.has_focus() {
-                welcome_card_focus_stroke(dark_mode)
+                ComponentStyles::focus_stroke(dark_mode)
             } else if selected {
                 Stroke::new(Shape::BORDER_WIDTH_THICK, DashColors::DASH_BLUE)
             } else {
@@ -172,7 +172,7 @@ impl WelcomeScreen {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             card.response.widget_info(|| {
-                WidgetInfo::selected(WidgetType::RadioButton, true, selected, card.role.label())
+                WidgetInfo::selected(Role::RadioButton, true, selected, card.role.label())
             });
         }
 
@@ -245,7 +245,7 @@ impl WelcomeScreen {
             );
         });
 
-        let response = frame.allocate_space(ui).interact(egui::Sense::click());
+        let response = allocate_card(ui, &frame);
         PreparedRoleCard {
             role,
             frame,
@@ -323,9 +323,10 @@ impl WelcomeScreen {
             );
         });
 
-        let response = frame.allocate_space(ui).interact(egui::Sense::click());
+        let response = allocate_card(ui, &frame);
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), title));
         let stroke = if response.has_focus() {
-            welcome_card_focus_stroke(dark_mode)
+            ComponentStyles::focus_stroke(dark_mode)
         } else {
             Stroke::new(Shape::BORDER_WIDTH, border_color)
         };
@@ -418,11 +419,9 @@ fn paint_welcome_card(
         .rect_stroke(rect, Shape::RADIUS_MD, stroke, egui::StrokeKind::Inside);
 }
 
-fn welcome_card_focus_stroke(dark_mode: bool) -> Stroke {
-    let color = if dark_mode {
-        DashColors::WHITE
-    } else {
-        DashColors::DEEP_BLUE
-    };
-    Stroke::new(Shape::BORDER_WIDTH_THICK, color)
+/// Allocate a card as a single clickable widget. Allocating it for hover and
+/// then sensing clicks would drop the card's keyboard focus every frame.
+fn allocate_card(ui: &mut egui::Ui, card: &egui::containers::frame::Prepared) -> Response {
+    let rect = card.frame.outer_rect(card.content_ui.min_rect());
+    ui.allocate_rect(rect, egui::Sense::click())
 }

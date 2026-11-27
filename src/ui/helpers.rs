@@ -303,6 +303,17 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         );
     }
 
+    // Screen readers get a short button name; the explanation is its description.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::accesskit::Role::Button,
+            ui.is_enabled(),
+            "More information",
+        )
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_description(hover_text));
+
     response.clickable_tooltip(hover_text)
 }
 
@@ -413,11 +424,85 @@ impl TransactionType {
             TransactionType::Withdraw => "Withdraw",
             TransactionType::DocumentAction => "Document Action",
             TransactionType::TokenAction => "Token Action",
-            TransactionType::TokenTransfer => "Token Transfer",
+            TransactionType::TokenTransfer => "Token Send",
             TransactionType::TokenClaim => "Token Claim",
             TransactionType::ContactRequest => "Contact Request",
             TransactionType::UsernameRegistration => "Username Registration",
         }
+    }
+}
+
+/// `identity`'s current copy of `key`, while this device holds its private
+/// half and it can sign in `scope` now.
+pub(crate) fn signable_key_now<'a>(
+    identity: &'a QualifiedIdentity,
+    key: &IdentityPublicKey,
+    scope: SigningScope<'_>,
+) -> Option<&'a IdentityPublicKey> {
+    identity.current_public_key(key).filter(|live| {
+        identity.holds_obtainable_key(live)
+            && !key_caveats(live, scope, now_ms())
+                .iter()
+                .any(KeyCaveat::blocks_signing)
+    })
+}
+
+/// Re-evaluate a contract key when the network confirms or changes its rules.
+/// A manually selected key is retained while the identity still holds it and
+/// the active protocol permits its limits.
+pub(crate) fn refresh_contract_signing_key(
+    app_context: &AppContext,
+    identity: Option<&QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+    security_levels: &[SecurityLevel],
+) -> bool {
+    let scope = app_context.contract_signing_scope();
+    let next = identity.and_then(|identity| {
+        selected_key
+            .as_ref()
+            .and_then(|key| signable_key_now(identity, key, scope))
+            .or_else(|| {
+                identity.signing_key_now(
+                    crate::model::identity_key_usability::KeyRequirements::new(
+                        Purpose::AUTHENTICATION,
+                        security_levels,
+                        scope,
+                    ),
+                )
+            })
+    });
+    if selected_key.as_ref() == next {
+        return false;
+    }
+    *selected_key = next.cloned();
+    true
+}
+
+/// Explain why contract signing cannot proceed before the network is known.
+pub(crate) fn contract_signing_key_notice(
+    app_context: &AppContext,
+    identity: Option<&QualifiedIdentity>,
+    security_levels: &[SecurityLevel],
+) -> &'static str {
+    if app_context
+        .protocol_version_info()
+        .verified_version
+        .is_none()
+        && identity.is_some_and(|identity| {
+            identity
+                .signing_key_now(crate::model::identity_key_usability::KeyRequirements::new(
+                    Purpose::AUTHENTICATION,
+                    security_levels,
+                    SigningScope::DataContract {
+                        protocol_version: Some(14),
+                    },
+                ))
+                .is_some()
+        })
+    {
+        "The network's signing rules are not confirmed yet. Wait for the connection to refresh and try again."
+    } else {
+        "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity."
     }
 }
 
@@ -442,12 +527,18 @@ impl<'a> KeyFilter<'a> {
         purposes: &'a [Purpose],
         security_levels: &'a [SecurityLevel],
         scope: SigningScope<'a>,
+        protocol_version: Option<u32>,
     ) -> Self {
         Self {
             purposes,
             security_levels,
             key_types: transaction_type.allowed_key_types(),
-            scope,
+            scope: match transaction_type {
+                TransactionType::RegisterContract | TransactionType::UpdateContract => {
+                    SigningScope::DataContract { protocol_version }
+                }
+                _ => scope,
+            },
         }
     }
 
@@ -465,7 +556,11 @@ impl<'a> KeyFilter<'a> {
     /// key bound to another contract or document type, so no mode offers
     /// them.
     fn may_sign(&self, key: &IdentityPublicKey, now: TimestampMillis) -> bool {
-        !key.is_disabled() && offered_for_manual_choice(&key_caveats(key, self.scope, now))
+        let caveats = key_caveats(key, self.scope, now);
+        !key.is_disabled()
+            && offered_for_manual_choice(&caveats)
+            && (!matches!(self.scope, SigningScope::DataContract { .. })
+                || !caveats.iter().any(KeyCaveat::blocks_signing))
     }
 
     /// Whether `key` is listed outside developer mode.
@@ -489,8 +584,9 @@ fn listed_keys<'a>(
         .identity_public_keys()
         .into_iter()
         // The stored copy may predate a limits raise: judge, label and hand
-        // on the key as the identity holds it now.
-        .map(|key_ref| identity.live_public_key(&key_ref.1.identity_public_key))
+        // on the key as the identity holds it now, skipping one it no longer
+        // holds.
+        .filter_map(|key_ref| identity.current_public_key(&key_ref.1.identity_public_key))
         // Platform rejects signing with a disabled key or a key bound
         // elsewhere, and no signer here can produce a private half this
         // device cannot obtain, so never offer one — not even in dev mode,
@@ -566,17 +662,20 @@ fn render_no_eligible_key_group(
 ///
 /// With `identity` `None`, prompts the user to pick an identity first. Developer mode also
 /// lists keys of another purpose, security level or key type, tagged via
-/// [`format_key_label_dev`].
+/// [`format_key_label_dev`]. `label_id` is the label that names the combo box.
+#[allow(clippy::too_many_arguments)]
 fn render_key_combo(
     ui: &mut Ui,
+    label_id: egui::Id,
     combo_id: &str,
     width: f32,
     identity: Option<&QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
     filter: &KeyFilter<'_>,
     is_dev_mode: bool,
-) {
+) -> bool {
     let now = now_ms();
+    let mut picked = false;
     ComboBox::from_id_salt(combo_id)
         .width(width)
         .selected_text(
@@ -607,9 +706,12 @@ fn render_key_combo(
                     .clicked()
                 {
                     *selected_key = Some(key.clone());
+                    picked = true;
                 }
             }
-        });
+        })
+        .response
+        .labelled_by(label_id);
 
     if let (Some(qi), Some(selected)) = (identity, selected_key.as_ref()) {
         let live = qi.live_public_key(selected);
@@ -620,16 +722,18 @@ fn render_key_combo(
     if let Some(key) = selected_key.as_ref() {
         render_key_caveats(ui, &key_caveats(key, filter.scope, now));
     }
+    picked
 }
 
-/// Whether a key with `caveats` is offered for the user to pick: every key
-/// but one whose bounds tie it to another contract or document type, which
-/// Platform is certain to refuse here. Expired and limited keys stay on
-/// offer with their warning; the user may know better.
-fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
-    !caveats
-        .iter()
-        .any(|caveat| matches!(caveat, KeyCaveat::OutOfBounds))
+/// Whether the key's caveats permit an explicit choice. Callers also
+/// enforce disabled-key and operation-specific signing rules.
+pub(crate) fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
+    !caveats.iter().any(|caveat| {
+        matches!(
+            caveat,
+            KeyCaveat::OutOfBounds | KeyCaveat::ContractRequiresUnlimitedKey
+        )
+    })
 }
 
 /// A key list entry for the key labelled `label`, naming its most severe
@@ -642,13 +746,17 @@ fn key_entry_label(label: &str, caveat: Option<&KeyCaveat>) -> String {
         Some(KeyCaveat::Expiring { .. }) => format!("{label} (expires)"),
         // Disabled keys and keys bound to another contract or document type
         // are never listed, so no entry names them.
-        Some(KeyCaveat::Disabled | KeyCaveat::OutOfBounds) | None => label.to_string(),
+        Some(
+            KeyCaveat::Disabled | KeyCaveat::OutOfBounds | KeyCaveat::ContractRequiresUnlimitedKey,
+        )
+        | None => label.to_string(),
     }
 }
 
 /// The user-facing explanation of a key caveat: what it means and what to do.
 pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
     match caveat {
+        KeyCaveat::ContractRequiresUnlimitedKey => "This key has a spending limit or an expiry date, so it cannot create or update contracts. Choose a key without either restriction.".to_string(),
         KeyCaveat::Disabled => "This key is disabled, so the network will reject anything signed with it. Choose another key.".to_string(),
         KeyCaveat::Expired { expired_at } => format!(
             "This key expired on {date}, so the network will reject anything signed with it. Choose another key.",
@@ -765,47 +873,73 @@ pub fn add_key_chooser_with_security_levels(
     allowed_security_levels: &[SecurityLevel],
     scope: SigningScope<'_>,
 ) -> AppAction {
-    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
-    let mut action = AppAction::None;
+    add_key_chooser_with_selection(
+        ui,
+        app_context,
+        identity,
+        selected_key,
+        transaction_type,
+        allowed_security_levels,
+        scope,
+    )
+    .0
+}
 
+/// Reports an explicit pick, including a click on the key already selected.
+pub(crate) fn add_key_chooser_with_selection(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    allowed_security_levels: &[SecurityLevel],
+    scope: SigningScope<'_>,
+) -> (AppAction, bool) {
+    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
     let allowed_purposes = transaction_type.allowed_purposes();
     let filter = KeyFilter::new(
         transaction_type,
         &allowed_purposes,
         allowed_security_levels,
         scope,
+        app_context.protocol_version_info().verified_version,
     );
 
     let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
         key_eligibility(identity, &filter, now_ms());
 
     if !is_dev_mode && !has_suitable_keys_with_private {
-        action = render_no_eligible_key_group(
-            ui,
-            app_context,
-            identity,
-            transaction_type,
-            has_eligible_public_keys_without_private,
-        );
-    } else {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.add_space(15.0);
-                ui.label("Key:");
-            });
-            render_key_combo(
+        return (
+            render_no_eligible_key_group(
                 ui,
-                "key_chooser_combo",
-                300.0,
-                Some(identity),
-                selected_key,
-                &filter,
-                is_dev_mode,
-            );
-        });
+                app_context,
+                identity,
+                transaction_type,
+                has_eligible_public_keys_without_private,
+            ),
+            false,
+        );
     }
 
-    action
+    let picked = ui.horizontal(|ui| {
+        let label = ui
+            .vertical(|ui| {
+                ui.add_space(15.0);
+                ui.label("Key:")
+            })
+            .inner;
+        render_key_combo(
+            ui,
+            label.id,
+            "key_chooser_combo",
+            300.0,
+            Some(identity),
+            selected_key,
+            &filter,
+            is_dev_mode,
+        )
+    });
+    (AppAction::None, picked.inner)
 }
 
 /// Identity key chooser that filters keys based on transaction type and dev mode
@@ -856,7 +990,7 @@ where
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Identity:");
+            let identity_label = ui.label("Identity:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("identity_combo")
                     .width(220.0)
@@ -877,12 +1011,14 @@ where
                                 *selected_key = None; // Clear key selection when identity changes
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(identity_label.id);
             });
 
             ui.end_row();
 
-            ui.label("Key:");
+            let key_label = ui.label("Key:");
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 let allowed_purposes = transaction_type.allowed_purposes();
@@ -893,6 +1029,7 @@ where
                     &allowed_purposes,
                     &allowed_security_levels,
                     scope,
+                    app_context.protocol_version_info().verified_version,
                 );
 
                 // Show the "no eligible key" notice instead of the combo when the selected
@@ -916,6 +1053,7 @@ where
                 if show_combo {
                     render_key_combo(
                         ui,
+                        key_label.id,
                         "key_combo",
                         220.0,
                         selected_identity.as_ref(),
@@ -990,11 +1128,12 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            let filter_label = ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term)
+                .labelled_by(filter_label.id);
             ui.end_row();
 
-            ui.label("Contract:");
+            let contract_label = ui.label("Contract:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("contract_combo")
                     .width(220.0)
@@ -1014,12 +1153,14 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                                 select_contract(selected_contract, selected_doc_type, qc);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(contract_label.id);
             });
 
             ui.end_row();
 
-            ui.label("Doc Type:");
+            let doc_type_label = ui.label("Doc Type:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ComboBox::from_id_salt("doctype_combo")
                     .width(220.0)
@@ -1049,7 +1190,9 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                         } else {
                             dui.label("Pick a contract first");
                         }
-                    });
+                    })
+                    .response
+                    .labelled_by(doc_type_label.id);
             });
             ui.end_row();
         });
@@ -1072,11 +1215,12 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
         .spacing([10.0, 5.0])
         .striped(false)
         .show(ui, |ui| {
-            ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            let filter_label = ui.label("Filter contracts:");
+            ui.text_edit_singleline(search_term)
+                .labelled_by(filter_label.id);
             ui.end_row();
 
-            ui.label("Contract:");
+            let contract_label = ui.label("Contract:");
             ComboBox::from_id_salt("contract_chooser")
                 .width(220.0)
                 .selected_text(
@@ -1095,7 +1239,9 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
                             *selected_contract = Some(qc.clone());
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(contract_label.id);
 
             ui.end_row();
         });
@@ -1313,6 +1459,174 @@ pub fn show_group_token_success_screen_with_fee(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn interop_contract_manual_choice_does_not_offer_expired_keys_on_protocol14() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let identity = identity_holding(&[expired]);
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            let filter =
+                KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, Some(14));
+            for dev in [false, true] {
+                assert_eq!(listed_keys(&identity, filter, dev, 2).count(), 0);
+            }
+        }
+    }
+    #[test]
+    fn interop_contract_key_choice_tracks_verified_protocol_changes() {
+        use crate::context::test_support::{
+            auth_key, identity_holding, prove_protocol_version, test_app_context,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let key =
+            auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(200_000_000_000), Some(u64::MAX));
+        let identity = identity_holding(&[key]);
+        let mut selected = None;
+        let levels = [SecurityLevel::CRITICAL];
+        assert!(!refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert!(selected.is_none(), "a seed is not network confirmation");
+        prove_protocol_version(&ctx, 14);
+        assert!(refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert_eq!(selected.as_ref().map(|key| key.id()), Some(1));
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            for (version, expected) in [(None, 0), (Some(14), 1), (Some(15), 0)] {
+                let filter =
+                    KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, version);
+                for dev in [false, true] {
+                    assert_eq!(listed_keys(&identity, filter, dev, 1).count(), expected);
+                }
+            }
+        }
+        prove_protocol_version(&ctx, 15);
+        assert!(refresh_contract_signing_key(
+            &ctx,
+            Some(&identity),
+            &mut selected,
+            &levels
+        ));
+        assert!(
+            selected.is_none(),
+            "activation invalidates a previous limited choice"
+        );
+    }
+
+    /// A kept contract key must still be the identity's key and signable on
+    /// this device; otherwise the automatic choice replaces it.
+    #[test]
+    fn contract_key_refresh_drops_a_key_this_device_cannot_sign_with() {
+        use crate::context::test_support::{
+            auth_key, hold_as_legacy_encrypted, identity_holding, test_app_context,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(dir.path());
+        let levels = [SecurityLevel::CRITICAL];
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        identity
+            .identity
+            .add_public_key(auth_key(2, SecurityLevel::CRITICAL));
+        hold_as_legacy_encrypted(&mut identity, 2);
+        for stale in [
+            auth_key(2, SecurityLevel::CRITICAL),
+            auth_key(3, SecurityLevel::CRITICAL),
+        ] {
+            let mut selected = Some(stale);
+            assert!(refresh_contract_signing_key(
+                &ctx,
+                Some(&identity),
+                &mut selected,
+                &levels
+            ));
+            assert_eq!(selected.as_ref().map(|key| key.id()), Some(1));
+        }
+    }
+
+    #[test]
+    fn pv15_contract_manual_chooser_rejects_any_limits() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        for action in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+        ] {
+            let purposes = action.allowed_purposes();
+            let levels = action.allowed_security_levels();
+            let filter =
+                KeyFilter::new(action, &purposes, &levels, SigningScope::NonBatch, Some(15));
+            for (budget, expiry) in [
+                (Some(0), None),
+                (Some(1_000), None),
+                (None, Some(u64::MAX)),
+                (Some(1_000), Some(u64::MAX)),
+            ] {
+                let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(budget, expiry);
+                let identity = identity_holding(&[limited, auth_key(2, SecurityLevel::CRITICAL)]);
+                for dev_mode in [false, true] {
+                    let ids: Vec<_> = listed_keys(&identity, filter, dev_mode, 1)
+                        .map(|key| key.id())
+                        .collect();
+                    assert_eq!(
+                        ids,
+                        vec![2],
+                        "{action:?}, dev={dev_mode}, budget={budget:?}, expiry={expiry:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pv15_limited_document_key_remains_usable_automatically_and_manually() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use crate::model::identity_key_usability::{KeyRequirements, select_identity_signing_key};
+        let limited = auth_key(1, SecurityLevel::CRITICAL).with_limits(Some(1_000), Some(u64::MAX));
+        let identity = identity_holding(&[limited]);
+        let scope = SigningScope::Document {
+            contract_id: Identifier::new([1; 32]),
+            document_type_name: "note",
+        };
+        let action = TransactionType::DocumentAction;
+        let purposes = action.allowed_purposes();
+        let levels = action.allowed_security_levels();
+        let filter = KeyFilter::new(action, &purposes, &levels, scope, Some(15));
+        assert_eq!(
+            listed_keys(&identity, filter, false, 1)
+                .map(|key| key.id())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            select_identity_signing_key(
+                &identity.identity,
+                KeyRequirements::new(Purpose::AUTHENTICATION, &levels, scope),
+                1,
+                |_| true
+            )
+            .map(|key| key.id()),
+            Some(1)
+        );
+    }
+
     /// Regression: a key bound to another contract or document type was
     /// offered, though its bounds prove Platform refuses it here. Expired and
     /// limited keys stay on offer (IDN-024), with their warning.
@@ -1467,6 +1781,42 @@ mod tests {
         }
     }
 
+    /// Regression: a filed key the identity no longer holds, removed or
+    /// replaced under the same id, was listed by its stored copy, though
+    /// Platform verifies against the identity's current key.
+    #[test]
+    fn the_chooser_lists_no_key_the_identity_no_longer_holds() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let dashpay = Identifier::new([0xDA; 32]);
+        let purposes = TransactionType::ContactRequest.allowed_purposes();
+        let levels = TransactionType::ContactRequest.allowed_security_levels();
+        let filter = contact_request_filter(&purposes, &levels, dashpay);
+        let now = 1_000;
+
+        let mut removed = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        removed
+            .identity
+            .set_public_keys(std::collections::BTreeMap::new());
+        let mut replaced = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        let mut other = auth_key(1, SecurityLevel::HIGH);
+        other.set_data(vec![3; 33].into());
+        replaced
+            .identity
+            .set_public_keys(std::collections::BTreeMap::from([(1, other)]));
+
+        for (case, identity) in [("removed", removed), ("replaced", replaced)] {
+            assert_eq!(
+                listed_keys(&identity, filter, true, now).count(),
+                0,
+                "{case}"
+            );
+            assert!(!key_eligibility(&identity, &filter, now).0, "{case}");
+        }
+    }
+
     /// DashPay and username registration choosers offer the key types their
     /// automatic choice takes; other transactions the types Platform verifies.
     #[test]
@@ -1527,6 +1877,25 @@ mod tests {
         }
     }
 
+    /// Screen readers announce the info icon as a button with a short name,
+    /// and its explanation as the description.
+    #[test]
+    fn info_icon_is_a_named_button_described_by_its_explanation() {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        const EXPLANATION: &str = "Explains what this option does.";
+        let harness = Harness::new_ui(|ui| {
+            info_icon_button(ui, EXPLANATION);
+        });
+        let icon = harness.get_by_role_and_label(Role::Button, "More information");
+        assert_eq!(
+            icon.accesskit_node().description().as_deref(),
+            Some(EXPLANATION)
+        );
+    }
+
     /// Switching contract drops a document type of the previous contract, so
     /// no action pairs one contract with another contract's type; a type of
     /// the newly selected contract stays selected.
@@ -1580,7 +1949,7 @@ mod tests {
         let ctx = egui::Context::default();
         let window_rect =
             egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
-        let id = egui::Id::new("test_modal_outside_click_pass");
+        let id = egui::Id::unique("test_modal_outside_click_pass");
 
         // Opening frame (first render): the outside press must be ignored.
         let mut closed = true;
@@ -1608,7 +1977,7 @@ mod tests {
         let ctx = egui::Context::default();
         let window_rect =
             egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
-        let id = egui::Id::new("test_modal_rearm_pass");
+        let id = egui::Id::unique("test_modal_rearm_pass");
 
         // First open + a continuation pass so the guard is disarmed.
         ctx.run_ui(outside_press(), |ui| {

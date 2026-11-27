@@ -3,8 +3,7 @@ use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::request_type::RequestType;
-use dash_sdk::Sdk;
+use crate::model::token::MintRecipient;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -12,9 +11,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::ac
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::mint::TokenMintTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::MintResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -31,46 +28,22 @@ impl AppContext {
         amount: u64,
         optional_recipient: Option<Identifier>,
         group_info: Option<GroupStateTransitionInfoStatus>,
-        sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let builder = TokenMintTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            sending_identity.identity.id(),
-            amount,
-        );
-
-        let mut builder = if let Some(recipient_id) = optional_recipient {
-            builder.issued_to_identity_id(recipient_id)
-        } else {
-            builder
-        };
-
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        if let Some(group_info) = group_info {
-            builder = builder.with_using_group_info(group_info);
-        }
-
-        let maybe_options = self.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
+        // The identity the tokens go to: the chosen one when the token allows
+        // choosing, otherwise its configured destination.
+        let mint_recipient = data_contract
+            .expected_token_configuration(token_position)
+            .ok()
+            .and_then(|config| {
+                MintRecipient::resolve(config.distribution_rules(), optional_recipient).identity()
+            });
+        let actor = self.token_actor(sending_identity).await?;
+        let common = self.token_action_common(data_contract.clone(), token_position, &signing_key);
 
         self.execute_token_op(
-            async {
-                sdk.token_mint(builder, &signing_key, sending_identity)
-                    .await
-                    .map_err(|e| {
-                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                    })
-            },
-            |result| {
-                self.cache_mint_result(&data_contract, token_position, optional_recipient, result)
-            },
+            actor.mint(common, amount, optional_recipient, public_note, group_info),
+            |result| self.cache_mint_result(&data_contract, token_position, mint_recipient, result),
             BackendTaskSuccessResult::MintedTokens,
         )
         .await

@@ -1,4 +1,5 @@
-use egui::{Rect, Response, Sense, Stroke, Ui, pos2, vec2};
+use egui::accesskit::Role;
+use egui::{Rect, Response, Sense, Stroke, Ui, WidgetInfo, pos2, vec2};
 
 use crate::model::secret::Secret;
 use crate::ui::theme::{DashColors, ResponseExt, Typography};
@@ -242,6 +243,8 @@ impl PasswordInput {
 
         let eye_id = text_response.id.with("eye");
         let eye_response = ui.interact(eye_rect, eye_id, Sense::click_and_drag());
+        eye_response
+            .widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), "Hold to reveal"));
 
         // Update for NEXT frame.
         let next_revealing = eye_response.is_pointer_button_down_on() && eye_response.hovered();

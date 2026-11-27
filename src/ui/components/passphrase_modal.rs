@@ -114,7 +114,7 @@ struct PassphraseModalState {
 }
 
 fn modal_state_id(config_id: egui::Id) -> egui::Id {
-    egui::Id::new("passphrase_modal_state").with(config_id)
+    egui::Id::unique("passphrase_modal_state").with(config_id)
 }
 
 /// Render the shared passphrase modal and return what the user did.
@@ -163,7 +163,7 @@ pub fn passphrase_modal(
         ctx,
         ModalChromeConfig {
             title: config.window_title.into(),
-            overlay_id: egui::Id::new("passphrase_modal_overlay").with(config.window_title),
+            overlay_id: egui::Id::unique("passphrase_modal_overlay").with(config.window_title),
             overlay_order: egui::Order::Background,
             window_order: egui::Order::Foreground,
             resizable: false,
@@ -323,8 +323,8 @@ mod tests {
     #[test]
     fn wallet_specific_state_never_crosses_to_another_prompt() {
         let ctx = egui::Context::default();
-        let wallet_a = egui::Id::new("wallet").with([0xA1u8; 32]);
-        let wallet_b = egui::Id::new("wallet").with([0xB2u8; 32]);
+        let wallet_a = egui::Id::unique("wallet").with([0xA1u8; 32]);
+        let wallet_b = egui::Id::unique("wallet").with([0xB2u8; 32]);
         let mut password_input = PasswordInput::new();
         password_input.set_text("wallet-a-password");
         ctx.data_mut(|data| {

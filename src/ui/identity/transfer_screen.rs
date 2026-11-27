@@ -95,8 +95,11 @@ impl TransferScreen {
         let max_amount = identity.identity.balance();
         let identity_clone = identity.clone();
         let selected_key = identity_clone.transfer_signing_key();
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
+        let selected_wallet = selected_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
                 MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error)
                     .disable_auto_dismiss();
                 None
@@ -576,6 +579,21 @@ impl ScreenLike for TransferScreen {
             self.max_amount = self.identity.identity.balance();
         }
         self.known_identities = identities;
+        let key_changed = super::reselect_unusable_key(
+            &self.identity,
+            &mut self.selected_key,
+            self.identity.transfer_signing_key(),
+        );
+        let wallet_changed = super::sync_signing_wallet(
+            Some(&self.identity),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+        if key_changed || wallet_changed {
+            self.confirmation_popup = false;
+            self.confirmation_dialog = None;
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -861,7 +879,88 @@ impl ScreenLike for TransferScreen {
 
 #[cfg(test)]
 mod tests {
-    use super::key_info_when_available;
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+    use crate::ui::helpers::format_key_label;
+    use egui_kittest::kittest::Queryable;
+
+    /// An unbound, unlimited CRITICAL `TRANSFER` key `id`.
+    fn transfer_key(id: u32) -> IdentityPublicKey {
+        let IdentityPublicKey::V0(mut key) = auth_key(id, SecurityLevel::CRITICAL) else {
+            panic!("auth_key builds a version 0 key");
+        };
+        key.purpose = Purpose::TRANSFER;
+        key.into()
+    }
+
+    /// Regression: picking a transfer key by hand left the signing wallet as
+    /// it was, so the unlock prompt did not follow the chosen key.
+    #[test]
+    fn picking_a_transfer_key_by_hand_follows_its_wallet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (first, second) = (transfer_key(1), transfer_key(2));
+        let mut identity = identity_holding(&[first.clone(), second.clone()]);
+        let wallet = crate::model::wallet::test_support::open_wallet_on(
+            crate::test_support::keys::labelled_seed("manual_transfer_key_wallet", 0),
+        );
+        let seed_hash = wallet.seed_hash();
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 2, seed_hash);
+        identity
+            .associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        let mut screen = TransferScreen::new(identity, &context);
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        assert!(screen.selected_wallet.is_none());
+        screen.show_advanced_options = true;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 1600.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_value(&format_key_label(&first)).click();
+        harness.run();
+        harness.get_by_label(&format_key_label(&second)).click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+        let wallet = screen
+            .selected_wallet
+            .as_ref()
+            .expect("the chosen key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+    }
+
+    /// Regression: after a transfer key was added, a refresh reloaded the
+    /// identity but kept no key selected, so Transfer stayed disabled.
+    #[test]
+    fn a_refresh_picks_the_transfer_key_that_became_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let mut screen = TransferScreen::new(
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]),
+            &context,
+        );
+        assert!(screen.selected_key.is_none());
+        screen.confirmation_dialog = Some(ConfirmationDialog::new("Transfer", "Transfer 1?"));
+        let seed_hash = crate::ui::tokens::tests::store_identity_with_wallet_key(
+            &context,
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL), transfer_key(2)]),
+            2,
+        );
+
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+        let wallet = screen.selected_wallet.as_ref().expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+        assert!(screen.confirmation_dialog.is_none());
+    }
 
     /// Regression: the lock notice returned before the key chooser, so with
     /// the default key's wallet locked the user could not pick a key held in

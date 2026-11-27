@@ -58,7 +58,7 @@ async fn spv_reconnect_succeeds_without_already_open() {
     let workdir =
         std::env::temp_dir().join(format!("dash-evo-e2e-reconnect-{}", std::process::id()));
     std::fs::create_dir_all(&workdir).expect("create reconnect test workdir");
-    ensure_env_file(&workdir);
+    ensure_env_file(&workdir).expect("write .env");
 
     let db_path = workdir.join("data.db");
     let db = Arc::new(create_database_at_path(&db_path).expect("create reconnect test DB"));

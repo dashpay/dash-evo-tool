@@ -45,6 +45,8 @@ pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 /// the key's life. The key version is not — upstream writes a V1 key without
 /// limits as V0 — so a V0 key and a limit-less V1 key with the same fields are
 /// the same key.
+// TODO(dashpay/platform#6294): use rs-dpp's `IdentityPublicKey::is_same_key`
+// once it exists.
 pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
     key_identity(stored) == key_identity(live)
 }
@@ -349,7 +351,7 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, Priva
 impl KeyStorage {
     /// Canonicalize valid compressed public keys saved in legacy HASH160 snapshots.
     pub(crate) fn normalize_legacy_hash160_keys(&mut self) -> bool {
-        use dash_sdk::dpp::dashcore::{PublicKey, hashes::Hash};
+        use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::identity::KeyType;
 
         let mut changed = false;
@@ -736,8 +738,8 @@ impl KeyStorage {
     ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
     ///   never replaced by a derivation path: no protection downgrade, and the
     ///   vault secret stays referenced. Its public key is still refreshed from
-    ///   the rebuild, so an on-chain `disabled_at` is not pinned stale, and a
-    ///   missing wallet path is taken from the rebuild.
+    ///   the rebuild, so an on-chain disable or raised limit is not pinned
+    ///   stale, and a missing wallet path is taken from the rebuild.
     ///
     /// A held stored entry whose public key differs from the rebuild's
     /// (on-chain) key at the same id is a stale local entry, such as a
@@ -782,7 +784,7 @@ impl KeyStorage {
                     continue;
                 }
                 // Same key: keep the held private half, but take the
-                // rebuild's public key (only `disabled_at` can differ) and the
+                // rebuild's public key (only the key's state can differ) and the
                 // wallet path it found for a key imported before the wallet.
                 entry.0.identity_public_key = on_chain.identity_public_key.clone();
                 if entry.0.in_wallet_at_derivation_path.is_none() {
@@ -1006,7 +1008,7 @@ mod tests {
 
     #[test]
     fn legacy_hash160_normalization_preserves_key_identity_and_is_idempotent() {
-        use dash_sdk::dpp::dashcore::{PublicKey, hashes::Hash};
+        use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::identity::KeyType;
 
         let public = PublicKey::from_slice(
@@ -1084,7 +1086,7 @@ mod tests {
         }
     }
 
-    /// A recognizable 32-byte secret. Delegates to the shared
+    /// A random 32-byte secret. Delegates to the shared
     /// [`distinctive_secret_32`] so the seam / sidecar / QI-blob leak cases
     /// share one definition rather than forking it.
     fn distinctive_secret() -> [u8; 32] {
@@ -1203,8 +1205,8 @@ mod tests {
         let cfg = bincode::config::standard();
         // Each of the four pre-existing variants must round-trip unchanged.
         for original in [
-            PrivateKeyData::AlwaysClear([0x11; 32]),
-            PrivateKeyData::Clear([0x22; 32]),
+            PrivateKeyData::AlwaysClear(crate::test_support::keys::secret_bytes()),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             PrivateKeyData::Encrypted(vec![0x33; 48]),
             PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
                 wallet_seed_hash: [0x44; 32],
@@ -1285,14 +1287,20 @@ mod tests {
         let mut ks = KeyStorage::default();
         ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(occupant), [0x11; 32]),
+            (
+                QualifiedIdentityPublicKey::from(occupant),
+                crate::test_support::keys::secret_bytes(),
+            ),
         )
         .expect("an empty slot accepts the first key");
         let before = ks.entry_at(&(MAIN, 0)).cloned().expect("occupant stored");
 
         let refused = ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(intruder), [0x22; 32]),
+            (
+                QualifiedIdentityPublicKey::from(intruder),
+                crate::test_support::keys::secret_bytes(),
+            ),
         );
 
         assert!(
@@ -1332,23 +1340,27 @@ mod tests {
     fn the_same_key_still_overwrites_itself() {
         let pv = PlatformVersion::latest();
         let key = IdentityPublicKey::random_key(0, Some(1), pv);
+        let replacement = crate::test_support::keys::secret_bytes();
         let mut ks = KeyStorage::default();
         ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(key.clone()), [0x11; 32]),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                crate::test_support::keys::secret_bytes(),
+            ),
         )
         .expect("an empty slot accepts the key");
 
         ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(key), [0x22; 32]),
+            (QualifiedIdentityPublicKey::from(key), replacement),
         )
         .expect("a key may replace itself at its own slot");
 
         assert_eq!(ks.len(), 1, "replacing in place adds no second entry");
         match ks.entry_at(&(MAIN, 0)).expect("entry present") {
             (_, PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes)) => {
-                assert_eq!(bytes, &[0x22; 32], "the re-entered bytes replaced the old")
+                assert_eq!(bytes, &replacement, "the re-entered bytes replaced the old")
             }
             (_, other) => panic!("expected plaintext bytes, got {other:?}"),
         }
@@ -1356,9 +1368,9 @@ mod tests {
 
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
-    /// `disabled_at` is the one field Platform lets move after a key is added,
-    /// so a key disabled on chain since its private half was saved must still
-    /// match the stored snapshot — otherwise a key the device demonstrably
+    /// `disabled_at` is the one field Platform lets move on a V0 key, so a key
+    /// disabled on chain since its private half was saved must still match the
+    /// stored snapshot — otherwise a key the device demonstrably
     /// holds is reported missing the moment it is retired.
     #[test]
     fn same_key_ignores_a_key_being_disabled() {
@@ -1414,15 +1426,22 @@ mod tests {
             Some((_, PrivateKeyData::AtWalletDerivationPath(path))) if *path == derivation_path(0x01)
         ));
 
-        let mut held = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x44; 32]))]);
+        let held_secret = crate::test_support::keys::secret_bytes();
+        let mut held = filed_under(&key, &[(MAIN, PrivateKeyData::Clear(held_secret))]);
         held.insert_wallet_derived((MAIN, 4), qualified.clone(), derivation_path(0x01))
             .expect("the same key is already filed");
         assert!(
-            matches!(held.entry_at(&(MAIN, 4)), Some((_, PrivateKeyData::Clear(bytes))) if *bytes == [0x44; 32]),
+            matches!(held.entry_at(&(MAIN, 4)), Some((_, PrivateKeyData::Clear(bytes))) if *bytes == held_secret),
             "a held private half is never replaced by a derivation path"
         );
 
-        let mut occupied = filed_under(&foreign, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        let mut occupied = filed_under(
+            &foreign,
+            &[(
+                MAIN,
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+            )],
+        );
         assert!(matches!(
             occupied.insert_wallet_derived((MAIN, 4), qualified, derivation_path(0x01)),
             Err(TaskError::IdentityKeySlotOccupied)
@@ -1482,6 +1501,57 @@ mod tests {
         assert!(!same_key(&expiry_only, &base), "nor an expiry");
     }
 
+    /// `IdentityKeyLimitsUpdate` raises a V1 key's `total_budget` and moves its
+    /// `expires_at` without changing the key, so a snapshot taken before the
+    /// update still names it, whichever side moved.
+    #[test]
+    fn same_key_ignores_raised_key_limits() {
+        let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let limited = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.clone().with_limits(Some(5_000), Some(1_800_000));
+        let expiring_later = base.clone().with_limits(Some(1_000), Some(2_400_000));
+
+        assert!(
+            same_key(&limited, &raised),
+            "a raised budget is the same key"
+        );
+        assert!(same_key(&raised, &limited));
+        assert!(
+            same_key(&limited, &expiring_later),
+            "a moved expiry is the same key"
+        );
+        assert!(same_key(&expiring_later, &limited));
+    }
+
+    /// A limits update only raises existing limits and preserves the key's
+    /// version, so a V1 key never matches a V0 snapshot.
+    #[test]
+    fn same_key_rejects_a_v1_key_against_a_v0_key() {
+        let base = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let limited = base.clone().with_limits(Some(1_000), None);
+
+        assert!(!same_key(&base, &limited));
+        assert!(!same_key(&limited, &base));
+    }
+
+    /// A V1 key's identifying fields still identify it: `read_only` stands for
+    /// the seven, here alongside a raised budget.
+    #[test]
+    fn same_key_rejects_a_v1_disagreement_outside_its_state() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        altered.read_only = !altered.read_only;
+
+        assert!(
+            !same_key(&limited, &IdentityPublicKey::V1(altered)),
+            "a key differing outside its state is not this key"
+        );
+    }
+
     /// Upstream writes a V1 key without limits as V0, so the two encodings of
     /// one key must still compare equal.
     #[test]
@@ -1491,6 +1561,42 @@ mod tests {
 
         assert!(same_key(&base, &limits_none));
         assert!(same_key(&limits_none, &base));
+    }
+
+    #[test]
+    fn same_key_rejects_a_v1_purpose_mismatch_despite_a_raised_budget() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        altered.purpose = if altered.purpose == Purpose::AUTHENTICATION {
+            Purpose::VOTING
+        } else {
+            Purpose::AUTHENTICATION
+        };
+        let altered = IdentityPublicKey::V1(altered);
+
+        assert!(!same_key(&limited, &altered));
+        assert!(!same_key(&altered, &limited));
+    }
+
+    #[test]
+    fn same_key_rejects_a_v1_data_mismatch_despite_a_raised_budget() {
+        let limited = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest())
+            .with_limits(Some(1_000), None);
+        let IdentityPublicKey::V1(mut altered) = limited.clone().with_limits(Some(5_000), None)
+        else {
+            panic!("a key with limits is a V1 key");
+        };
+        let mut data = altered.data.to_vec();
+        data[0] ^= 1;
+        altered.data = data.into();
+        let altered = IdentityPublicKey::V1(altered);
+
+        assert!(!same_key(&limited, &altered));
+        assert!(!same_key(&altered, &limited));
     }
 
     /// A storage filing one key under several placements, each with the given
@@ -1523,11 +1629,12 @@ mod tests {
     #[test]
     fn a_resident_placement_wins_over_a_vault_placeholder() {
         let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let resident = crate::test_support::keys::secret_bytes();
         let ks = filed_under(
             &key,
             &[
                 (MAIN, PrivateKeyData::InVault),
-                (VOTER, PrivateKeyData::Clear([0x33; 32])),
+                (VOTER, PrivateKeyData::Clear(resident)),
             ],
         );
 
@@ -1539,7 +1646,7 @@ mod tests {
         assert!(
             matches!(
                 ks.held_private_key_data(&key),
-                Some((PrivateKeyData::Clear(bytes), None)) if bytes == [0x33; 32]
+                Some((PrivateKeyData::Clear(bytes), None)) if bytes == resident
             ),
             "the material comes from the placement that was named"
         );
@@ -1551,7 +1658,10 @@ mod tests {
     fn a_lone_placement_is_named_whatever_it_holds() {
         let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
 
-        for data in [PrivateKeyData::InVault, PrivateKeyData::Clear([0x44; 32])] {
+        for data in [
+            PrivateKeyData::InVault,
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+        ] {
             let ks = filed_under(&key, &[(MAIN, data.clone())]);
             assert_eq!(
                 ks.first_live_candidate(&key),
@@ -1580,7 +1690,10 @@ mod tests {
         let ks = filed_under(
             &key,
             &[
-                (MAIN, PrivateKeyData::Clear([0x55; 32])),
+                (
+                    MAIN,
+                    PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+                ),
                 (
                     VOTER,
                     PrivateKeyData::AtWalletDerivationPath(derivation_path(0x66)),
@@ -1594,7 +1707,13 @@ mod tests {
             "the wallet is found under the placement that names it"
         );
 
-        let plaintext_only = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        let plaintext_only = filed_under(
+            &key,
+            &[(
+                MAIN,
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+            )],
+        );
         assert!(
             plaintext_only.wallet_derived_at(&key).is_none(),
             "a key no placement derives has no wallet"
@@ -1606,7 +1725,10 @@ mod tests {
     /// `false`.
     #[test]
     fn in_vault_and_public_key_probes() {
-        let mut ks = storage_with_plaintext_and_derived([0x01; 32], [0x02; 32]);
+        let mut ks = storage_with_plaintext_and_derived(
+            crate::test_support::keys::secret_bytes(),
+            crate::test_support::keys::secret_bytes(),
+        );
         let keys: Vec<_> = ks.private_keys.keys().cloned().collect();
         ks.take_plaintext_for_vault();
         // The two plaintext keys are now InVault; the derived one is not.
@@ -1629,6 +1751,7 @@ mod tests {
     fn a_wallet_rebuild_keeps_every_stored_key_it_did_not_recreate() {
         let pv = PlatformVersion::latest();
         let pasted = IdentityPublicKey::random_key(9, Some(9), pv);
+        let pasted_secret = crate::test_support::keys::secret_bytes();
         let sealed = IdentityPublicKey::random_key(4, Some(4), pv);
         let derived = IdentityPublicKey::random_key(0, Some(10), pv);
         let fresh_wallet_key = IdentityPublicKey::random_key(5, Some(5), pv);
@@ -1637,7 +1760,10 @@ mod tests {
         };
 
         let mut stored = KeyStorage::default();
-        stored.insert_at((MAIN, 9), entry(&pasted, PrivateKeyData::Clear([0x19; 32])));
+        stored.insert_at(
+            (MAIN, 9),
+            entry(&pasted, PrivateKeyData::Clear(pasted_secret)),
+        );
         // Held in the vault AND derivable from the wallet: the vault copy wins.
         stored.insert_at((MAIN, 4), entry(&sealed, PrivateKeyData::InVault));
         stored.insert_at(
@@ -1681,7 +1807,7 @@ mod tests {
         assert!(
             matches!(
                 rebuilt.entry_at(&(MAIN, 9)),
-                Some((_, PrivateKeyData::Clear(bytes))) if *bytes == [0x19; 32]
+                Some((_, PrivateKeyData::Clear(bytes))) if *bytes == pasted_secret
             ),
             "a pasted key the wallet cannot derive is kept"
         );
@@ -1787,8 +1913,8 @@ mod tests {
         let stale = IdentityPublicKey::random_key(7, Some(71), pv);
         let on_chain = IdentityPublicKey::random_key(7, Some(72), pv);
         for data in [
-            PrivateKeyData::Clear([0x77; 32]),
-            PrivateKeyData::AlwaysClear([0x78; 32]),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+            PrivateKeyData::AlwaysClear(crate::test_support::keys::secret_bytes()),
             PrivateKeyData::Encrypted(vec![0x79; 48]),
         ] {
             let stored = filed_under(&stale, &[(MAIN, data.clone())]);
@@ -1847,6 +1973,84 @@ mod tests {
             Some(1_700_000_000),
             "the on-chain disabled_at replaces the stale snapshot"
         );
+    }
+
+    /// Re-entering a key's private half after its limits were raised fills
+    /// the slot its earlier snapshot holds, with the raised public half.
+    #[test]
+    fn a_private_key_entered_after_a_limits_raise_fills_the_keys_own_slot() {
+        let base = IdentityPublicKey::random_key(3, Some(31), PlatformVersion::latest());
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let mut ks = filed_under(
+            &saved,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x01)),
+            )],
+        );
+        let secret = crate::test_support::keys::secret_bytes();
+
+        ks.insert_non_encrypted(
+            (MAIN, 3),
+            (QualifiedIdentityPublicKey::from(raised.clone()), secret),
+        )
+        .expect("a raised limit does not make the slot another key's");
+
+        let (public_key, data) = ks.entry_at(&(MAIN, 3)).expect("key filed");
+        assert!(matches!(data, PrivateKeyData::Clear(bytes) if *bytes == secret));
+        assert_eq!(public_key.identity_public_key, raised);
+    }
+
+    /// A wallet rescan finding a key whose limits were raised since its held
+    /// private half was saved leaves that entry as it is.
+    #[test]
+    fn a_wallet_derived_key_after_a_limits_raise_keeps_the_held_entry() {
+        let base = IdentityPublicKey::random_key(3, Some(31), PlatformVersion::latest());
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let mut ks = filed_under(&saved, &[(MAIN, PrivateKeyData::InVault)]);
+
+        ks.insert_wallet_derived(
+            (MAIN, 3),
+            QualifiedIdentityPublicKey::from(raised),
+            derivation_path(0x01),
+        )
+        .expect("a raised limit does not make the slot another key's");
+
+        let (public_key, data) = ks.entry_at(&(MAIN, 3)).expect("key kept");
+        assert!(matches!(data, PrivateKeyData::InVault));
+        assert_eq!(public_key.identity_public_key, saved);
+    }
+
+    /// A held stored secret whose key's limits were raised since the save
+    /// keeps its private half and takes the rebuild's raised limits.
+    #[test]
+    fn a_held_stored_secret_takes_the_rebuilds_raised_limits() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let pv = PlatformVersion::latest();
+        let base = IdentityPublicKey::random_key(3, Some(31), pv);
+        let saved = base.clone().with_limits(Some(1_000), Some(1_800_000));
+        let raised = base.with_limits(Some(5_000), Some(2_400_000));
+        let stored = filed_under(&saved, &[(MAIN, PrivateKeyData::InVault)]);
+        let mut rebuilt = filed_under(
+            &raised,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            )],
+        );
+
+        rebuilt.retain_local_keys_from(stored);
+
+        let (public_key, data) = rebuilt.entry_at(&(MAIN, 3)).expect("key kept");
+        assert!(
+            matches!(data, PrivateKeyData::InVault),
+            "the held private half survives"
+        );
+        assert_eq!(public_key.identity_public_key, raised);
+        assert_eq!(public_key.identity_public_key.total_budget(), Some(5_000));
     }
 
     /// A stored derivation path never displaces a private half the rebuild

@@ -1,36 +1,18 @@
 #!/usr/bin/env bash
 #
-# Fetch migration fixture archives named by tests/migration-fixtures/manifest.json
-# into a local directory, for MIGRATION_FIXTURES_DIR to point at.
+# Verify the migration fixture archives committed with
+# tests/migration-fixtures/manifest.json and, with --merged-manifest, fetch the
+# fixtures attached to releases into a local directory for
+# MIGRATION_FIXTURES_DIR.
 #
-#   scripts/migration-fixtures/download-fixtures.sh --dest "$RUNNER_TEMP/fixtures"
+#   scripts/migration-fixtures/download-fixtures.sh --dest "$RUNNER_TEMP/fixtures" \
+#       --merged-manifest "$RUNNER_TEMP/fixtures/manifest.json"
 #
-# WHY THIS IS NOT `actions/download-artifact`
-# -------------------------------------------
-# Manifest fixtures are stored as GitHub Actions build artifacts. The consequence
-# is that the artifact a matrix run needs was almost never produced by that run:
-# a hand capture such as the v0.9.3 baseline is uploaded once and then consumed
-# by every future run.
-# `actions/download-artifact` without a `run-id` only sees the CURRENT run's
-# artifacts, so it finds nothing here. It does accept `run-id` + `github-token`
-# for cross-run downloads, but only one artifact per step and only when the id
-# is already known at YAML-authoring time, which it is not — it lives in the
-# manifest.
-#
-# So resolution happens here, in order:
-#   1. the manifest entry carries an explicit run id -> download from that exact
-#      run. No guessing; the manifest is the durable pointer, which is the whole
-#      reason it is committed to the repo.
-#   2. otherwise -> search the newest successful run of the named workflow for
-#      an artifact of the given name. Weaker (a re-run can shift which run holds
-#      it) but it keeps a manifest entry usable before anyone records a run id.
-#
-# `dawidd6/action-download-artifact` is the well-known third-party action for
-# case 2 and would work. It is avoided deliberately: this job downloads data
-# that later gets executed against a real binary, so the fewer third parties in
-# that path the better, and `gh` gives exact run-id resolution that a
-# name-pattern search cannot. If a maintainer later prefers the action, it is a
-# drop-in replacement for this script's fallback branch only.
+# COMMITTED ARCHIVES
+# ------------------
+# A manifest entry names its archive by `archive.path`, relative to the
+# manifest's directory, with its `sha256` and `bytes`. The archive stays where
+# it is; this script holds it to the entry, and a mismatch always fails.
 #
 # FIXTURES ATTACHED TO RELEASES
 # -----------------------------
@@ -45,10 +27,6 @@
 # The capture itself needs one fixture, the newest older than the release it
 # captures. --source-for resolves exactly that one, from the manifest or from a
 # release, however many newer fixtures exist.
-#
-# ARTIFACT RETENTION is the standing hazard: artifacts expire (90 days by
-# default). An entry whose artifact has expired resolves to nothing and is
-# reported as such rather than silently skipped — see --strict.
 
 set -euo pipefail
 
@@ -84,9 +62,9 @@ usage() {
     cat <<'EOF'
 usage: download-fixtures.sh --dest DIR [options]
 
-  --dest DIR         directory to download and unpack fixtures into (required)
+  --dest DIR         directory to download attached fixtures into (required)
   --manifest PATH    manifest to read (default: tests/migration-fixtures/manifest.json)
-  --repo OWNER/NAME  repository owning the artifacts (default: $GITHUB_REPOSITORY)
+  --repo OWNER/NAME  repository owning the releases (default: $GITHUB_REPOSITORY)
   --strict           exit non-zero when the manifest is empty or any entry
                      cannot be resolved (default: warn and continue)
   --merged-manifest PATH
@@ -187,126 +165,46 @@ fi
 resolved=0
 failed=0
 
+# Archive paths are relative to the manifest's directory.
+FIXTURES_ROOT="$(cd -- "$(dirname -- "$MANIFEST")" && pwd)"
+
 while IFS= read -r entry; do
     [ -n "$entry" ] || continue
 
-    get() { echo "$entry" | jq -r "$1 // empty"; }
+    get() { jq -r "$1 // empty" <<<"$entry"; }
 
     id="$(get '.id')"
     id="${id:-$(get '.git_tag')}"
     id="${id:-unnamed}"
-    # The `artifact.*` keys documented in tests/migration-fixtures/README.md
-    # come first; the rest are shapes this reader accepted before that schema
-    # settled, kept so an older entry still resolves.
-    artifact_name="$(get '.artifact.artifact_name')"
-    artifact_name="${artifact_name:-$(get '.artifact.name')}"
-    artifact_name="${artifact_name:-$(get '.artifact_name')}"
-    run_id="$(get '.artifact.workflow_run_id')"
-    run_id="${run_id:-$(get '.artifact.run_id')}"
-    run_id="${run_id:-$(get '.run_id')}"
-    workflow="$(get '.artifact.workflow_name')"
-    workflow="${workflow:-$(get '.artifact.workflow')}"
-    workflow="${workflow:-$(get '.workflow')}"
-    expected_sha="$(get '.artifact.sha256')"
-    expected_sha="${expected_sha:-$(get '.archive.sha256')}"
-    expected_sha="${expected_sha:-$(get '.sha256')}"
-    expected_file="$(get '.artifact.archive_filename')"
+    path="$(get '.archive.path')"
+    expected_sha="$(get '.archive.sha256')"
+    expected_bytes="$(get '.archive.bytes')"
 
     note "Fixture '$id'"
 
-    if [ "$STRICT" -eq 1 ] && [[ ! "$expected_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        unresolved "Fixture '$id' needs a valid sha256 in strict mode."
+    if [[ -z "$path" || "$path" == /* || "/$path/" == */../* || "/$path/" == */./* ]]; then
+        unresolved "Fixture '$id' names no archive path below $FIXTURES_ROOT."
         continue
     fi
-    expected_sha="${expected_sha,,}"
-
-    if [ -z "$artifact_name" ]; then
-        unresolved "Fixture '$id' has no artifact name in the manifest — skipping."
+    if [[ ! "$expected_sha" =~ ^[0-9a-f]{64}$ || ! "$expected_bytes" =~ ^[0-9]+$ ]]; then
+        unresolved "Fixture '$id' needs a lowercase hex sha256 and a byte size."
         continue
     fi
-
-    # --- resolve the run holding the artifact -----------------------------
-    if [ -z "$run_id" ]; then
-        if [ -z "$workflow" ]; then
-            unresolved "Fixture '$id' gives neither an artifact run id nor a workflow to search — skipping."
-            continue
-        fi
-        note "  no run id recorded; searching newest successful run of $workflow"
-        run_id="$(gh api "repos/$REPO/actions/workflows/$workflow/runs?status=success&per_page=50" \
-            --jq '.workflow_runs | sort_by(.run_started_at) | reverse | .[0].id // empty' 2>/dev/null || true)"
-        if [ -z "$run_id" ]; then
-            unresolved "Fixture '$id': no successful run of $workflow found in $REPO — skipping."
-            continue
-        fi
-    fi
-
-    # An expired artifact still appears in the API with expired == true, and
-    # downloading it fails with an unhelpful 410. Say so plainly instead.
-    expired="$(gh api "repos/$REPO/actions/runs/$run_id/artifacts?per_page=100" \
-        --jq ".artifacts[] | select(.name == \"$artifact_name\") | .expired" 2>/dev/null | head -n1 || true)"
-    if [ -z "$expired" ]; then
-        unresolved "Fixture '$id': artifact '$artifact_name' is not present in run $run_id of $REPO. It may have been deleted, or the run id in the manifest may be stale."
-        continue
-    fi
-    if [ "$expired" = "true" ]; then
-        unresolved "Fixture '$id': artifact '$artifact_name' in run $run_id has EXPIRED. Re-capture it, or re-upload it to refresh its retention window."
+    archive="$FIXTURES_ROOT/$path"
+    if [ ! -f "$archive" ]; then
+        unresolved "Fixture '$id': archive $path is not in $FIXTURES_ROOT."
         continue
     fi
 
-    # Download into a per-fixture staging directory rather than straight into
-    # $DEST: it keeps two fixtures from colliding on a shared file name, and it
-    # makes "which file did THIS entry produce" an exact answer rather than a
-    # guess based on modification times.
-    safe_id="$(printf '%s' "$id" | tr -c 'A-Za-z0-9._-' '-')"
-    stage="$DEST/.staging-$safe_id"
-    rm -rf "$stage"
-    mkdir -p "$stage"
-
-    note "  downloading '$artifact_name' from run $run_id"
-    # Keep gh's reason (e.g. "HTTP 503: ...") for the report, minus the signed
-    # download URL it appends.
-    if ! download_error="$(gh run download "$run_id" --repo "$REPO" --name "$artifact_name" \
-        --dir "$stage" 2>&1 >/dev/null)"; then
-        rm -rf "$stage"
-        download_error="$(printf '%s' "$download_error" | sed -E 's/ \(https?:[^)]*\)//g')"
-        unresolved "Fixture '$id': download of '$artifact_name' from run $run_id failed: ${download_error:-no reason given}"
-        continue
+    actual_bytes="$(stat -c %s "$archive")"
+    actual_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+    if [ "$actual_bytes" != "$expected_bytes" ] || [ "$actual_sha" != "$expected_sha" ]; then
+        die "Fixture '$id': $path does not match its manifest entry.
+  manifest $expected_sha, $expected_bytes bytes
+  actual   $actual_sha, $actual_bytes bytes
+Refusing to run migration tests against unverified fixture data."
     fi
-
-    mapfile -t archives < <(find "$stage" -type f \( -name '*.tar.zst' -o -name '*.tar.gz' \) | LC_ALL=C sort)
-    if [ "${#archives[@]}" -ne 1 ]; then
-        rm -rf "$stage"
-        unresolved "Fixture '$id': expected exactly one .tar.zst/.tar.gz inside artifact '$artifact_name', found ${#archives[@]}."
-        continue
-    fi
-    archive_path="${archives[0]}"
-
-    # The harness locates the archive by this name, so a mismatch here would
-    # only resurface later as a less specific "archive not found".
-    if [ -n "$expected_file" ] && [ "$(basename -- "$archive_path")" != "$expected_file" ]; then
-        rm -rf "$stage"
-        unresolved "Fixture '$id': artifact '$artifact_name' holds $(basename -- "$archive_path"), but the manifest names $expected_file."
-        continue
-    fi
-
-    # --- integrity --------------------------------------------------------
-    if [ -n "$expected_sha" ]; then
-        actual_sha="$(sha256sum "$archive_path" | cut -d' ' -f1)"
-        if [ "$actual_sha" != "$expected_sha" ]; then
-            die "Fixture '$id': checksum mismatch on $(basename -- "$archive_path").
-  manifest $expected_sha
-  actual   $actual_sha
-The artifact does not match what the manifest describes. Refusing to run migration tests against unverified fixture data."
-        fi
-        note "  checksum OK"
-    else
-        warn "Fixture '$id' records no sha256 — downloaded archive is unverified."
-    fi
-
-    mv "$archive_path" "$DEST/"
-    # Keep the .sha256 sidecar pack.sh emitted, if the artifact carried it.
-    find "$stage" -type f -name '*.sha256' -exec mv -t "$DEST/" {} +
-    rm -rf "$stage"
+    note "  size and checksum OK"
 
     resolved=$((resolved + 1))
 done <<<"$ENTRIES"

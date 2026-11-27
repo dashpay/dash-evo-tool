@@ -2506,6 +2506,10 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
 
+    if !crate::test_support::file_modes_deny_access() {
+        eprintln!("skipped: file modes do not deny this process access");
+        return;
+    }
     let (ctx, sender, tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await

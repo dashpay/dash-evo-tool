@@ -3801,6 +3801,10 @@ mod tests {
     fn qa_005_vault_write_fault_leaves_keystore_intact_and_skips_persist() {
         use std::os::unix::fs::PermissionsExt;
 
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_vault(dir.path());
         let id = id(0x22);

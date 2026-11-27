@@ -79,7 +79,7 @@ pub enum ConfigError {
     InvalidNetworkConfig {
         network: &'static str,
         #[source]
-        source: envy::Error,
+        source: NetworkSettingError,
     },
 
     /// Failed to save configuration to disk.
@@ -487,9 +487,20 @@ fn load_network_config(
     if entries.is_empty() {
         return Ok(None);
     }
+    parse_network_config(prefix, entries.iter()).map(Some)
+}
+
+fn parse_network_config<'a>(
+    prefix: &str,
+    entries: impl Iterator<Item = (&'a String, &'a String)> + Clone,
+) -> Result<NetworkConfig, NetworkSettingError> {
     // Checked here, not read from envy's error, whose text quotes the value.
-    if let Some(port) = entries.get(&format!("{prefix}{CORE_RPC_PORT_FIELD}"))
-        && let Err(error) = port.parse::<u16>()
+    if let Some((_, port)) = entries.clone().find(|(key, _)| {
+        key.starts_with(prefix)
+            && key
+                .trim_start_matches(prefix)
+                .eq_ignore_ascii_case(CORE_RPC_PORT_FIELD)
+    }) && let Err(error) = port.parse::<u16>()
     {
         return Err(NetworkSettingError::InvalidNumber {
             field: CORE_RPC_PORT_FIELD,
@@ -497,8 +508,7 @@ fn load_network_config(
         });
     }
     envy::prefixed(prefix)
-        .from_iter::<_, NetworkConfig>(entries)
-        .map(Some)
+        .from_iter(entries.map(|(key, value)| (key.clone(), value.clone())))
         .map_err(|_| NetworkSettingError::Unreadable)
 }
 
@@ -516,8 +526,7 @@ fn validate_env_contents(contents: &str) -> Result<(), ConfigError> {
         ("LOCAL_", "local network"),
     ] {
         if entries.iter().any(|(key, _)| key.starts_with(prefix)) {
-            envy::prefixed(prefix)
-                .from_iter::<_, NetworkConfig>(entries.iter().cloned())
+            parse_network_config(prefix, entries.iter().map(|(key, value)| (key, value)))
                 .map_err(|source| ConfigError::InvalidNetworkConfig { network, source })?;
         }
     }
@@ -1097,6 +1106,35 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(env_path).expect("read unchanged config"),
             original,
+        );
+    }
+
+    #[test]
+    fn save_invalid_network_config_error_omits_the_value() {
+        let marker = format!("marker{:016x}", rand::random::<u64>());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join(".env"),
+            format!("TESTNET_CORE_RPC_PORT={marker}\n"),
+        )
+        .expect("write test config");
+        let config = Config {
+            mainnet_config: None,
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+            invalid_networks: Vec::new(),
+        };
+
+        let error = config.save(tmp.path()).expect_err("invalid RPC port");
+
+        assert!(
+            !error.to_string().contains(&marker),
+            "Display leaks the value"
+        );
+        assert!(
+            !format!("{error:?}").contains(&marker),
+            "Debug leaks the value"
         );
     }
 

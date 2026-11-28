@@ -535,15 +535,16 @@ pub(crate) fn identity_across_two_wallets_of(
         key
     };
     let mut identity = identity_holding(&[key(1), key(2)]);
-    let (seed_a, seed_b) = ([0xA1; 32], [0xB2; 32]);
-    hold_as_wallet_reference(&mut identity, 1, seed_a);
-    hold_as_wallet_reference(&mut identity, 2, seed_b);
     let wallet = || {
         Arc::new(std::sync::RwLock::new(
-            crate::model::wallet::test_support::open_wallet(),
+            crate::model::wallet::test_support::open_wallet_on(crate::test_support::keys::seed()),
         ))
     };
     let (wallet_a, wallet_b) = (wallet(), wallet());
+    let seed_a = wallet_a.read().unwrap().seed_hash();
+    let seed_b = wallet_b.read().unwrap().seed_hash();
+    hold_as_wallet_reference(&mut identity, 1, seed_a);
+    hold_as_wallet_reference(&mut identity, 2, seed_b);
     identity
         .associated_wallets
         .insert(seed_a, Arc::clone(&wallet_a));

@@ -55,6 +55,7 @@ pub struct WithdrawalScreen {
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
+    confirmed_withdrawal: Option<IdentityTask>,
     withdraw_from_identity_status: WithdrawFromIdentityStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -92,6 +93,7 @@ impl WithdrawalScreen {
             max_amount,
             app_context: app_context.clone(),
             confirmation_dialog: None,
+            confirmed_withdrawal: None,
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -235,66 +237,76 @@ impl WithdrawalScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let address = if self.withdrawal_address.is_empty() {
-            None
-        } else {
-            match Address::from_str(&self.withdrawal_address) {
-                Ok(address) => Some(address.assume_checked()),
-                Err(_) => {
-                    // Error is already shown next to the input field
-                    self.withdrawal_address_error = Some("Invalid address".to_string());
-                    self.confirmation_dialog = None;
-                    return AppAction::None;
+        if self.confirmation_dialog.is_none() {
+            let Some(amount) = self.withdrawal_amount.as_ref() else {
+                return AppAction::None;
+            };
+            let address = if self.withdrawal_address.is_empty() {
+                None
+            } else {
+                match Address::from_str(&self.withdrawal_address) {
+                    Ok(address) => Some(address.assume_checked()),
+                    Err(_) => {
+                        // Error is already shown next to the input field
+                        self.withdrawal_address_error = Some("Invalid address".to_string());
+                        self.confirmation_dialog = None;
+                        return AppAction::None;
+                    }
                 }
-            }
-        };
+            };
 
-        let message_address = if address.is_some() {
-            self.withdrawal_address.clone()
-        } else if let Some(payout_address) = self
-            .identity
-            .masternode_payout_address(self.app_context.network)
-        {
-            format!("masternode payout address {payout_address}")
-        } else if !self.app_context.user_role().at_least(UserRole::Power) {
-            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "No masternode payout address",
-                MessageType::Error,
+            let message_address = if address.is_some() {
+                self.withdrawal_address.clone()
+            } else if let Some(payout_address) = self
+                .identity
+                .masternode_payout_address(self.app_context.network)
+            {
+                format!("masternode payout address {payout_address}")
+            } else if !self.app_context.user_role().at_least(UserRole::Power) {
+                self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "No masternode payout address",
+                    MessageType::Error,
+                );
+                self.confirmation_dialog = None;
+                return AppAction::None;
+            } else {
+                "to default address".to_string()
+            };
+
+            let Some(selected_key) = self.selected_key.as_ref() else {
+                self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "No selected key",
+                    MessageType::Error,
+                );
+                self.confirmation_dialog = None;
+                return AppAction::None;
+            };
+
+            self.confirmed_withdrawal = Some(IdentityTask::WithdrawFromIdentity(
+                self.identity.clone(),
+                address,
+                amount.value() as Credits,
+                Some(selected_key.id()),
+            ));
+            self.confirmation_dialog = Some(
+                ConfirmationDialog::new(
+                    "Confirm Withdrawal".to_string(),
+                    format!(
+                        "Are you sure you want to withdraw {amount} to {address}",
+                        amount = amount,
+                        address = message_address
+                    ),
+                )
+                .danger_mode(true), // Withdrawal is a destructive operation
             );
-            self.confirmation_dialog = None;
-            return AppAction::None;
-        } else {
-            "to default address".to_string()
-        };
-
-        let Some(selected_key) = self.selected_key.as_ref() else {
-            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "No selected key",
-                MessageType::Error,
-            );
-            self.confirmation_dialog = None;
+        }
+        let Some(dialog) = self.confirmation_dialog.as_mut() else {
             return AppAction::None;
         };
-
-        let dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new(
-                "Confirm Withdrawal".to_string(),
-                format!(
-                    "Are you sure you want to withdraw {amount} to {address}",
-                    amount = self
-                        .withdrawal_amount
-                        .as_ref()
-                        .expect("Withdrawal amount should be present"),
-                    address = message_address
-                ),
-            )
-            .danger_mode(true) // Withdrawal is a destructive operation
-        });
-
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
@@ -307,24 +319,15 @@ impl WithdrawalScreen {
                 handle.with_elapsed();
                 self.refresh_banner = Some(handle);
 
-                // Use the amount directly from the stored amount
-                let credits = self
-                    .withdrawal_amount
-                    .as_ref()
-                    .expect("Withdrawal amount should be present")
-                    .value() as u128;
-
-                AppAction::BackendTask(BackendTask::IdentityTask(
-                    IdentityTask::WithdrawFromIdentity(
-                        self.identity.clone(),
-                        address,
-                        credits as Credits,
-                        Some(selected_key.id()),
-                    ),
-                ))
+                self.confirmed_withdrawal
+                    .take()
+                    .map_or(AppAction::None, |task| {
+                        AppAction::BackendTask(BackendTask::IdentityTask(task))
+                    })
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.confirmation_dialog = None;
+                self.confirmed_withdrawal = None;
                 AppAction::None
             }
             None => AppAction::None,
@@ -405,6 +408,7 @@ impl ScreenLike for WithdrawalScreen {
         );
         if key_changed || wallet_changed {
             self.confirmation_dialog = None;
+            self.confirmed_withdrawal = None;
         }
     }
 
@@ -569,6 +573,8 @@ impl ScreenLike for WithdrawalScreen {
                     &mut self.wallet_open_attempted,
                     &mut self.wallet_unlock_popup,
                 ) {
+                    self.confirmation_dialog = None;
+                    self.confirmed_withdrawal = None;
                     return inner_action;
                 }
 
@@ -658,6 +664,71 @@ impl ScreenLike for WithdrawalScreen {
 mod tests {
     use super::*;
     use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+
+    #[test]
+    fn locked_signing_wallet_discards_withdrawal_confirmation() {
+        use crate::context::test_support::{identity_across_two_wallets_of, lock_with_password};
+        let dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(dir.path());
+        let (identity, _, wallet_b) =
+            identity_across_two_wallets_of(Purpose::TRANSFER, SecurityLevel::CRITICAL);
+        let mut screen = WithdrawalScreen::new(identity, &context);
+        screen.confirmation_dialog = Some(ConfirmationDialog::new("Withdraw", "Withdraw 1?"));
+        screen.selected_key = Some(screen.identity.identity.public_keys()[&2].clone());
+        screen.selected_wallet = Some(wallet_b.clone());
+        lock_with_password(&wallet_b);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+        drop(harness);
+        assert!(screen.confirmation_dialog.is_none());
+    }
+
+    #[test]
+    fn withdrawal_confirmation_submits_displayed_amount() {
+        use crate::context::test_support::identity_across_two_wallets_of;
+        use egui_kittest::{Harness, kittest::Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(dir.path());
+        let (identity, _, _) =
+            identity_across_two_wallets_of(Purpose::TRANSFER, SecurityLevel::CRITICAL);
+        let mut screen = WithdrawalScreen::new(identity, &context);
+        screen.withdrawal_address = Address::p2pkh(
+            &crate::test_support::keys::private_key(Network::Testnet).public_key(),
+            Network::Testnet,
+        )
+        .to_string();
+        let expected_address = screen.withdrawal_address.clone();
+        screen.withdrawal_amount = Some(Amount::new(12345, 11));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, (screen, action): &mut (WithdrawalScreen, AppAction)| {
+                let next = screen.show_confirmation_popup(ui);
+                if !matches!(next, AppAction::None) {
+                    *action = next;
+                }
+            },
+            (screen, AppAction::None),
+        );
+        harness.run_steps(2);
+        harness.state_mut().0.withdrawal_amount = Some(Amount::new(54321, 11));
+        harness.state_mut().0.withdrawal_address.clear();
+        harness.get_by_label("Confirm").click();
+        harness.run_steps(2);
+        let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
+            _,
+            address,
+            credits,
+            _,
+        ))) = &harness.state().1
+        else {
+            panic!("withdrawal task");
+        };
+        assert_eq!(*credits, 12345);
+        assert_eq!(address.as_ref().unwrap().to_string(), expected_address);
+    }
 
     /// Regression: after a withdrawal key was added, a refresh reloaded the
     /// identity but kept no key selected, so the form stayed blank.

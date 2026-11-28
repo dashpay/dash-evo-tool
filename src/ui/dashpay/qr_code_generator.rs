@@ -481,6 +481,44 @@ mod tests {
         context.wallet_backend().unwrap().shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_removes_the_generated_code_and_cached_image() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let identity = bare_user_identity(Identifier::new([1; 32]), context.network);
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        let mut screen = QRCodeGeneratorScreen::new(context.clone());
+        screen.selected_identity = Some(identity);
+        let code = "dash:contact";
+        screen.generated_qr_data = Some(code.to_string());
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui_state(
+                |ui, screen: &mut QRCodeGeneratorScreen| {
+                    screen.render(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .qr_code
+                .as_ref()
+                .and_then(QrCodeImage::value),
+            Some(code)
+        );
+        harness.get_by_label("Clear").click();
+        harness.run();
+        assert!(harness.state().generated_qr_data.is_none());
+        assert!(harness.state().qr_code.is_none());
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// Regression: a QR code generated for one identity arrived after the user
     /// had picked another and was shown under it, handing out the first
     /// identity's contact code as if it were the second's.

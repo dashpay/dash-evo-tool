@@ -563,7 +563,7 @@ fn owned_address_paths_from_info(
     for account in info.accounts.all_accounts() {
         if account.managed_account_type().is_contact_owned() {
             for pool in account.managed_account_type().address_pools() {
-                for entry in pool.addresses.values() {
+                for entry in pool.addresses().values() {
                     paths.remove(&entry.address);
                 }
             }
@@ -2867,7 +2867,7 @@ mod tests {
             .address_pools()[0]
             .clone();
         let contact_addresses: Vec<_> = pool
-            .addresses
+            .addresses()
             .values()
             .map(|entry| entry.address.clone())
             .collect();

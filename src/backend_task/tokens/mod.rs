@@ -61,6 +61,7 @@ mod unfreeze_tokens;
 mod update_token_config;
 
 pub use crate::model::token_creator::TokenContractParams;
+pub(crate) use creator_registration::TokenCreationAcceptance;
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
@@ -74,7 +75,7 @@ pub enum TokenTask {
         prepared: Box<crate::model::token_creator::registration::PreparedRegistration>,
     },
     CheckTokenCreation,
-    /// Save the receipt from the proven record without looking up the contract again.
+    /// Retry a receipt save; the backend requires retained or durably saved acceptance.
     SaveConfirmedTokenCreation {
         record: Box<crate::model::token_creator::registration::RegistrationRecord>,
     },

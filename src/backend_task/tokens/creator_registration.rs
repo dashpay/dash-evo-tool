@@ -33,6 +33,10 @@ use dash_sdk::platform::transition::{
     broadcast::BroadcastStateTransition, put_settings::PutSettings,
 };
 
+/// Backend-owned acceptance retained when persisting the receipt fails.
+#[derive(Debug, Default)]
+pub(crate) struct TokenCreationAcceptance(arc_swap::ArcSwapOption<RegistrationRecord>);
+
 fn settings() -> Option<PutSettings> {
     let mut settings = PutSettings {
         identity_nonce_stale_time_s: Some(0),
@@ -386,6 +390,9 @@ impl AppContext {
         record.contract_id = contract.id();
         record.token_id = contract.token_id(0).ok_or(TaskError::TokenCreatorChanged)?;
         record.status = RegistrationStatus::Confirmed;
+        self.token_creation_acceptance
+            .0
+            .store(Some(Arc::new(record.clone())));
         let journal_saved = journal
             .update(&record)
             .map_err(|error| {
@@ -431,8 +438,7 @@ impl AppContext {
         )
     }
 
-    /// Saves the receipt of a creation Platform confirmed, from the proven record alone: a
-    /// network read could return a later version of the contract and look like a conflict.
+    /// Retries a receipt save using backend acceptance or an already confirmed journal entry.
     pub(super) fn save_confirmed_token_creation(
         &self,
         proven: RegistrationRecord,
@@ -443,6 +449,15 @@ impl AppContext {
             || proven.network != self.network
             || current.attempt_id != proven.attempt_id
             || current.contract_bytes != proven.contract_bytes
+        {
+            return Err(TaskError::TokenCreatorChanged);
+        }
+        if current.status != RegistrationStatus::Confirmed
+            && !self
+                .token_creation_acceptance
+                .0
+                .load_full()
+                .is_some_and(|accepted| *accepted == proven)
         {
             return Err(TaskError::TokenCreatorChanged);
         }
@@ -1256,26 +1271,131 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn receipt_retry_rejects_a_pending_record_relabeled_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (mut record, _) = fixture(&context);
+        record.status = RegistrationStatus::Submitted;
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record)
+            .unwrap();
+        let mut claimed = record.clone();
+        claimed.status = RegistrationStatus::Confirmed;
+        assert!(matches!(
+            context.save_confirmed_token_creation(claimed),
+            Err(TaskError::TokenCreatorChanged)
+        ));
+        assert_eq!(
+            context.token_registration_record().unwrap(),
+            Some(record.clone())
+        );
+        assert!(
+            context
+                .token_registration_record()
+                .unwrap()
+                .unwrap()
+                .blocks_registration()
+        );
+        assert!(!context.has_token_entry(&record.token_id).unwrap());
+    }
+
+    #[test]
+    fn receipt_retry_cannot_reuse_acceptance_for_another_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (record, contract) = fixture(&context);
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&record).unwrap();
+        context
+            .creator_accept(&journal, record.clone(), contract)
+            .unwrap();
+        let mut next = record;
+        next.attempt_id = [77; 32];
+        next.status = RegistrationStatus::Submitted;
+        journal.claim(&next).unwrap();
+        drop(journal);
+        let mut claimed = next.clone();
+        claimed.status = RegistrationStatus::Confirmed;
+        assert!(matches!(
+            context.save_confirmed_token_creation(claimed),
+            Err(TaskError::TokenCreatorChanged)
+        ));
+        assert_eq!(context.token_registration_record().unwrap(), Some(next));
+    }
+
+    #[test]
+    fn receipt_retry_restores_a_durable_confirmation_without_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (record, contract) = fixture(&context);
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&record).unwrap();
+        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) =
+            context.creator_accept(&journal, record, contract)
+        else {
+            panic!("expected acceptance")
+        };
+        assert!(outcome.journal_saved);
+        drop(journal);
+        let kv = context.app_kv();
+        drop(context);
+        let reopened_dir = tempfile::tempdir().unwrap();
+        let reopened =
+            crate::context::test_support::test_app_context_with_kv(reopened_dir.path(), kv);
+        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(restored)) =
+            reopened.save_confirmed_token_creation(outcome.record.clone())
+        else {
+            panic!("expected offline restore")
+        };
+        assert!(restored.journal_saved);
+        assert_eq!(restored.record, outcome.record);
+    }
+
     /// After Platform confirmed a creation whose receipt was not saved, the
     /// retry saves the proven record without reading the network, so a later
     /// configuration update can never turn it into a conflict.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_confirmed_receipt_is_saved_from_the_proven_record() {
+    async fn receipt_retry_uses_backend_acceptance_after_journal_write_failure() {
         use dash_sdk::dpp::dashcore::Network;
         let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let (mut record, _) = fixture(&context);
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            dir.path(),
+            Arc::new(crate::wallet_backend::DetKv::from_store(store.clone())),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                tx,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .unwrap();
+        let (mut record, contract) = fixture(&context);
         let journal = context.token_registration_journal().unwrap();
         journal.claim(&record).unwrap();
         record.status = RegistrationStatus::Submitted;
         journal.update(&record).unwrap();
+        store.fail_next_puts_containing("token-registration", 1);
+        let Ok(BackendTaskSuccessResult::TokenCreationOutcome(accepted)) =
+            context.creator_accept(&journal, record.clone(), contract)
+        else {
+            panic!("expected verified acceptance")
+        };
+        assert!(!accepted.journal_saved);
+        assert_eq!(
+            journal.read().unwrap().unwrap().status,
+            RegistrationStatus::Submitted
+        );
         drop(journal);
         let status = || {
             let journal = context.token_registration_journal().unwrap();
             journal.read().unwrap().unwrap().status
         };
-        let mut proven = record.clone();
-        proven.status = RegistrationStatus::Confirmed;
+        let proven = accepted.record;
 
         let other_network = if context.network == Network::Testnet {
             Network::Devnet

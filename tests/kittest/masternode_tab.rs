@@ -2120,28 +2120,31 @@ fn evonode_load_inputs_keep_geometry_on_hover() {
                     ("hover-out", egui::pos2(1.0, 1.0)),
                 ] {
                     harness.hover_at(pointer);
-                    harness.run_steps(5);
-                    let after = harness
-                        .query_all_by_role(Role::PasswordInput)
-                        .nth(index)
-                        .expect("password input")
-                        .rect();
-                    let next_after = harness.get_by_label(next).rect().top();
-                    eprintln!(
-                        "{theme:?} {label} {phase}: height {} -> {}; next top {next_before} -> {next_after}",
-                        before.height(),
-                        after.height()
-                    );
-                    if (before.height(), next_before) != (after.height(), next_after) {
-                        differences.push((
-                            theme,
-                            label,
-                            phase,
+                    for frame in 1..=5 {
+                        harness.step();
+                        let after = harness
+                            .query_all_by_role(Role::PasswordInput)
+                            .nth(index)
+                            .expect("password input")
+                            .rect();
+                        let next_after = harness.get_by_label(next).rect().top();
+                        eprintln!(
+                            "{theme:?} {label} {phase} frame {frame}: height {} -> {}; next top {next_before} -> {next_after}",
                             before.height(),
-                            after.height(),
-                            next_before,
-                            next_after,
-                        ));
+                            after.height()
+                        );
+                        if (before.height(), next_before) != (after.height(), next_after) {
+                            differences.push((
+                                theme,
+                                label,
+                                phase,
+                                frame,
+                                before.height(),
+                                after.height(),
+                                next_before,
+                                next_after,
+                            ));
+                        }
                     }
                 }
             }

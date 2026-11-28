@@ -732,13 +732,17 @@ impl ScreenLike for DocumentQueryScreen {
             "Group Actions",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::GroupActions)),
         );
+        let fee_pots_button = [(
+            "Fee Pots",
+            DesiredAppAction::AddScreenType(Box::new(ScreenType::ContractFeePots)),
+        )];
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
             action |= add_top_panel_with_global_nav(
                 ui,
                 &self.app_context,
                 subdued_everyday_spec("Contracts", RootScreenType::RootScreenDocumentQuery),
-                vec![
+                [
                     load_contract_button,
                     register_contract_button,
                     update_contract_button,
@@ -748,7 +752,10 @@ impl ScreenLike for DocumentQueryScreen {
                     transfer_document_button,
                     purchase_document_button,
                     set_document_price_button,
-                ],
+                ]
+                .into_iter()
+                .chain(fee_pots_button)
+                .collect(),
             );
         } else {
             action |= add_top_panel_with_global_nav(
@@ -766,7 +773,10 @@ impl ScreenLike for DocumentQueryScreen {
                     purchase_document_button,
                     set_document_price_button,
                     group_actions_button,
-                ],
+                ]
+                .into_iter()
+                .chain(fee_pots_button)
+                .collect(),
             );
         }
 
@@ -891,6 +901,35 @@ mod tests {
     use dash_sdk::dpp::data_contracts::SystemDataContract;
     use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
     use dash_sdk::dpp::version::PlatformVersion;
+
+    #[test]
+    fn fee_pots_entry_is_available_without_a_known_protocol_version() {
+        use egui_kittest::kittest::Queryable;
+
+        for version in [None, Some(dash_sdk::dpp::version::LATEST_VERSION + 1)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ctx = crate::context::test_support::test_app_context(dir.path());
+            if let Some(version) = version {
+                crate::context::test_support::prove_protocol_version(&ctx, version);
+            }
+            let mut harness = egui_kittest::Harness::builder()
+                .with_context_setup(|ctx| {
+                    ctx.set_fonts(crate::bundled::fonts().expect("bundled fonts load"));
+                })
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut DocumentQueryScreen| {
+                        screen.ui(ui);
+                    },
+                    DocumentQueryScreen::new(&ctx),
+                );
+            harness.run();
+            assert!(
+                harness.query_by_label("Fee Pots").is_some(),
+                "protocol {version:?}: the entry to fee pots must stay available"
+            );
+        }
+    }
 
     fn query(limit: u32) -> DocumentQuery {
         let contract =

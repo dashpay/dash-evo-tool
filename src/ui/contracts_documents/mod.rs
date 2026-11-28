@@ -6,10 +6,12 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 
 pub mod add_contracts_screen;
+pub mod contract_fee_pots_screen;
 pub mod contracts_documents_screen;
 pub mod document_action_screen;
 pub mod group_actions_screen;
 pub mod register_contract_screen;
+pub(crate) mod task_feedback;
 pub mod update_contract_screen;
 
 fn signing_identities_changed(app_context: &AppContext, update: CacheUpdate) -> bool {

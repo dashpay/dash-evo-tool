@@ -89,6 +89,13 @@ pub(crate) struct SpvProvider {
     // everywhere. `ArcSwapOption` keeps binding lock-free.
     app_context: Arc<ArcSwapOption<AppContext>>,
     network: Network,
+    fee_claim_contract: Option<Arc<FeeClaimContract>>,
+}
+
+#[derive(Debug)]
+struct FeeClaimContract {
+    id: Identifier,
+    registered: ArcSwapOption<DataContract>,
 }
 
 impl SpvProvider {
@@ -96,6 +103,18 @@ impl SpvProvider {
         Self {
             app_context: Arc::new(ArcSwapOption::empty()),
             network,
+            fee_claim_contract: None,
+        }
+    }
+
+    /// Isolate the contract refreshed for one payout from all other SDK callers.
+    pub(crate) fn for_fee_claim(&self, contract_id: Identifier) -> Self {
+        Self {
+            fee_claim_contract: Some(Arc::new(FeeClaimContract {
+                id: contract_id,
+                registered: ArcSwapOption::empty(),
+            })),
+            ..self.clone()
         }
     }
 
@@ -127,8 +146,25 @@ impl ContextProvider for SpvProvider {
         data_contract_id: &Identifier,
         platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
+        if let Some(scope) = &self.fee_claim_contract
+            && scope.id == *data_contract_id
+            && let Some(contract) = scope.registered.load_full()
+        {
+            return Ok(Some(contract));
+        }
         let app_ctx = self.app_context()?;
         resolve_data_contract(&app_ctx, data_contract_id, platform_version)
+    }
+
+    fn register_data_contract(&self, contract: Arc<DataContract>) {
+        if let Some(scope) = &self.fee_claim_contract
+            && scope.id == contract.id()
+        {
+            scope.registered.rcu(|saved| match saved {
+                Some(saved) if saved.version() > contract.version() => Some(saved.clone()),
+                _ => Some(contract.clone()),
+            });
+        }
     }
 
     fn get_token_configuration(
@@ -303,6 +339,81 @@ mod data_contract_tests {
         assert!(
             matches!(resolved, Err(ContextProviderError::DataContractFailure(_))),
             "got {resolved:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fee_claim_tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::config::moderation::ContractModerationConfig;
+    use dash_sdk::dpp::data_contract::config::moderation::ContractModerators;
+    use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
+    use std::collections::BTreeSet;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fee_claim_refresh_resolves_new_team_without_changing_other_callers() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let version = PlatformVersion::latest();
+        let mut saved = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            version,
+        )
+        .unwrap();
+        saved.set_id(Identifier::random());
+        let [a, b, c] = std::array::from_fn(|_| Identifier::random());
+        let team = |ids| ContractModerationConfig {
+            banlist: true,
+            suspensions: false,
+            warnings: false,
+            moderators: ContractModerators::AppointedModerators(BTreeSet::from(ids)),
+        };
+        let config: DataContractConfig = saved.config().clone();
+        saved.set_config(config.with_moderation(Some(team([a, b]))));
+        ctx.replace_contract(saved.id(), &saved).unwrap();
+        let original = SpvProvider::new(ctx.network);
+        original.bind_app_context(ctx);
+        let claim = original.for_fee_claim(saved.id());
+        let verifier = claim.clone();
+        let mut current = saved.clone();
+        current.set_version(saved.version() + 1);
+        let config: DataContractConfig = current.config().clone();
+        current.set_config(config.with_moderation(Some(team([a, c]))));
+        claim.register_data_contract(Arc::new(current));
+        let resolved = verifier
+            .get_data_contract(&saved.id(), version)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ContractFeePot::Moderators.claim_proof_identities(&resolved, a),
+            BTreeSet::from([a, c])
+        );
+        claim.register_data_contract(Arc::new(saved.clone()));
+        assert_eq!(
+            verifier
+                .get_data_contract(&saved.id(), version)
+                .unwrap()
+                .unwrap()
+                .version(),
+            saved.version() + 1
+        );
+        assert_eq!(
+            *original
+                .get_data_contract(&saved.id(), version)
+                .unwrap()
+                .unwrap(),
+            saved
+        );
+        assert_eq!(
+            *original
+                .for_fee_claim(saved.id())
+                .get_data_contract(&saved.id(), version)
+                .unwrap()
+                .unwrap(),
+            saved
         );
     }
 }

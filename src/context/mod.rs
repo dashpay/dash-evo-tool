@@ -449,6 +449,14 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
+    /// Build an isolated provider for a single contract fee payout.
+    pub(crate) fn fee_claim_provider(
+        &self,
+        contract_id: Identifier,
+    ) -> Result<SpvProvider, TaskError> {
+        Ok(self.spv_context_provider.read()?.for_fee_claim(contract_id))
+    }
+
     /// Shared wallet membership and committed metadata.
     pub fn wallet_context(&self) -> &Arc<WalletContext> {
         &self.wallet_context

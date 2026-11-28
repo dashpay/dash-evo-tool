@@ -1455,6 +1455,19 @@ As a user, when a document action's token cost is optional, I want to choose not
 - A "Pay the token cost" option appears only when the token cost is optional.
 - Without it, the action carries no token payment and its network fee is paid from the identity's credits.
 
+---
+
+### DOC-012: View and claim a contract's fee pots [Implemented]
+**Persona:** Jordan
+
+As a contract owner or moderator, I want to see what my contract's document fees have collected and claim it, so that the fees reach my identity.
+
+- The Contracts screen offers "Fee Pots" on networks that support contract fees.
+- Both pots of a contract are shown with their balance and last payout (epoch, time, claimant).
+- Only an identity that receives a pot can claim it; the owner pot goes to the owner, the moderators pot to the whole moderation team.
+- A pot can be claimed once per epoch. The app shows the last payout's epoch but does not block a claim on it; a second claim in the same epoch is refused by the network, and the message says to try again once the next epoch starts.
+- After a claim, the pot and the claimant's new balance are shown.
+
 ## Developer and Power Tools (DEV)
 
 ### DEV-001: Decode state transitions [Implemented]

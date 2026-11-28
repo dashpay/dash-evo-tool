@@ -53,6 +53,7 @@ use tokens::TokenTask;
 pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
+pub mod contract_fee_pots;
 pub mod core;
 pub mod dapi_discovery;
 pub mod dashpay;
@@ -385,6 +386,10 @@ impl BackendTask {
                 | ContractTask::FetchActiveGroupActions(..)
                 | ContractTask::RemoveContract(_)
                 | ContractTask::SaveDataContract(..) => return None,
+                // Claims persist all paid balances from their proof themselves.
+                ContractTask::FetchContractFeePots(_) | ContractTask::ClaimContractFees { .. } => {
+                    return None;
+                }
             },
             Self::DocumentTask(task) => match task.as_ref() {
                 DocumentTask::BroadcastDocument {
@@ -1360,6 +1365,24 @@ pub enum BackendTaskSuccessResult {
     IdentityKeysUnprotected {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
+    },
+    /// Both fee pots of a contract, as Platform holds them.
+    ContractFeePots {
+        contract_id: Identifier,
+        contract: Arc<dash_sdk::platform::DataContract>,
+        pots: dash_sdk::platform::contract_fee_pots::ContractFeePots,
+        /// The seated moderation team, which claims an elected contract's
+        /// moderators pot instead of its interim team.
+        seated_moderators: crate::model::contract_fee_pots::SeatedModerators,
+    },
+    /// A contract fee pot was paid out. `claimant_balance` is the claiming
+    /// identity's balance after the claim, `remaining_credits` what is left
+    /// in the pot.
+    ContractFeesClaimed {
+        contract_id: Identifier,
+        pot: dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot,
+        claimant_balance: Option<dash_sdk::dpp::fee::Credits>,
+        remaining_credits: dash_sdk::dpp::fee::Credits,
     },
     /// What the preserved legacy database could restore for this identity.
     /// Descriptors only — public key metadata, never key bytes. An empty plan
@@ -3288,6 +3311,14 @@ mod tests {
         let free = [
             token(TokenTask::QueryMyTokenBalances),
             contract_task(ContractTask::FetchContracts(vec![contract.id()])),
+            contract_task(ContractTask::FetchContractFeePots(contract.id())),
+            // Fee claims already persist the balances proved by the payout.
+            contract_task(ContractTask::ClaimContractFees {
+                contract_id: contract.id(),
+                pot:
+                    dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot::Owner,
+                identity: Box::new(payer.clone()),
+            }),
             contract_task(ContractTask::FetchActiveGroupActions(
                 QualifiedContract {
                     contract: contract.as_ref().clone(),

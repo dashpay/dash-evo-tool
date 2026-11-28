@@ -724,14 +724,9 @@ impl ShieldedTabView {
                     });
                 }
             }
-            Some(check) => {
-                let label = match check {
-                    Check::MinRole(_) | Check::Experimental(_) => {
-                        SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL
-                    }
-                };
+            Some(Check::MinRole(_) | Check::Experimental(_)) => {
                 ui.label(
-                    RichText::new(label)
+                    RichText::new(SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL)
                         .size(12.0)
                         .color(DashColors::text_secondary(dark_mode)),
                 );

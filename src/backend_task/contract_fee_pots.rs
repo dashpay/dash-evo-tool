@@ -1,0 +1,443 @@
+//! Contract fee pots (protocol version 14): what a contract's document action
+//! fees have paid into its owner pot and its moderators pot, and paying a pot
+//! out to its recipients.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
+use crate::context::AppContext;
+use crate::model::contract_fee_pots::{SeatedModerators, has_elected_moderation};
+use crate::model::identity_balance::BalanceProvenance;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
+use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
+use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+use dash_sdk::platform::contract_fee_pots::ContractFeePots;
+use dash_sdk::platform::transition::contract_fee_claim::ClaimContractFeesWithMetadata;
+use dash_sdk::platform::{Fetch, Identifier};
+
+/// The key requirements of a fee claim: a CRITICAL authentication key, and
+/// since a claim is not a document batch, not one bound to a contract.
+fn fee_claim_key_requirements() -> KeyRequirements<'static> {
+    KeyRequirements::new(
+        Purpose::AUTHENTICATION,
+        &[SecurityLevel::CRITICAL],
+        SigningScope::NonBatch,
+    )
+}
+
+impl AppContext {
+    /// Both fee pots of `contract_id`, with the seated moderation team that
+    /// claims an elected contract's moderators pot. A contract nobody has paid
+    /// fees to reads as two empty pots.
+    pub(super) async fn fetch_contract_fee_pots(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let contract = dash_sdk::platform::DataContract::fetch(sdk, contract_id)
+            .await?
+            .ok_or(TaskError::DataContractNotFound)?;
+        let elected = has_elected_moderation(&contract);
+        // Only the pots are proved. The response metadata's epoch is not
+        // signed, so nothing is decided from it.
+        let (pots, seated_moderators) =
+            tokio::join!(ContractFeePots::fetch(sdk, contract_id), async {
+                if elected {
+                    read_seated_moderators(sdk, contract_id).await
+                } else {
+                    SeatedModerators::NotSeated
+                }
+            });
+        Ok(BackendTaskSuccessResult::ContractFeePots {
+            contract_id,
+            contract: Arc::new(contract),
+            pots: pots?.unwrap_or_default(),
+            seated_moderators,
+        })
+    }
+
+    /// Pay out `pot` of `contract_id`, claimed by `qualified_identity`, and
+    /// store the claimant's new balance.
+    pub(super) async fn claim_contract_fees(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+        pot: ContractFeePot,
+        qualified_identity: QualifiedIdentity,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let identity_id = qualified_identity.identity.id();
+        let signing_key = qualified_identity
+            .signing_key_now(fee_claim_key_requirements())
+            .cloned()
+            .ok_or(TaskError::NoFeeClaimSigningKey)?;
+        let identity = qualified_identity.identity.clone();
+        let signer = Arc::new(qualified_identity);
+
+        let claim_sdk = dash_sdk::SdkBuilder::new(sdk.address_list().clone())
+            .with_network(self.network)
+            .with_initial_version(sdk.version())
+            .with_settings(*sdk.query_settings().request_settings)
+            .with_context_provider(self.fee_claim_provider(contract_id)?)
+            .build()?;
+        let claim_result = identity
+            .claim_contract_fees_with_metadata(
+                &claim_sdk,
+                contract_id,
+                pot,
+                Some(&signing_key),
+                signer,
+                None,
+            )
+            .await;
+        // The payout SDK has a separate nonce cache; later tasks must read the network again.
+        sdk.refresh_identity_nonce(&identity_id).await;
+        let (claimed, metadata) = claim_result?;
+
+        let claimant_balance = claimed.balances.get(&identity_id).copied();
+        self.persist_paid_balances(
+            &identity_id,
+            &claimed.balances,
+            BalanceProvenance::ObservedAt(metadata.height),
+        )
+        .await?;
+
+        Ok(BackendTaskSuccessResult::ContractFeesClaimed {
+            contract_id,
+            pot,
+            claimant_balance,
+            remaining_credits: claimed.remaining_credits,
+        })
+    }
+
+    /// Store the balances after a claim the network paid out (`balances`,
+    /// from the proof) on the records of the paid identities kept on this
+    /// device; paid identities not kept here are skipped, but `claimant` must
+    /// be kept here. The claim is already paid out, so a failure here is
+    /// reported as [`TaskError::ContractFeesClaimedButBalanceNotSaved`], not
+    /// as a failed claim.
+    async fn persist_paid_balances(
+        &self,
+        claimant: &Identifier,
+        balances: &BTreeMap<Identifier, Credits>,
+        observed: BalanceProvenance,
+    ) -> Result<(), TaskError> {
+        // Every write is tried, so one failure does not leave the other
+        // paid identities stale; the first failure is reported.
+        let mut first_failure = None;
+        let mut saved_any = false;
+        for (identity_id, balance) in balances {
+            let saved =
+                self.edit_local_qualified_identity_observed(identity_id, observed, |fresh| {
+                    fresh.identity.set_balance(*balance);
+                    Ok(())
+                });
+            match saved {
+                Ok(_) => saved_any = true,
+                // A paid co-recipient not kept on this device has no record
+                // to update.
+                Err(TaskError::IdentityNotFoundLocally) if identity_id != claimant => {}
+                Err(source) => {
+                    first_failure.get_or_insert(source);
+                }
+            }
+        }
+        if saved_any {
+            self.notify_cache_changed(
+                crate::backend_task::CacheDomain::Identities,
+                &self.frame_loop_sender(),
+            )
+            .await;
+        }
+        match first_failure {
+            None => Ok(()),
+            Some(source) => Err(TaskError::ContractFeesClaimedButBalanceNotSaved {
+                source: Box::new(source),
+            }),
+        }
+    }
+}
+
+/// The seated moderation team of `contract_id`, its leader and active
+/// members: who Platform lets claim an elected contract's moderators pot.
+///
+/// A failed read is not an error of the pots read: the pots still show, and
+/// moderator claims remain unavailable until membership can be checked.
+async fn read_seated_moderators(sdk: &Sdk, contract_id: Identifier) -> SeatedModerators {
+    match sdk.fetch_moderation_team(contract_id).await {
+        Ok(None) => SeatedModerators::NotSeated,
+        Ok(Some(team)) => SeatedModerators::Seated(Box::new(team)),
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                %contract_id,
+                "Could not read the seated moderation team; moderator claims remain unavailable"
+            );
+            SeatedModerators::Unknown
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fee_pots_refresh_uses_current_appointed_team() {
+        use crate::model::contract_fee_pots::pot_claimants;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::{
+            accessors::v0::DataContractV0Setters,
+            config::{
+                DataContractConfig,
+                moderation::{ContractModerationConfig, ContractModerators},
+            },
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut saved = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            crate::sdk_wrapper::MIN_PLATFORM_VERSION,
+        )
+        .unwrap();
+        saved.set_id(Identifier::random());
+        let [a, b, c] = std::array::from_fn(|_| Identifier::random());
+        let team = |ids| ContractModerationConfig {
+            banlist: true,
+            suspensions: false,
+            warnings: false,
+            moderators: ContractModerators::AppointedModerators(std::collections::BTreeSet::from(
+                ids,
+            )),
+        };
+        let config: DataContractConfig = saved.config().clone();
+        saved.set_config(config.with_moderation(Some(team([a, b]))));
+        ctx.replace_contract(saved.id(), &saved).unwrap();
+        let mut current = saved.clone();
+        current.set_version(saved.version() + 1);
+        let config: DataContractConfig = current.config().clone();
+        current.set_config(config.with_moderation(Some(team([a, c]))));
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(saved.id(), Some(current))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(saved.id(), Some(ContractFeePots::default()))
+            .await
+            .unwrap();
+        let result = ctx.fetch_contract_fee_pots(&sdk, saved.id()).await.unwrap();
+        let BackendTaskSuccessResult::ContractFeePots {
+            contract,
+            seated_moderators,
+            ..
+        } = result
+        else {
+            panic!("fee pots result")
+        };
+        let claimants = pot_claimants(ContractFeePot::Moderators, &contract, &seated_moderators);
+        assert!(claimants.includes(&a));
+        assert!(claimants.includes(&c), "newly appointed member can claim");
+        assert!(!claimants.includes(&b), "removed member cannot claim");
+    }
+
+    /// A claim the network paid out is reported as paid out, not as failed,
+    /// when storing the claimant's new balance on this device fails.
+    #[tokio::test]
+    async fn a_claim_whose_balance_cannot_be_saved_is_reported_as_paid_out() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+
+        // Nothing is stored for this identity, so the write fails.
+        let claimant = Identifier::random();
+        let result = ctx
+            .persist_paid_balances(
+                &claimant,
+                &BTreeMap::from([(claimant, 1_000)]),
+                BalanceProvenance::ObservedAt(51),
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractFeesClaimedButBalanceNotSaved { .. })
+            ),
+            "got {result:?}"
+        );
+    }
+
+    /// The proof carries the new balance of every identity the pot paid: each
+    /// one kept on this device is updated, not only the claimant's, and the
+    /// paid identities not kept here are skipped, even after a prior refresh
+    /// has established a balance watermark.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_claim_stores_the_new_balance_of_every_paid_identity_kept_here() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(temp_dir.path()).await;
+        let [claimant, co_moderator, stranger] = [1, 2, 3].map(|byte| Identifier::new([byte; 32]));
+        for id in [claimant, co_moderator] {
+            let mut identity = crate::context::test_support::bare_user_identity(id, ctx.network);
+            identity.identity.set_balance(100);
+            ctx.insert_local_qualified_identity_observed(
+                &mut identity,
+                &None,
+                BalanceProvenance::ObservedAt(50),
+            )
+            .expect("identity stored with its observed balance");
+        }
+        let balances =
+            BTreeMap::from([(claimant, 1_000), (co_moderator, 2_000), (stranger, 3_000)]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+
+        ctx.persist_paid_balances(&claimant, &balances, BalanceProvenance::ObservedAt(51))
+            .await
+            .expect("balances saved");
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::backend_task::TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network,
+                domain: crate::backend_task::CacheDomain::Identities,
+            })) if network == ctx.network
+        ));
+
+        let balance = |id| {
+            ctx.get_local_qualified_identity(&id)
+                .expect("read")
+                .map(|stored| stored.identity.balance())
+        };
+        assert_eq!(balance(claimant), Some(1_000));
+        assert_eq!(balance(co_moderator), Some(2_000));
+        assert_eq!(
+            balance(stranger),
+            None,
+            "an identity not kept here is not added"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partial_payout_save_notifies_and_a_closed_receiver_does_not_fail_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let paid = Identifier::new([1; 32]);
+        let missing_claimant = Identifier::new([2; 32]);
+        let mut identity = crate::context::test_support::bare_user_identity(paid, ctx.network);
+        ctx.insert_local_qualified_identity_observed(
+            &mut identity,
+            &None,
+            BalanceProvenance::ObservedAt(50),
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+        let result = ctx
+            .persist_paid_balances(
+                &missing_claimant,
+                &BTreeMap::from([(paid, 1_000), (missing_claimant, 2_000)]),
+                BalanceProvenance::ObservedAt(51),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(TaskError::ContractFeesClaimedButBalanceNotSaved { .. })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::backend_task::TaskResult::CacheUpdated(
+                crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::Identities,
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(
+            ctx.get_local_qualified_identity(&paid)
+                .unwrap()
+                .unwrap()
+                .identity
+                .balance(),
+            1_000
+        );
+        drop(rx);
+        ctx.persist_paid_balances(
+            &paid,
+            &BTreeMap::from([(paid, 3_000)]),
+            BalanceProvenance::ObservedAt(52),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ctx.get_local_qualified_identity(&paid)
+                .unwrap()
+                .unwrap()
+                .identity
+                .balance(),
+            3_000
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_claim_validates_the_key_without_a_known_protocol_version() {
+        for version in [None, Some(dash_sdk::dpp::version::LATEST_VERSION + 1)] {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+            if let Some(version) = version {
+                crate::context::test_support::prove_protocol_version(&ctx, version);
+                assert!(ctx.protocol_version_info().newer_protocol_available);
+            } else {
+                assert_eq!(ctx.protocol_version_info().verified_version, None);
+            }
+            let identity =
+                crate::context::test_support::bare_user_identity(Identifier::random(), ctx.network);
+            let claimed = ctx
+                .claim_contract_fees(
+                    &Sdk::new_mock(),
+                    Identifier::random(),
+                    ContractFeePot::Owner,
+                    identity,
+                )
+                .await;
+            assert!(
+                matches!(claimed, Err(TaskError::NoFeeClaimSigningKey)),
+                "protocol {version:?}: got {claimed:?}"
+            );
+        }
+    }
+
+    /// A claimant with no CRITICAL unbound key is refused before anything is
+    /// signed or broadcast.
+    #[tokio::test]
+    async fn a_claim_needs_a_critical_unbound_key() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14,
+        );
+        let sdk = Sdk::new_mock();
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+
+        let claimed = ctx
+            .claim_contract_fees(&sdk, Identifier::random(), ContractFeePot::Owner, identity)
+            .await;
+        assert!(
+            matches!(claimed, Err(TaskError::NoFeeClaimSigningKey)),
+            "got {claimed:?}"
+        );
+    }
+}

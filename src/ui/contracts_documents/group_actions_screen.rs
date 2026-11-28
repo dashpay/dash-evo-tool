@@ -34,7 +34,7 @@ use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
-use dash_sdk::dpp::data_contract::TokenContractPosition;
+use dash_sdk::dpp::data_contract::{GroupContractPosition, TokenContractPosition};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -60,7 +60,7 @@ use std::sync::Arc;
 enum FetchGroupActionsStatus {
     NotStarted,
     WaitingForResult,
-    Complete(IndexMap<Identifier, GroupAction>),
+    Complete(IndexMap<Identifier, (GroupContractPosition, GroupAction)>),
     Error,
 }
 
@@ -178,7 +178,7 @@ impl GroupActionsScreen {
     fn render_group_actions(
         &mut self,
         ui: &mut egui::Ui,
-        group_actions: &IndexMap<Identifier, GroupAction>,
+        group_actions: &IndexMap<Identifier, (GroupContractPosition, GroupAction)>,
     ) -> AppAction {
         let mut action = AppAction::None;
 
@@ -225,7 +225,7 @@ impl GroupActionsScreen {
                         });
                     })
                     .body(|mut body| {
-                        for (id, group_action) in group_actions {
+                        for (id, (group_position, group_action)) in group_actions {
                             let GroupActionEvent::TokenEvent(token_event) = group_action.event();
 
                             body.row(row_height, |mut row| {
@@ -329,7 +329,7 @@ impl GroupActionsScreen {
                                             token_position,
                                         };
 
-                                        self.handle_token_event_action(token_event, *id, identity_token_info, &mut action);
+                                        self.handle_token_event_action(token_event, *id, *group_position, identity_token_info, &mut action);
                                     }
                                 });
                             });
@@ -442,6 +442,7 @@ impl GroupActionsScreen {
         &mut self,
         token_event: &TokenEvent,
         action_id: Identifier,
+        group_position: GroupContractPosition,
         identity_token_info: IdentityTokenInfo,
         action: &mut AppAction,
     ) {
@@ -449,6 +450,7 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, recipient, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.common.group_action_id = Some(action_id);
+                mint_screen.common.proposal_group_position = Some(group_position);
                 mint_screen.action.set_proposal_recipient(*recipient);
                 mint_screen.action.amount = Some(Amount::from_token(
                     &mint_screen.common.identity_token_info,
@@ -460,6 +462,7 @@ impl GroupActionsScreen {
             TokenEvent::Burn(amount, _burn_from, note_opt) => {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
                 burn_screen.common.group_action_id = Some(action_id);
+                burn_screen.common.proposal_group_position = Some(group_position);
                 // Convert amount to Amount struct using the token configuration
                 burn_screen.action.amount = Some(Amount::from_token(
                     &burn_screen.common.identity_token_info,
@@ -472,6 +475,7 @@ impl GroupActionsScreen {
                 let mut freeze_screen =
                     FreezeTokensScreen::new(identity_token_info, &self.app_context);
                 freeze_screen.common.group_action_id = Some(action_id);
+                freeze_screen.common.proposal_group_position = Some(group_position);
                 freeze_screen.action.freeze_identity_id = identifier.to_string(Encoding::Base58);
                 freeze_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::FreezeTokensScreen(freeze_screen));
@@ -480,6 +484,7 @@ impl GroupActionsScreen {
                 let mut unfreeze_screen =
                     UnfreezeTokensScreen::new(identity_token_info, &self.app_context);
                 unfreeze_screen.common.group_action_id = Some(action_id);
+                unfreeze_screen.common.proposal_group_position = Some(group_position);
                 unfreeze_screen.action.unfreeze_identity_id =
                     identifier.to_string(Encoding::Base58);
                 unfreeze_screen.common.public_note = note_opt.clone();
@@ -489,6 +494,7 @@ impl GroupActionsScreen {
                 let mut destroy_screen =
                     DestroyFrozenFundsScreen::new(identity_token_info, &self.app_context);
                 destroy_screen.common.group_action_id = Some(action_id);
+                destroy_screen.common.proposal_group_position = Some(group_position);
                 destroy_screen.action.frozen_identity_id = identifier.to_string(Encoding::Base58);
                 destroy_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(destroy_screen));
@@ -500,6 +506,7 @@ impl GroupActionsScreen {
                         let mut pause_screen =
                             PauseTokensScreen::new(identity_token_info, &self.app_context);
                         pause_screen.common.group_action_id = Some(action_id);
+                        pause_screen.common.proposal_group_position = Some(group_position);
                         pause_screen.common.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::PauseTokensScreen(pause_screen));
                     }
@@ -507,6 +514,7 @@ impl GroupActionsScreen {
                         let mut resume_screen =
                             ResumeTokensScreen::new(identity_token_info, &self.app_context);
                         resume_screen.common.group_action_id = Some(action_id);
+                        resume_screen.common.proposal_group_position = Some(group_position);
                         resume_screen.common.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::ResumeTokensScreen(resume_screen));
                     }
@@ -516,6 +524,7 @@ impl GroupActionsScreen {
                 let mut update_screen =
                     UpdateTokenConfigScreen::new(identity_token_info, &self.app_context);
                 update_screen.group_action_id = Some(action_id);
+                update_screen.proposal_group_position = Some(group_position);
                 update_screen.public_note = note_opt.clone();
                 update_screen.change_item = change_item.clone();
                 *action |=
@@ -527,6 +536,8 @@ impl GroupActionsScreen {
                         .with_schedule(schedule.clone());
 
                 change_price_screen.group_action_id = Some(action_id);
+
+                change_price_screen.proposal_group_position = Some(group_position);
                 change_price_screen.token_pricing_schedule = format!("{:?}", schedule);
                 change_price_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::SetTokenPriceScreen(change_price_screen));
@@ -726,6 +737,7 @@ mod sdk_adapter_tests {
             screen.handle_token_event_action(
                 &TokenEvent::Mint(5, proposed, None),
                 Identifier::from([8; 32]),
+                0,
                 token_info(&ctx, Some(destination), false),
                 &mut action,
             );
@@ -883,16 +895,19 @@ mod sdk_adapter_tests {
         assert!(ctx.identity_token_balances().unwrap().is_empty());
         let proposals = IndexMap::from([(
             Identifier::from([8; 32]),
-            GroupAction::V0(GroupActionV0 {
-                contract_id: info.data_contract.contract.id(),
-                proposer_id: recipient,
-                token_contract_position: 0,
-                event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
-                    12,
-                    recipient,
-                    Some("Treasury proposal".into()),
-                )),
-            }),
+            (
+                0,
+                GroupAction::V0(GroupActionV0 {
+                    contract_id: info.data_contract.contract.id(),
+                    proposer_id: recipient,
+                    token_contract_position: 0,
+                    event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                        12,
+                        recipient,
+                        Some("Treasury proposal".into()),
+                    )),
+                }),
+            ),
         )]);
         let mut opened = None;
         let mut harness = egui_kittest::Harness::builder()
@@ -917,6 +932,7 @@ mod sdk_adapter_tests {
         harness.run();
         drop(harness);
         let mint = opened.expect("Take Action opens the proposal");
+        assert_eq!(mint.common.proposal_group_position, Some(0));
         let amount = mint.action.amount.as_ref().unwrap().clone();
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 900.0))
@@ -982,16 +998,19 @@ mod sdk_adapter_tests {
         assert!(ctx.identity_token_balances().unwrap().is_empty());
         let proposals = IndexMap::from([(
             Identifier::from([8; 32]),
-            GroupAction::V0(GroupActionV0 {
-                contract_id: info.data_contract.contract.id(),
-                proposer_id: recipient,
-                token_contract_position: 0,
-                event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
-                    12,
-                    recipient,
-                    Some("Treasury proposal".into()),
-                )),
-            }),
+            (
+                0,
+                GroupAction::V0(GroupActionV0 {
+                    contract_id: info.data_contract.contract.id(),
+                    proposer_id: recipient,
+                    token_contract_position: 0,
+                    event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                        12,
+                        recipient,
+                        Some("Treasury proposal".into()),
+                    )),
+                }),
+            ),
         )]);
         let mut opened = None;
         let mut harness = egui_kittest::Harness::builder()
@@ -1016,6 +1035,7 @@ mod sdk_adapter_tests {
         harness.run();
         drop(harness);
         let mint = opened.expect("Take Action opens the proposal");
+        assert_eq!(mint.common.proposal_group_position, Some(0));
         assert_eq!(
             mint.common.identity_token_info.identity.identity, updated.identity,
             "reopening must include the key added after the list snapshot"
@@ -1095,16 +1115,19 @@ mod sdk_adapter_tests {
         assert!(ctx.identity_token_balances().unwrap().is_empty());
         let proposals = IndexMap::from([(
             Identifier::from([8; 32]),
-            GroupAction::V0(GroupActionV0 {
-                contract_id: info.data_contract.contract.id(),
-                proposer_id: recipient,
-                token_contract_position: 0,
-                event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
-                    12,
-                    recipient,
-                    Some("Treasury proposal".into()),
-                )),
-            }),
+            (
+                0,
+                GroupAction::V0(GroupActionV0 {
+                    contract_id: info.data_contract.contract.id(),
+                    proposer_id: recipient,
+                    token_contract_position: 0,
+                    event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                        12,
+                        recipient,
+                        Some("Treasury proposal".into()),
+                    )),
+                }),
+            ),
         )]);
         let mut opened = None;
         let mut harness = egui_kittest::Harness::builder()
@@ -1129,6 +1152,7 @@ mod sdk_adapter_tests {
         harness.run();
         drop(harness);
         let mint = opened.expect("Take Action opens the proposal");
+        assert_eq!(mint.common.proposal_group_position, Some(0));
         assert_eq!(
             mint.common.identity_token_info.identity.identity, updated.identity,
             "reopening must include the key added after the list snapshot"
@@ -1186,6 +1210,7 @@ mod sdk_adapter_tests {
         screen.handle_token_event_action(
             &TokenEvent::Mint(12, recipient, None),
             Identifier::from([8; 32]),
+            0,
             info,
             &mut action,
         );
@@ -1297,6 +1322,7 @@ mod sdk_adapter_tests {
         screen.handle_token_event_action(
             &TokenEvent::Mint(12, treasury, None),
             Identifier::from([8; 32]),
+            0,
             info,
             &mut action,
         );

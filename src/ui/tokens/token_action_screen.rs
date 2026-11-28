@@ -149,6 +149,7 @@ pub trait TokenAction: Sized + 'static {
 pub struct TokenActionCommon {
     pub identity_token_info: IdentityTokenInfo,
     pub group_action_id: Option<Identifier>,
+    pub proposal_group_position: Option<GroupContractPosition>,
     pub public_note: Option<String>,
 
     selected_key: TokenSigningKey,
@@ -168,7 +169,7 @@ pub struct TokenActionCommon {
     app_context: Arc<AppContext>,
 }
 
-const UNRESOLVED_PROPOSAL_GROUP: &str = "This proposal can no longer be signed with the current token settings. Refresh the group actions and choose another proposal.";
+pub(super) const UNRESOLVED_PROPOSAL_GROUP: &str = "This proposal can no longer be signed with the current token settings. Refresh the group actions and choose another proposal.";
 
 impl TokenActionCommon {
     fn group_info(&self) -> Option<GroupStateTransitionInfoStatus> {
@@ -229,6 +230,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
             common: TokenActionCommon {
                 identity_token_info,
                 group_action_id: None,
+                proposal_group_position: None,
                 public_note: None,
                 selected_key: TokenSigningKey::automatic(possible_key),
                 show_advanced_options: false,
@@ -405,7 +407,11 @@ impl<A: TokenAction> TokenActionScreen<A> {
         };
 
         let group_info = self.common.group_info();
-        if self.common.group_action_id.is_some() && group_info.is_none() {
+        if self.common.group_action_id.is_some()
+            && (group_info.is_none()
+                || self.common.proposal_group_position
+                    != self.common.group.as_ref().map(|(position, _)| *position))
+        {
             super::set_error_banner(&self.common.app_context, UNRESOLVED_PROPOSAL_GROUP);
             return AppAction::None;
         }
@@ -686,8 +692,10 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             ui.add_space(10.0);
             self.render_fee_estimate(ui);
 
-            let proposal_group_ready =
-                self.common.group_action_id.is_none() || self.common.group.is_some();
+            let proposal_group_ready = self.common.group_action_id.is_none()
+                || (self.common.group.is_some()
+                    && self.common.proposal_group_position
+                        == self.common.group.as_ref().map(|(position, _)| *position));
             if !proposal_group_ready {
                 ui.label(UNRESOLVED_PROPOSAL_GROUP);
             }
@@ -1252,6 +1260,7 @@ mod tests {
         let recipient = Identifier::from([5; 32]).to_string(Encoding::Base58);
         let mut screen = MintTokensScreen::new(info, &context);
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
         screen.common.group = Some((
             0,
             Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
@@ -1315,6 +1324,7 @@ mod tests {
             "the signing key's wallet is locked"
         );
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
         screen.common.group = Some((
             0,
             Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
@@ -1422,6 +1432,7 @@ mod tests {
         let amount = Amount::from_token(&info, 5);
         let mut screen = MintTokensScreen::new(info, &context);
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
         screen.common.group = Some((
             0,
             Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
@@ -1543,6 +1554,7 @@ mod tests {
         let mut screen = MintTokensScreen::new(info, &context);
         screen.action.amount = Some(amount);
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
         screen.common.group = Some((
             0,
             Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
@@ -1630,6 +1642,7 @@ mod tests {
             crate::ui::tokens::burn_tokens_screen::BurnTokensScreen::new(info, &context);
         screen.action.amount = Some(Amount::from_token(&screen.common.identity_token_info, 5));
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
         screen.common.group = Some((
             0,
             Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
@@ -1704,6 +1717,42 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_from_another_group_cannot_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+        let group = Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
+            members: [(info.identity.identity.id(), 1)].into(),
+            required_power: 1,
+        });
+        info.data_contract
+            .contract
+            .set_groups([(0, group.clone()), (1, group)].into());
+        let TokenConfiguration::V0(config) = &mut info.token_config else {
+            panic!("version zero fixture");
+        };
+        let dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules::V0(rules) =
+            &mut config.manual_minting_rules;
+        rules.authorized_to_make_change = AuthorizedActionTakers::Group(1);
+        let mut screen = TokenActionScreen::<MintAction>::new(info.clone(), &context);
+        screen.common.selected_key = TokenSigningKey::automatic(Some(signing_key()));
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+        screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
+        assert_eq!(screen.common.group.as_ref().map(|(pos, _)| *pos), Some(1));
+        assert!(
+            matches!(screen.submit(), AppAction::None),
+            "a proposal fetched from group 0 cannot dispatch with group 1"
+        );
+        screen.common.proposal_group_position = Some(1);
+        assert!(
+            crate::ui::tokens::mint_tokens_screen::tests::sent_request(&screen.submit()).is_some(),
+            "a matching proposal remains signable"
+        );
+    }
+
+    #[test]
     fn a_proposal_without_its_group_never_submits_an_independent_mint() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
@@ -1726,6 +1775,7 @@ mod tests {
         screen.common.selected_key = TokenSigningKey::automatic(Some(signing_key()));
         screen.action.amount = Some(Amount::from_token(&info, 5));
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.proposal_group_position = Some(0);
         assert!(screen.common.group.is_none());
         assert!(
             matches!(screen.submit(), AppAction::None),

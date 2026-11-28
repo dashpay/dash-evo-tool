@@ -1,3 +1,4 @@
+use dash_sdk::dpp::data_contract::GroupContractPosition;
 pub mod events;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
@@ -1074,7 +1075,7 @@ pub enum BackendTaskSuccessResult {
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
     ),
-    ActiveGroupActions(IndexMap<Identifier, GroupAction>),
+    ActiveGroupActions(IndexMap<Identifier, (GroupContractPosition, GroupAction)>),
     TokenPricing {
         token_id: Identifier,
         prices: Option<TokenPricingSchedule>,

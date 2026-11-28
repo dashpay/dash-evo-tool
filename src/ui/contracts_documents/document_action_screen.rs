@@ -346,6 +346,7 @@ impl DocumentActionScreen {
     /// Drop everything fetched or entered for the previous contract and
     /// document type, so no action can use it with the new selection.
     fn clear_selection_state(&mut self) {
+        self.pay_optional_token_cost = true;
         self.abandon_pending_fetch();
         self.clear_fetched_document_state();
         self.no_documents_found = false;
@@ -361,6 +362,7 @@ impl DocumentActionScreen {
     }
 
     fn reset_screen(&mut self) {
+        self.pay_optional_token_cost = true;
         self.refresh_banner.take_and_clear();
         self.no_documents_found = false;
         self.selected_identity = None;
@@ -3223,6 +3225,79 @@ mod tests {
         assert_eq!(token_payment(Some(required), false), paid(required));
         assert_eq!(token_payment(Some(optional), true), paid(optional));
         assert_eq!(token_payment(Some(optional), false), None);
+    }
+
+    #[test]
+    fn optional_token_cost_defaults_to_pay_after_form_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        screen.pay_optional_token_cost = false;
+        screen.broadcast_status = BroadcastStatus::Broadcasted;
+
+        screen.reset_screen();
+
+        assert!(screen.pay_optional_token_cost);
+    }
+
+    #[test]
+    fn optional_token_cost_defaults_to_pay_after_selection_change() {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Setters;
+
+        for change_contract in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+            let contract = dpns();
+            let cost = DocumentActionTokenCost {
+                optional: true,
+                token_amount: 40,
+                ..Default::default()
+            };
+            let mut first_type = owned_document_type(&contract, "domain");
+            first_type.set_document_creation_token_cost(Some(cost));
+            screen.selected_document_type = Some(first_type);
+            screen.selected_contract = Some(contract.clone());
+            screen.pay_optional_token_cost = false;
+            assert_eq!(screen.token_payment_for(Some(cost)), None);
+
+            let (next_contract, next_type) = if change_contract {
+                (
+                    QualifiedContract {
+                        contract: crate::context::test_support::dashpay_contract(),
+                        alias: None,
+                    },
+                    "profile",
+                )
+            } else {
+                (contract, "preorder")
+            };
+            let mut next_type = owned_document_type(&next_contract, next_type);
+            next_type.set_document_creation_token_cost(Some(cost));
+            screen.selected_contract = Some(next_contract);
+            screen.selected_document_type = Some(next_type);
+            screen.signing_scope_changed();
+
+            assert!(
+                screen.token_payment_for(Some(cost)).is_some(),
+                "contract changed: {change_contract}"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_token_cost_choice_survives_failed_draft_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, own) = screen_broadcasting(dir.path());
+        screen.pay_optional_token_cost = false;
+
+        screen.display_backend_task_error(&own, &TaskError::WalletStorageNotReady);
+        assert!(screen.can_broadcast());
+        assert!(!screen.pay_optional_token_cost);
+
+        let ctx = screen.app_context.egui_ctx().clone();
+        let _ = screen.start_broadcast(&ctx, BackendTask::None);
+        assert!(!screen.pay_optional_token_cost);
     }
 
     #[test]

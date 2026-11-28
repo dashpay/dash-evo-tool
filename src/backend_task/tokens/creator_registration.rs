@@ -33,9 +33,28 @@ use dash_sdk::platform::transition::{
     broadcast::BroadcastStateTransition, put_settings::PutSettings,
 };
 
-/// Backend-owned acceptance retained when persisting the receipt fails.
+/// Backend-owned verdicts retained when persisting the receipt fails.
 #[derive(Debug, Default)]
-pub(crate) struct TokenCreationAcceptance(arc_swap::ArcSwapOption<RegistrationRecord>);
+pub(crate) struct TokenCreationAcceptance {
+    accepted: arc_swap::ArcSwapOption<RegistrationRecord>,
+    not_sent: arc_swap::ArcSwapOption<RegistrationRecord>,
+}
+
+async fn claim_after_preflight(
+    journal: &TokenRegistrationJournal<'_>,
+    record: &RegistrationRecord,
+    contract: &DataContract,
+    preflight: impl std::future::Future<Output = Result<u64, TaskError>>,
+    now: impl FnOnce() -> u64,
+) -> Result<(), TaskError> {
+    preflight.await?;
+    crate::model::token_creator::contract::validate_submission_time(contract, now()).map_err(
+        |source| TaskError::InvalidTokenDraft {
+            source: Box::new(source),
+        },
+    )?;
+    journal.claim(record)
+}
 
 fn settings() -> Option<PutSettings> {
     let mut settings = PutSettings {
@@ -294,14 +313,6 @@ impl AppContext {
             alias: prepared.alias,
             status: RegistrationStatus::Submitted,
         };
-        // Persist before the first possible send. A crash after this point never enables paid retry.
-        crate::model::token_creator::contract::validate_submission_time(
-            &prepared.contract,
-            chrono::Utc::now().timestamp_millis().max(0) as u64,
-        )
-        .map_err(|source| TaskError::InvalidTokenDraft {
-            source: Box::new(source),
-        })?;
         if sdk.version().protocol_version != prepared.protocol_version {
             return Err(TaskError::TokenCreatorChanged);
         }
@@ -320,9 +331,20 @@ impl AppContext {
             .map_err(|source| TaskError::InvalidTokenDraft {
                 source: Box::new(source),
             })?;
-        crate::backend_task::contract::prepare_contract_signing_key(sdk, &identity, &prepared.key)
-            .await?;
-        journal.claim(&record)?;
+        claim_after_preflight(
+            &journal,
+            &record,
+            &prepared.contract,
+            crate::backend_task::contract::prepare_contract_signing_key(
+                sdk,
+                &identity,
+                &prepared.key,
+            ),
+            || chrono::Utc::now().timestamp_millis().max(0) as u64,
+        )
+        .await?;
+        // A corrected retry may reuse the immutable record; its previous no-send proof is spent.
+        self.token_creation_acceptance.not_sent.store(None);
         if let Err(error) = transition.broadcast(sdk, settings()).await {
             return self.creator_broadcast_error(&journal, record, error);
         }
@@ -350,7 +372,11 @@ impl AppContext {
             )
         ) {
             record.status = RegistrationStatus::NotSubmitted;
+            self.token_creation_acceptance
+                .not_sent
+                .store(Some(Arc::new(record.clone())));
             journal.update(&record)?;
+            self.token_creation_acceptance.not_sent.store(None);
             return Err(TaskError::TokenCreatorNotSent {
                 source: Box::new(source),
             });
@@ -395,7 +421,7 @@ impl AppContext {
         record.token_id = contract.token_id(0).ok_or(TaskError::TokenCreatorChanged)?;
         record.status = RegistrationStatus::Confirmed;
         self.token_creation_acceptance
-            .0
+            .accepted
             .store(Some(Arc::new(record.clone())));
         let journal_saved = journal
             .update(&record)
@@ -436,11 +462,13 @@ impl AppContext {
         let contract = cached.as_ref().unwrap_or(accepted);
         let mut missing = Vec::new();
         for position in accepted.tokens().keys().copied() {
-            // An existing entry is kept even if this build cannot read it.
-            if let Some(token_id) = contract.token_id(position)
-                && !self.has_token_entry(&token_id)?
-            {
-                missing.push(position);
+            if let Some(token_id) = contract.token_id(position) {
+                if self.has_token_entry(&token_id)? {
+                    // Preserve existing bytes, but only report a readable cache as saved.
+                    self.get_token_config_for_id(&token_id)?;
+                } else {
+                    missing.push(position);
+                }
             }
         }
         // The contract entry itself is written only when absent.
@@ -468,7 +496,7 @@ impl AppContext {
         if current.status != RegistrationStatus::Confirmed
             && !self
                 .token_creation_acceptance
-                .0
+                .accepted
                 .load_full()
                 .is_some_and(|accepted| *accepted == proven)
         {
@@ -492,6 +520,19 @@ impl AppContext {
             // later state (it may have been updated) or downgrade an accepted payment.
             let accepted = record.contract().map_err(protocol)?;
             return self.creator_accept(&journal, record, accepted);
+        }
+        if let Some(proven) = self.token_creation_acceptance.not_sent.load_full() {
+            let mut expected = record.clone();
+            expected.status = RegistrationStatus::NotSubmitted;
+            if expected == *proven {
+                journal.update(&proven)?;
+                self.token_creation_acceptance.not_sent.store(None);
+                return Err(TaskError::TokenCreatorNotSent {
+                    source: Box::new(dash_sdk::Error::DapiClientError(
+                        dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses,
+                    )),
+                });
+            }
         }
         if record.status == RegistrationStatus::NotSubmitted {
             return Err(TaskError::TokenCreatorChanged);
@@ -548,6 +589,59 @@ mod tests {
         (record, contract)
     }
     use dash_sdk::dpp::version::PlatformVersion;
+
+    #[tokio::test]
+    async fn allocation_expiring_during_preflight_never_claims_or_broadcasts() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (record, _) = fixture(&context);
+        let version = PlatformVersion::latest();
+        let mut draft = TokenDraft::example(false);
+        draft.scheduled_enabled = true;
+        draft
+            .scheduled
+            .push(crate::model::token_creator::ScheduleDraft {
+                id: 0,
+                timestamp: Some(1000),
+                recipient: crate::model::token_creator::Recipient::Owner,
+                amount: crate::model::token_creator::amount::TokenAmountInput::tokens("1"),
+            });
+        let contract = canonical_contract(
+            record.owner,
+            7,
+            draft
+                .parse(record.owner, context.network, version, 0)
+                .unwrap(),
+            version,
+        )
+        .unwrap();
+        let journal = context.token_registration_journal().unwrap();
+        let clock = std::cell::Cell::new(999);
+        let mut broadcast = false;
+        let result = async {
+            claim_after_preflight(
+                &journal,
+                &record,
+                &contract,
+                async {
+                    tokio::task::yield_now().await;
+                    clock.set(1001);
+                    Ok(0)
+                },
+                || clock.get(),
+            )
+            .await?;
+            broadcast = true;
+            Ok::<_, TaskError>(())
+        }
+        .await;
+        assert!(
+            matches!(result, Err(TaskError::InvalidTokenDraft { source })
+            if source.section == crate::model::token_creator::Section::Distribution)
+        );
+        assert!(journal.read().unwrap().is_none());
+        assert!(!broadcast);
+    }
 
     async fn dispatch_recovers_payer_balance(local_cache_available: bool) {
         use crate::backend_task::{BackendTask, CacheDomain, CacheUpdate};
@@ -692,6 +786,13 @@ mod tests {
                 journal.read().unwrap().unwrap().status,
                 RegistrationStatus::Unknown
             );
+            assert!(
+                context
+                    .token_creation_acceptance
+                    .not_sent
+                    .load_full()
+                    .is_none()
+            );
         }
     }
 
@@ -726,6 +827,95 @@ mod tests {
                 .unwrap()
                 .blocks_registration()
         );
+    }
+
+    #[tokio::test]
+    async fn definite_no_send_survives_failed_journal_update() {
+        for changed in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+            let context = crate::context::test_support::test_app_context_with_kv(
+                dir.path(),
+                Arc::new(crate::wallet_backend::DetKv::from_store(store.clone())),
+            );
+            let (mut record, _) = fixture(&context);
+            record.status = RegistrationStatus::Submitted;
+            let journal = context.token_registration_journal().unwrap();
+            journal.claim(&record).unwrap();
+            store.fail_next_puts_containing("token-registration", 1);
+            let error = dash_sdk::Error::DapiClientError(
+                dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses,
+            );
+            assert!(matches!(
+                context.creator_broadcast_error(&journal, record.clone(), error),
+                Err(TaskError::TokenCreatorJournal { .. })
+            ));
+            assert_eq!(journal.read().unwrap(), Some(record.clone()));
+            drop(journal);
+            if changed != 0 {
+                if changed == 2 {
+                    record.attempt_id = [98; 32];
+                }
+                // Vary the alias independently of the attempt identifier.
+                if changed == 1 {
+                    record.alias.push_str(" changed");
+                }
+                context
+                    .app_kv()
+                    .put(
+                        crate::wallet_backend::DetScope::Global,
+                        "testnet:token-registration:v1",
+                        &record,
+                    )
+                    .unwrap();
+            }
+            let mut sdk = dash_sdk::SdkBuilder::new_mock()
+                .with_version(PlatformVersion::latest())
+                .build()
+                .unwrap();
+            sdk.mock()
+                .expect_fetch::<DataContract, _>(record.contract_id, None)
+                .await
+                .unwrap();
+            if changed == 0 {
+                store.fail_next_puts_containing("token-registration", 1);
+                assert!(matches!(
+                    context.check_token_creation(&sdk).await,
+                    Err(TaskError::TokenCreatorJournal { .. })
+                ));
+                assert_eq!(
+                    context.token_registration_record().unwrap(),
+                    Some(record.clone())
+                );
+            }
+            let result = context.check_token_creation(&sdk).await;
+            let current = context.token_registration_record().unwrap().unwrap();
+            if changed != 0 {
+                assert!(current.blocks_registration());
+                assert_eq!(current.alias, record.alias);
+            } else {
+                assert!(
+                    matches!(result, Err(TaskError::TokenCreatorNotSent { .. })),
+                    "{result:?}"
+                );
+                assert_eq!(current.status, RegistrationStatus::NotSubmitted);
+                assert!(
+                    context
+                        .token_creation_acceptance
+                        .not_sent
+                        .load_full()
+                        .is_none()
+                );
+                assert!(!current.blocks_registration());
+                let mut next = record;
+                next.attempt_id = [99; 32];
+                context
+                    .token_registration_journal()
+                    .unwrap()
+                    .claim(&next)
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
@@ -1328,7 +1518,7 @@ mod tests {
             else {
                 panic!("the restore is accepted ({envelope})");
             };
-            assert!(outcome.local_cache_saved, "{envelope}");
+            assert!(!outcome.local_cache_saved, "{envelope}");
             assert!(
                 context.get_token_config_for_id(&token_id).is_err(),
                 "the unreadable entry is left as it was ({envelope})"

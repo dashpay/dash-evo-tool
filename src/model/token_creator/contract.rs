@@ -2,6 +2,7 @@
 
 use super::{DraftError, Section, TokenContractParams};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::{
     token_configuration::{accessors::v1::TokenConfigurationV1Setters, v0::TokenConfigurationV0},
     token_configuration_convention::TokenConfigurationConvention,
@@ -174,6 +175,19 @@ pub fn canonical_contract(
         ));
     }
     for token in contract.tokens().values() {
+        let distribution = token
+            .distribution_rules()
+            .validate_once_per_identity_distribution(version)
+            .map_err(|source| {
+                DraftError::protocol(Section::Distribution, "Distribution", source)
+            })?;
+        if !distribution.is_valid() {
+            return Err(DraftError::consensus(
+                Section::Distribution,
+                "Distribution",
+                distribution.errors,
+            ));
+        }
         let references = token
             .validate_token_config_groups_exist(contract.groups(), version)
             .map_err(|source| DraftError::protocol(Section::Groups, "Group references", source))?;
@@ -262,6 +276,25 @@ mod tests {
     use super::*;
     use crate::model::token_creator::TokenDraft;
     use dash_sdk::dpp::dashcore::Network;
+
+    #[test]
+    fn once_per_identity_canonical_validation_checks_protocol() {
+        let owner = Identifier::from([8; 32]);
+        let mut draft = TokenDraft::example(false);
+        draft.transferable = true;
+        draft.once_enabled = true;
+        draft.once_amount = crate::model::token_creator::TokenAmountInput::tokens("1");
+        for protocol in [14, 13] {
+            let version = PlatformVersion::get(protocol).unwrap();
+            let params = draft.parse(owner, Network::Testnet, version, 0).unwrap();
+            let result = canonical_contract(owner, 1, params, version);
+            if protocol == 14 {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert_eq!(result.unwrap_err().section, Section::Distribution);
+            }
+        }
+    }
 
     #[test]
     fn token_registration_checks_the_network_encoded_size_limit() {

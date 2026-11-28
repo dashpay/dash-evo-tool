@@ -92,8 +92,17 @@ fn assert_first_screen_failure_with_unlock(test: &str, hook: fn(bool), unlock: b
         "wallet teardown clears secrets"
     );
     drop(secrets);
+    let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
+    let reopened = if unlock {
+        AppContext::open_secret_store_with_passphrase(
+            &data_dir,
+            platform_wallet_storage::secrets::SecretString::new(passphrase.clone()),
+        )
+    } else {
+        AppContext::open_secret_store(&data_dir)
+    };
     assert!(
-        AppContext::open_secret_store(&crate::app_dir::app_user_data_dir_path().unwrap()).is_err(),
+        reopened.is_err(),
         "the failure window must retain the profile lock"
     );
     harness.run_steps(2);

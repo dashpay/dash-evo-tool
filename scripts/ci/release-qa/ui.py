@@ -147,6 +147,7 @@ def main():
             str(OUT / "new"),
             "--out-dir",
             str(OUT / "annotated"),
+            "--full-refresh",
         )
         run(
             "/usr/bin/python3",

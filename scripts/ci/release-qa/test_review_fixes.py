@@ -16,6 +16,7 @@ os.environ.setdefault("QA_ROOT", "/tmp/release-qa-tests-unused")
 import run
 import prepare
 import wallet
+import ui
 from test_process_and_export import REPORT, SOURCE
 
 
@@ -105,6 +106,53 @@ class ReviewFixTests(unittest.TestCase):
         self.assertFalse((self.out / "annotated/unlisted.png").exists())
         self.assertTrue((self.root / "export/new/00-smoke.png").exists())
         self.assertFalse(list((self.root / "export").rglob("unlisted.png")))
+
+    def test_ui_gallery_rerun_drops_removed_image_defects(self):
+        (self.root / "window").write_text("1")
+        (self.out / "new").mkdir()
+        spec = {
+            name: [
+                {
+                    "kind": "defect",
+                    "rect": [40, 40, 120, 100],
+                    "pill": [150, 40],
+                    "label": "Defect: example",
+                }
+            ]
+            for name in ("01-keep", "02-remove")
+        }
+        for name in spec:
+            Image.new("RGB", (480, 240)).save(self.out / "new" / f"{name}.png")
+
+        def execute(python, script, *args):
+            local = SOURCE / ".claude/skills/visual-diff/scripts" / Path(script).name
+            result = subprocess.run(
+                [python, str(local), *args], capture_output=True, text=True, timeout=60
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        with (
+            patch.object(ui, "ROOT", self.root),
+            patch.object(ui, "OUT", self.out),
+            patch.object(ui, "run", side_effect=execute),
+            patch("sys.argv", ["qa-ui", "gallery"]),
+        ):
+            for names in (list(spec), ["01-keep"]):
+                (self.out / "spec.json").write_text(
+                    json.dumps({name: spec[name] for name in names})
+                )
+                (self.out / "meta.json").write_text(
+                    json.dumps(
+                        {
+                            "images": [{"name": name, "title": name} for name in names],
+                            "coverage": [],
+                        }
+                    )
+                )
+                ui.main()
+                manifest = json.loads((self.out / "annotated/defects.json").read_text())
+                self.assertEqual(set(manifest), set(names))
+            self.assertNotIn("02-remove", (self.out / "index.html").read_text())
 
     def test_render_failure_cannot_export_stale_gallery_or_pass(self):
         self.evidence()

@@ -47,7 +47,7 @@ pub struct BootPanic {
 }
 
 impl BootPanic {
-    fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
+    pub(crate) fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
         Self {
             message: crate::logging::PanicMessage::from_payload(payload),
         }
@@ -171,8 +171,8 @@ pub enum BootApp {
     Unlocking(UnlockState),
     /// The vault is open and the app is running normally.
     Running(Box<AppState>),
-    /// Startup failed. Only the failure dialog is shown; no part of the app
-    /// is built.
+    /// Startup failed. Only the failure dialog is shown; any partial app
+    /// has been shut down and discarded.
     Failed(StartupFailure),
     /// The failure dialog closed on macOS, by any route; reports and exits when
     /// eframe drops the app.
@@ -231,7 +231,9 @@ impl BootApp {
                 // window still saves into the profile, so no other launch may
                 // start writing that profile meanwhile.
                 outcome.hold_vault(Arc::clone(&store));
-                let app = AppState::new_inner(ctx, db, data_dir, store)?;
+                let mut app = AppState::new_inner(ctx, db, data_dir, store)?;
+                app.startup_supervised = true;
+                app.startup_outcome = outcome.clone();
                 outcome.release_vault();
                 Ok(BootApp::Running(Box::new(app)))
             }
@@ -268,6 +270,11 @@ impl BootApp {
         BootApp::Failed(failure)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_unlock(&mut self, passphrase: SecretString) {
+        self.try_unlock(passphrase);
+    }
+
     /// Attempt to open the vault with the supplied passphrase and, on success,
     /// build the full app. A wrong passphrase re-arms the prompt; any other
     /// failure is fatal and shows the startup failure dialog.
@@ -285,7 +292,11 @@ impl BootApp {
                         store,
                     )
                 }) {
-                    Ok(app) => BootApp::Running(Box::new(app)),
+                    Ok(mut app) => {
+                        app.startup_supervised = true;
+                        app.startup_outcome = state.outcome.clone();
+                        BootApp::Running(Box::new(app))
+                    }
                     Err(error) => Self::failed(&*error, &state.outcome),
                 };
             }
@@ -310,6 +321,15 @@ impl eframe::App for BootApp {
         let state = match self {
             BootApp::Running(app) => {
                 app.ui(ui, frame);
+                if let Some(panic) = app.startup_panic.take() {
+                    let outcome = app.startup_outcome.clone();
+                    outcome.hold_vault(app.current_app_context().secret_store());
+                    // Discard the partial app only after the existing bounded task
+                    // and wallet teardown has drained work, including late contexts.
+                    app.run_blocking_shutdown_fallback();
+                    *self = Self::failed(&panic, &outcome);
+                    ui.ctx().request_repaint();
+                }
                 return;
             }
             BootApp::Failed(failure) => {

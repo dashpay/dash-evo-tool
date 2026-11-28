@@ -2,6 +2,8 @@
 use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
 #[cfg(test)]
 use crate::ui::dpns::copy::dpns_vote_feedback;
+#[cfg(all(test, feature = "testing"))]
+mod boot_failure_tests;
 mod reconcilers;
 mod shutdown;
 use shutdown::{ShutdownOutcome, ShutdownSession, shutdown_hard_deadline};
@@ -608,6 +610,9 @@ pub struct AppState {
     /// network's storage is prepared, so wiring, the legacy drain and chain sync
     /// are one ordering instead of three racing tasks.
     boot: StoragePrepGate,
+    pub(crate) startup_outcome: crate::boot::StartupOutcome,
+    pub(crate) startup_supervised: bool,
+    pub(crate) startup_panic: Option<crate::boot::BootPanic>,
     /// Watches payments whose broadcast outcome came back unverified and
     /// replaces their banner once the network demonstrably takes them.
     pending_confirmation: PendingConfirmation,
@@ -619,6 +624,8 @@ pub struct AppState {
     shutdown_started: Option<std::time::Instant>,
     /// True once every managed shutdown stage reached a terminal outcome.
     shutdown_finished: bool,
+    #[cfg(test)]
+    boot_transition_hook: Option<fn(bool)>,
     /// Platform-level accessibility (AccessKit) activation reconciler.
     accessibility: AccessibilityActivator,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
@@ -1207,9 +1214,14 @@ impl AppState {
             } else {
                 StoragePrepGate::preparing(chosen_network)
             },
+            startup_outcome: crate::boot::StartupOutcome::default(),
+            startup_supervised: false,
+            startup_panic: None,
             shutdown_receiver: None,
             shutdown_started: None,
             shutdown_finished: false,
+            #[cfg(test)]
+            boot_transition_hook: None,
             accessibility: AccessibilityActivator::new(accessibility_enforced),
             #[cfg(feature = "mcp")]
             mcp_app_context,
@@ -1509,6 +1521,13 @@ impl AppState {
         );
     }
 
+    fn needs_first_screens(&self) -> bool {
+        self.main_screens.len() == 1
+            && self
+                .main_screens
+                .contains_key(&RootScreenType::RootScreenNetworkChooser)
+    }
+
     /// Lift the storage-preparation gate: build the root screens against the
     /// now-hydrated context, settle the startup route, and start chain sync if
     /// the user opted in.
@@ -1518,13 +1537,13 @@ impl AppState {
     /// chain sync starts as a continuation of completed preparation rather than
     /// alongside it.
     fn finish_boot_phase(&mut self, start_spv: bool, arm_spv_block: bool) {
+        #[cfg(test)]
+        if let Some(hook) = self.boot_transition_hook {
+            hook(false);
+        }
         let active_context = self.current_app_context().clone();
         notify_legacy_scheduled_votes(&active_context);
-        let first_screen_build = self.main_screens.len() == 1
-            && self
-                .main_screens
-                .contains_key(&RootScreenType::RootScreenNetworkChooser);
-        if first_screen_build {
+        if self.needs_first_screens() {
             for (root, screen) in Self::build_main_screens(&active_context) {
                 self.main_screens.insert(root, screen);
             }
@@ -1547,6 +1566,10 @@ impl AppState {
             // Every root screen refreshes, not just the visible one, so screens the
             // user has not opened yet (e.g. DashPay Profile) already hold their data.
             for screen in self.main_screens.values_mut() {
+                #[cfg(test)]
+                if let Some(hook) = self.boot_transition_hook {
+                    hook(true);
+                }
                 screen.refresh_on_arrival();
             }
         }
@@ -2097,7 +2120,7 @@ impl AppState {
         self.begin_shutdown().start()
     }
 
-    fn run_blocking_shutdown_fallback(&mut self) {
+    pub(crate) fn run_blocking_shutdown_fallback(&mut self) {
         self.begin_shutdown().run_blocking();
     }
 }
@@ -2632,7 +2655,22 @@ impl App for AppState {
                 start_spv,
                 arm_spv_block,
                 ..
-            }) => self.finish_boot_phase(start_spv, arm_spv_block),
+            }) => {
+                if self.startup_supervised && self.needs_first_screens() {
+                    // BootApp handles captured failures during the first screen build. Later network
+                    // transitions and ordinary frames retain their panic behavior.
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.finish_boot_phase(start_spv, arm_spv_block);
+                        }))
+                    {
+                        self.startup_panic = Some(crate::boot::BootPanic::from_payload(&*payload));
+                        return;
+                    }
+                } else {
+                    self.finish_boot_phase(start_spv, arm_spv_block);
+                }
+            }
             Some(GateEvent::Retry(network)) => {
                 tracing::info!(?network, "User retried storage preparation");
                 let app_ctx = self.current_app_context().clone();

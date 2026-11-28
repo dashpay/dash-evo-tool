@@ -3185,6 +3185,7 @@ mod tests {
             document_task(DocumentTask::BroadcastDocument {
                 document: document.clone(),
                 token_payment_info: None,
+                action_fee_agreement: None,
                 entropy: [0; 32],
                 document_type: document_type.clone(),
                 data_contract: contract.clone(),
@@ -3193,6 +3194,7 @@ mod tests {
             }),
             document_task(DocumentTask::DeleteDocument {
                 document_id: other,
+                action_fee_agreement: None,
                 document_type: document_type.clone(),
                 data_contract: contract.clone(),
                 qualified_identity: payer.clone(),
@@ -3201,6 +3203,7 @@ mod tests {
             }),
             document_task(DocumentTask::ReplaceDocument {
                 document,
+                action_fee_agreement: None,
                 document_type: document_type.clone(),
                 data_contract: contract.clone(),
                 qualified_identity: payer.clone(),
@@ -3209,6 +3212,7 @@ mod tests {
             }),
             document_task(DocumentTask::TransferDocument {
                 document_id: other,
+                action_fee_agreement: None,
                 new_owner_id: bystander.identity.id(),
                 document_type: document_type.clone(),
                 data_contract: contract.clone(),
@@ -3218,6 +3222,7 @@ mod tests {
             }),
             document_task(DocumentTask::PurchaseDocument {
                 price: 1,
+                action_fee_agreement: None,
                 document_id: other,
                 document_type: document_type.clone(),
                 data_contract: contract.clone(),
@@ -3227,6 +3232,7 @@ mod tests {
             }),
             document_task(DocumentTask::SetDocumentPrice {
                 price: 1,
+                action_fee_agreement: None,
                 document_id: other,
                 document_type,
                 data_contract: contract.clone(),

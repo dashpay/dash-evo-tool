@@ -1447,6 +1447,18 @@ As a developer, I want to set a price on a document and allow others to purchase
 
 ---
 
+### DOC-010: Agree to a contract's fee for a document action [Implemented]
+**Persona:** Alex, Priya
+
+As a user acting on a document whose contract charges a fee, I want to see that fee and agree to it before anything is sent, so that I am never charged more than I accepted.
+
+- The estimated-fee panel shows the contract fee next to the network fee, split between the contract owner and its moderators. The owner portion is waived when the selected payer owns the contract; the agreement still carries the full declaration. Sponsorship makes the final charge conditional on the actual payer.
+- Sending asks for confirmation naming the fee and, for a fee that follows network fees, the most that can be charged ("up to N DASH") and the tolerated increase.
+- If network fees rise past that tolerance, the network refuses the action. Before another confirmation, the app requires a successful proved fee read. An unchanged multiplier is reported as unchanged; a failed read remains retryable without resubmitting the action.
+- A local agreement mismatch is refused before signing. A network mismatch is reported after submission: the contract fee is not collected, but rejection processed in a block can still incur gas. The user is asked to verify the selected contract and fee; a mismatch does not prove that the immutable fee declaration changed.
+
+---
+
 ### DOC-011: Skip an optional token cost [Implemented]
 **Persona:** Alex, Priya
 

@@ -4173,7 +4173,9 @@ async fn import_discovery_waits_for_the_masternode_list() {
         "import-time identity lookups must not start before the masternode list is synced"
     );
 
-    ctx.connection_status().set_masternodes_ready(true);
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .mark_quorum_keys_ready_for_test();
     wait_for_identity_lookups(&ctx, &seed_hash).await;
 }
 
@@ -4181,11 +4183,83 @@ async fn import_discovery_waits_for_the_masternode_list() {
 async fn import_discovery_starts_at_once_when_the_masternode_list_is_synced() {
     let (ctx, _tmp, seed_hash, wallet) =
         context_with_imported_wallet(crate::test_support::keys::seed()).await;
-    ctx.connection_status().set_masternodes_ready(true);
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .mark_quorum_keys_ready_for_test();
 
     ctx.queue_wallet_identity_discovery(&wallet, 4);
 
     wait_for_identity_lookups(&ctx, &seed_hash).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn import_discovery_shared_readiness_does_not_release_wait_or_prevent_shutdown() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("wire backend");
+    ctx.connection_status().set_masternodes_ready(true);
+    assert!(
+        !ctx.wallet_backend()
+            .expect("backend wired")
+            .quorum_keys_ready()
+    );
+
+    let wait = ctx.wait_for_masternodes_ready();
+    tokio::pin!(wait);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut wait)
+            .await
+            .is_err(),
+        "another network's readiness must not release the importing network's wait"
+    );
+
+    ctx.subtasks.cancellation_token.cancel();
+    assert!(
+        !tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+            .await
+            .expect("shutdown must cancel the pending wait"),
+        "shutdown must not report this network as ready"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn import_discovery_keeps_custom_depth_until_its_own_network_is_ready() {
+    use crate::model::identity_discovery::IDENTITY_GAP_LIMIT;
+
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_imported_wallet(crate::test_support::keys::seed()).await;
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let max_identity_index = IDENTITY_GAP_LIMIT + 3;
+    ctx.connection_status().set_masternodes_ready(true);
+    assert!(!backend.quorum_keys_ready());
+
+    // The import screen queues this exact request with its chosen search depth.
+    ctx.queue_wallet_identity_discovery(&wallet, max_identity_index);
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    assert!(
+        !identity_lookups_started(&ctx, &seed_hash),
+        "another network's readiness must not spend the queued import scan"
+    );
+    assert!(ctx.subtasks.is_active("wallet_identity_discovery"));
+
+    // The importing network can become ready even when the shared UI flag is false.
+    ctx.connection_status().set_masternodes_ready(false);
+    backend.mark_quorum_keys_ready_for_test();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while ctx.subtasks.is_active("wallet_identity_discovery") {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the queued import scan must finish after its own network becomes ready");
+    let cache = backend
+        .auth_pubkey_cache()
+        .get(Network::Testnet, &seed_hash);
+    assert!(
+        cache.get(Network::Testnet, max_identity_index, 0).is_some(),
+        "the scan must retain the requested index beyond the default search window"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

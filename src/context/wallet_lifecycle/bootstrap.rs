@@ -707,15 +707,15 @@ impl AppContext {
         }
     }
 
-    /// Wait until the masternode list is synced, so identity lookups can be
-    /// proof-verified. Returns `false` if the app shuts down first.
+    /// Wait for this network's proof gate, not the readiness flag shared by
+    /// GUI networks. Returns `false` if the app shuts down first.
     pub(super) async fn wait_for_masternodes_ready(&self) -> bool {
-        if !self.connection_status.masternodes_ready() {
+        if self.wallet_identity_discovery_readiness() != DiscoveryReadiness::Ready {
             tracing::debug!(
                 "Masternode list not synced yet; holding wallet identity discovery until it is"
             );
         }
-        while !self.connection_status.masternodes_ready() {
+        while self.wallet_identity_discovery_readiness() != DiscoveryReadiness::Ready {
             tokio::select! {
                 _ = self.subtasks.cancellation_token.cancelled() => return false,
                 _ = tokio::time::sleep(MASTERNODES_READY_POLL_INTERVAL) => {}

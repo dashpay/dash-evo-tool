@@ -798,6 +798,7 @@ As an everyday user, I can fund a new identity or a top-up by receiving a Dash d
 As a user, I want my wallet's identities to be found and loaded automatically once the app finishes connecting, so that I do not have to open the "Load Identity → By Wallet" screen and search manually.
 
 - After the network is ready, every unlocked wallet is searched automatically once per session.
+- A wallet import waits for its own network to finish connecting and keeps the chosen identity search depth, even if another network becomes ready first.
 - The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
 - Already-loaded identities are refreshed with new keys and DPNS names.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.

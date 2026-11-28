@@ -266,7 +266,7 @@ fn small_window_keeps_both_actions_reachable() {
     harness.step();
     assert!(copied_text(&harness).is_some(), "details copied");
 
-    for label in ["Copy question", "Ask ChatGPT"] {
+    for label in ["Copy question", "Ask AI"] {
         let button = harness.get_by_label(label);
         assert!(
             screen.contains_rect(button.rect()),
@@ -319,8 +319,7 @@ fn open_url(harness: &Harness<'_, impl Sized>) -> Option<String> {
         })
 }
 
-/// Copy question puts the same redacted question on the clipboard that Ask
-/// ChatGPT sends, and Ask ChatGPT opens it prefilled in the browser.
+/// The preview matches the copied question, and only confirmation opens a URL.
 #[test]
 fn ask_ai_buttons_copy_and_open_the_question() {
     let failure = StartupFailure::from_error(&access_denied_error(), None);
@@ -339,13 +338,37 @@ fn ask_ai_buttons_copy_and_open_the_question() {
     assert!(question.contains("WalletStorageAccessDenied"), "{question}");
 
     harness.run();
-    harness.get_by_label("Ask ChatGPT").click();
+    harness.get_by_label("Ask AI").click();
+    harness.step();
+    assert!(open_url(&harness).is_none());
+    harness.run();
+    assert!(harness.query_by_label(&question).is_some());
+    harness.get_by_label("Send").click();
+    harness.step();
+    assert!(open_url(&harness).is_none());
+    harness.run();
+    assert!(
+        harness
+            .query_by_label_contains("Inspect the question")
+            .is_some()
+    );
+    harness.get_by_label("Cancel").click();
+    harness.step();
+    assert!(open_url(&harness).is_none());
+    harness.run();
+    assert!(harness.query_by_label(&question).is_some());
+    assert!(harness.query_by_label("Confirm").is_none());
+    harness.get_by_label("Send").click();
+    harness.run();
+    harness.get_by_label("Confirm").click();
     harness.step();
     let url = open_url(&harness).expect("assistant opened");
     let encoded = url
         .strip_prefix("https://chatgpt.com/?q=")
         .expect("ChatGPT URL");
     assert_eq!(urlencoding::decode(encoded).unwrap(), question);
+    harness.step();
+    assert!(open_url(&harness).is_none());
 }
 
 /// An app database only an earlier release can upgrade is refused at boot, and
@@ -382,4 +405,61 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
             "the refused database must be left unchanged"
         );
     });
+}
+
+#[test]
+fn ask_ai_standalone_confirms_once() {
+    use dash_evo_tool::ui::components::ask_ai::AskAi;
+    use dash_evo_tool::ui::components::component_trait::Component;
+    let sends = Rc::new(Cell::new(0));
+    let observed = sends.clone();
+    let mut dialog = AskAi::new("Explain this arbitrary help topic.");
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(900.0, 700.0))
+        .build_ui(move |ui| {
+            if dialog.show(ui).inner.send.is_some() {
+                observed.set(observed.get() + 1);
+            }
+        });
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Explain this arbitrary help topic.")
+            .is_some()
+    );
+    harness.get_by_label("Send").click();
+    harness.run();
+    assert_eq!(sends.get(), 0);
+    harness.get_by_label("Confirm").click();
+    harness.run();
+    assert_eq!(sends.get(), 1);
+    harness.run_steps(3);
+    assert_eq!(sends.get(), 1);
+}
+
+#[test]
+fn ask_ai_closing_preview_or_confirmation_sends_nothing() {
+    use dash_evo_tool::ui::components::ask_ai::AskAi;
+    use dash_evo_tool::ui::components::component_trait::Component;
+    for confirming in [false, true] {
+        let closed = Rc::new(Cell::new(false));
+        let observed = closed.clone();
+        let mut dialog = AskAi::new("Explain an arbitrary help topic.");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui(move |ui| {
+                let response = dialog.show(ui).inner;
+                assert!(response.send.is_none());
+                observed.set(response.closed);
+            });
+        harness.run();
+        if confirming {
+            harness.get_by_label("Send").click();
+            harness.run();
+        }
+        harness.get_by_label("Close window").click();
+        harness.run();
+        assert!(closed.get());
+        harness.run_steps(3);
+    }
 }

@@ -1,11 +1,13 @@
 //! Fatal startup failure window: what happened, where to get help, and the
 //! technical details to send.
 
+use super::ask_ai::AskAi;
+use super::component_trait::Component;
+
 use egui::{RichText, Ui};
 
 use crate::model::error_report::{
-    AiAssistant, QuestionEnvironment, STARTUP_SITUATION, StartupFailure, ai_question,
-    redact_identity,
+    QuestionEnvironment, STARTUP_SITUATION, StartupFailure, ai_question, redact_identity,
 };
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::technical_details::TechnicalDetails;
@@ -87,6 +89,21 @@ impl<'a> StartupErrorDialog<'a> {
         if chrome.closed_via_x {
             action = StartupErrorDialogAction::Quit;
         }
+        let id = egui::Id::unique("startup_ask_ai");
+        let dialog = ui.ctx().data_mut(|data| data.get_temp::<AskAi>(id));
+        if let Some(mut dialog) = dialog {
+            let response = dialog.show(ui).inner;
+            if let Some(assistant) = response.send {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(
+                    assistant.question_url(dialog.prompt()),
+                ));
+            }
+            if response.closed {
+                ui.ctx().data_mut(|data| data.remove::<AskAi>(id));
+            } else {
+                ui.ctx().data_mut(|data| data.insert_temp(id, dialog));
+            }
+        }
         action
     }
 
@@ -141,28 +158,18 @@ impl<'a> StartupErrorDialog<'a> {
                 action = StartupErrorDialogAction::Quit;
             }
             if ComponentStyles::add_secondary_button(ui, "Copy question", dark_mode)
-                .on_hover_text(
-                    "Copies the question the Ask buttons send, so you can read it first or paste it into any AI assistant.",
-                )
+                .on_hover_text("Copies the question so you can paste it into any AI assistant.")
                 .clicked()
             {
                 ui.ctx().copy_text(self.question());
             }
-            for assistant in AiAssistant::ALL.iter().rev() {
-                let label = format!("Ask {name}", name = assistant.name());
-                let hint = format!(
-                    "Sends a question about this problem, with the technical details, to {name} ({operator}) as soon as {name} opens in your browser. To read the question first, use Copy question.",
-                    name = assistant.name(),
-                    operator = assistant.operator(),
-                );
-                if ComponentStyles::add_secondary_button(ui, label, dark_mode)
-                    .on_hover_text(hint)
-                    .clicked()
-                {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(
-                        assistant.question_url(&self.question()),
-                    ));
-                }
+            if ComponentStyles::add_secondary_button(ui, "Ask AI", dark_mode).clicked() {
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::unique("startup_ask_ai"),
+                        AskAi::new(self.question()),
+                    )
+                });
             }
         });
         action

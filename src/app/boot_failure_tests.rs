@@ -6,6 +6,10 @@ use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
 use egui_kittest::{Harness, kittest::Queryable};
 
 fn assert_first_screen_failure(test: &str, hook: fn(bool)) {
+    assert_first_screen_failure_with_unlock(test, hook, false);
+}
+
+fn assert_first_screen_failure_with_unlock(test: &str, hook: fn(bool), unlock: bool) {
     let dir = tempfile::tempdir().expect("isolated profile");
     if crate::test_support::run_test_in_child(test, &[("DASH_EVO_DATA_DIR", dir.path())]) {
         return;
@@ -16,9 +20,23 @@ fn assert_first_screen_failure(test: &str, hook: fn(bool)) {
     let scope = SecretScope::HdSeed {
         seed_hash: [17; 32],
     };
+    let passphrase = format!("{:?}", crate::test_support::keys::seed());
+    if unlock {
+        AppContext::open_secret_store_with_passphrase(
+            &crate::app_dir::app_user_data_dir_path().unwrap(),
+            platform_wallet_storage::secrets::SecretString::new(passphrase.clone()),
+        )
+        .expect("legacy vault");
+    }
     let mut resources = None;
     let mut harness = Harness::builder().build_eframe(|cc| {
         let mut boot = BootApp::new(cc.egui_ctx.clone(), outcome.clone());
+        if unlock {
+            assert!(matches!(boot, BootApp::Unlocking(_)));
+            boot.test_unlock(platform_wallet_storage::secrets::SecretString::new(
+                passphrase.clone(),
+            ));
+        }
         let BootApp::Running(app) = &mut boot else {
             panic!("test profile must boot");
         };
@@ -163,5 +181,49 @@ fn ordinary_frames_remain_outside_startup_guard() {
     assert_post_startup_panic_propagates(
         "app::boot_failure_tests::ordinary_frames_remain_outside_startup_guard",
         false,
+    );
+}
+
+#[test]
+fn direct_app_first_screen_panic_propagates() {
+    let dir = tempfile::tempdir().expect("isolated profile");
+    if crate::test_support::run_test_in_child(
+        "app::boot_failure_tests::direct_app_first_screen_panic_propagates",
+        &[("DASH_EVO_DATA_DIR", dir.path())],
+    ) {
+        return;
+    }
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _entered = runtime.enter();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut harness = Harness::builder().build_eframe(|cc| {
+            let mut app = AppState::new(cc.egui_ctx.clone()).expect("test profile");
+            app.boot_transition_hook = Some(|_| panic!("direct first screen"));
+            app
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while harness.state().startup_panic.is_none() && harness.state().needs_first_screens() {
+            assert!(
+                Instant::now() < deadline,
+                "storage-ready frame did not arrive"
+            );
+            harness.step();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        eframe::App::on_exit(harness.state_mut());
+    }));
+    let payload = result.expect_err("direct AppState must propagate the startup panic");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"direct first screen"));
+}
+
+#[test]
+fn legacy_unlock_first_screen_panic_sets_exit_status() {
+    assert_first_screen_failure_with_unlock(
+        "app::boot_failure_tests::legacy_unlock_first_screen_panic_sets_exit_status",
+        |_| {
+            let private = String::from("private-screen-marker");
+            panic!("screen: {private}");
+        },
+        true,
     );
 }

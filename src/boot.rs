@@ -232,6 +232,7 @@ impl BootApp {
                 // start writing that profile meanwhile.
                 outcome.hold_vault(Arc::clone(&store));
                 let mut app = AppState::new_inner(ctx, db, data_dir, store)?;
+                app.startup_supervised = true;
                 app.startup_outcome = outcome.clone();
                 outcome.release_vault();
                 Ok(BootApp::Running(Box::new(app)))
@@ -269,6 +270,11 @@ impl BootApp {
         BootApp::Failed(failure)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_unlock(&mut self, passphrase: SecretString) {
+        self.try_unlock(passphrase);
+    }
+
     /// Attempt to open the vault with the supplied passphrase and, on success,
     /// build the full app. A wrong passphrase re-arms the prompt; any other
     /// failure is fatal and shows the startup failure dialog.
@@ -287,6 +293,7 @@ impl BootApp {
                     )
                 }) {
                     Ok(mut app) => {
+                        app.startup_supervised = true;
                         app.startup_outcome = state.outcome.clone();
                         BootApp::Running(Box::new(app))
                     }

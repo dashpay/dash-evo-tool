@@ -611,6 +611,7 @@ pub struct AppState {
     /// are one ordering instead of three racing tasks.
     boot: StoragePrepGate,
     pub(crate) startup_outcome: crate::boot::StartupOutcome,
+    pub(crate) startup_supervised: bool,
     pub(crate) startup_panic: Option<crate::boot::BootPanic>,
     /// Watches payments whose broadcast outcome came back unverified and
     /// replaces their banner once the network demonstrably takes them.
@@ -1214,6 +1215,7 @@ impl AppState {
                 StoragePrepGate::preparing(chosen_network)
             },
             startup_outcome: crate::boot::StartupOutcome::default(),
+            startup_supervised: false,
             startup_panic: None,
             shutdown_receiver: None,
             shutdown_started: None,
@@ -2654,8 +2656,8 @@ impl App for AppState {
                 arm_spv_block,
                 ..
             }) => {
-                if self.needs_first_screens() {
-                    // Only the first screen build belongs to startup. Later network
+                if self.startup_supervised && self.needs_first_screens() {
+                    // BootApp handles captured failures during the first screen build. Later network
                     // transitions and ordinary frames retain their panic behavior.
                     if let Err(payload) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

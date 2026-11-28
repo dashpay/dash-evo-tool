@@ -445,6 +445,23 @@ def test_offline_recovery_preserves_paid_response_and_uses_no_credentials(
     )
 
 
+def test_offline_recovery_preserves_crlf_script(voice, source, tmp_path):
+    script = "Hello,\r\nCzatosław Klałdowski.\r\n".encode("utf-8")
+    source.write_bytes(script)
+    cached = tmp_path / "failed/unapproved"
+    cached.mkdir(parents=True)
+    (cached / "script.txt").write_bytes(script)
+    raw = response()
+    (cached / "response.json").write_bytes(raw)
+
+    ready = voice.recover_take(source, cached.parent, tmp_path / "recovered")
+
+    assert (ready / "script.txt").read_bytes() == script
+    assert (ready / "audio.wav").read_bytes() == wav_bytes()
+    assert (cached / "script.txt").read_bytes() == script
+    assert (cached / "response.json").read_bytes() == raw
+
+
 def test_recovery_rejects_different_source_before_publishing(voice, source, tmp_path):
     failed = tmp_path / "failed"
     (failed / "unapproved").mkdir(parents=True)

@@ -202,7 +202,7 @@ def recover_take(source, failed_take, take, *, voice="cedar"):
     """Validate and republish a saved paid response offline, preserving its original take."""
     script = preflight(source, take, voice)
     cached = Path(failed_take) / "unapproved"
-    if (cached / "script.txt").read_text(encoding="utf-8") != script:
+    if (cached / "script.txt").read_bytes().decode("utf-8") != script:
         raise ValueError(
             "Recovery source differs from the script stored with this response"
         )

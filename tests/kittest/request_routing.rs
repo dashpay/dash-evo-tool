@@ -919,6 +919,48 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
     }
 }
 
+/// A failed registration reaches the Token Creator that sent it: the creator
+/// leaves its wait in the error state and drops its progress banner, while the
+/// failure itself is reported by a banner.
+#[test]
+fn a_failed_registration_puts_the_token_creator_in_its_error_state() {
+    use dash_evo_tool::ui::components::message_banner::MessageBanner;
+    use dash_evo_tool::ui::tokens::tokens_screen::TokenCreatorStatus;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+        harness.run_steps(3);
+        let ctx = harness.ctx.clone();
+        MessageBanner::clear_all_global(&ctx);
+        let registration = token_creator(&mut harness).begin_token_registration_for_test();
+        harness
+            .state_mut()
+            .test_record_visible_dispatch(&registration);
+        harness.run_steps(3);
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: registration,
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+
+        let creator = token_creator(&mut harness);
+        assert_eq!(
+            *creator.token_creator_status_for_test(),
+            TokenCreatorStatus::Error
+        );
+        assert!(!creator.registration_banner_live_for_test());
+        assert!(
+            harness
+                .query_all_by_label_contains(&TaskError::TaskManagerShuttingDown.to_string())
+                .next()
+                .is_some(),
+            "the failure is reported by a banner"
+        );
+    });
+}
+
 /// A scheduled-vote sweep that ran on the previous network reaches no screen
 /// of the new one when it ends after a switch. The Token Creator, in view and
 /// registering a token on the new network, keeps its progress banner through
@@ -1720,4 +1762,54 @@ fn an_older_refreshs_failed_step_leaves_the_newer_refreshs_banner_up() {
             "the newer refresh's own result takes its banner down"
         );
     });
+}
+
+/// A wallet identity search refused because the network was not ready keeps
+/// its banner while that state lasts, and loses it once readiness moves on,
+/// so a refusal for stopped sync does not outlive a reconnect.
+#[test]
+fn a_wallet_search_refusal_banner_goes_once_readiness_moves_on() {
+    use dash_evo_tool::backend_task::identity::IdentityTask;
+    use dash_evo_tool::model::spv_status::SpvStatus;
+    for (refusal, refused_at, moved_on) in [
+        (
+            TaskError::WalletIdentityDiscoverySyncStopped,
+            SpvStatus::Stopped,
+            SpvStatus::Syncing,
+        ),
+        (
+            TaskError::WalletIdentityDiscoveryNotReady,
+            SpvStatus::Syncing,
+            SpvStatus::Stopped,
+        ),
+    ] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+            let app_context = harness.state().current_app_context().clone();
+            app_context.connection_status().set_spv_status(refused_at);
+            harness.run_steps(3);
+            let message = refusal.to_string();
+            deliver(
+                &mut harness,
+                TaskResult::Error {
+                    context: BackendTaskContext::for_dispatch_for_test(&BackendTask::IdentityTask(
+                        IdentityTask::RefreshMyUsernameRequests,
+                    )),
+                    error: refusal,
+                },
+            );
+            harness.run_steps(3);
+            assert!(
+                harness.query_by_label_contains(&message).is_some(),
+                "the refusal stays reported while the network is {refused_at:?}"
+            );
+
+            app_context.connection_status().set_spv_status(moved_on);
+            harness.run_steps(3);
+            assert!(
+                harness.query_by_label_contains(&message).is_none(),
+                "the refusal goes once the network is {moved_on:?}"
+            );
+        });
+    }
 }

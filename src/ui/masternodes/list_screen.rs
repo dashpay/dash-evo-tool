@@ -2034,9 +2034,10 @@ mod tests {
         // Resubmit, then succeed: the form closes and drops back to the list.
         submit_load(&mut screen, target);
         claim_dispatched_load(&ctx, &screen).loaded();
-        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity(
-            masternode_identity(&ctx, target),
-        ));
+        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity {
+            identity: masternode_identity(&ctx, target),
+            warning: None,
+        });
         assert!(
             matches!(screen.view, MasternodesView::List),
             "a successful load must close the form and return to the list"
@@ -2062,9 +2063,10 @@ mod tests {
         let target = Identifier::from([0x33; 32]);
         submit_load(&mut screen, target);
 
-        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity(
-            masternode_identity(&ctx, Identifier::from([0x99; 32])),
-        ));
+        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity {
+            identity: masternode_identity(&ctx, Identifier::from([0x99; 32])),
+            warning: None,
+        });
 
         assert_eq!(
             screen.pending_identity(),

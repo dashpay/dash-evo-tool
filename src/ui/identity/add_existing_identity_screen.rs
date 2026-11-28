@@ -917,7 +917,7 @@ impl ScreenLike for AddExistingIdentityScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::LoadedIdentity(_) => {
+            BackendTaskSuccessResult::LoadedIdentity { .. } => {
                 self.refresh_banner.take_and_clear();
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;

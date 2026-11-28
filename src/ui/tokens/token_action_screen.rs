@@ -700,6 +700,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     .clicked()
                 {
                     let message = self.action.confirm_message(&self.ctx());
+                    let signer = self.common.selected_key.confirmation_signer(
+                        &self.common.app_context,
+                        self.common.selected_wallet.as_ref(),
+                    );
+                    let message = format!("{message}\n\n{signer}");
                     let mut dialog = ConfirmationDialog::new(A::CONFIRM_TITLE, message)
                         .confirm_text(Some(A::VERB))
                         .cancel_text(Some("Cancel"));
@@ -1265,6 +1270,75 @@ mod tests {
             screen.common.confirmation_dialog.is_none(),
             "a wallet-only change must close the confirmation"
         );
+    }
+
+    #[test]
+    fn a_token_confirmation_shows_the_replacement_signer_without_advanced_options() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use egui_kittest::kittest::Queryable;
+
+        for replacement_id in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = test_app_context(dir.path());
+            let mut info = token_info(&context, Some(Identifier::from([5; 32])), false);
+            info.identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(1280.0, 1000.0))
+                .build_ui_state(
+                    |ui, screen: &mut MintTokensScreen| {
+                        screen.ui(ui);
+                    },
+                    MintTokensScreen::new(info, &context),
+                );
+            harness.run();
+            harness.get_by_label("Amount to Mint:").focus();
+            harness.run();
+            harness.get_by_label("Amount to Mint:").type_text("5");
+            harness.run();
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Mint")
+                .last()
+                .expect("Mint button")
+                .click();
+            harness.run_steps(3);
+            assert!(harness.state().common.confirmation_dialog.is_some());
+            assert!(!harness.state().common.show_advanced_options);
+
+            let replacement = auth_key(replacement_id, SecurityLevel::CRITICAL);
+            let wallet_hash = store_identity_with_wallet_key(
+                &context,
+                identity_holding(std::slice::from_ref(&replacement)),
+                replacement_id,
+            );
+            context
+                .wallet_context()
+                .rename_test_hd(wallet_hash, "Replacement wallet")
+                .unwrap();
+            harness.state_mut().refresh();
+            // This UI-only fixture has no running wallet backend.
+            harness.state_mut().common.token_action_availability =
+                crate::model::token::TokenActionAvailability::Available;
+            assert!(harness.state().common.confirmation_dialog.is_none());
+            assert_eq!(
+                harness.state().common.selected_key.as_ref(),
+                Some(&replacement)
+            );
+            harness.run_steps(3);
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Mint")
+                .last()
+                .expect("Mint button")
+                .click();
+            harness.run_steps(3);
+
+            assert!(!harness.state().common.show_advanced_options);
+            assert!(harness.state().common.confirmation_dialog.is_some());
+            harness.get_by_label_contains(&format!(
+                "This action will be signed with key {replacement_id}"
+            ));
+            harness.get_by_label_contains("from wallet \"Replacement wallet\".");
+        }
     }
 
     /// A co-signer whose key cannot sign for this contract still sees the

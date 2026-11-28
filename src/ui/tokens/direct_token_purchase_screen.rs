@@ -300,12 +300,14 @@ impl PurchaseTokenScreen {
         };
         let total_price_dash =
             Amount::new(total_price_credits, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+        let signer = self
+            .selected_key
+            .confirmation_signer(&self.app_context, self.selected_wallet.as_ref());
         self.confirmation_dialog = Some(PendingPurchase {
             dialog: ConfirmationDialog::new(
                 "Confirm Purchase".to_string(),
                 format!(
-                    "Are you sure you want to purchase {} for {} ({} Credits)?",
-                    amount, total_price_dash, total_price_credits
+                    "Are you sure you want to purchase {amount} for {total_price_dash} ({total_price_credits} Credits)?\n\n{signer}"
                 ),
             ),
             amount: amount.value(),
@@ -1300,5 +1302,76 @@ mod tests {
         harness.run_steps(2);
         assert!(harness.state().confirmation_dialog.is_none());
         assert!(harness.query_by_label("Confirm Purchase").is_none());
+    }
+
+    #[test]
+    fn a_purchase_confirmation_shows_the_replacement_signer_without_advanced_options() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use dash_sdk::dpp::identity::SecurityLevel;
+
+        for replacement_id in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = test_app_context(dir.path());
+            let mut info = token_info(&context, None, false);
+            info.identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+            let mut screen = PurchaseTokenScreen::new(info.clone(), &context);
+            screen.display_task_result(BackendTaskSuccessResult::TokenPricing {
+                token_id: info.token_id,
+                prices: Some(TokenPricingSchedule::SinglePrice(10)),
+            });
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(1280.0, 1000.0))
+                .build_ui_state(
+                    |ui, screen: &mut PurchaseTokenScreen| {
+                        screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_label("Amount to Purchase:").focus();
+            harness.run();
+            harness.get_by_label("Amount to Purchase:").type_text("5");
+            harness.run();
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Purchase")
+                .last()
+                .expect("Purchase button")
+                .click();
+            harness.run_steps(3);
+            assert!(harness.state().confirmation_dialog.is_some());
+            assert!(!harness.state().show_advanced_options);
+
+            let replacement = auth_key(replacement_id, SecurityLevel::CRITICAL);
+            let wallet_hash = store_identity_with_wallet_key(
+                &context,
+                identity_holding(std::slice::from_ref(&replacement)),
+                replacement_id,
+            );
+            context
+                .wallet_context()
+                .rename_test_hd(wallet_hash, "Replacement wallet")
+                .unwrap();
+            harness.state_mut().refresh();
+            // This UI-only fixture has no running wallet backend.
+            harness.state_mut().token_action_availability =
+                crate::model::token::TokenActionAvailability::Available;
+            assert!(harness.state().confirmation_dialog.is_none());
+            assert_eq!(harness.state().selected_key.as_ref(), Some(&replacement));
+            harness.run_steps(3);
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Purchase")
+                .last()
+                .expect("Purchase button")
+                .click();
+            harness.run_steps(3);
+
+            assert!(!harness.state().show_advanced_options);
+            assert!(harness.state().confirmation_dialog.is_some());
+            harness.get_by_label_contains(&format!(
+                "This action will be signed with key {replacement_id}"
+            ));
+            harness.get_by_label_contains("from wallet \"Replacement wallet\".");
+        }
     }
 }

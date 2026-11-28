@@ -142,6 +142,30 @@ impl TokenSigningKey {
         self.selected.as_ref()
     }
 
+    /// Identifies the signer in a confirmation, including with advanced options hidden.
+    fn confirmation_signer(
+        &self,
+        app_context: &AppContext,
+        wallet: Option<&Arc<RwLock<Wallet>>>,
+    ) -> String {
+        use crate::wallet_backend::poison::RwLockRecover;
+        let Some(key) = self.as_ref() else {
+            return String::new();
+        };
+        let key_id = key.id();
+        if let Some(wallet) = wallet {
+            let seed_hash = wallet.read_recover().seed_hash();
+            let alias = app_context.wallet_context().hd_alias(&seed_hash);
+            let wallet_name = crate::model::wallet::meta::wallet_label(
+                alias.as_deref().unwrap_or_default(),
+                &seed_hash,
+            );
+            format!("This action will be signed with key {key_id} from wallet \"{wallet_name}\".")
+        } else {
+            format!("This action will be signed with key {key_id}.")
+        }
+    }
+
     /// Shows the key chooser; a key the user picks also moves the signing
     /// wallet to that key's wallet, so its unlock prompt follows the choice.
     #[expect(

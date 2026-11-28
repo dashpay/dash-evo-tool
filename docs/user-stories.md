@@ -1370,6 +1370,7 @@ As a user, I want token transactions to use the wallet that holds my identity, a
 - Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) of an identity that a wallet in this app holds are sent through that wallet.
 - An identity that no wallet in this app holds (masternode, evonode and key-only identities) sends them signed with its own keys; it needs no wallet.
 - When the identity's wallet is known but not loaded yet, My Tokens marks the identity "View only" with its transaction buttons disabled, and token action screens show the reason (unlock the wallet or wait for it to load) instead of the form.
+- Token action and direct purchase confirmations identify the signing key and its wallet when applicable, even with Advanced Options off; after a signer change closes a confirmation, the next prompt identifies the replacement.
 
 ## Contracts and Documents (DOC)
 

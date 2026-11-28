@@ -305,6 +305,22 @@ fn small_window_keeps_both_actions_reachable() {
                     .query_by_label_contains("Inspect the question")
                     .is_some()
             );
+            let warning = harness.get_by_label_contains("Inspect the question").rect();
+            let dialog = harness.get_by_label("Ask an AI assistant").rect();
+            assert!(
+                dialog.contains_rect(warning),
+                "warning outside dialog: {warning:?}"
+            );
+            let painted = harness.output().shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Text(text)
+                    if text.galley.text().contains("Inspect the question")
+                    && clipped.clip_rect.contains_rect(text.visual_bounding_rect())
+                    && dialog.contains_rect(text.visual_bounding_rect()))
+            });
+            assert!(
+                painted,
+                "the whole privacy warning must be painted without clipping"
+            );
             for label in ["Confirm", "Cancel"] {
                 assert!(screen.contains_rect(harness.get_by_label(label).rect()));
             }

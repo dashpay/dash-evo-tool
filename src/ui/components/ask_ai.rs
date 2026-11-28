@@ -92,23 +92,34 @@ impl Component for AskAi {
                 ui.set_max_width(560.0_f32.min((screen.width() - 64.0).max(0.0)));
                 let body_height = (screen.height() - 160.0).max(0.0);
                 let dark = ui.visuals().dark_mode;
+                let warning = self.confirming.then(|| {
+                    ui.painter().layout(
+                        format!("This sends the question and its technical details to {name} ({operator}) as soon as it opens in your browser. Inspect the question for private or sensitive information before confirming. Do not share recovery phrases, keys or passwords.", name = self.assistant.name(), operator = self.assistant.operator()),
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        ui.visuals().text_color(),
+                        ui.available_width(),
+                    )
+                });
+                let warning_height = warning
+                    .as_ref()
+                    .map_or(0.0, |text| text.size().y + ui.spacing().item_spacing.y);
                 egui::ScrollArea::vertical()
                     .id_salt("ask_ai_body")
-                    .max_height(body_height)
+                    .max_height((body_height - warning_height).max(0.0))
                     .show(ui, |ui| {
-                ui.label(format!(
-                    "Read the question before sending it to {name}.",
-                    name = self.assistant.name()
-                ));
-                egui::ScrollArea::vertical()
-                    .max_height(240.0)
-                    .show(ui, |ui| {
-                        ui.add(egui::Label::new(&self.prompt).selectable(true).wrap());
+                        ui.label(format!(
+                            "Read the question before sending it to {name}.",
+                            name = self.assistant.name()
+                        ));
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                ui.add(egui::Label::new(&self.prompt).selectable(true).wrap());
+                            });
                     });
-                if self.confirming {
-                    ui.label(format!("This sends the question and its technical details to {name} ({operator}) as soon as it opens in your browser. Inspect the question for private or sensitive information before confirming. Do not share recovery phrases, keys or passwords.", name = self.assistant.name(), operator = self.assistant.operator()));
+                if let Some(warning) = warning {
+                    ui.label(warning);
                 }
-                    });
                 if self.confirming {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ComponentStyles::add_primary_button(ui, "Confirm").clicked() {

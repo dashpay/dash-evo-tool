@@ -336,17 +336,22 @@ pub(crate) async fn balance_below(
     }
 }
 
-/// The balance the app holds back for the name document's reference
-/// admission, on top of the registration charge; zero on protocol versions
-/// without it. Funding must cover it or the app refuses the registration.
-pub(crate) fn name_admission_reserve(app_context: &AppContext) -> u64 {
+/// The balance the app holds back for the name document of `label`'s
+/// reference admission, on top of the registration charge; zero on protocol
+/// versions without it. Funding must cover it or the app refuses the
+/// registration.
+pub(crate) fn name_admission_reserve(
+    app_context: &AppContext,
+    label: &str,
+    needs_vote: bool,
+) -> u64 {
     let platform_version = app_context.sdk_platform_version();
     let dpns = load_system_data_contract(SystemDataContract::DPNS, platform_version)
         .expect("the DPNS contract should load");
     let domain = dpns
         .document_type_for_name("domain")
         .expect("the DPNS contract should define domain");
-    username_name_admission_reserve_credits(domain, platform_version)
+    username_name_admission_reserve_credits(domain, label, needs_vote, platform_version)
 }
 
 /// A random 19-letter label, which opens a community vote.
@@ -518,7 +523,7 @@ async fn test_register_dpns_name_funded_from_platform_addresses() {
     let funding = app_context
         .fee_estimator()
         .estimate_username_registration(dpns_name.len(), false)
-        .saturating_add(name_admission_reserve(app_context));
+        .saturating_add(name_admission_reserve(app_context, &dpns_name, false));
 
     let funded = platform_funded_identity(ctx, funding).await;
     returning_credits(app_context, &funded, async {
@@ -571,7 +576,7 @@ async fn test_register_contested_dpns_name_funded_from_platform_addresses() {
         .fee_estimator()
         .estimate_username_registration(dpns_name.len(), true)
         .saturating_add(vote_fee)
-        .saturating_add(name_admission_reserve(app_context));
+        .saturating_add(name_admission_reserve(app_context, &dpns_name, true));
 
     let funded = platform_funded_identity(ctx, funding).await;
     returning_credits(

@@ -13,15 +13,21 @@
 //! endpoint (when available).
 
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::dpns::dpns_name_fields;
 use crate::model::spend_limit::{CoreDestinationScript, CoreSendQuoteFee};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
-use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::data_contract::document_type::reference_lookup::DocumentReferenceLookup;
+use dash_sdk::dpp::data_contract::document_type::{
+    DocumentTypeRef, PropertyReference, ReferenceHolder,
+};
+use dash_sdk::dpp::document::property_names::CREATED_AT_BLOCK_HEIGHT;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::{FeeRate, estimate_tx_size};
-use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
+use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof, Identifier};
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
@@ -176,7 +182,7 @@ pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
 }
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Most Platform address inputs one state transition may spend under
 /// `platform_version`.
@@ -885,43 +891,127 @@ pub fn contest_fee_credits(platform_version: &PlatformVersion) -> Credits {
 }
 
 /// Balance an identity must hold, beyond the fee, for Platform to admit the
-/// name document of a username registration, in credits. Never charged.
+/// name document of a username registration of `label`, in credits. Never
+/// charged.
 ///
-/// A name document type declaring a `chooseFirst` lookup (DPNS from contract
-/// version 3) makes Platform scan competing preorders when it writes the name.
-/// Before admitting it, Platform reserves the most that scan may bill: the
-/// credits per competitor of the fee schedule times the competitors it may
-/// read. A balance covering the fee but not this reserve is turned away after
-/// the first document was already paid for. Zero for a type without
-/// `chooseFirst`.
+/// Before admitting a document, Platform holds the signer to the most the
+/// checks of its lookups may bill in a block (Drive's check tx reservations
+/// `choose_first_reservation` and `reference_lookup_reservation`):
+/// - a query allowance for every lookup its references make;
+/// - for a `chooseFirst` lookup (DPNS from contract version 3), the competitor
+///   scan's budget and, from reservation generation 1, the `validWhen` hash of
+///   every competitor the scan may read, unless the name's vote decides the
+///   choice.
 ///
-/// The two hashes Platform also reserves for the lookup cost a few thousand
-/// credits and sit inside the margin of
+/// A balance covering the fee but not this reserve is turned away after the
+/// first document was already paid for. Zero for a type without lookups. The
+/// hashes and the preorder delete Platform bills for the name itself are
+/// charged, a few thousand credits for the hashes, and sit inside the margin of
 /// [`PlatformFeeEstimator::estimate_username_registration`].
 pub fn username_name_admission_reserve_credits(
     name_document_type: DocumentTypeRef<'_>,
+    label: &str,
+    needs_vote: bool,
     platform_version: &PlatformVersion,
 ) -> Credits {
-    let declares_choose_first = name_document_type
-        .reference_declarations()
-        .filter_map(|(_, reference)| reference.target())
-        .flat_map(|target| target.leaves())
-        .filter_map(|leaf| leaf.as_any_document_reference())
-        .any(|declaration| {
-            declaration
-                .lookup
-                .is_some_and(|lookup| lookup.choose_first.is_some())
-        });
-    if !declares_choose_first {
-        return 0;
+    let data = dpns_name_fields(label);
+    let fees = &platform_version.fee_version;
+    let mut reserve: Credits = 0;
+    let mut choose_first: Option<&DocumentReferenceLookup> = None;
+    for (holder, reference) in name_document_type.reference_declarations() {
+        let values = match (&holder, &reference) {
+            (_, PropertyReference::KeyId(_)) => 0,
+            (ReferenceHolder::Owner | ReferenceHolder::Creator, _) => 1,
+            // The name fields are text: no typed array of identifiers is set.
+            (ReferenceHolder::Property(_), PropertyReference::Elements { .. }) => 0,
+            (ReferenceHolder::Property(path), _) => {
+                u64::from(data.get(*path).is_some_and(|value| !value.is_null()))
+            }
+        };
+        let Some(target) = reference.target() else {
+            continue;
+        };
+        for lookup in target
+            .leaves()
+            .into_iter()
+            .filter_map(|leaf| leaf.as_any_document_reference())
+            .filter_map(|declaration| declaration.lookup)
+        {
+            reserve = reserve.saturating_add(
+                fees.document_reference
+                    .lookup_query_credits_reserved
+                    .saturating_mul(values),
+            );
+            if lookup.choose_first.is_some() {
+                choose_first.get_or_insert(lookup);
+            }
+        }
     }
-    platform_version
-        .fee_version
-        .document_reference
-        .choose_first_credits_per_candidate
-        .saturating_mul(u64::from(
-            platform_version.system_limits.max_choose_first_candidates,
-        ))
+    let Some(lookup) = choose_first else {
+        return reserve;
+    };
+    let competitors = u64::from(platform_version.system_limits.max_choose_first_candidates);
+    reserve = reserve.saturating_add(
+        fees.document_reference
+            .choose_first_credits_per_candidate
+            .saturating_mul(competitors),
+    );
+    let reads_competitors = platform_version
+        .drive_abci
+        .validation_and_processing
+        .state_transitions
+        .batch_state_transition
+        .choose_first_reservation
+        > 0
+        && !(needs_vote && contest_decides_choose_first(name_document_type, lookup));
+    if let Some(valid_when) = lookup.choose_first.as_ref().map(|rule| &rule.valid_when)
+        && reads_competitors
+        // The owner id only adds its length, the same for every identity.
+        && let Ok(preimage) =
+            valid_when.preimage(name_document_type, None, Identifier::default(), &data)
+    {
+        let blocks = u64::from(valid_when.function.block_count(preimage.len()));
+        let hash = fees
+            .hashing
+            .single_sha256_base
+            .saturating_add(fees.hashing.sha256_per_block.saturating_mul(blocks));
+        reserve = reserve.saturating_add(hash.saturating_mul(competitors));
+    }
+    reserve
+}
+
+/// Whether a create's community vote, not its `chooseFirst` lookup, decides
+/// between the requests for the same values, so Platform reads no competitor
+/// for it. Drive's `contest_decides_choose_first`: the lookup orders by age
+/// alone and waits a minimum age, and `validWhen` commits to exactly the
+/// properties of a contested index those values alone decide.
+fn contest_decides_choose_first(
+    document_type: DocumentTypeRef<'_>,
+    lookup: &DocumentReferenceLookup,
+) -> bool {
+    let Some(choose_first) = &lookup.choose_first else {
+        return false;
+    };
+    let ordered_by_age = matches!(
+        choose_first.by.as_slice(),
+        [order] if order.property == CREATED_AT_BLOCK_HEIGHT && order.ascending
+    );
+    if !ordered_by_age || lookup.minimum_age_blocks.is_none() {
+        return false;
+    }
+    let Some(contested_index) = document_type.find_contested_index() else {
+        return false;
+    };
+    if !contested_index.contest_is_decided_by_index_values(document_type.flattened_properties()) {
+        return false;
+    }
+    let contested: BTreeSet<&str> = contested_index
+        .properties
+        .iter()
+        .map(|property| property.name.as_str())
+        .collect();
+    let committed: BTreeSet<&str> = choose_first.valid_when.properties_read().collect();
+    committed == contested
 }
 
 /// The optional parts of a token contract built by the token creator, each of
@@ -2171,27 +2261,81 @@ mod tests {
         }
     }
 
-    /// DPNS from contract version 3 picks the first preorder of a name, and
-    /// Platform admits the name document only with 0.001 DASH held beyond its
-    /// fee for that scan. Earlier contracts need no such reserve.
+    /// What Platform holds back before it admits the name document, by the
+    /// reservations of Drive's check tx at the pinned revision:
+    /// - protocol 14 (DPNS contract version 2): no lookup, nothing held;
+    /// - protocol 15 (DPNS contract version 3, `creatorRefersTo` with
+    ///   `chooseFirst`): the scan budget, 100,000 credits for each of 1,000
+    ///   competitors; the lookup query allowance, 12,000,000; and, for a name
+    ///   no vote decides, the `validWhen` hash of each competitor, 1,000 x
+    ///   (100 + 5,000 per SHA-256 block). Its preimage is the 32-byte owner
+    ///   id, the label, `.` and `dash`: 2 blocks up to 18 characters, 3 from
+    ///   19 to 63.
+    ///
+    /// The preorder declares no lookup, so nothing is held for it.
     #[test]
-    fn username_name_admission_reserve_follows_the_contract_choose_first_rule() {
+    fn username_name_admission_reserve_follows_the_network_reservation() {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
         use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
-        for (version, expected) in [(14, 0), (15, 100_000_000)] {
+        const SCAN: u64 = 100_000_000;
+        const QUERY: u64 = 12_000_000;
+        let cases = [
+            (14, "alice-123", false, 0),
+            (14, "alice", true, 0),
+            (15, "abc-12", false, SCAN + QUERY + 10_100_000),
+            (15, "a12345678901234567", false, SCAN + QUERY + 10_100_000),
+            (15, "a123456789012345678", false, SCAN + QUERY + 15_100_000),
+            (15, &"a1".repeat(10), false, SCAN + QUERY + 15_100_000),
+            (15, &"b2".repeat(31), false, SCAN + QUERY + 15_100_000),
+            // The vote decides between the requests; no competitor is read.
+            (15, "alice", true, SCAN + QUERY),
+        ];
+        for (version, label, needs_vote, expected) in cases {
             let pv = PlatformVersion::get(version).unwrap();
             let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
             let domain = contract.document_type_for_name("domain").unwrap();
             assert_eq!(
-                username_name_admission_reserve_credits(domain, pv),
+                username_name_admission_reserve_credits(domain, label, needs_vote, pv),
                 expected,
-                "protocol {version}"
+                "protocol {version}, {label}, vote {needs_vote}"
             );
             let preorder = contract.document_type_for_name("preorder").unwrap();
             assert_eq!(
-                username_name_admission_reserve_credits(preorder, pv),
+                username_name_admission_reserve_credits(preorder, label, needs_vote, pv),
                 0,
-                "protocol {version}: the preorder has no chooseFirst lookup"
+                "protocol {version}: the preorder has no lookup"
+            );
+        }
+    }
+
+    /// On a protocol 15 devnet the network refused the name document of
+    /// identities funded with exactly what the registration was estimated to
+    /// need. Each figure is the first document's charge plus the balance the
+    /// network then named as required, for a name of that many characters
+    /// that opens no vote: 15,330,870 + 231,170,640; 15,316,370 + 232,152,520;
+    /// 15,286,150 + 235,946,560. The estimate and the reserve together must
+    /// cover each and stay within 15% of it.
+    #[test]
+    fn username_registration_covers_the_balance_protocol_15_required() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        let pv = PlatformVersion::get(15).unwrap();
+        let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
+        let domain = contract.document_type_for_name("domain").unwrap();
+        let estimator =
+            PlatformFeeEstimator::new(pv, PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE);
+        for (label_chars, required) in [(20, 246_501_510_u64), (29, 247_468_890), (63, 251_232_710)]
+        {
+            let label = "a".repeat(label_chars);
+            let total = estimator.estimate_username_registration(label_chars, false)
+                + username_name_admission_reserve_credits(domain, &label, false, pv);
+            assert!(
+                total >= required,
+                "{label_chars}: {total} is below {required}"
+            );
+            assert!(
+                total <= required / 100 * 115,
+                "{label_chars}: {total} is far above {required}"
             );
         }
     }

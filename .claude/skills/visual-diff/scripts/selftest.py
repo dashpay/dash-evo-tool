@@ -25,6 +25,10 @@ SIZE = (480, 240)
 GREY = (128, 128, 128)
 RECT = [40, 40, 120, 100]
 PILL = [150, 40]
+AMBER = (245, 124, 0)
+VIOLET = (123, 63, 242)
+INK = (30, 30, 40)
+WHITE = (255, 255, 255)
 
 
 def image(path, *patches):
@@ -54,6 +58,30 @@ class Case(unittest.TestCase):
 
     def path(self, *parts):
         return os.path.join(self.root, *parts)
+
+
+class EvidenceContract(unittest.TestCase):
+    def test_old_evidence_requires_exact_revision(self):
+        text = Path(HERE, "../SKILL.md").read_text()
+        self.assertIn("exact OLD revision", text)
+        self.assertNotIn("report dated before it", text)
+
+    def test_unchanged_defects_and_banners_are_evidence(self):
+        text = Path(HERE, "../SKILL.md").read_text()
+        self.assertIn("including unchanged defects", text)
+        self.assertIn(
+            "banners only when they document a change or confirmed defect", text
+        )
+
+    def test_weekly_export_preserves_badge(self):
+        sys.path.insert(0, str(Path(HERE).parents[3] / "scripts/ci/release-qa"))
+        from passive_html import sanitize_html
+
+        result = sanitize_html(
+            '<span class="badge" onclick="bad()">⚠ Known issue</span>'
+        )
+        self.assertIn('<span class="badge">⚠ Known issue</span>', result)
+        self.assertNotIn("onclick", result)
 
 
 class RenderSelfCheck(Case):
@@ -124,6 +152,236 @@ class RenderSelfCheck(Case):
         self.assertIn("inset needs --old-dir", out)
 
 
+class RenderDefect(Case):
+    """A defect is outlined in amber, its pill carries a marker and a dark
+    label, and render.py lists it in annotated/defects.json for gallery.py."""
+
+    def render(self, *els, old=True, new_patch=()):
+        return self.render_spec({"s": list(els)}, old=old, new_patch=new_patch)
+
+    def render_spec(self, spec, old=True, new_patch=()):
+        for name in spec:
+            image(self.path("old", name + ".png"))
+            image(self.path("new", name + ".png"), *new_patch)
+        with open(self.path("spec.json"), "w") as f:
+            json.dump(spec, f)
+        old_args = ["--old-dir", self.path("old")] if old else []
+        return run(
+            "render.py",
+            self.path("spec.json"),
+            "--new-dir",
+            self.path("new"),
+            *old_args,
+            "--out-dir",
+            self.path("out"),
+        )
+
+    def defect(self, **extra):
+        return dict(
+            {"kind": "defect", "rect": RECT, "label": "Defect: x", "pill": PILL},
+            **extra,
+        )
+
+    def amber_pixels(self, *parts):
+        px = Image.open(self.path("out", *parts)).convert("RGB").getdata()
+        return sum(1 for p in px if p == AMBER)
+
+    def pill(self, fill):
+        """The labelled pill at PILL (2x): its pixels, found by its fill."""
+        img = Image.open(self.path("out", "s.png")).convert("RGB")
+        x0, y0 = PILL[0] * 2, PILL[1] * 2
+        row = y0 + 18  # below the rounded corners, above the text
+        x1 = x0
+        while x1 < img.width and img.getpixel((x1 + 20, row)) == fill:
+            x1 += 1
+        y1 = y0
+        while y1 < img.height and img.getpixel((x0 + 20, y1)) == fill:
+            y1 += 1
+        return x1 + 20 - x0, list(img.crop((x0, y0, x1 + 20, y1)).getdata())
+
+    def defects_json(self):
+        with open(self.path("out", "defects.json")) as f:
+            return json.load(f)
+
+    def test_a_defect_needs_no_change_between_builds(self):
+        code, out = self.render(self.defect())
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("FAIL", out)
+
+    def test_the_outline_is_amber_in_both_variants(self):
+        code, out = self.render(self.defect())
+        self.assertEqual(code, 0, out)
+        # Middle of the outline's left edge: (RECT x0 - PAD) * scale + 2.
+        for parts in (("s.png",), ("clean", "s.png")):
+            img = Image.open(self.path("out", *parts)).convert("RGB")
+            self.assertEqual(img.getpixel((72, 140)), AMBER, parts)
+
+    def test_the_pill_adds_amber_only_to_the_labelled_variant(self):
+        code, out = self.render(self.defect())
+        self.assertEqual(code, 0, out)
+        self.assertGreater(
+            self.amber_pixels("s.png"), self.amber_pixels("clean", "s.png")
+        )
+
+    def test_the_pill_is_read_without_colour(self):
+        sys.dont_write_bytecode = True  # no __pycache__ in the repository
+        import render
+
+        self.assertEqual(render.pill_text(self.defect()), ("\u26a0 Defect: x", None))
+        self.assertEqual(
+            render.pill_text(self.defect(pre_existing=True)),
+            ("\u26a0 Defect: x", "Existed before this release"),
+        )
+        changed = {"kind": "changed", "label": "Changed: x"}
+        self.assertEqual(render.pill_text(changed), ("Changed: x", None))
+
+    def test_the_marker_widens_the_pill(self):
+        label = {"rect": RECT, "label": "Defect: x", "pill": PILL}
+        self.assertEqual(self.render(dict(label, kind="changed"), old=False)[0], 0)
+        changed_width, _ = self.pill(VIOLET)
+        self.assertEqual(self.render(dict(label, kind="defect"), old=False)[0], 0)
+        defect_width, _ = self.pill(AMBER)
+        self.assertGreater(defect_width, changed_width + 20)
+
+    def test_the_pill_text_is_dark_not_white(self):
+        for el in (self.defect(), self.defect(pre_existing=True)):
+            code, out = self.render(el, old=False)
+            self.assertEqual(code, 0, out)
+            _, pixels = self.pill(AMBER)
+            self.assertGreater(pixels.count(INK), 50, el)
+            self.assertEqual(pixels.count(WHITE), 0, el)
+
+    def test_pre_existing_must_be_a_boolean(self):
+        code, out = self.render(self.defect(pre_existing="false"), old=False)
+        self.assertEqual(code, 1, out)
+        self.assertIn("pre_existing must be true or false", out)
+
+    def test_an_unchanged_defect_not_marked_pre_existing_warns(self):
+        code, out = self.render(self.defect())
+        self.assertEqual(code, 0, out)
+        self.assertIn("defect identical in old and new", out)
+        code, out = self.render(self.defect(pre_existing=True))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("WARNING", out)
+
+    def test_a_changed_defect_marked_pre_existing_warns(self):
+        new = [(RECT, (255, 255, 255))]
+        code, out = self.render(self.defect(pre_existing=True), new_patch=new)
+        self.assertEqual(code, 0, out)
+        self.assertIn("pre-existing defect differs between old and new", out)
+        code, out = self.render(self.defect(), new_patch=new)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("WARNING", out)
+
+    def test_a_partial_render_keeps_the_other_images_defects(self):
+        entry = {"label": "Defect: x", "pre_existing": False}
+        self.assertEqual(self.render_spec({"a": [self.defect()]})[0], 0)
+        self.assertEqual(self.render_spec({"b": [self.defect()]})[0], 0)
+        self.assertEqual(self.defects_json(), {"a": [entry], "b": [entry]})
+        changed = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": PILL}
+        self.assertEqual(self.render_spec({"a": [changed]}, old=False)[0], 0)
+        self.assertEqual(self.defects_json(), {"b": [entry]})
+
+    def test_full_refresh_drops_deleted_images(self):
+        self.assertEqual(self.render_spec({"a": [self.defect()]})[0], 0)
+        Path(self.path("spec.json")).write_text("{}")
+        code, out = run(
+            "render.py",
+            self.path("spec.json"),
+            "--new-dir",
+            self.path("new"),
+            "--out-dir",
+            self.path("out"),
+            "--full-refresh",
+        )
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.defects_json(), {})
+
+    def test_failed_render_preserves_outputs(self):
+        self.assertEqual(self.render(self.defect(), old=False)[0], 0)
+        files = [
+            Path(self.path("out", n)) for n in ("s.png", "clean/s.png", "defects.json")
+        ]
+        original = [p.read_bytes() for p in files]
+        for spec in (
+            {"s": [self.defect(pill=[470, 40])]},
+            {"s": [self.defect(label="Defect: modified")], "missing": []},
+        ):
+            Path(self.path("spec.json")).write_text(json.dumps(spec))
+            code, out = run(
+                "render.py",
+                self.path("spec.json"),
+                "--new-dir",
+                self.path("new"),
+                "--out-dir",
+                self.path("out"),
+            )
+            self.assertNotEqual(code, 0, out)
+            self.assertEqual([p.read_bytes() for p in files], original)
+
+    def test_clean_defect_has_noncolour_marker(self):
+        self.assertEqual(self.render(self.defect(), old=False)[0], 0)
+        img = Image.open(self.path("out", "clean", "s.png")).convert("RGB")
+        pixels = list(img.crop((70, 70, 130, 130)).getdata())
+        self.assertGreater(pixels.count(INK), 10)
+
+    def test_legend_overlap_warns(self):
+        code, out = self.render(
+            self.defect(pre_existing=True, pill=[150, 175]), old=False
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("pill overlaps legend", out)
+
+    def test_an_image_without_a_defect_shows_no_amber(self):
+        changed = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": PILL}
+        code, out = self.render(changed, old=False)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.amber_pixels("s.png"), 0)
+
+    def test_a_defect_label_must_say_defect(self):
+        code, out = self.render(self.defect(label="Broken x"))
+        self.assertEqual(code, 1, out)
+        self.assertIn('defect label must start with "Defect: "', out)
+
+    def test_only_a_defect_can_be_pre_existing(self):
+        changed = {
+            "kind": "changed",
+            "rect": RECT,
+            "label": "Changed: x",
+            "pill": PILL,
+            "pre_existing": True,
+        }
+        code, out = self.render(changed, old=False)
+        self.assertEqual(code, 1, out)
+        self.assertIn("pre_existing applies only to a defect", out)
+
+    def test_a_pre_existing_defect_has_a_taller_pill(self):
+        # Fits as one line (36 px at 1x) but not with the second line.
+        low = [PILL[0], SIZE[1] - 40]
+        code, out = self.render(self.defect(pill=low))
+        self.assertEqual(code, 0, out)
+        code, out = self.render(self.defect(pill=low, pre_existing=True))
+        self.assertEqual(code, 1, out)
+        self.assertIn("pill outside image", out)
+
+    def test_defects_are_listed_for_the_gallery(self):
+        code, out = self.render(
+            self.defect(),
+            self.defect(label="Defect: y", pre_existing=True, pill=[150, 140]),
+        )
+        self.assertEqual(code, 0, out)
+        with open(self.path("out", "defects.json")) as f:
+            self.assertEqual(
+                json.load(f),
+                {
+                    "s": [
+                        {"label": "Defect: x", "pre_existing": False},
+                        {"label": "Defect: y", "pre_existing": True},
+                    ]
+                },
+            )
+
+
 class Diff(Case):
     def diff(self):
         code, out = run(
@@ -163,9 +421,12 @@ class Diff(Case):
 
 
 class Gallery(Case):
-    def gallery(self, meta, files):
+    def gallery(self, meta, files, defects=None):
         for f in files:
             image(self.path(*f))
+        if defects is not None:
+            with open(self.path("annotated", "defects.json"), "w") as f:
+                json.dump(defects, f)
         with open(self.path("meta.json"), "w") as f:
             json.dump(meta, f)
         return run("gallery.py", "--root", self.root, "--meta", self.path("meta.json"))
@@ -173,8 +434,12 @@ class Gallery(Case):
     META = {"images": [{"name": "01-a", "title": "A"}], "coverage": []}
     BOTH = [("annotated", "01-a.png"), ("annotated", "clean", "01-a.png")]
 
+    def index(self):
+        with open(self.path("index.html")) as f:
+            return f.read()
+
     def test_complete_gallery_is_written(self):
-        code, out = self.gallery(self.META, self.BOTH)
+        code, out = self.gallery(self.META, self.BOTH, defects={})
         self.assertEqual(code, 0, out)
         self.assertTrue(os.path.exists(self.path("index.html")))
         text = Path(self.path("index.html")).read_text()
@@ -183,12 +448,15 @@ class Gallery(Case):
             '<img src="annotated/clean/01-a.png" alt="A"></details>',
             text,
         )
+        self.assertNotIn("Known issues", self.index())
 
     def test_embedded_gallery_keeps_style_charset_and_both_images(self):
         name = "01-a&b"
         files = [("annotated", name + ".png"), ("annotated", "clean", name + ".png")]
         code, out = self.gallery(
-            {"images": [{"name": name, "title": "A"}], "coverage": []}, files
+            {"images": [{"name": name, "title": "A"}], "coverage": []},
+            files,
+            defects={},
         )
         self.assertEqual(code, 0, out)
         image(self.path(*files[1]), (RECT, (255, 0, 0)))
@@ -219,14 +487,41 @@ class Gallery(Case):
         self.assertNotIn('href="data:', text)
         self.assertNotIn('src="annotated/', text)
 
+    def test_missing_defect_list_stops_the_gallery(self):
+        code, out = self.gallery(self.META, self.BOTH)
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("defects.json is missing", out)
+        self.assertFalse(os.path.exists(self.path("index.html")))
+
+    def test_images_with_defects_are_marked_and_listed(self):
+        defects = {
+            "01-a": [
+                {"label": "Defect: <late> balance", "pre_existing": False},
+                {"label": "Defect: clipped title", "pre_existing": True},
+            ]
+        }
+        code, out = self.gallery(self.META, self.BOTH, defects)
+        self.assertEqual(code, 0, out)
+        page = self.index()
+        self.assertIn('class="badge"', page)
+        self.assertIn("<h2>Known issues</h2>", page)
+        self.assertIn("Defect: &lt;late&gt; balance", page)
+        self.assertIn("Defect: clipped title (existed before this release)", page)
+
+    def test_a_defect_on_an_unlisted_image_stops_the_gallery(self):
+        defects = {"02-b": [{"label": "Defect: x", "pre_existing": False}]}
+        code, out = self.gallery(self.META, self.BOTH, defects)
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("defects.json lists an image not listed: 02-b", out)
+
     def test_missing_labelled_image_stops_the_gallery(self):
-        code, out = self.gallery(self.META, self.BOTH[1:])
+        code, out = self.gallery(self.META, self.BOTH[1:], defects={})
         self.assertNotEqual(code, 0, out)
         self.assertIn("image file is missing", out)
         self.assertFalse(os.path.exists(self.path("index.html")))
 
     def test_missing_clean_image_stops_the_gallery(self):
-        code, out = self.gallery(self.META, self.BOTH[:1])
+        code, out = self.gallery(self.META, self.BOTH[:1], defects={})
         self.assertNotEqual(code, 0, out)
         self.assertIn("image file is missing", out)
         self.assertFalse(os.path.exists(self.path("index.html")))
@@ -235,7 +530,7 @@ class Gallery(Case):
         meta = dict(
             self.META, coverage=[{"commit": "abc", "subject": "s", "images": ["02-b"]}]
         )
-        code, out = self.gallery(meta, self.BOTH)
+        code, out = self.gallery(meta, self.BOTH, defects={})
         self.assertNotEqual(code, 0, out)
         self.assertIn("not listed", out)
 

@@ -9,7 +9,7 @@ from logic import CAPTURE_NAME
 
 class PassiveHTML(HTMLParser):
     tags = set(
-        "h1 h2 h3 p pre code table tr th td ul li b strong em img a br details summary".split()
+        "span h1 h2 h3 p pre code table tr th td ul li b strong em img a br details summary".split()
     )
 
     def __init__(self):
@@ -26,7 +26,9 @@ class PassiveHTML(HTMLParser):
         for key, value in attrs:
             if value is None:
                 continue
-            if (key == "id" and re.fullmatch(r"[a-zA-Z0-9_-]+", value)) or (
+            if tag == "span" and key == "class" and value == "badge":
+                safe.append((key, value))
+            elif (key == "id" and re.fullmatch(r"[a-zA-Z0-9_-]+", value)) or (
                 key == "alt" and tag == "img"
             ):
                 safe.append((key, value))

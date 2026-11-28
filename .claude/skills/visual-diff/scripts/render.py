@@ -3,15 +3,18 @@
 
 usage: render.py SPEC.json --new-dir DIR [--old-dir DIR] --out-dir DIR [--scale 2]
 
-SPEC: {"<image name>": [{"kind": "new|changed|removed|screen",
+SPEC: {"<image name>": [{"kind": "new|changed|removed|screen|defect",
                          "rect": [x0, y0, x1, y1],          # capture pixels (1x)
                          "label": "Changed: profile name",  # 2-5 words
                          "pill": [x, y],                    # pill top-left, 1x
+                         "pre_existing": true,              # optional, defect only
                          "inset": {"old": "<old image name>", # optional, removed items
                                    "crop": [x0, y0, x1, y1], "xy": [x, y]}}]}
 
 Reads <new-dir>/<name>.png (and <old-dir>/<name>.png for the self-check and
-insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png.
+insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png,
+and updates <out-dir>/defects.json, the defects per image for gallery.py: the
+images of this spec are replaced, the others kept.
 Without --old-dir (NEW-only mode) the rect self-check is skipped and insets are
 refused. Exit code 1 if a self-check fails (see selfcheck()); warnings do not
 change it.
@@ -21,11 +24,21 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-COL = {"new": (0, 168, 84), "changed": (123, 63, 242), "removed": (229, 57, 53)}
+COL = {
+    "new": (0, 168, 84),
+    "changed": (123, 63, 242),
+    "removed": (229, 57, 53),
+    "defect": (245, 124, 0),
+}
+INK = (30, 30, 40)  # defect pill text: white on amber is too faint
+MARK = "\u26a0 "  # tells a defect from a change without colour
+DEFECT_PREFIX = "Defect: "
+PRE_EXISTING = "Existed before this release"
 PAD = 5
 FONTS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans{}.ttf",
@@ -50,6 +63,12 @@ def font(size, scale, bold=True):
 
 def rr(d, r, rad, **k):
     d.rounded_rectangle(r, radius=rad, **k)
+
+
+def pill_text(e):
+    """The pill's label and its optional second line."""
+    lab = MARK + e["label"] if e["kind"] == "defect" else e["label"]
+    return lab, PRE_EXISTING if e.get("pre_existing") is True else None
 
 
 def build(name, els, a, labels):
@@ -81,6 +100,7 @@ def build(name, els, a, labels):
             )
         img = Image.composite(base, dim, mask.filter(ImageFilter.GaussianBlur(1)))
     d = ImageDraw.Draw(img)
+    pills = []
     for e in els:
         k, r, lab = e["kind"], e["rect"], e["label"]
         c = COL["new" if k == "screen" else k]
@@ -105,12 +125,24 @@ def build(name, els, a, labels):
         else:
             rr(d, box, 10 * s, outline=c, width=4 * s)
         px, py = e["pill"][0] * s, e["pill"][1] * s
-        f = font(20, s)
-        w, h = d.textlength(lab, font=f) + 28 * s, 36 * s
+        f, f2 = font(20, s), font(14, s, bold=False)
+        lab, note = pill_text(e)
+        w = max(d.textlength(lab, font=f), d.textlength(note or "", font=f2))
+        w, h = w + 28 * s, (56 if note else 36) * s
         if px < 0 or py < 0 or px + w > img.width or py + h > img.height:
             BAD.append((name, lab, "pill outside image"))
+        if k == "defect":
+            d.text(
+                (box[0] + 6 * s, box[1] + 6 * s),
+                MARK.strip(),
+                font=font(20, s),
+                fill=INK,
+                stroke_width=s,
+                stroke_fill=c,
+            )
         if not labels:
             continue
+        pills.append((px, py, px + w, py + h, lab))
         cx = min(max(px + w / 2, box[0]), box[2])
         cy = min(max(py + h / 2, box[1]), box[3])
         side = px > box[2] or px + w < box[0]
@@ -121,7 +153,12 @@ def build(name, els, a, labels):
         if not (box[0] < px + w / 2 < box[2] and box[1] < py + h / 2 < box[3]):
             d.line((sx, sy, tx, ty), fill=c, width=3 * s)  # leader line
         rr(d, [px, py, px + w, py + h], 8 * s, fill=c)
-        d.text((px + 14 * s, py + h / 2), lab, fill="white", font=f, anchor="lm")
+        ink = INK if k == "defect" else "white"
+        if note:
+            d.text((px + 14 * s, py + 19 * s), lab, fill=ink, font=f, anchor="lm")
+            d.text((px + 14 * s, py + 41 * s), note, fill=ink, font=f2, anchor="lm")
+        else:
+            d.text((px + 14 * s, py + h / 2), lab, fill=ink, font=f, anchor="lm")
         ins = e.get("inset")
         if ins and old_dir is None:
             BAD.append((name, lab, "inset needs --old-dir"))
@@ -149,9 +186,14 @@ def build(name, els, a, labels):
     # corner key
     f = font(15, s)
     items = [("new", "New"), ("changed", "Changed"), ("removed", "Removed")]
+    if any(e["kind"] == "defect" for e in els):  # only where one is shown
+        items.append(("defect", MARK + "Defect"))
     kw = int(sum(d.textlength(t, font=f) + 60 * s for _, t in items)) + 10 * s
     kh = 34 * s
     kx, ky = img.width - kw - 16 * s, img.height - kh - 12 * s
+    for x0, y0, x1, y1, lab in pills:
+        if x0 < kx + kw and x1 > kx and y0 < ky + kh and y1 > ky:
+            WARN.append((name, lab, "pill overlaps legend"))
     rr(
         d,
         [kx, ky, kx + kw, ky + kh],
@@ -174,9 +216,43 @@ def build(name, els, a, labels):
     return img
 
 
+def validate(name, els):
+    """A defect must read as one without its colour; only a defect can
+    predate the release."""
+    for e in els:
+        if e["kind"] == "defect" and not e["label"].startswith(DEFECT_PREFIX):
+            BAD.append(
+                (name, e["label"], f'defect label must start with "{DEFECT_PREFIX}"')
+            )
+        if "pre_existing" not in e:
+            continue
+        if not isinstance(e["pre_existing"], bool):
+            BAD.append((name, e["label"], "pre_existing must be true or false"))
+        elif e["pre_existing"] and e["kind"] != "defect":
+            BAD.append((name, e["label"], "pre_existing applies only to a defect"))
+
+
+def defects(spec, path, full_refresh=False):
+    """defects.json with the images of `spec` replaced and the rest kept, so
+    re-rendering some images does not drop the others' defects."""
+    known = json.load(open(path)) if os.path.exists(path) and not full_refresh else {}
+    for name, els in spec.items():
+        found = [
+            {"label": e["label"], "pre_existing": e.get("pre_existing") is True}
+            for e in els
+            if e["kind"] == "defect"
+        ]
+        if found:
+            known[name] = found
+        else:
+            known.pop(name, None)
+    return dict(sorted(known.items()))
+
+
 def selfcheck(name, els, a):
     """Every new/changed rect must differ between the NEW and OLD capture of the
-    same screen; a highlight over identical pixels means a wrong rect.
+    same screen; a highlight over identical pixels means a wrong rect. A defect
+    only warns when its pixels contradict its pre_existing flag.
 
     Compared in RGB, so a change of colour alone counts. Only a rect with no
     differing pixel at all fails; a rect that differs very little is reported
@@ -189,12 +265,31 @@ def selfcheck(name, els, a):
     n = Image.open(os.path.join(a.new_dir, name + ".png")).convert("RGB")
     o = Image.open(op).convert("RGB")
     for e in els:
-        if e["kind"] not in ("new", "changed"):
+        if e["kind"] not in ("new", "changed", "defect"):
             continue
         ca = np.asarray(n.crop(e["rect"]), dtype=int)
         cb = np.asarray(o.crop(e["rect"]), dtype=int)
         delta = abs(ca - cb).max(axis=2)  # largest channel difference per pixel
-        if not delta.any():
+        if e["kind"] == "defect":
+            # Either look is legitimate; only the pre_existing claim is checked.
+            if e.get("pre_existing") is True:
+                if int((delta > NOISE_LEVEL).sum()) >= NOISE_PIXELS:
+                    WARN.append(
+                        (
+                            name,
+                            e["label"],
+                            "pre-existing defect differs between old and new",
+                        )
+                    )
+            elif not delta.any():
+                WARN.append(
+                    (
+                        name,
+                        e["label"],
+                        "defect identical in old and new: set pre_existing if OLD shows it",
+                    )
+                )
+        elif not delta.any():
             BAD.append((name, e["label"], "rect identical in old and new"))
         elif int((delta > NOISE_LEVEL).sum()) < NOISE_PIXELS:
             WARN.append(
@@ -216,15 +311,36 @@ def main():
     p.add_argument("--old-dir", help="OLD captures; omit for NEW-only mode")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--scale", type=int, default=2)
+    p.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Replace the entire defects manifest",
+    )
     a = p.parse_args()
     spec = json.load(open(a.spec))
     os.makedirs(os.path.join(a.out_dir, "clean"), exist_ok=True)
     if a.old_dir is None:
         print("NEW-only mode: rect self-check skipped, check every rect by eye")
-    for name, els in spec.items():
-        selfcheck(name, els, a)
-        build(name, els, a, True).save(os.path.join(a.out_dir, name + ".png"))
-        build(name, els, a, False).save(os.path.join(a.out_dir, "clean", name + ".png"))
+    path = os.path.join(a.out_dir, "defects.json")
+    with tempfile.TemporaryDirectory(dir=a.out_dir) as stage:
+        for name, els in spec.items():
+            validate(name, els)
+            selfcheck(name, els, a)
+            build(name, els, a, True).save(os.path.join(stage, name + ".png"))
+            build(name, els, a, False).save(os.path.join(stage, name + ".clean.png"))
+        merged = defects(spec, path, a.full_refresh)
+        if not BAD:
+            for name in spec:
+                os.replace(
+                    os.path.join(stage, name + ".png"),
+                    os.path.join(a.out_dir, name + ".png"),
+                )
+                os.replace(
+                    os.path.join(stage, name + ".clean.png"),
+                    os.path.join(a.out_dir, "clean", name + ".png"),
+                )
+            with open(path, "w") as f:
+                json.dump(merged, f, indent=1)
     if WARN:
         print("SELFCHECK WARNING (not a failure, check these rects by eye):")
         for w in sorted(set(WARN)):

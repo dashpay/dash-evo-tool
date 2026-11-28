@@ -26,6 +26,19 @@ impl DomainFeedback for IdentityFeedback {
             true,
             feedback.delivery.sender_in_view,
         );
+        finish_key_limits_raise(feedback.ctx, context);
+        if !feedback.delivery.sender_in_view
+            && matches!(
+                result,
+                BackendTaskSuccessResult::IdentityKeyLimitsRaised { .. }
+            )
+        {
+            MessageBanner::set_global(
+                feedback.ctx,
+                "The key's limits were raised.",
+                MessageType::Success,
+            );
+        }
         clear_profile_saving_banner_after_success(feedback.ctx, context, result);
         show(feedback.ctx, result);
         Vec::new()
@@ -38,8 +51,25 @@ impl DomainFeedback for IdentityFeedback {
         _error: &TaskError,
     ) -> bool {
         finish_top_up(feedback.ctx, context, false, true);
+        finish_key_limits_raise(feedback.ctx, context);
         clear_profile_saving_banner_after_error(feedback.ctx, context);
-        false
+        context.key_remaining_budgets_identity().is_some()
+    }
+}
+
+fn finish_key_limits_raise(ctx: &egui::Context, context: &BackendTaskContext) {
+    if context.raise_key_limits_target().is_some()
+        && let Some(id) = context.dispatch_id()
+        && let Some(banner) = ctx.data_mut(|data| {
+            let pending = data
+                .get_temp_mut_or_default::<std::collections::BTreeMap<u64, BannerHandle>>(
+                    egui::Id::unique("key_limits_raises"),
+                );
+            let banner = pending.remove(&id);
+            if pending.is_empty() { banner } else { None }
+        })
+    {
+        banner.clear();
     }
 }
 

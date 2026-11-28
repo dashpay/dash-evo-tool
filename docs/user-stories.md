@@ -854,6 +854,32 @@ As a user, I want to remove an identity from this device from the identity's own
 
 ---
 
+### IDN-022: Add a key with a spending limit or an expiry [Implemented]
+**Persona:** Priya, Jordan
+
+As a user handing a key to an app or a helper, I want to budget the credits that key can charge to my identity and set when it stops working, so that a leaked or forgotten key can do limited damage.
+
+- The budget covers credits charged to the identity, not the value of tokens the key can act on. The final processing fee can exceed the remaining budget.
+- The Add Key screen offers "Spending Limit" and "Expires After (days)" for authentication keys below the master level.
+- Spending limits and expiry are available before the network version is verified, like other features supported by the app's minimum Platform version.
+- A zero limit, zero days, or an expiry too far in the future is refused before anything is sent.
+- The Key Info screen shows the limit with how much is left of it, and the expiry date; an expired or used-up key is marked.
+- If the remaining budget cannot be read, the budget row asks the user to refresh; the passive read does not raise a global error banner.
+
+### IDN-023: Raise a key's spending limit or extend its expiry [Implemented]
+**Persona:** Priya, Jordan
+
+As a user whose limited key is running out, I want to add to its spending limit or extend its expiry so that I can keep using it without adding a new key.
+
+- The Key Info screen of a limited key offers "Raise Limits" with an amount to add and a number of days to extend by.
+- An expiry is extended from its current date, or from today when the key has already expired.
+- An expired key cannot be topped up on its own; the screen also asks to extend its expiry.
+- Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
+- If the preflight read detects changed limits or an unusable reviewed signer, nothing is sent and the screen asks for a new review. The app never substitutes another amount or signer; a reviewed signer that remains eligible is kept.
+- Another device can change the key after preflight. The network then decides whether to accept the reviewed raise and can charge a fee even if it refuses it.
+- The change is signed by the identity's master key, or a critical key that has no limits and is not limited to a contract; without either on this device, the screen says which key to import.
+- After the change, the screen shows the key as the network stores it and its new remaining limit.
+
 ### IDN-024: Signing avoids keys that cannot sign [Implemented]
 **Persona:** Alex, Priya
 
@@ -863,7 +889,7 @@ As a user, I want the app to sign with a key that can actually sign the action, 
 - Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
 - Creating or updating a contract (including registering a token contract) accepts a key with a spending limit or future expiry on verified protocol 14. On protocol 15, or before the network version is verified, both automatic and manual selection require a key without either restriction. Open forms follow newly verified network rules; the backend confirms them again before signing and sending.
 - Signing eligibility never hides imported identities, keys, contracts, documents, token prices or configuration. Disabled voting keys remain importable for history and key management but cannot cast votes.
-- For other actions where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
+- For other actions where the user picks the key, limited and expired keys stay selectable, the key list marks them, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
 
 ## DPNS (DPN)
 

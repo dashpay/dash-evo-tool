@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
+
 /// A feature that has not stabilised yet (the stability axis). Distinct from
 /// role: when such a feature stabilises, its check is removed and it unlocks
 /// for every role — misfiling it as a role gate would permanently hide the
@@ -42,8 +43,7 @@ impl Check {
     }
 }
 
-/// Named feature gate. Each variant resolves to a conjunction of [`Check`]s;
-/// the feature is available iff all of them pass.
+/// Named feature gate. Role and experimental checks must all pass.
 ///
 /// Adding a new gate:
 /// 1. Add a variant here
@@ -83,8 +83,7 @@ pub enum FeatureGate {
 }
 
 impl FeatureGate {
-    /// The checks that must ALL pass for this feature. An empty list means the
-    /// feature is always available (the empty conjunction is `true`).
+    /// Role and experimental checks that must all pass for this feature.
     fn checks(self) -> &'static [Check] {
         match self {
             FeatureGate::Shielded => &[],

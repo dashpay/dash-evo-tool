@@ -6,6 +6,8 @@ use crate::model::derived_identity_key::{
     derivation_index_limit, derivation_wallet, is_derivable_key_type, occupied_indices,
 };
 use crate::model::identity_balance::BalanceProvenance;
+use crate::model::identity_key_limits::{key_with_limits, validate_key_limits};
+use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::PrivateKeyTarget::{self, PrivateKeyOnMainIdentity};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -23,6 +25,7 @@ use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
+use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
@@ -32,6 +35,19 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 
 impl AppContext {
+    fn validate_added_key_configuration(
+        &self,
+        public_key_to_add: &QualifiedIdentityPublicKey,
+    ) -> Result<(), TaskError> {
+        // Validate before prompting or broadcasting: a limit Platform refuses
+        // would still be charged.
+        if public_key_to_add.identity_public_key.has_limits() {
+            validate_key_limits(&public_key_to_add.identity_public_key, now_ms())?;
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn add_key_to_identity(
         &self,
         sdk: &Sdk,
@@ -70,6 +86,7 @@ impl AppContext {
         index: u32,
         expected_key_id: KeyID,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.validate_added_key_configuration(&key)?;
         let (identity, key) = self
             .prepare_derived_identity_key(&identity.identity.id(), key, index)
             .await?;
@@ -174,6 +191,12 @@ impl AppContext {
         mut public_key_to_add: QualifiedIdentityPublicKey,
         material: NewKeyMaterial,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // A key without limits goes out as a version 0 key, the only version
+        // a protocol 13 network decodes.
+        let key = &public_key_to_add.identity_public_key;
+        public_key_to_add.identity_public_key =
+            key_with_limits(key.clone(), key.total_budget(), key.expires_at());
+
         // O-2: enforce the protected-identity precondition BEFORE any
         // on-chain side effect. If this identity is password-protected, prompt
         // for and VERIFY its object password up front; a headless host or a
@@ -184,6 +207,8 @@ impl AppContext {
         //
         // A wallet-derived key has no private bytes to seal (it stays
         // protected by its wallet), so it needs no identity password (SEC-105).
+        self.validate_added_key_configuration(&public_key_to_add)?;
+
         let verify_scope = match material {
             NewKeyMaterial::Private(_) => {
                 self.protected_identity_verify_scope(&qualified_identity)?
@@ -1919,6 +1944,65 @@ mod tests {
                 .expect("read back")
                 .is_none(),
             "nothing is written for an unloaded identity",
+        );
+    }
+
+    fn key_with_limits(total_budget: Option<u64>) -> QualifiedIdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+        QualifiedIdentityPublicKey {
+            identity_public_key: IdentityPublicKey::from(IdentityPublicKeyV0 {
+                id: 5,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: vec![2; 33].into(),
+                disabled_at: None,
+            })
+            .with_limits(total_budget, Some(u64::MAX)),
+            in_wallet_at_derivation_path: None,
+        }
+    }
+
+    #[test]
+    fn a_key_with_limits_is_valid_before_protocol_verification() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
+        let mut key = key_with_limits(Some(1));
+        key.identity_public_key = key.identity_public_key.with_limits(Some(1), None);
+        ctx.validate_added_key_configuration(&key)
+            .expect("valid limits");
+    }
+
+    #[tokio::test]
+    async fn a_key_with_a_zero_budget_is_refused_locally() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14,
+        );
+        let sdk = dash_sdk::Sdk::new_mock();
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+
+        let result = ctx
+            .add_key_to_identity(&sdk, identity, key_with_limits(Some(0)), [1; 32])
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::InvalidKeyLimits {
+                    source: crate::model::identity_key_limits::KeyLimitsError::ZeroBudget
+                })
+            ),
+            "got {result:?}"
         );
     }
 }

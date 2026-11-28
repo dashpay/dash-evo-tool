@@ -1220,3 +1220,41 @@ fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
         );
     });
 }
+
+/// Each key row marks a key Platform no longer accepts as "Expired" and a key
+/// with a budget or a future expiry as "Limited"; an unlimited key carries no
+/// marker.
+#[test]
+fn expired_and_limited_keys_are_marked_in_the_list() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let mut identity = stranded_identity(
+            0x3e,
+            &[
+                Purpose::AUTHENTICATION,
+                Purpose::AUTHENTICATION,
+                Purpose::AUTHENTICATION,
+            ],
+            "limits",
+        );
+        // Key 0 stays unlimited; key 1 expired long ago; key 2 has a budget.
+        identity
+            .identity
+            .add_public_key(key(1, Purpose::AUTHENTICATION).with_limits(None, Some(1)));
+        identity
+            .identity
+            .add_public_key(key(2, Purpose::AUTHENTICATION).with_limits(Some(5_000), None));
+
+        let (harness, _) = harness_for(KeysScreen::new(identity, &app_context));
+        assert_eq!(
+            harness.query_all_by_label("Expired").count(),
+            1,
+            "the expired key is marked once"
+        );
+        assert_eq!(
+            harness.query_all_by_label("Limited").count(),
+            1,
+            "the budgeted key is marked once"
+        );
+    });
+}

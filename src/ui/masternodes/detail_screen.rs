@@ -679,14 +679,13 @@ impl MasternodeDetailView {
         );
         ui.horizontal_wrapped(|ui| {
             // The withdrawal screen is reused, scoped to THIS node (FR-9).
-            if ui.button("Withdraw").clicked() {
+            if reveal_on_focus(ui.button("Withdraw")).clicked() {
                 action = Some(self.push(ScreenType::WithdrawalScreen(self.identity.clone())));
             }
             // Evonode-only token-rewards cross-link (FR-11); absent for a plain
             // masternode (TC-FR11-02).
             if self.is_evonode()
-                && ui
-                    .button("Claim token rewards ›")
+                && reveal_on_focus(ui.button("Claim token rewards ›"))
                     .on_hover_text("Claim this evonode's token rewards.")
                     .clicked()
             {

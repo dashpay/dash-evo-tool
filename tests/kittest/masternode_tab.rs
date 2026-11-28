@@ -1410,6 +1410,63 @@ fn tab_reveals_pinned_section_headers_and_buttons() {
     });
 }
 
+fn assert_tab_reveals_pinned_action(label: &str, backwards: bool) {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0xC0,
+            "evo-action-focus",
+            IdentityType::Evonode,
+        );
+        for index in 0..30 {
+            seed_open_contest(&app_context, &format!("row{index:02}"));
+        }
+        harness.set_size(egui::vec2(800.0, 480.0));
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open evo-action-focus").click();
+        harness.run_steps(3);
+        for section in ["Keys", "Danger zone"] {
+            tab_to_detail_control(&mut harness, section);
+            harness.key_press(egui::Key::Enter);
+            harness.run_steps(3);
+        }
+        tab_to_detail_control(&mut harness, "Remove masternode");
+        assert_detail_label_unclipped(&harness, "Remove masternode");
+
+        if backwards {
+            // Approach the rewards button from below, without first revealing Withdraw.
+            for _ in 0..80 {
+                harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+                harness.run_steps(6);
+                if harness.get_by_label(label).is_focused() {
+                    break;
+                }
+            }
+        } else {
+            tab_to_detail_control(&mut harness, label);
+        }
+        assert!(
+            harness.get_by_label(label).is_focused(),
+            "Tab must reach {label}"
+        );
+        assert_detail_label_unclipped(&harness, label);
+    });
+}
+
+#[test]
+fn tab_reveals_pinned_withdraw_button() {
+    assert_tab_reveals_pinned_action("Withdraw", false);
+}
+
+#[test]
+fn tab_reveals_pinned_token_rewards_button() {
+    assert_tab_reveals_pinned_action("Claim token rewards ›", true);
+}
+
 #[test]
 fn segment_round_trip_collapses_danger_zone_and_keeps_node_and_keys() {
     with_isolated_data_dir(|| {

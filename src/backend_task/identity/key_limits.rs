@@ -8,7 +8,8 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_limits::{
-    KeyLimitsError, KeyLimitsRaise, ReviewedSignerUnusable, reviewed_key_limits_signer,
+    KeyLimitsError, KeyLimitsRaise, ReviewedSignerUnusable, merge_proved_key,
+    reviewed_key_limits_signer,
 };
 use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -16,7 +17,7 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use dash_sdk::dpp::identity::signer::Signer;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::Identity;
 use dash_sdk::platform::identity_keys_remaining_budgets::{
     IdentityKeysRemainingBudgets, IdentityKeysRemainingBudgetsQuery,
@@ -68,10 +69,10 @@ impl AppContext {
     ///
     /// The key is read as Platform holds it now. If its limits are not the
     /// ones the user reviewed (raised elsewhere meanwhile), nothing is signed:
-    /// the live keys replace the local copies and the raise is refused, so the
+    /// the live keys are merged into the local copies and the raise is refused, so the
     /// screen quotes it again. The same holds when the reviewed signer can no
     /// longer sign it — another key is never picked in its place. The
-    /// updated key replaces the local copy.
+    /// updated key is merged without undoing newer local observations.
     pub(super) async fn raise_key_limits(
         &self,
         sdk: &Sdk,
@@ -91,7 +92,7 @@ impl AppContext {
             Err(error) => Some(TaskError::from(error)),
             Ok(()) => {
                 reviewed_key_limits_signer(identity.public_keys(), raise.signing_key_id, |key| {
-                    qualified_identity.can_sign_with(key)
+                    qualified_identity.holds_obtainable_key(key)
                 })
                 .err()
                 .map(refused_signer_error)
@@ -104,7 +105,10 @@ impl AppContext {
             let live_keys: Vec<_> = identity.public_keys().values().cloned().collect();
             self.edit_local_qualified_identity(&identity_id, move |fresh| {
                 for key in live_keys {
-                    fresh.identity.add_public_key(key);
+                    fresh.identity.add_public_key(merge_proved_key(
+                        fresh.identity.public_keys().get(&key.id()),
+                        key,
+                    ));
                 }
                 Ok(())
             })?;
@@ -177,7 +181,10 @@ impl AppContext {
             BalanceProvenance::ObservedAt(height)
         });
         self.edit_local_qualified_identity_observed(identity_id, provenance, move |fresh| {
-            fresh.identity.add_public_key(key);
+            fresh.identity.add_public_key(merge_proved_key(
+                fresh.identity.public_keys().get(&key.id()),
+                key,
+            ));
             if let Some((balance, _)) = balance {
                 fresh.identity.set_balance(balance);
             }
@@ -504,5 +511,46 @@ mod tests {
             by_key,
             BTreeMap::from([(1, Some(500)), (2, None), (3, Some(0)), (4, None)])
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn review_1120_late_raise_preserves_newer_limits_and_disable() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+            IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+        };
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            secret_bytes(),
+            secret_bytes(),
+        )
+        .await;
+        let old = dash_sdk::dpp::identity::IdentityPublicKey::random_key(
+            7,
+            None,
+            PlatformVersion::latest(),
+        )
+        .with_limits(Some(9_000), Some(100));
+        let mut newer = old.clone().with_limits(Some(12_000), Some(200));
+        newer.set_disabled_at(50);
+        staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |fresh| {
+                fresh.identity.add_public_key(newer.clone());
+                Ok(())
+            })
+            .unwrap();
+        staged
+            .ctx
+            .finish_raise(staged.id, old, Ok(Some((100, 11))))
+            .unwrap();
+        let stored = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let key = stored.identity.public_keys().get(&7).unwrap();
+        let actual = (key.total_budget(), key.expires_at(), key.disabled_at());
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+        assert_eq!(actual, (Some(12_000), Some(200), Some(50)));
     }
 }

@@ -857,8 +857,9 @@ As a user, I want to remove an identity from this device from the identity's own
 ### IDN-022: Add a key with a spending limit or an expiry [Implemented]
 **Persona:** Priya, Jordan
 
-As a user handing a key to an app or a helper, I want to cap how much that key can ever spend and when it stops working, so that a leaked or forgotten key can do limited damage.
+As a user handing a key to an app or a helper, I want to budget the credits that key can charge to my identity and set when it stops working, so that a leaked or forgotten key can do limited damage.
 
+- The budget covers credits charged to the identity, not the value of tokens the key can act on. The final processing fee can exceed the remaining budget.
 - The Add Key screen offers "Spending Limit" and "Expires After (days)" for authentication keys below the master level.
 - Spending limits and expiry are available before the network version is verified, like other features supported by the app's minimum Platform version.
 - A zero limit, zero days, or an expiry too far in the future is refused before anything is sent.
@@ -874,7 +875,8 @@ As a user whose limited key is running out, I want to add to its spending limit 
 - An expiry is extended from its current date, or from today when the key has already expired.
 - An expired key cannot be topped up on its own; the screen also asks to extend its expiry.
 - Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
-- If the key's limits, or the key that would sign the change, changed elsewhere in the meantime, nothing is sent and the screen shows the current limits and signing key to review again; no other signing key is picked without a new review.
+- If the preflight read detects changed limits or an unusable reviewed signer, nothing is sent and the screen asks for a new review. The app never substitutes another amount or signer; a reviewed signer that remains eligible is kept.
+- Another device can change the key after preflight. The network then decides whether to accept the reviewed raise and can charge a fee even if it refuses it.
 - The change is signed by the identity's master key, or a critical key that has no limits and is not limited to a contract; without either on this device, the screen says which key to import.
 - After the change, the screen shows the key as the network stores it and its new remaining limit.
 

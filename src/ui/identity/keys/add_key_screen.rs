@@ -510,31 +510,35 @@ impl AddKeyScreen {
             return;
         }
 
-        ui.label("Spending Limit:");
+        let budget_label = ui.label("Spending Limit (DASH):");
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.enable_budget, "").on_hover_text(
-                "The most this key can ever spend in total. Once used up, the key can no longer sign.",
+            ui.checkbox(&mut self.enable_budget, "").accessible_name("Enable spending limit").on_hover_text(
+                "This budget covers credits charged to the identity. The final processing fee can exceed the remaining budget. It does not limit token values. Once used up, the key can no longer sign.",
             );
             if self.enable_budget {
                 let input = self.budget_input.get_or_insert_with(|| {
                     AmountInput::new(Amount::new_dash(0.0)).with_hint_text("0.1")
                 });
                 let response = input.show(ui);
+                response.inner.response.clone().labelled_by(budget_label.id);
                 response.inner.update(&mut self.budget);
             }
         });
         ui.end_row();
 
-        ui.label("Expires After (days):");
+        let expiry_label = ui.label("Expires After (days):");
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.enable_expiry, "")
+                .accessible_name("Enable expiry")
                 .on_hover_text("After this many days the key can no longer sign.");
             if self.enable_expiry {
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.validity_days_input)
-                        .hint_text("30")
-                        .desired_width(80.0),
-                );
+                let response = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.validity_days_input)
+                            .hint_text("30")
+                            .desired_width(80.0),
+                    )
+                    .labelled_by(expiry_label.id);
                 if response.changed() {
                     self.validity_days_error = None;
                 }
@@ -2190,8 +2194,16 @@ mod tests {
         harness.run();
         assert!(harness.state().enable_budget);
         assert!(harness.state().enable_expiry);
-        assert!(harness.query_by_label("Spending Limit:").is_some());
-        assert!(harness.query_by_label("Expires After (days):").is_some());
+        assert!(
+            harness
+                .query_by_role_and_label(egui::accesskit::Role::TextInput, "Spending Limit (DASH):")
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_role_and_label(egui::accesskit::Role::TextInput, "Expires After (days):")
+                .is_some()
+        );
     }
 
     /// Regression: a mistyped number of days surfaced as a global error banner
@@ -2258,5 +2270,34 @@ mod tests {
         );
         assert!(status(TaskError::MasterKeyNotFound).is_none());
         assert!(status(TaskError::IdentityKeyProtectionDowngrade).is_none());
+    }
+    #[test]
+    fn review_1120_budget_fields_name_their_dash_unit() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity = crate::context::test_support::bare_user_identity(
+            dash_sdk::platform::Identifier::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+        let mut screen = AddKeyScreen::new(identity, &ctx);
+        screen.purpose = Purpose::AUTHENTICATION;
+        screen.security_level = SecurityLevel::HIGH;
+        screen.enable_budget = true;
+        screen.enable_expiry = true;
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                egui::Grid::new("limits").show(ui, |ui| screen.render_limits_rows(ui));
+            },
+            screen,
+        );
+        harness.run();
+        assert!(
+            harness
+                .query_by_role_and_label(egui::accesskit::Role::TextInput, "Spending Limit (DASH):")
+                .is_some()
+        );
+        assert!(harness.query_by_label("Enable spending limit").is_some());
+        assert!(harness.query_by_label("Enable expiry").is_some());
     }
 }

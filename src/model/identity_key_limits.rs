@@ -151,13 +151,34 @@ pub fn key_limits_update_signer<'a>(
 /// enabled MASTER authentication key, or an enabled CRITICAL one with no
 /// limits and no contract bounds.
 fn may_sign_key_limits_update(key: &IdentityPublicKey) -> bool {
-    key.purpose() == Purpose::AUTHENTICATION
+    crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES.contains(&key.key_type())
+        && key.purpose() == Purpose::AUTHENTICATION
         && key.disabled_at().is_none()
         && match key.security_level() {
             SecurityLevel::MASTER => true,
             SecurityLevel::CRITICAL => !key.has_limits() && key.contract_bounds().is_none(),
             _ => false,
         }
+}
+
+/// Merge a proved key without undoing a newer raise or permanent disable.
+pub fn merge_proved_key(
+    held: Option<&IdentityPublicKey>,
+    mut proved: IdentityPublicKey,
+) -> IdentityPublicKey {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    if let Some(held) = held.filter(|held| held.id() == proved.id() && held.data() == proved.data())
+    {
+        let budget = held.total_budget().max(proved.total_budget());
+        let expiry = held.expires_at().max(proved.expires_at());
+        if (budget, expiry) != (proved.total_budget(), proved.expires_at()) {
+            proved = proved.with_limits(budget, expiry);
+        }
+        if let Some(disabled_at) = held.disabled_at().max(proved.disabled_at()) {
+            proved.set_disabled_at(disabled_at);
+        }
+    }
+    proved
 }
 
 /// Why the signer a key limits update was reviewed with cannot sign it.
@@ -799,6 +820,27 @@ mod tests {
         assert_eq!(
             raised_key_limits(&disabled, Some(1), None, NOW),
             Err(KeyLimitsError::KeyDisabled)
+        );
+    }
+
+    #[test]
+    fn review_1120_signer_rejects_eddsa_and_keeps_reviewed_eligible_key() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let mut eddsa = signer_key(0, SecurityLevel::CRITICAL);
+        eddsa.set_key_type(KeyType::EDDSA_25519_HASH160);
+        let ecdsa = signer_key(1, SecurityLevel::CRITICAL);
+        let keys = BTreeMap::from([(0, eddsa), (1, ecdsa)]);
+        assert_eq!(
+            key_limits_update_signer(keys.values(), |_| true).map(|k| k.id()),
+            Some(1)
+        );
+        assert_eq!(
+            reviewed_key_limits_signer(&keys, 0, |_| true),
+            Err(ReviewedSignerUnusable::SignerChanged)
+        );
+        assert_eq!(
+            reviewed_key_limits_signer(&keys, 1, |_| true).map(|k| k.id()),
+            Ok(1)
         );
     }
 }

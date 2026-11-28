@@ -96,6 +96,18 @@ impl AppContext {
         // entering with nothing to do is harmless. The upstream 60 s
         // ShieldedSyncManager loop picks up any newly bound wallets automatically.
         let wallet = Arc::clone(wallet);
+        // The whole bootstrap is one operation Clear Database cannot run
+        // under, admitted before the seed is read. Admission waits out a
+        // running clear, which forgets the wallet; the bootstrap then stops
+        // instead of registering and binding it again.
+        let admission = backend.shielded_operation_admission().await;
+        if !self.wallet_context().contains_hd(&seed_hash) {
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                "Wallet bootstrap dropped; the wallet was cleared while it waited"
+            );
+            return;
+        }
         let result = backend
             .secret_access()
             .with_secret_session(
@@ -135,8 +147,9 @@ impl AppContext {
                     // Best-effort — a failure only defers the first shielded op prompt.
                     // The upstream ShieldedSyncManager 60s loop picks up any newly
                     // bound wallets automatically; no manual sync trigger needed.
-                    if let Err(error) =
-                        backend.ensure_shielded_bound(&seed_hash, seed).await
+                    if let Err(error) = backend
+                        .ensure_shielded_bound_admitted(&admission, &seed_hash, seed)
+                        .await
                     {
                         tracing::debug!(
                             wallet = %hex::encode(seed_hash),

@@ -374,6 +374,58 @@ pub enum TaskError {
     )]
     WalletDataClearUnavailable,
 
+    /// Clearing saved wallet data was refused before anything was deleted: a
+    /// shielded bind, payment or sync pass was still running, and the shielded
+    /// data cannot be cleared under it. `source` is upstream's refusal, absent
+    /// when DET's own operation gate refused. Clearing again once it has
+    /// finished deletes everything.
+    #[error(
+        "A shielded transaction, a shielded balance update or a wallet setup is still running, so nothing was cleared. Wait for it to finish, then clear your data again."
+    )]
+    WalletDataClearShieldedBusy {
+        #[source]
+        source: Option<std::sync::Arc<platform_wallet::error::PlatformWalletError>>,
+    },
+
+    /// Clearing saved wallet data stopped because the shielded reset failed.
+    /// Nothing DET stores was deleted, but upstream may have reset part of the
+    /// shielded store (the commitment tree before a failed subwallet purge,
+    /// or part of either) and always drops its in-memory sync state, so the
+    /// shielded balance resynchronizes.
+    #[error(
+        "Clear Database stopped because the shielded balance file at \"{path}\" could not be reset. \
+        Your wallets and keys are still saved. Some local shielded balance data may already have been removed. \
+        Check that your disk has free space and that the app can write to its data folder. Restart the app and try clearing again. \
+        If it keeps failing, first wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
+        Then close the app and back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
+        Delete the file and those matching files manually. \
+        Deleting the file means your shielded balances must sync again. Reopen the app, connect to the network and unlock your wallets if needed. \
+        Wait for the sync to finish, then check your shielded balances to confirm the rebuild and clear your data again. \
+        Do not repeat a payment that arrived, and do not resend one you are unsure about based on the balance alone.",
+        path = .path.display()
+    )]
+    WalletDataClearShieldedResetFailed {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Clearing saved wallet data was refused before anything was deleted: no
+    /// shielded coordinator is configured, so the shielded store cannot be
+    /// reset.
+    #[error(
+        "Clear Database stopped before deleting any data because the shielded balance file at \"{path}\" was unavailable. \
+        Check that your disk has free space and that the app can write to its data folder. Restart the app and try clearing again. \
+        If it keeps failing, first wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
+        Then close the app. If the file exists, back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
+        Delete the file and those matching files manually. \
+        Deleting the file means your shielded balances must sync again. Reopen the app, connect to the network and unlock your wallets if needed. \
+        Wait for the sync to finish, then check your shielded balances to confirm the rebuild and clear your data again. \
+        Do not repeat a payment that arrived, and do not resend one you are unsure about based on the balance alone.",
+        path = .path.display()
+    )]
+    WalletDataClearShieldedUnavailable { path: std::path::PathBuf },
+
     /// Clearing saved wallet data ran to completion, but at least one
     /// secret-bearing delete failed, so some data may still be on disk.
     #[error(
@@ -3811,13 +3863,13 @@ pub enum TaskError {
         "The app could not open the shielded balance file at \"{path}\". \
         Your wallets and keys are still saved. \
         Check that your disk has free space and that the app can write to its data folder, then try again. \
-        If it keeps failing and the file exists, first wait until every shielded payment, transfer, unshield and withdrawal you made recently has arrived, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
-        Do not send any of them again until the new file has synced and you have checked your shielded balances. \
+        If it keeps failing and the file exists, first wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal, including those to your own wallets, because this file also keeps the records of shielded operations that are still pending. \
         Then close the app and back up the file together with any matching files ending in -wal, -shm, or -journal, keeping their names. \
         Delete the file and those matching files manually. \
         Reopen the app, connect to the network and unlock your wallets if needed. \
         The app will create a new file and sync your shielded balances again. \
-        Wait for the sync to finish, then check your shielded balances.",
+        Wait for the sync to finish, then check your shielded balances to confirm the rebuild. \
+        Do not repeat a payment that arrived, and do not resend one you are unsure about based on the balance alone.",
         path = .path.display()
     )]
     ShieldedStoreOpenFailed {

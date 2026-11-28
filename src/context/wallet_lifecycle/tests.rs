@@ -179,16 +179,17 @@ async fn shielded_store_startup_failure_explains_manual_recovery() {
     for step in [
         "Your wallets and keys are still saved",
         "free space",
-        "every shielded payment, transfer, unshield and withdrawal",
+        "wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal",
         "including those to your own wallets",
-        "Do not send any of them again until the new file has synced",
         "close the app",
         "back up the file together with any matching files ending in -wal, -shm, or -journal",
         "Delete the file and those matching files manually",
         "Reopen the app",
         "create a new file",
         "Wait for the sync to finish",
-        "check your shielded balances",
+        "check your shielded balances to confirm the rebuild",
+        "Do not repeat a payment that arrived",
+        "do not resend one you are unsure about based on the balance alone",
     ] {
         remaining = remaining
             .split_once(step)
@@ -2643,31 +2644,728 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     }
 }
 
+/// When upstream refuses the shielded reset because one of its own shielded
+/// operations runs, Clear Database must delete nothing — no seed, no wallet
+/// record — and say to clear again once the operation has finished, instead
+/// of deleting the keys and leaving the shielded data behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
+async fn clear_network_database_deletes_nothing_when_upstream_refuses_the_shielded_reset() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend.set_clear_shielded_test_refusal(true);
+
+    let result = ctx.clear_network_database().await;
+
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let meta_kept = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .is_some();
+    let wallet_loaded = ctx.wallet_context().has_hd_wallets();
+    backend.shutdown().await;
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearShieldedBusy { .. })),
+        "a refused shielded reset must stop the clear: {result:?}"
+    );
+    assert!(
+        seed_kept,
+        "the seed must not be deleted when nothing can be cleared"
+    );
+    assert!(
+        meta_kept,
+        "the wallet record must not be deleted when nothing can be cleared"
+    );
+    assert!(
+        wallet_loaded,
+        "the wallet must stay loaded when nothing was cleared"
+    );
+}
+
+/// While Clear Database excludes shielded operations, every DET shielded
+/// payment must wait for admission instead of running alongside the wipe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_payments_wait_while_clear_database_excludes_them() {
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    backend.set_clear_shielded_test_failure(true);
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        crate::test_support::keys::seed(),
+        Network::Testnet,
+        None,
+        None,
+    )
+    .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let path_index =
+        crate::wallet_backend::PlatformPathIndex::from_wallet(&wallet, Network::Testnet);
+    let orchard_keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
+        &crate::test_support::keys::seed(),
+        Network::Testnet,
+        0,
+    )
+    .expect("Orchard keys");
+    let orchard_raw = orchard_keys.address_at(0).to_raw_address_bytes();
+    let recipient = dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(&orchard_raw)
+        .expect("Orchard address");
+
+    type Payment =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), TaskError>> + Send>>;
+    let payments: Vec<(&str, Payment)> = vec![
+        ("shield from an asset lock", {
+            let backend = Arc::clone(&backend);
+            let funding =
+                platform_wallet::wallet::asset_lock::AssetLockFunding::FromWalletBalance {
+                    amount_duffs: 100_000,
+                    account_index: 0,
+                };
+            Box::pin(async move {
+                backend
+                    .shield_from_asset_lock(&seed_hash, funding, recipient, 0, None)
+                    .await
+            })
+        }),
+        ("shield from a balance", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shield_from_balance(&seed_hash, &path_index, 0, 0, 100_000)
+                    .await
+            })
+        }),
+        ("shielded transfer", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shielded_transfer(&seed_hash, 0, &orchard_raw, 100_000, [0; 36])
+                    .await
+            })
+        }),
+        ("unshield", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shielded_unshield(&seed_hash, 0, "unused", 100_000)
+                    .await
+            })
+        }),
+        ("shielded withdrawal", {
+            let backend = Arc::clone(&backend);
+            Box::pin(async move {
+                backend
+                    .shielded_withdraw(&seed_hash, 0, "unused", 100_000, 1)
+                    .await
+            })
+        }),
+    ];
+
+    let exclusion = backend
+        .try_exclude_shielded_operations()
+        .expect("no shielded operation runs yet");
+    let mut waiting = Vec::new();
+    for (name, payment) in payments {
+        let requests_before = backend.shielded_admission_requests();
+        let task = tokio::spawn(payment);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while backend.shielded_admission_requests() == requests_before {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the {name} must ask for shielded admission"));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !task.is_finished(),
+            "the {name} must wait while Clear Database excludes shielded operations"
+        );
+        waiting.push((name, task));
+    }
+    drop(exclusion);
+    for (name, task) in waiting {
+        // Only admission matters here: the payment then fails, because the
+        // test wallet is not loaded.
+        let _outcome = tokio::time::timeout(std::time::Duration::from_secs(30), task)
+            .await
+            .unwrap_or_else(|_| panic!("the {name} must go on once Clear Database ends"))
+            .expect("payment task");
+    }
+    backend.shutdown().await;
+}
+
+/// A shielded bind that already holds its wallet handle and seed when Clear
+/// Database starts must make the clear refuse, deleting nothing: otherwise the
+/// bind resumes after the shielded reset and writes the wallet's shielded
+/// state back while its seed is being deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_refuses_while_a_shielded_bind_runs() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+    let barrier = backend.set_shielded_bind_test_barrier();
+    let bind = tokio::spawn({
+        let backend = backend.clone();
+        async move { backend.ensure_shielded_bound(&seed_hash, &seed).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), barrier.wait())
+        .await
+        .expect("the bind reaches its pause");
+
+    let result = ctx.clear_network_database().await;
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let meta_kept = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .is_some();
+    barrier.wait().await;
+    let bind = bind.await.expect("bind task");
+    backend.shutdown().await;
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearShieldedBusy { .. })),
+        "a running shielded bind must stop the clear: {result:?}"
+    );
+    assert!(
+        seed_kept,
+        "the seed must not be deleted while the bind runs"
+    );
+    assert!(
+        meta_kept,
+        "the wallet record must not be deleted while the bind runs"
+    );
+    assert!(bind.is_ok(), "the bind finishes once released: {bind:?}");
+}
+
+/// A wallet bootstrap registers the wallet upstream and binds its shielded
+/// keys as one operation. Clear must not delete the seed while that
+/// registration is under way, or the wallet is published and bound afterwards
+/// with no saved seed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_refuses_while_a_wallet_bootstrap_registers() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    WalletSeedView::new(&ctx.secret_store())
+        .set_raw(&seed_hash, &seed)
+        .expect("save the seed");
+    let wallet = Arc::new(std::sync::RwLock::new(wallet));
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+
+    let pause = backend.set_registration_test_pause();
+    let bootstrap = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.bootstrap_wallet_addresses_jit(&wallet).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the bootstrap reaches registration");
+    let result = ctx.clear_network_database().await;
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the bootstrap resumes");
+    tokio::time::timeout(std::time::Duration::from_secs(30), bootstrap)
+        .await
+        .expect("the bootstrap finishes")
+        .expect("bootstrap task");
+    let registered = backend.is_wallet_registered(&seed_hash);
+    backend.shutdown().await;
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearShieldedBusy { .. })),
+        "a running wallet bootstrap must stop the clear: {result:?}"
+    );
+    assert!(seed_kept, "a refused clear must keep the seed");
+    assert!(registered, "the bootstrap finishes its registration");
+}
+
+/// A wallet bootstrap that starts while Clear Database runs must not register
+/// or bind the cleared wallet once the clear has finished, even though the
+/// seed was still saved when it started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wallet_bootstrap_started_during_a_clear_does_not_restore_the_wallet() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    WalletSeedView::new(&ctx.secret_store())
+        .set_raw(&seed_hash, &seed)
+        .expect("save the seed");
+    WalletMetaView::new(&ctx.app_kv())
+        .set(
+            Network::Testnet,
+            &seed_hash,
+            &WalletMeta {
+                xpub_encoded: wallet
+                    .master_bip44_ecdsa_extended_public_key
+                    .encode()
+                    .to_vec(),
+                ..Default::default()
+            },
+        )
+        .expect("save the wallet record");
+    let wallet = Arc::new(std::sync::RwLock::new(wallet));
+    ctx.wallet_context()
+        .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+
+    let pause = backend.set_clear_test_pause();
+    let clear = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.clear_network_database().await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the clear reaches its pause");
+
+    let requests_before = backend.shielded_admission_requests();
+    let bootstrap = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.bootstrap_wallet_addresses_jit(&wallet).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while backend.shielded_admission_requests() == requests_before {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the bootstrap waits for admission");
+
+    tokio::time::timeout(std::time::Duration::from_secs(30), pause.wait())
+        .await
+        .expect("the clear resumes");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), clear)
+        .await
+        .expect("the clear finishes")
+        .expect("clear task");
+    tokio::time::timeout(std::time::Duration::from_secs(30), bootstrap)
+        .await
+        .expect("the bootstrap finishes")
+        .expect("bootstrap task");
+    let seed_left = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let registered = backend.is_wallet_registered(&seed_hash);
+    let upstream = backend.upstream_wallet_ids().await;
+    backend.shutdown().await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(!seed_left, "the clear deletes the seed");
+    assert!(
+        !registered,
+        "the bootstrap must not register the cleared wallet"
+    );
+    assert!(
+        upstream.is_empty(),
+        "upstream wallets restored: {upstream:?}"
+    );
+}
+
+/// Clear Database reports success only once the upstream wallet is removed,
+/// while its shielded exclusion still holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_removes_the_upstream_wallet_before_returning() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+    assert!(!backend.upstream_wallet_ids().await.is_empty());
+
+    let result = ctx.clear_network_database().await;
+    let remaining = backend.upstream_wallet_ids().await;
+    backend.shutdown().await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(remaining.is_empty(), "upstream wallets left: {remaining:?}");
+}
+
+/// Removing a wallet cascades to the identities it owns and drops their
+/// stored records, which are the only list of their vault keys. Clear must
+/// delete those keys first, so a wallet-owned identity's vaulted key (kept
+/// outside any retained-import inventory) does not survive the clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_wipes_keys_of_a_wallet_owned_identity() {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let key_id = key.id();
+    let mut private_keys = KeyStorage::default();
+    private_keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+        ),
+    );
+    let identity_id = Identifier::from([0x44u8; 32]);
+    let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+    let qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: Some(0),
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist local identity");
+    backend
+        .ensure_identity_managed(&seed_hash, &qi.identity, 0)
+        .await
+        .expect("the wallet owns the identity upstream");
+
+    let store = ctx.secret_store();
+    let view = IdentityKeyView::new(&store, identity_id.to_buffer());
+    assert!(
+        view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+            .expect("vault read before clear")
+            .is_some(),
+        "precondition: the identity private key is in the vault before clear"
+    );
+
+    let result = ctx.clear_network_database().await;
+    let key_left = view
+        .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+        .expect("vault read after clear")
+        .is_some();
+    backend.shutdown().await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        !key_left,
+        "the wallet-owned identity's vault key must be deleted"
+    );
+}
+
+/// Run Clear Database with a failing shielded reset, set up by `fail`, over a
+/// wallet registered upstream, a stored identity with a vaulted key and an
+/// upgrade backup, and assert that none of it was deleted. Returns the error.
+async fn clear_with_failing_shielded_reset(
+    fail: impl FnOnce(&crate::wallet_backend::WalletBackend),
+) -> TaskError {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let seed = crate::test_support::keys::seed();
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let key_id = key.id();
+    let mut private_keys = KeyStorage::default();
+    private_keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+        ),
+    );
+    let identity_id = Identifier::from([0x55u8; 32]);
+    let qi = QualifiedIdentity {
+        identity: Identity::create_basic_identity(identity_id, pv).expect("basic identity"),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist local identity");
+    let backup = ctx
+        .data_dir()
+        .join("det-testnet.sqlite.platform-67d4ef3-backup-fixture.sqlite");
+    std::fs::write(&backup, b"old wallet history").unwrap();
+    fail(&backend);
 
     let result = ctx.clear_network_database().await;
 
+    let seed_kept = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read")
+        .is_some();
+    let meta_kept = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .is_some();
+    let wallet_loaded = ctx.wallet_context().has_hd_wallets();
+    let upstream_kept =
+        backend.is_wallet_registered(&seed_hash) && !backend.upstream_wallet_ids().await.is_empty();
+    let identity_kept = ctx.local_identity_ids().expect("list identities") == vec![identity_id];
+    let identity_key_kept = IdentityKeyView::new(&ctx.secret_store(), identity_id.to_buffer())
+        .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+        .expect("identity vault read")
+        .is_some();
+    let backup_kept = backup.exists();
     backend.shutdown().await;
-    match result {
-        Err(TaskError::WalletDataClearIncomplete {
-            failed,
-            first_error,
-        }) => {
-            assert_eq!(failed, 1, "the shielded clear should be the only failure");
-            assert!(
-                matches!(*first_error, TaskError::WalletDataClearUnavailable),
-                "the aggregate must preserve the shielded clear error"
-            );
+
+    assert!(seed_kept, "the seed must not be deleted");
+    assert!(meta_kept, "the wallet record must not be deleted");
+    assert!(wallet_loaded, "the wallet must stay loaded");
+    assert!(upstream_kept, "the upstream wallet must not be removed");
+    assert!(identity_kept, "the identity must stay listed");
+    assert!(identity_key_kept, "the identity key must not be deleted");
+    assert!(backup_kept, "the upgrade backup must not be deleted");
+    result.expect_err("a failed shielded reset must stop the clear")
+}
+
+/// Upstream keeps the shielded notes when the commitment-tree reset fails and
+/// the caller must keep its own data: Clear Database stops before deleting
+/// anything and says the shielded data may be partly reset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_when_the_commitment_tree_reset_fails() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShieldedStoreError(
+                "reset_commitment_tree failed: disk I/O error".into(),
+            ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedResetFailed { .. }),
+        "{error:?}"
+    );
+}
+
+/// A subwallet purge fails after the tree was reset: still nothing of DET's is
+/// deleted, and the error does not claim that nothing was cleared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_when_the_subwallet_purge_fails() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShieldedStoreError(
+                "purge_all_subwallets failed: database is locked".into(),
+            ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedResetFailed { .. }),
+        "{error:?}"
+    );
+    assert!(!error.to_string().contains("nothing was"), "{error}");
+}
+
+/// Without a shielded coordinator the shielded store cannot be reset, so
+/// Clear Database deletes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_without_a_shielded_coordinator() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_coordinator_missing()
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedUnavailable { .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_shielded_store_failure_explains_manual_recovery() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("wire backend");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let path = ctx.data_dir().join("det-testnet-shielded.sqlite");
+    backend.set_clear_shielded_test_error(
+        platform_wallet::error::PlatformWalletError::ShieldedStoreError(
+            "database disk image is malformed".into(),
+        ),
+    );
+    let reset_failure = ctx
+        .clear_network_database()
+        .await
+        .expect_err("reset failed");
+    backend.set_clear_shielded_test_coordinator_missing();
+    let unavailable = ctx
+        .clear_network_database()
+        .await
+        .expect_err("store unavailable");
+    backend.shutdown().await;
+
+    for error in [reset_failure, unavailable] {
+        let message = error.to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        let (before_deletion, after_deletion) = message
+            .split_once("Delete the file and those matching files manually")
+            .unwrap_or_else(|| panic!("missing backup and deletion advice: {message}"));
+        let mut before = before_deletion;
+        for step in [
+            "wait at least 15 minutes after your most recent shielded payment, transfer, unshield or withdrawal",
+            "including those to your own wallets",
+            "close the app",
+            "back up the file together with any matching files ending in -wal, -shm, or -journal",
+        ] {
+            before = before
+                .split_once(step)
+                .unwrap_or_else(|| panic!("missing or out of order: {step:?} in {message}"))
+                .1;
         }
-        other => panic!("shielded clear failure must make clear incomplete: {other:?}"),
+        assert!(after_deletion.contains("sync again"), "{message}");
+        let mut remaining = after_deletion;
+        for step in [
+            "then check your shielded balances to confirm the rebuild",
+            "clear your data again",
+            "Do not repeat a payment that arrived",
+            "do not resend one you are unsure about based on the balance alone",
+        ] {
+            remaining = remaining
+                .split_once(step)
+                .unwrap_or_else(|| panic!("missing or out of order: {step:?} in {message}"))
+                .1;
+        }
     }
+}
+
+/// A shielded sync pass that does not stop in time makes upstream refuse the
+/// reset: nothing is deleted and the user waits for it to finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_when_shielded_sync_does_not_stop() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShutdownIncomplete(
+                "shielded sync pass did not drain".into(),
+            ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedBusy { .. }),
+        "{error:?}"
+    );
+}
+
+/// A shielded operation in flight makes upstream refuse the reset: nothing is
+/// deleted and the user waits for it to finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_deletes_nothing_while_a_shielded_operation_holds_upstream() {
+    let error = clear_with_failing_shielded_reset(|backend| {
+        backend.set_clear_shielded_test_error(
+            platform_wallet::error::PlatformWalletError::ShieldedOperationInProgress,
+        )
+    })
+    .await;
+    assert!(
+        matches!(error, TaskError::WalletDataClearShieldedBusy { .. }),
+        "{error:?}"
+    );
 }
 
 /// A legacy shielded-file removal failure must not skip upgrade-backup removal:
@@ -8778,7 +9476,7 @@ async fn clearing_the_network_database_removes_search_notices() {
         ctx.connection_status().set_spv_status(SpvStatus::Syncing);
         unlock_for_one_operation_before_sync(&ctx, &seed_hash, &wallet, password).await;
         let backend = ctx.wallet_backend().expect("backend wired");
-        backend.set_clear_shielded_test_failure(partial_failure);
+        backend.set_forget_wallet_local_state_test_failure(partial_failure);
 
         let result = ctx.clear_network_database().await;
 

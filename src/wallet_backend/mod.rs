@@ -396,16 +396,33 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
+    /// Held shared by every DET shielded bind and payment, and every wallet
+    /// bootstrap, for its whole run, and exclusively by Clear Database from before the shielded reset until
+    /// every key and wallet is deleted. Upstream's own admission covers only
+    /// the reset, so a bind waiting behind it would otherwise resume mid-wipe.
+    shielded_lifecycle: tokio::sync::RwLock<()>,
+    #[cfg(test)]
+    shielded_bind_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_attempts: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
+    registration_test_pause: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    clear_test_pause: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    shielded_admission_requests: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
-    clear_shielded_test_failure: std::sync::atomic::AtomicBool,
+    clear_shielded_test_error: std::sync::Mutex<Option<PlatformWalletError>>,
+    #[cfg(test)]
+    clear_shielded_test_coordinator_missing: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    clear_shielded_test_refusal: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
     /// Runs once at the end of [`WalletBackend::forget_all_wallets_local`],
@@ -747,16 +764,29 @@ impl WalletBackend {
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                shielded_lifecycle: tokio::sync::RwLock::new(()),
+                #[cfg(test)]
+                shielded_bind_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_attempts: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
                 registration_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
+                registration_test_pause: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                clear_test_pause: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                shielded_admission_requests: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
                 #[cfg(test)]
-                clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
+                clear_shielded_test_error: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                clear_shielded_test_coordinator_missing: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                clear_shielded_test_refusal: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -1281,6 +1311,18 @@ impl WalletBackend {
         if let Some(barrier) = registration_test_barrier {
             barrier.wait().await;
         }
+        #[cfg(test)]
+        let registration_test_pause = self
+            .inner
+            .registration_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        #[cfg(test)]
+        if let Some(pause) = registration_test_pause {
+            pause.wait().await;
+            pause.wait().await;
+        }
         let outcome = flight
             .outcome
             .get_or_init(|| async {
@@ -1380,6 +1422,98 @@ impl WalletBackend {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Admission for a shielded bind or payment, held for its whole run. Waits
+    /// while Clear Database runs, so an operation that started behind it finds
+    /// the wallet already gone.
+    pub(crate) async fn shielded_operation_admission(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        #[cfg(test)]
+        self.inner
+            .shielded_admission_requests
+            .fetch_add(1, Ordering::SeqCst);
+        self.inner.shielded_lifecycle.read().await
+    }
+
+    /// How many shielded operation admissions were requested, granted or not.
+    #[cfg(test)]
+    pub(crate) fn shielded_admission_requests(&self) -> usize {
+        self.inner
+            .shielded_admission_requests
+            .load(Ordering::SeqCst)
+    }
+
+    /// Pause the next Clear Database twice on a two-party barrier, once it
+    /// excludes shielded operations and before it deletes anything.
+    #[cfg(test)]
+    pub(crate) fn set_clear_test_pause(&self) -> Arc<tokio::sync::Barrier> {
+        let pause = Arc::new(tokio::sync::Barrier::new(2));
+        *self
+            .inner
+            .clear_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&pause));
+        pause
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn clear_test_pause_point(&self) {
+        let pause = self
+            .inner
+            .clear_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(pause) = pause {
+            pause.wait().await;
+            pause.wait().await;
+        }
+    }
+
+    /// Exclude every DET shielded bind and payment until the guard drops, or
+    /// refuse at once while one runs. Clear Database holds it across the whole
+    /// wipe; it never waits, so no operation queues behind a waiting Clear.
+    pub(crate) fn try_exclude_shielded_operations(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, TaskError> {
+        self.inner
+            .shielded_lifecycle
+            .try_write()
+            .map_err(|_| TaskError::WalletDataClearShieldedBusy { source: None })
+    }
+
+    /// Wallet ids the upstream manager holds, including loaded wallets no DET
+    /// wallet matches.
+    pub(crate) async fn upstream_wallet_ids(&self) -> Vec<WalletId> {
+        self.inner.pwm.wallet_ids().await
+    }
+
+    /// Pause the next shielded bind twice on a two-party barrier, once it holds
+    /// its wallet handle: when it gets there, and before it binds.
+    #[cfg(test)]
+    pub(crate) fn set_shielded_bind_test_barrier(&self) -> Arc<tokio::sync::Barrier> {
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        *self
+            .inner
+            .shielded_bind_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    /// Pause the next W2 registration twice on a two-party barrier, before it
+    /// publishes the wallet: when it gets there, and before it registers.
+    #[cfg(test)]
+    pub(crate) fn set_registration_test_pause(&self) -> Arc<tokio::sync::Barrier> {
+        let pause = Arc::new(tokio::sync::Barrier::new(2));
+        *self
+            .inner
+            .registration_test_pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&pause));
+        pause
+    }
+
     #[cfg(test)]
     pub(crate) fn set_registration_test_barrier(&self, parties: usize) {
         *self
@@ -1418,11 +1552,32 @@ impl WalletBackend {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Make the next shielded clear fail with `error` in place of upstream's
+    /// own result.
     #[cfg(test)]
-    pub(crate) fn set_clear_shielded_test_failure(&self, fail: bool) {
+    pub(crate) fn set_clear_shielded_test_error(&self, error: PlatformWalletError) {
+        *self
+            .inner
+            .clear_shielded_test_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error);
+    }
+
+    /// Make the shielded clear find no shielded coordinator configured.
+    #[cfg(test)]
+    pub(crate) fn set_clear_shielded_test_coordinator_missing(&self) {
         self.inner
-            .clear_shielded_test_failure
-            .store(fail, std::sync::atomic::Ordering::Relaxed);
+            .clear_shielded_test_coordinator_missing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Make the shielded clear return upstream's refusal for an operation in
+    /// flight, as `clear_shielded` gets it while a shielded payment runs.
+    #[cfg(test)]
+    pub(crate) fn set_clear_shielded_test_refusal(&self, refuse: bool) {
+        self.inner
+            .clear_shielded_test_refusal
+            .store(refuse, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -1884,26 +2039,44 @@ impl WalletBackend {
 
     /// Reset the upstream shielded coordinator for this network: quiesces the
     /// 60-second sync loop and empties the coordinator's per-subwallet store so
-    /// the next bind cold-resyncs from index 0. Idempotent and a no-op when
-    /// shielded support was never configured. Used by the "delete all local
-    /// data" sweep.
-    pub(crate) async fn clear_shielded(&self) -> Result<(), TaskError> {
+    /// the next bind cold-resyncs from index 0. Used by the "delete all local
+    /// data" sweep, which must keep its own data when this fails.
+    pub(crate) async fn clear_shielded(&self, data_dir: &Path) -> Result<(), TaskError> {
+        let path = shielded_database_path(data_dir, self.inner.network);
+        let path = std::path::absolute(&path).unwrap_or(path);
+        // Upstream reports a missing coordinator as a store error, like a
+        // failed reset; asked first, it is known to have cleared nothing.
+        let coordinator_missing = self.inner.pwm.shielded_coordinator().await.is_none();
+        #[cfg(test)]
+        let coordinator_missing = coordinator_missing
+            || self
+                .inner
+                .clear_shielded_test_coordinator_missing
+                .load(std::sync::atomic::Ordering::Relaxed);
+        if coordinator_missing {
+            return Err(TaskError::WalletDataClearShieldedUnavailable { path });
+        }
+        let map_error = |error| shielded_clear_error(error, path);
+        #[cfg(test)]
+        if let Some(error) = self
+            .inner
+            .clear_shielded_test_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            return Err(map_error(error));
+        }
         #[cfg(test)]
         if self
             .inner
-            .clear_shielded_test_failure
+            .clear_shielded_test_refusal
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return Err(TaskError::WalletDataClearUnavailable);
+            return Err(map_error(PlatformWalletError::ShieldedOperationInProgress));
         }
 
-        self.inner
-            .pwm
-            .clear_shielded()
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })
+        self.inner.pwm.clear_shielded().await.map_err(map_error)
     }
 
     /// Remove a wallet from the upstream `det-<network>.sqlite` persistor
@@ -3598,6 +3771,23 @@ fn shield_capacity_exceeded_error(
     }
 }
 
+/// Classify a failed shielded clear. Upstream refuses before clearing
+/// anything while a shielded operation holds its admission or a sync pass
+/// does not drain (that one after cancelling sync); every other failure may
+/// come after part of the reset.
+fn shielded_clear_error(e: PlatformWalletError, path: std::path::PathBuf) -> TaskError {
+    match e {
+        PlatformWalletError::ShieldedOperationInProgress
+        | PlatformWalletError::ShutdownIncomplete(_) => TaskError::WalletDataClearShieldedBusy {
+            source: Some(Arc::new(e)),
+        },
+        e => TaskError::WalletDataClearShieldedResetFailed {
+            path,
+            source: Arc::new(e),
+        },
+    }
+}
+
 /// Map a [`PlatformWalletError`] from any shielded operation to the correct
 /// [`TaskError`] variant.
 ///
@@ -4584,6 +4774,29 @@ mod tests {
         platform_wallet::error::PlatformWalletError::Sdk(
             dash_sdk::Error::StateTransitionBroadcastError(broadcast_error),
         )
+    }
+
+    /// Upstream's two refusals of a shielded clear come before it clears
+    /// anything, so they are told apart from a reset that failed part-way.
+    #[test]
+    fn shielded_clear_refusals_are_busy_and_other_failures_are_not() {
+        let path = std::path::PathBuf::from("det-testnet-shielded.sqlite");
+        for refusal in [
+            PlatformWalletError::ShieldedOperationInProgress,
+            PlatformWalletError::ShutdownIncomplete("shielded sync pass did not drain".into()),
+        ] {
+            assert!(matches!(
+                shielded_clear_error(refusal, path.clone()),
+                TaskError::WalletDataClearShieldedBusy { .. }
+            ));
+        }
+        assert!(matches!(
+            shielded_clear_error(
+                PlatformWalletError::ShieldedStoreError("reset_commitment_tree failed".into()),
+                path,
+            ),
+            TaskError::WalletDataClearShieldedResetFailed { .. }
+        ));
     }
 
     /// Covers the managed-state seam after contact xpub derivation, including generation gating.

@@ -24,6 +24,23 @@ impl AppContext {
             .wallet_backend()
             .map_err(|_| TaskError::WalletDataClearUnavailable)?;
 
+        // Exclude every DET shielded bind and payment for the whole wipe, or
+        // refuse at once while one runs: upstream's admission covers only the
+        // shielded reset, and a bind queued behind it would write the wallet's
+        // shielded state back while its keys are deleted.
+        let _shielded_exclusion = backend.try_exclude_shielded_operations()?;
+        #[cfg(test)]
+        backend.clear_test_pause_point().await;
+
+        // Reset the upstream shielded coordinator first (it quiesces its sync
+        // loop and empties the per-network store). On any failure stop before
+        // deleting anything: upstream requires its caller to keep its own data
+        // when the reset fails, and a failed reset may have run part-way.
+        if let Err(error) = backend.clear_shielded(self.data_dir()).await {
+            tracing::warn!(%error, "Clear Database stopped: the shielded reset failed");
+            return Err(error);
+        }
+
         // F60: permanently delete every wallet's secret-bearing state so the
         // "delete all local data" promise holds — wallets must NOT rehydrate
         // on next launch and encrypted seeds must NOT persist. Clear the
@@ -31,24 +48,15 @@ impl AppContext {
         // sidecars, shielded notes, session cache) BEFORE the in-memory maps
         // below, so a mid-failure crash cannot strand current state. The
         // pre-update database remains a read-only recovery artifact. The
-        // upstream (watch-only) persistor rows have no seed and are removed
-        // asynchronously off the main thread.
+        // upstream (watch-only) persistor rows have no seed; they are removed
+        // after the identity keys below and before the shielded exclusion
+        // ends, and a failure is reported.
         let ClearAllOutcome {
             upstream_ids,
             hd_seed_hashes,
-            mut failures,
+            failures: wallet_failures,
         } = backend.forget_all_wallets_local();
-        for wallet_id in upstream_ids {
-            let backend = Arc::clone(&backend);
-            let _ = self
-                .subtasks
-                .spawn_sync("wallet_upstream_removal", async move {
-                    if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
-                        tracing::warn!(%error, "Upstream wallet removal failed during clear");
-                    }
-                });
-        }
-
+        let mut failures: Vec<TaskError> = wallet_failures;
         // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays
         // (blocked / rejected markers, timestamps, reverse address map)
         // share the `det:dashpay:` prefix and come out in one sweep. The
@@ -71,6 +79,7 @@ impl AppContext {
                 failures.push(TaskError::DashpaySidecarStorage { source });
             }
         }
+        let mut identity_keys_cleared = true;
         match self.local_identity_ids() {
             Ok(owners) => {
                 for owner in owners {
@@ -89,6 +98,7 @@ impl AppContext {
                             owner = %owner,
                             "Identity private-key wipe failed during clear: {e:?}"
                         );
+                        identity_keys_cleared = false;
                         failures.push(e);
                     }
                 }
@@ -98,28 +108,38 @@ impl AppContext {
                 // surface as an incomplete clear — never a silent success that
                 // leaves identity private keys on disk.
                 tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
+                identity_keys_cleared = false;
                 failures.push(e);
             }
         }
 
-        // Reset the upstream shielded coordinator (quiesces its sync loop and
-        // empties the per-network store) and unlink DET's two retired legacy
-        // shielded files. The legacy-file unlinks are synchronous and scoped
-        // strictly to THIS network's spv directory.
+        // Removing a wallet cascades to the identities it owns and drops their
+        // stored records, the only list of their vault keys, so it runs after
+        // the key wipe above. When that wipe did not complete, the wallets stay
+        // so the records do: the clear is incomplete, and clearing again finds
+        // every key. Every wallet the upstream manager holds is removed, so a
+        // wallet kept by an earlier incomplete clear goes too.
+        if identity_keys_cleared {
+            let mut wallet_ids: std::collections::BTreeSet<_> = upstream_ids.into_iter().collect();
+            wallet_ids.extend(backend.upstream_wallet_ids().await);
+            for wallet_id in wallet_ids {
+                if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                    tracing::warn!(%error, "Upstream wallet removal failed during clear");
+                    failures.push(error);
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Upstream wallets kept after an incomplete identity key wipe; clear again after a restart"
+            );
+        }
+
+        // Unlink DET's two retired legacy shielded files. The unlinks are
+        // synchronous and scoped strictly to THIS network's spv directory.
         // A failure here must not skip the steps below: upgrade backups hold the
         // wallet data being cleared, so record it and keep going.
         if let Err(error) = cleanup_legacy_shielded_files(&self.data_dir, self.network) {
             tracing::warn!(?error, "Legacy shielded file removal failed during clear");
-            failures.push(error);
-        }
-
-        // Known limitation (Clear Database is a devnet-only developer tool):
-        // while a shielded operation runs, upstream refuses this reset with
-        // `ShieldedOperationInProgress`. The keys above are already deleted, so
-        // the wipe is reported as incomplete; run Clear Database again once the
-        // shielded operation has finished.
-        if let Err(error) = backend.clear_shielded().await {
-            tracing::warn!(%error, "Shielded coordinator reset failed during clear");
             failures.push(error);
         }
 

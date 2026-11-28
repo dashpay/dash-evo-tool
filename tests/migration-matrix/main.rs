@@ -304,6 +304,10 @@ fn run_scenario(
     let data_db = data_dir.join(DATA_DB);
     let app_db = data_dir.join(APP_DB);
     let network_db = data_dir.join(assertions::network_db_name(network));
+    let refused_networks = assertions::upgrade_release_networks(&data_dir, &scratch)?;
+    if fixture.expect.upgrade_release_required || !refused_networks.is_empty() {
+        return check_upgrade_release_refusal(&staged, &refused_networks, options);
+    }
 
     let before = assertions::schema_snapshot(&data_db, &scratch, "before")?;
     let starting_version = before.as_ref().and_then(|snapshot| snapshot.version);
@@ -461,6 +465,38 @@ fn run_scenario(
         println!("    address derivation skipped (needs a synced chain)");
     }
 
+    Ok(())
+}
+
+/// A fixture holding a network store only an earlier release can upgrade:
+/// every boot is refused, naming that release and exactly the networks whose
+/// stores are on the pinned-PR lineage, and nothing in the data directory
+/// (`det-app.sqlite` and `data.db` included) is created or changed.
+fn check_upgrade_release_refusal(
+    staged: &stage::StagedFixture,
+    networks: &[dash_sdk::dpp::dashcore::Network],
+    options: &Options,
+) -> Result<(), String> {
+    if networks.is_empty() {
+        return Err(
+            "the manifest expects an upgrade-release refusal, but no network store is on the \
+             pinned-PR lineage"
+                .to_string(),
+        );
+    }
+    let data_dir = staged.data_dir();
+    let before = assertions::data_dir_digest(data_dir)?;
+    let cli = cli::DetCli::new(staged)?;
+    for label in ["the first boot", "the second boot"] {
+        let run = cli.wallets_list(options.boot_timeout)?;
+        assertions::check_needs_upgrade_release(&run, networks, label)?;
+        assertions::check_data_dir_unchanged(
+            &before,
+            &assertions::data_dir_digest(data_dir)?,
+            label,
+        )?;
+    }
+    println!("    refused as expected; stores needing the upgrade release: {networks:?}");
     Ok(())
 }
 

@@ -252,19 +252,22 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
-/// newer/incompatible app build, an unwritable data folder, or
-/// a compatibility upgrade that fails the same way on every attempt). These
+/// newer/incompatible app build, an unwritable data folder, or data only an
+/// earlier release can upgrade). These
 /// must surface their actionable message instead of being logged-and-discarded
 /// as a transient deferral (F50); retrying cannot fix them. Every other init
 /// error is retried by the cold-boot bridge.
 pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
-    match error {
+    matches!(
+        error,
         TaskError::WalletDataTooNew { .. }
-        | TaskError::WalletDataIncompatible { .. }
-        | TaskError::WalletStorageAccessDenied { .. } => true,
-        TaskError::PlatformDatabaseUpgrade { source } => !source.is_retryable(),
-        _ => false,
-    }
+            | TaskError::WalletDataIncompatible { .. }
+            | TaskError::WalletStorageAccessDenied { .. }
+            | TaskError::WalletStorageLockAccessDenied { .. }
+            | TaskError::SecretStoreAccessDenied { .. }
+            | TaskError::WalletDataNeedsUpgradeRelease { .. }
+            | TaskError::AppDataNeedsUpgradeRelease { .. }
+    )
 }
 
 /// Information about fees for a platform state transition.
@@ -2984,9 +2987,8 @@ mod tests {
     /// its stored balance is read back after the task; reads name nobody.
     #[test]
     fn paid_tasks_name_the_identity_that_pays_for_them() {
-        use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
         use crate::backend_task::tokens::TokenContractParams;
-        use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+        use crate::model::dashpay::{ContactInfoUpdate, ContactQr, UnreadableContactInfoPolicy};
         use crate::model::qualified_contract::QualifiedContract;
         use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
         use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -3247,13 +3249,16 @@ mod tests {
             dashpay(DashPayTask::SendContactRequestWithProof {
                 identity: payer.clone(),
                 signing_key: key.clone(),
-                to_identity_id: other,
-                account_label: None,
-                qr_auto_accept: AutoAcceptProofData {
-                    identity_id: other,
-                    proof_key: [0; 32],
-                    account_reference: 0,
-                    expires_at: 0,
+                qr: {
+                    use platform_wallet::wallet::identity::crypto::auto_accept::{
+                        encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+                    };
+                    let key = crate::test_support::keys::secret_key();
+                    let uri = encode_dashpay_contact_uri(
+                        "bob",
+                        &encode_auto_accept_key_blob(&key, u32::MAX),
+                    );
+                    ContactQr::parse(&uri, 0).expect("a contact QR code")
                 },
             }),
             dashpay(DashPayTask::AcceptContactRequest {
@@ -3703,17 +3708,33 @@ mod tests {
                 .into(),
             }
         ));
-        use crate::wallet_backend::platform_compatibility::UpgradeError;
-        assert!(
-            is_terminal_storage_open_error(&TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::Verification,
-            }),
-            "a deterministic upgrade failure must surface instead of re-running"
-        );
-        // A user-clearable upgrade failure keeps offering a retry.
-        assert!(!is_terminal_storage_open_error(
-            &TaskError::PlatformDatabaseUpgrade {
-                source: UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
+        // A data folder the app may not open the wallet lock or the seed
+        // vault in fails the same way on every retry.
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletStorageLockAccessDenied {
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::SecretStoreAccessDenied {
+                source: Box::new(platform_wallet_storage::secrets::SecretStoreError::Io(
+                    platform_wallet_storage::secrets::IoError {
+                        path: None,
+                        source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    },
+                )),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataNeedsUpgradeRelease {
+                networks: crate::backend_task::error::UpgradeReleaseNetworks(vec![
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                ]),
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::AppDataNeedsUpgradeRelease {
+                database: std::path::PathBuf::from("det-app.sqlite"),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

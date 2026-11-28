@@ -1283,6 +1283,23 @@ impl AppContext {
             .map(|stored| stored.qi_bytes))
     }
 
+    /// The wallet whose seed derives `identity`'s contact QR code key: the
+    /// owner its stored record names, if loaded with the identity.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::ContactQrWalletMissing`] when no owner is recorded or it
+    /// is not on this device; the store's error when the record cannot be read.
+    pub(crate) fn contact_qr_wallet_seed_hash(
+        &self,
+        identity: &QualifiedIdentity,
+    ) -> std::result::Result<WalletSeedHash, TaskError> {
+        self.stored_identity_wallet_link(&identity.identity.id())?
+            .map(|(seed_hash, _)| seed_hash)
+            .filter(|seed_hash| identity.associated_wallets.contains_key(seed_hash))
+            .ok_or(TaskError::ContactQrWalletMissing)
+    }
+
     /// The wallet link recorded for `id`, or `None` when the identity is not
     /// stored or was never linked to a wallet.
     ///
@@ -3801,6 +3818,10 @@ mod tests {
     fn qa_005_vault_write_fault_leaves_keystore_intact_and_skips_persist() {
         use std::os::unix::fs::PermissionsExt;
 
+        if !crate::test_support::file_modes_deny_access() {
+            eprintln!("skipped: file modes do not deny this process access");
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_vault(dir.path());
         let id = id(0x22);

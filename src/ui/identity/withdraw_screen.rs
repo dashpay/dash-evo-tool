@@ -4,7 +4,8 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -24,7 +25,7 @@ use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Frame, Margin, Ui};
@@ -67,15 +68,12 @@ pub struct WithdrawalScreen {
 impl WithdrawalScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
-        // Only pre-select a withdrawal key whose private material is held locally
-        // (TRANSFER preferred, OWNER fallback). Pre-selecting an on-chain-only key
-        // the signer cannot use is what surfaced the raw signing error. This is the
-        // same invariant `can_attempt_withdrawal` gates on for every role, so a
-        // `None` here means the gate itself should have kept this screen from
-        // being reachable in the first place.
-        let selected_key: Option<IdentityPublicKey> = identity
-            .default_withdrawal_key()
-            .map(|qk| qk.identity_public_key.clone());
+        // Pre-select the key the backend signs with when none is chosen: one
+        // this device can sign with and Platform accepts (TRANSFER preferred,
+        // OWNER fallback). `can_attempt_withdrawal` gates on the same choice
+        // for every role, so a `None` here means the gate itself should have
+        // kept this screen from being reachable in the first place.
+        let selected_key: Option<IdentityPublicKey> = identity.withdrawal_signing_key().cloned();
         // With no key there is nothing to resolve a wallet from; skip the call so
         // get_selected_wallet's "no key provided" Err path stays unreachable here.
         let selected_wallet = match selected_key.as_ref() {
@@ -111,6 +109,7 @@ impl WithdrawalScreen {
             &self.identity,
             &mut self.selected_key,
             TransactionType::Withdraw,
+            SigningScope::NonBatch,
         )
     }
 
@@ -386,6 +385,20 @@ impl ScreenLike for WithdrawalScreen {
             self.identity = refreshed;
             self.max_amount = self.identity.identity.balance();
         }
+        let key_changed = super::reselect_unusable_key(
+            &self.identity,
+            &mut self.selected_key,
+            self.identity.withdrawal_signing_key(),
+        );
+        let wallet_changed = super::sync_signing_wallet(
+            Some(&self.identity),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+        if key_changed || wallet_changed {
+            self.confirmation_dialog = None;
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -426,16 +439,20 @@ impl ScreenLike for WithdrawalScreen {
             });
             ui.add_space(10.0);
 
-            if !self
-                .identity
-                .can_attempt_withdrawal(self.app_context.user_role())
-            {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
+            // The same choice `can_attempt_withdrawal` gates the entry points on.
+            let key_status = self.identity.withdrawal_key_status();
+            if key_status != SigningKeyStatus::Usable {
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
+                    "No key on this device can approve a withdrawal from this identity. Its \
+                     keys are disabled, expired, or not available on this device. Load or \
+                     import a key that can send funds from this identity, or load the wallet \
+                     that holds one, then try again."
+                } else {
                     "This identity has no loaded key that can approve a withdrawal. Load or \
                      import a key that can send funds from this identity, or use a different \
-                     identity.",
-                );
+                     identity."
+                };
+                ui.colored_label(egui::Color32::DARK_RED, message);
                 ui.add_space(10.0);
 
                 if self.identity.identity_type != IdentityType::User {
@@ -444,18 +461,16 @@ impl ScreenLike for WithdrawalScreen {
                     ui.add_space(10.0);
                 }
 
-                let owner_key = self.identity.identity.get_first_public_key_matching(
+                let owner_key = self.identity.matching_key_now(KeyRequirements::new(
                     Purpose::OWNER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
-                let transfer_key = self.identity.identity.get_first_public_key_matching(
+                    &SecurityLevel::full_range(),
+                    SigningScope::NonBatch,
+                ));
+                let transfer_key = self.identity.matching_key_now(KeyRequirements::new(
                     Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
+                    &SecurityLevel::full_range(),
+                    SigningScope::NonBatch,
+                ));
 
                 if let Some(owner_key) = owner_key {
                     if ui.button("Check Owner Key").clicked() {
@@ -666,5 +681,40 @@ impl ScreenLike for WithdrawalScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+
+    /// Regression: after a withdrawal key was added, a refresh reloaded the
+    /// identity but kept no key selected, so the form stayed blank.
+    #[test]
+    fn a_refresh_picks_the_withdrawal_key_that_became_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let mut screen = WithdrawalScreen::new(
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]),
+            &context,
+        );
+        assert!(screen.selected_key.is_none());
+        screen.confirmation_dialog = Some(ConfirmationDialog::new("Withdraw", "Withdraw 1?"));
+        let IdentityPublicKey::V0(mut transfer_key) = auth_key(2, SecurityLevel::CRITICAL) else {
+            panic!("auth_key builds a version 0 key");
+        };
+        transfer_key.purpose = Purpose::TRANSFER;
+        let seed_hash = crate::ui::tokens::tests::store_identity_with_wallet_key(
+            &context,
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL), transfer_key.into()]),
+            2,
+        );
+
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(2));
+        let wallet = screen.selected_wallet.as_ref().expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+        assert!(screen.confirmation_dialog.is_none());
     }
 }

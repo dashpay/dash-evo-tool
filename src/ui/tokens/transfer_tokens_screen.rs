@@ -1,3 +1,4 @@
+use super::TokenSigningKey;
 use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
@@ -5,9 +6,8 @@ use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessRes
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::token::parse_identity_id;
-use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -21,7 +21,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{TransactionType, add_key_chooser};
+use crate::ui::helpers::TransactionType;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::state::PendingRequest;
@@ -82,7 +82,7 @@ pub struct TransferTokensScreen {
     identity: Option<QualifiedIdentity>,
     pub identity_token_balance: IdentityTokenBalance,
     known_identities: Vec<QualifiedIdentity>,
-    selected_key: Option<IdentityPublicKey>,
+    selected_key: TokenSigningKey,
     show_advanced_options: bool,
     public_note: Option<String>,
     receiver_identity_id: String,
@@ -143,17 +143,13 @@ impl TransferTokensScreen {
 
         let max_amount = Amount::from(&identity_token_balance);
         let selected_key: Option<IdentityPublicKey> = identity.as_ref().and_then(|id| {
-            id.identity
-                .get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+            id.single_token_transition_key(identity_token_balance.data_contract_id)
                 .cloned()
         });
         let selected_wallet = identity.as_ref().and_then(|id| {
-            get_selected_wallet(id, None, selected_key.as_ref())
+            selected_key
+                .as_ref()
+                .map_or(Ok(None), |key| get_selected_wallet(id, None, Some(key)))
                 .or_show_error(app_context.egui_ctx())
                 .unwrap_or(None)
         });
@@ -166,7 +162,7 @@ impl TransferTokensScreen {
             identity,
             identity_token_balance,
             known_identities,
-            selected_key,
+            selected_key: TokenSigningKey::automatic(selected_key),
             show_advanced_options: false,
             public_note: None,
             receiver_identity_id: String::new(),
@@ -449,6 +445,18 @@ impl ScreenLike for TransferTokensScreen {
                 self.identity = Some(refreshed);
             }
         }
+        if let Some(identity) = &self.identity
+            && self.selected_key.refresh_with_wallet(
+                &self.app_context,
+                identity,
+                TransactionType::TokenTransfer,
+                self.identity_token_balance.data_contract_id,
+                &mut self.selected_wallet,
+                &mut self.wallet_open_attempted,
+            )
+        {
+            self.confirmation_dialog = None;
+        }
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
             match self.app_context.identity_token_balances() {
                 Ok(token_balances) => {
@@ -540,33 +548,46 @@ impl ScreenLike for TransferTokensScreen {
                 return AppAction::None;
             }
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !identity.identity.public_keys().is_empty()
-            } else {
-                !identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
-
-            if !has_keys {
+            let followed = self.selected_key.follow_automatic(
+                &self.app_context,
+                identity,
+                TransactionType::TokenTransfer,
+                self.identity_token_balance.data_contract_id,
+            );
+            let key_status = followed.status;
+            if followed.changed {
+                // A pending confirmation was for the previous key.
+                self.confirmation_dialog = None;
+            }
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.show_advanced_options = true;
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
                 let identity_type = identity.identity_type;
                 // Extract key data before releasing the borrow (needed for click handlers).
-                let key = identity
-                    .identity
-                    .get_first_public_key_matching(
-                        Purpose::AUTHENTICATION,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
+                let key = [Purpose::AUTHENTICATION, Purpose::TRANSFER]
+                    .into_iter()
+                    .find_map(|purpose| {
+                        identity.identity.get_first_public_key_matching(
+                            purpose,
+                            HashSet::from([SecurityLevel::CRITICAL]),
+                            KeyType::all_key_types().into(),
+                            false,
+                        )
+                    })
                     .cloned();
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
+                    "No key on this device can sign this token send. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
+                } else {
                     format!(
-                        "You do not have any authentication keys with CRITICAL security level loaded for this {} identity.",
-                        identity_type
-                    ),
-                );
+                        "You do not have a CRITICAL authentication or transfer key loaded for this {identity_type} identity."
+                    )
+                };
+                ui.colored_label(DashColors::error_color(dark_mode), message);
                 ui.add_space(10.0);
 
                 if let Some(key) = key {
@@ -591,7 +612,8 @@ impl ScreenLike for TransferTokensScreen {
                         &self.app_context,
                     )));
                 }
-            } else {
+            }
+            {
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
@@ -610,7 +632,6 @@ impl ScreenLike for TransferTokensScreen {
                         if ui.button("Unlock Wallet").clicked() {
                             self.wallet_unlock_popup.open();
                         }
-                        return AppAction::None;
                     }
                 }
 
@@ -618,20 +639,30 @@ impl ScreenLike for TransferTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the transaction with");
                     ui.add_space(10.0);
-                    // Reborrow identity as ref for add_key_chooser; selected_key is &mut self.
-                    let identity = self.identity.as_ref().expect("checked above");
-                    add_key_chooser(
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
+                    action |= self.selected_key.show_chooser(
                         ui,
                         &self.app_context,
                         identity,
-                        &mut self.selected_key,
                         TransactionType::TokenTransfer,
+                        self.identity_token_balance.data_contract_id,
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
                 }
 
+                crate::ui::identity::sync_signing_wallet(
+                    Some(identity),
+                    self.selected_key.as_ref(),
+                    &mut self.selected_wallet,
+                    &mut self.wallet_open_attempted,
+                );
                 let step_num = if self.show_advanced_options { "2" } else { "1" };
                 ui.heading(format!("{}. Input the amount to send", step_num));
                 ui.add_space(5.0);
@@ -699,9 +730,16 @@ impl ScreenLike for TransferTokensScreen {
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
                 let in_flight = self.transfer_request.is_pending();
-                let ready = self.amount.is_some()
+                let ready = matches!(
+                    key_status,
+                    SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+                ) && self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
-                    && self.selected_key.is_some()
+                    && self.selected_key.as_ref().is_some()
+                    && self
+                        .selected_wallet
+                        .as_ref()
+                        .is_none_or(|wallet| !wallet_needs_unlock(wallet))
                     && has_enough_balance
                     && !in_flight;
                 let hover_text = if in_flight {
@@ -711,6 +749,8 @@ impl ScreenLike for TransferTokensScreen {
                         "Insufficient identity balance for fee (need at least {})",
                         format_credits_as_dash(estimated_fee)
                     )
+                } else if self.selected_key.as_ref().is_none() {
+                    super::CHOOSE_SIGNING_KEY.to_string()
                 } else {
                     "Please ensure all fields are filled correctly".to_string()
                 };
@@ -739,7 +779,7 @@ impl ScreenLike for TransferTokensScreen {
                     }
                 }
 
-                if self.confirmation_dialog.is_some() {
+                if ready && self.confirmation_dialog.is_some() {
                     return self.show_confirmation_popup(ui);
                 }
 
@@ -790,6 +830,154 @@ mod tests {
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interop_transfer_cannot_confirm_after_the_signing_key_expires() {
+        use crate::ui::tokens::tests::identity_with_expired_key;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use std::cell::Cell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut identity = identity_with_expired_key();
+        identity.identity.set_balance(1_000_000_000_000);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Example".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: ctx.dpns_contract().id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &ctx);
+        screen.amount = Some(Amount::new(1, 0));
+        screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        screen.selected_key.selected = identity.identity.public_keys().get(&1).cloned();
+        assert!(screen.selected_key.as_ref().is_some());
+        screen.confirmation_dialog = Some(PendingSend {
+            dialog: ConfirmationDialog::new("Confirm Transfer", "Send the token?")
+                .confirm_text(Some("Confirm pending transfer")),
+            amount: Amount::new(1, 0),
+            recipient_id: Identifier::from([7; 32]),
+            recipient: screen.receiver_identity_id.clone(),
+        });
+        let dispatched = Cell::new(false);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferTokensScreen| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::TokenTask(task),
+                        ..
+                    } = screen.ui(ui)
+                        && matches!(*task, TokenTask::TransferTokens { .. })
+                    {
+                        dispatched.set(true);
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        assert!(harness.query_by_label("Confirm pending transfer").is_none());
+        assert!(harness.query_all_by_label(SEND_LABEL).any(|button| {
+            !button
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        }));
+        assert!(!dispatched.get());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An automatically chosen key that expires while the confirmation is
+    /// open is never submitted, though another key still signs: the form
+    /// switches to that key and asks for confirmation again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_automatic_key_expiring_under_the_confirmation_is_not_submitted() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use egui_kittest::{Harness, kittest::Queryable};
+        use std::cell::RefCell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        // The form submits only for a contract this device stores.
+        ctx.insert_contract_if_not_exists(
+            &ctx.dpns_contract(),
+            None,
+            crate::model::qualified_contract::InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .unwrap();
+        let mut identity = identity_holding(&[expired.clone(), live]);
+        identity.identity.set_balance(1_000_000_000_000);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Example".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: ctx.dpns_contract().id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &ctx);
+        screen.amount = Some(Amount::new(1, 0));
+        screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        // Key 1 was the automatic choice before it expired.
+        screen.selected_key = TokenSigningKey::automatic(Some(expired));
+        screen.confirmation_dialog = Some(PendingSend {
+            dialog: ConfirmationDialog::new("Confirm Transfer", "Send the token?")
+                .confirm_text(Some("Confirm pending transfer")),
+            amount: Amount::new(1, 0),
+            recipient_id: Identifier::from([7; 32]),
+            recipient: screen.receiver_identity_id.clone(),
+        });
+        let submitted = RefCell::new(Vec::new());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferTokensScreen| {
+                    if let AppAction::BackendTaskWithContext {
+                        task: BackendTask::TokenTask(task),
+                        ..
+                    } = screen.ui(ui)
+                        && let TokenTask::TransferTokens { signing_key, .. } = *task
+                    {
+                        submitted.borrow_mut().push(signing_key.id());
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        if let Some(confirm) = harness.query_by_label("Confirm pending transfer") {
+            confirm.click();
+            harness.run_steps(4);
+        }
+        assert_eq!(*submitted.borrow(), Vec::<u32>::new());
+        assert_eq!(
+            harness.state().selected_key.as_ref().map(|key| key.id()),
+            Some(2)
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
 
     /// A screen whose Send can be confirmed: a stored contract, a loaded
     /// identity with a signing key, an amount and a recipient.
@@ -818,7 +1006,7 @@ mod tests {
         };
         let mut screen = TransferTokensScreen::new(balance, context);
         screen.identity = Some(identity);
-        screen.selected_key = Some(
+        screen.selected_key = TokenSigningKey::automatic(Some(
             IdentityPublicKeyV0 {
                 id: 0,
                 key_type: KeyType::ECDSA_HASH160,
@@ -830,7 +1018,7 @@ mod tests {
                 contract_bounds: None,
             }
             .into(),
-        );
+        ));
         screen.amount = Some(Amount::new(5, 0));
         screen.receiver_identity_id = Identifier::from([5; 32]).to_string(Encoding::Base58);
         screen
@@ -893,6 +1081,64 @@ mod tests {
         }));
         report_error(&mut screen, &unrelated_request(context.network));
         assert!(screen.transfer_tokens_status == TransferTokensStatus::Complete);
+    }
+
+    /// Regression: with no key selected (here only a contract-group key, for
+    /// the user to choose) the disabled Send button asked to fill in the
+    /// fields, though they were filled in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transfer_without_a_signing_key_asks_for_one() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::from([0x6A; 32]),
+            },
+        )]);
+        identity.identity.set_balance(1_000_000_000_000);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .unwrap();
+        let balance = IdentityTokenBalance {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Example".into(),
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            identity_id: identity.identity.id(),
+            balance: 100,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: ctx.dpns_contract().id(),
+            token_position: 0,
+        };
+        let mut screen = TransferTokensScreen::new(balance, &ctx);
+        assert!(screen.selected_key.as_ref().is_none());
+        screen.amount = Some(Amount::new(1, 0));
+        screen.receiver_identity_id = Identifier::from([7; 32]).to_string(Encoding::Base58);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut TransferTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, SEND_LABEL)
+            .last()
+            .expect("the Send button")
+            .hover();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::CHOOSE_SIGNING_KEY)
+                .is_some()
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     fn sending_banners(context: &AppContext) -> Vec<String> {

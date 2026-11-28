@@ -122,6 +122,146 @@ pub fn check_needs_desktop(run: &CliRun, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The release `WalletDataNeedsUpgradeRelease` and `AppDataNeedsUpgradeRelease`
+/// name; det-cli prints the error's message when it cannot open the wallet data.
+const UPGRADE_RELEASE_MARKER: &str = "v1.0.0-weekly.20261117";
+
+/// Networks whose wallet store is on the pinned-PR (Platform 67d4ef3)
+/// lineage, in the order the refusal names them. That lineage's refinery
+/// history diverges from the released one at version 3, named `unified`.
+pub fn upgrade_release_networks(data_dir: &Path, scratch: &Path) -> Result<Vec<Network>, String> {
+    let mut networks = Vec::new();
+    for network in [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ] {
+        let db = data_dir.join(network_db_name(network));
+        let Some(conn) = open_copy(&db, scratch, "lineage")? else {
+            continue;
+        };
+        let has_history = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| format!("could not read {}: {e}", db.display()))?
+            .is_some();
+        if !has_history {
+            continue;
+        }
+        let third: Option<String> = conn
+            .query_row(
+                "SELECT name FROM refinery_schema_history WHERE version = 3",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("could not read the history of {}: {e}", db.display()))?;
+        if third.as_deref() == Some("unified") {
+            networks.push(network);
+        }
+    }
+    Ok(networks)
+}
+
+/// Network name the refusal shows, matching the network chooser's labels.
+fn chooser_label(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "Mainnet",
+        Network::Testnet => "Testnet",
+        Network::Devnet => "Devnet",
+        Network::Regtest => "Local",
+    }
+}
+
+/// A boot refused because only an earlier release can upgrade the wallet
+/// stores of exactly `networks`.
+pub fn check_needs_upgrade_release(
+    run: &CliRun,
+    networks: &[Network],
+    label: &str,
+) -> Result<(), String> {
+    if run.succeeded() {
+        return Err(format!(
+            "{label} completed, but the fixture's wallet data needs {UPGRADE_RELEASE_MARKER} first\n{}",
+            run.report()
+        ));
+    }
+    let names = networks
+        .iter()
+        .map(|network| chooser_label(*network))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let expected = format!(
+        "{UPGRADE_RELEASE_MARKER}, and start it. In that version, open each of these networks \
+         and wait until each one finishes syncing: {names}. Then return to this version."
+    );
+    if run.timed_out || !run.stderr.contains(&expected) {
+        return Err(format!(
+            "{label} failed, but not with {UPGRADE_RELEASE_MARKER} named for exactly {names}\n{}",
+            run.report()
+        ));
+    }
+    Ok(())
+}
+
+/// SHA-256 of every file below `data_dir`, keyed by relative path. A `-shm`
+/// index holds no data, and a read-only open of a database with a `-wal` rewrites it.
+pub fn data_dir_digest(data_dir: &Path) -> Result<BTreeMap<PathBuf, [u8; 32]>, String> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        found: &mut BTreeMap<PathBuf, [u8; 32]>,
+    ) -> Result<(), String> {
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("could not read {}: {e}", dir.display()))?;
+        for entry in entries {
+            let path = entry
+                .map_err(|e| format!("could not walk {}: {e}", dir.display()))?
+                .path();
+            if path.is_dir() {
+                walk(root, &path, found)?;
+            } else if !path.to_string_lossy().ends_with("-shm") {
+                let bytes = fs::read(&path)
+                    .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                found.insert(relative, Sha256::digest(bytes).into());
+            }
+        }
+        Ok(())
+    }
+    let mut found = BTreeMap::new();
+    walk(data_dir, data_dir, &mut found)?;
+    Ok(found)
+}
+
+/// Names every file a boot added, removed or changed below the data directory.
+pub fn check_data_dir_unchanged(
+    before: &BTreeMap<PathBuf, [u8; 32]>,
+    after: &BTreeMap<PathBuf, [u8; 32]>,
+    label: &str,
+) -> Result<(), String> {
+    let touched: Vec<_> = before
+        .keys()
+        .chain(after.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .map(|path| path.display().to_string())
+        .collect();
+    if touched.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{label} must leave the data directory untouched, but changed: {}",
+        touched.join(", ")
+    ))
+}
+
 /// `data.db`'s schema as it can be compared across a boot: the version the
 /// ladder records, every schema object, and the committed rows including WAL data.
 #[derive(Debug, PartialEq, Eq)]
@@ -606,8 +746,8 @@ pub fn check_password_not_echoed(run: &CliRun, password: &str) -> Result<(), Str
 }
 
 /// Backup files a boot created, by path relative to the data dir. Covers the
-/// `platform_compatibility` bridge's `*-backup-*.sqlite` copies and the
-/// generic `.bak` convention.
+/// `platform_compatibility` bridge's `*-backup-*.sqlite` copies, upstream
+/// `pre-migration-*.db` snapshots and the generic `.bak` convention.
 pub fn backup_files(data_dir: &Path) -> Result<BTreeMap<String, u64>, String> {
     let mut found = BTreeMap::new();
     collect_backups(data_dir, data_dir, &mut found)?;
@@ -632,7 +772,10 @@ fn collect_backups(
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if name.contains("backup") || name.ends_with(".bak") {
+        if name.contains("backup")
+            || name.ends_with(".bak")
+            || (name.starts_with("pre-migration-") && name.ends_with(".db"))
+        {
             let relative = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
@@ -1320,6 +1463,116 @@ mod tests {
         assert!(error.contains("ccdd"), "{error}");
     }
 
+    fn write_history(db: &Path, names: &[&str]) {
+        let conn = Connection::open(db).expect("open store");
+        conn.execute_batch(
+            "CREATE TABLE refinery_schema_history(version int4 PRIMARY KEY, name VARCHAR(255));",
+        )
+        .expect("create history");
+        for (index, name) in names.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO refinery_schema_history VALUES (?1, ?2)",
+                rusqlite::params![index + 1, name],
+            )
+            .expect("insert history row");
+        }
+    }
+
+    #[test]
+    fn upgrade_release_networks_are_the_pinned_pr_network_stores_in_refusal_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        let pinned = ["initial", "address_height_pin", "unified", "invitations"];
+        let released = ["initial", "address_height_pin", "invitations"];
+        write_history(&data_dir.join("det-testnet.sqlite"), &pinned);
+        write_history(&data_dir.join("det-mainnet.sqlite"), &pinned);
+        write_history(&data_dir.join("det-devnet.sqlite"), &released);
+        write_history(&data_dir.join(APP_DB), &pinned);
+        fs::write(data_dir.join("det-regtest.sqlite"), b"").expect("write empty store");
+
+        let networks =
+            upgrade_release_networks(&data_dir, &dir.path().join("scratch")).expect("classify");
+
+        assert_eq!(networks, vec![Network::Mainnet, Network::Testnet]);
+    }
+
+    #[test]
+    fn upgrade_release_refusal_must_name_exactly_the_expected_networks() {
+        let refusal = |names: &str| CliRun {
+            command: "det-cli --standalone core-wallets-list".to_string(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: format!(
+                "Error: app k/v open: Your wallet data was created by an older test version of \
+                 Dash Evo Tool and must be upgraded before this version can open it. Install \
+                 Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/\
+                 dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, and start it. In that \
+                 version, open each of these networks and wait until each one finishes \
+                 syncing: {names}. Then return to this version.  (code -32603)"
+            ),
+            timed_out: false,
+        };
+
+        check_needs_upgrade_release(&refusal("Mainnet"), &[Network::Mainnet], "boot")
+            .expect("the refusal names exactly Mainnet");
+        check_needs_upgrade_release(
+            &refusal("Mainnet, Testnet"),
+            &[Network::Mainnet, Network::Testnet],
+            "boot",
+        )
+        .expect("the refusal names exactly Mainnet and Testnet");
+        check_needs_upgrade_release(&refusal("Mainnet, Testnet"), &[Network::Mainnet], "boot")
+            .expect_err("an extra network is not the expected refusal");
+        check_needs_upgrade_release(
+            &refusal("Mainnet"),
+            &[Network::Mainnet, Network::Testnet],
+            "boot",
+        )
+        .expect_err("a missing network is not the expected refusal");
+
+        let completed = CliRun {
+            exit_code: Some(0),
+            ..refusal("Mainnet")
+        };
+        check_needs_upgrade_release(&completed, &[Network::Mainnet], "boot")
+            .expect_err("a completed boot is not a refusal");
+    }
+
+    #[test]
+    fn data_dir_digest_names_every_added_removed_and_changed_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("spv/testnet")).expect("create nested dir");
+        fs::write(dir.path().join(APP_DB), b"app").expect("write app store");
+        fs::write(dir.path().join(DATA_DB), b"data").expect("write data.db");
+        fs::write(dir.path().join("spv/testnet/headers"), b"h").expect("write nested file");
+        let before = data_dir_digest(dir.path()).expect("digest before");
+        check_data_dir_unchanged(
+            &before,
+            &data_dir_digest(dir.path()).expect("digest"),
+            "boot",
+        )
+        .expect("an untouched directory passes");
+
+        fs::write(dir.path().join(APP_DB), b"migrated").expect("change app store");
+        fs::write(dir.path().join("det-app.sqlite-wal"), b"w").expect("add wal");
+        fs::write(dir.path().join("det-app.sqlite-shm"), b"s").expect("add index");
+        let mut after = data_dir_digest(dir.path()).expect("digest");
+        after
+            .remove(Path::new("spv/testnet/headers"))
+            .expect("nested file digested");
+        let error = check_data_dir_unchanged(&before, &after, "boot")
+            .expect_err("a touched directory fails");
+
+        for touched in [APP_DB, "det-app.sqlite-wal", "spv/testnet/headers"] {
+            assert!(error.contains(touched), "{touched} missing from: {error}");
+        }
+        assert!(
+            !error.contains(DATA_DB) && !error.contains("-shm"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn backup_files_are_found_below_the_data_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1331,9 +1584,20 @@ mod tests {
         .expect("write backup");
         fs::write(dir.path().join("spv/testnet/notes.bak"), b"yy").expect("write nested backup");
         fs::write(dir.path().join(DATA_DB), b"zzz").expect("write live db");
+        fs::create_dir_all(dir.path().join("backups/auto")).expect("create auto backup dir");
+        fs::write(
+            dir.path()
+                .join("backups/auto/pre-migration-det-app-19-to-21-20000101T000000Z.db"),
+            b"wwww",
+        )
+        .expect("write upstream snapshot");
 
         let found = backup_files(dir.path()).expect("scan");
-        assert_eq!(found.len(), 2, "found {found:?}");
+        assert_eq!(found.len(), 3, "found {found:?}");
         assert_eq!(found.get("spv/testnet/notes.bak"), Some(&2));
+        assert_eq!(
+            found.get("backups/auto/pre-migration-det-app-19-to-21-20000101T000000Z.db"),
+            Some(&4)
+        );
     }
 }

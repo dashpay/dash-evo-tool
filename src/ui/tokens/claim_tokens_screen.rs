@@ -33,7 +33,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SigningKeyStatus};
 use crate::model::wallet::Wallet;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};

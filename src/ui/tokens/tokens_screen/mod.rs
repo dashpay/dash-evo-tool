@@ -64,7 +64,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::{
     TokenRegistrationFeatures, estimate_token_contract_registration,
 };
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::token::TokenActionAvailability;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;

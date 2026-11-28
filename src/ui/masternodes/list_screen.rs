@@ -42,8 +42,8 @@ use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_it
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
-/// Arriving on Votes refreshes contests unless one completed this recently.
-const VOTES_ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
+/// Throttle arrival refreshes against both completed and dispatched requests.
+const ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
@@ -117,9 +117,9 @@ pub struct MasternodesScreen {
     /// The single voting workspace (Masternodes ▸ Votes). Receives every vote
     /// result whether or not its segment is showing.
     votes: DPNSScreen,
-    /// Set when Votes comes into view; the next frame refreshes contests and
-    /// vote state unless a refresh completed moments ago (VOTE-FR-074).
-    votes_arrival_refresh: bool,
+    /// Arrival arms a silent contest refresh on the next idle frame.
+    contests_arrival_refresh: bool,
+    last_arrival_refresh_ms: Option<u64>,
     /// The segment to persist through the backend once no user action is out.
     pending_segment_save: Option<MasternodesSegment>,
 }
@@ -159,7 +159,8 @@ impl MasternodesScreen {
                 app_context.masternodes_last_segment().unwrap_or_default(),
             ),
             votes: DPNSScreen::new(app_context, VotesView::ToDecide),
-            votes_arrival_refresh: false,
+            contests_arrival_refresh: false,
+            last_arrival_refresh_ms: None,
             pending_segment_save: None,
         };
         screen.reload();
@@ -180,7 +181,7 @@ impl MasternodesScreen {
     pub fn select_segment(&mut self, segment: MasternodesSegment) {
         if segment == MasternodesSegment::Votes && self.segment != segment {
             self.votes.refresh_on_arrival();
-            self.votes_arrival_refresh = true;
+            self.contests_arrival_refresh = true;
         }
         if segment != self.segment {
             self.votes.release_list_focus();
@@ -327,6 +328,7 @@ impl MasternodesScreen {
     /// actionable would let the user submit a cross-network operation. Drop back
     /// to the List view and reload from the now-active network's local store.
     pub fn reset_for_network_change(&mut self) {
+        self.last_arrival_refresh_ms = None;
         self.view = MasternodesView::List;
         self.pending_load = None;
         self.pending_removals.clear();
@@ -713,6 +715,9 @@ impl ScreenLike for MasternodesScreen {
         }
         if matches!(update.domain, CacheDomain::Dpns | CacheDomain::All) {
             self.votes.refresh();
+            if let MasternodesView::Detail(detail) = &mut self.view {
+                detail.refresh_from_store();
+            }
         }
     }
     fn accepts_legacy_recovery_result(
@@ -737,6 +742,7 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        self.contests_arrival_refresh = true;
         self.reload();
         self.reconcile_pending_load();
         if let MasternodesView::Detail(detail) = &mut self.view {
@@ -755,7 +761,7 @@ impl ScreenLike for MasternodesScreen {
                 .masternodes_last_segment()
                 .unwrap_or_default(),
         );
-        self.votes_arrival_refresh |= self.segment == MasternodesSegment::Votes;
+        self.contests_arrival_refresh |= self.segment == MasternodesSegment::Votes;
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -849,20 +855,24 @@ impl ScreenLike for MasternodesScreen {
         });
         // Never displace a user action; a refresh deferred here runs next frame.
         if action == AppAction::None
-            && std::mem::take(&mut self.votes_arrival_refresh)
-            && self.segment == MasternodesSegment::Votes
+            && std::mem::take(&mut self.contests_arrival_refresh)
+            && !self.app_context.dpns_contest_refresh_running()
             && background_refresh_due(
                 self.app_context.dpns_contests_refreshed_at_ms(),
-                None,
+                self.last_arrival_refresh_ms,
                 crate::utils::time::now_ms(),
-                VOTES_ARRIVAL_REFRESH_MIN_GAP,
+                ARRIVAL_REFRESH_MIN_GAP,
             )
         {
-            // A user-visible refresh (VOTE-FR-074): failures reach the banner,
-            // unlike the timer's background refresh.
-            action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::QueryDPNSContests,
-            ));
+            self.last_arrival_refresh_ms = Some(crate::utils::time::now_ms());
+            action = AppAction::BackendTaskWithContext {
+                task: BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::RefreshContestsInBackground,
+                ),
+                context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh {
+                    network: self.app_context.network,
+                },
+            };
         }
         if self.votes.take_load_node_request() {
             self.select_segment(MasternodesSegment::Nodes);
@@ -1067,6 +1077,59 @@ mod tests {
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode with voter");
         node_id
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contest_arrival_throttle_expires_and_resets_for_a_new_network() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_ui_state(
+                |ui, state: &mut (MasternodesScreen, usize)| {
+                    if matches!(
+                        state.0.ui(ui),
+                        AppAction::BackendTaskWithContext {
+                            task: BackendTask::ContestedResourceTask(
+                                ContestedResourceTask::RefreshContestsInBackground
+                            ),
+                            ..
+                        }
+                    ) {
+                        state.1 += 1;
+                    }
+                },
+                (MasternodesScreen::new(&ctx), 0),
+            );
+        harness.state_mut().0.refresh_on_arrival();
+        harness.run_steps(3);
+        assert_eq!(harness.state().1, 1, "never fetched: refresh immediately");
+
+        harness.state_mut().0.last_arrival_refresh_ms = Some(crate::utils::time::now_ms() - 60_001);
+        harness.state_mut().0.refresh_on_arrival();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().1,
+            2,
+            "an old attempt must not delay arrival"
+        );
+
+        ctx.mark_dpns_contests_refreshed();
+        harness.state_mut().0.refresh_on_arrival();
+        harness.run_steps(3);
+        assert_eq!(harness.state().1, 2, "reuse a recently completed refresh");
+
+        let (next_ctx, _next_tmp) = offline_ctx().await;
+        harness.state_mut().0.app_context = next_ctx.clone();
+        harness.state_mut().0.reset_for_network_change();
+        harness.state_mut().0.refresh_on_arrival();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().1,
+            3,
+            "another network must not inherit the throttle"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+        next_ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     /// A vote a node cast resolves on that node's own card.

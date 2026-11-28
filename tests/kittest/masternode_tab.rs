@@ -1851,6 +1851,127 @@ fn contest_notifications_do_not_refresh_a_screen_without_contest_data() {
     });
 }
 
+/// Enter through the real left navigation with no contests cached and Nodes selected.
+#[test]
+fn contest_arrival_on_nodes_dispatches_one_silent_refresh() {
+    use dash_evo_tool::backend_task::BackendTask;
+    use dash_evo_tool::backend_task::contested_names::ContestedResourceTask;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let context = harness.state().current_app_context().clone();
+        harness.state_mut().test_capture_dispatches();
+        context.set_user_role(UserRole::Power);
+        seed_node(&context, 0x98, "mn-arrival", IdentityType::Masternode);
+        assert_eq!(context.dpns_contests_refreshed_at_ms(), None);
+        harness.run_steps(3);
+
+        for _ in 0..2 {
+            harness
+                .get_by_role_and_label(Role::Button, "Masternodes")
+                .click();
+            harness.run_steps(3);
+            assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Nodes);
+            let refreshes: Vec<_> = harness
+                .state()
+                .test_captured_dispatches()
+                .iter()
+                .filter(|(task, _)| {
+                    matches!(
+                        task,
+                        BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::RefreshContestsInBackground
+                        )
+                    )
+                })
+                .collect();
+            assert_eq!(
+                refreshes.len(),
+                1,
+                "arrival must refresh immediately, without duplicating an outstanding refresh"
+            );
+            assert!(
+                matches!(
+                    refreshes[0].1,
+                    BackendTaskContext::DpnsBackgroundRefresh { .. }
+                ),
+                "arrival failures must use the silent background result path"
+            );
+            harness
+                .get_by_role_and_label(Role::Button, "Wallets")
+                .click();
+            harness.run_steps(3);
+        }
+        rt.block_on(context.wallet_backend().unwrap().shutdown());
+    });
+}
+
+/// Cache notifications update the open node in place, including its unfinished key prompt.
+#[test]
+fn contest_notifications_update_the_open_node_detail() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let context = harness.state().current_app_context().clone();
+        harness.state_mut().test_capture_dispatches();
+        seed_node(&context, 0x99, "mn-contests", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &context);
+        harness.get_by_label("Open mn-contests").click();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label("There are no open name contests right now.")
+                .is_some()
+        );
+        harness.get_by_label("Add voting key").click();
+        harness.run_steps(3);
+        harness
+            .query_all_by_role(Role::PasswordInput)
+            .next()
+            .unwrap()
+            .focus();
+        harness.event(egui::Event::Text("a-half-typed-voting-key".to_owned()));
+        harness.step();
+        assert!(!harness.get_by_label("Save").accesskit_node().is_disabled());
+
+        for name in ["alice", "bravo"] {
+            seed_open_contest(&context, name);
+        }
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::CacheUpdated(
+                dash_evo_tool::backend_task::CacheUpdate {
+                    network: context.network(),
+                    domain: dash_evo_tool::backend_task::CacheDomain::Dpns,
+                },
+            ))
+            .unwrap();
+        harness.run_steps(3);
+
+        for name in ["alice.dash", "bravo.dash"] {
+            assert!(
+                harness.query_by_label(name).is_some(),
+                "the open node must show {name} without re-entry"
+            );
+        }
+        assert!(
+            harness
+                .query_by_label("There are no open name contests right now.")
+                .is_none()
+        );
+        assert!(
+            !harness.get_by_label("Save").accesskit_node().is_disabled(),
+            "the unfinished voting-key prompt must survive"
+        );
+        assert!(harness.query_by_label("‹ All masternodes").is_some());
+        rt.block_on(context.wallet_backend().unwrap().shutdown());
+    });
+}
+
 /// The Votes view in view keeps following a contest refresh: each of its
 /// notifications makes the view re-read the contest cache.
 #[test]

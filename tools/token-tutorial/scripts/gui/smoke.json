@@ -1,0 +1,10 @@
+{
+  "steps": [
+    {"action": "wait", "target": {"name": "Testnet", "role": "label"}},
+    {"action": "click", "target": {"name": "My Tokens", "role": "button"}},
+    {"action": "wait", "target": {"name": "No Tracked Tokens", "role": "label"}},
+    {"action": "click", "target": {"name": "Token Creator", "role": "button"}},
+    {"action": "wait", "target": {"name": "No Identities Loaded", "role": "label"}},
+    {"action": "screenshot", "name": "gui-smoke-ready"}
+  ]
+}

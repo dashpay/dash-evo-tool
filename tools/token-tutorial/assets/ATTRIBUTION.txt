@@ -1,0 +1,20 @@
+Dash Evolution token tutorial
+
+Official unmodified white Dash Evolution logo, © Dash.
+Source: https://www.dash.org/brand-guidelines/
+Asset: https://media.dash.org/wp-content/uploads/logo_dash_evo_full_white.svg
+License: Creative Commons Attribution 4.0 International.
+https://creativecommons.org/licenses/by/4.0/
+Logo SHA-256: 5e2dd6000f8990245089115b071dbef8cad3523f162b9be5f42e66220b3be43b
+Only proportional display scaling is applied.
+Publication credit: Dash Evolution logo © Dash, CC BY 4.0, dash.org/brand-guidelines.
+
+Original production typeface: Montserrat variable, SIL Open Font License 1.1.
+https://github.com/google/fonts/tree/main/ofl/montserrat
+See slides/montserrat-ofl.txt. Supply the font externally; no font binaries are stored here.
+If using another typeface, set the project font_license to its actual license and
+update these publication credits in your private edit before export.
+Slide backgrounds, geometry and layout are original tutorial artwork.
+
+This presentation was generated entirely by AI and may contain mistakes.
+Dash Testnet demonstration. Chad G. P. Taylor (Cedar) and Ewa Dashwood (Nova).

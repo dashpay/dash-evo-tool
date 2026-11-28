@@ -199,6 +199,8 @@ def load_plan(manifest_path):
         if not isinstance(value, str) or not value:
             raise ValueError(f"Missing input: {context}")
         path = (base / value).resolve()
+        if ".incomplete" in path.stem:
+            raise ValueError(f"Incomplete input is refused: {context}")
         if not path.is_file():
             raise ValueError(f"Missing input: {context}: {path}")
         return path
@@ -247,6 +249,8 @@ def load_plan(manifest_path):
             metadata = read_json(
                 existing(str(path.with_name("metadata.json")), f"{sid} turn metadata")
             )
+            if metadata.get("synthetic_test") and not manifest.get("synthetic_test"):
+                raise ValueError("Synthetic takes require a synthetic test manifest")
             expected = turn["text"].split()
             if (
                 stored_script.read_text().split() != expected
@@ -441,6 +445,12 @@ def ffmpeg(args, log):
     subprocess.run(command, check=True, stdout=log, stderr=log, timeout=7200)
 
 
+def require_frames(info, expected):
+    streams = [s for s in info["streams"] if s["codec_type"] == "video"]
+    if len(streams) != 1 or streams[0].get("nb_frames") != str(expected):
+        raise ValueError("Rendered video frame count differs from the narration plan")
+
+
 def render_segment(segment, scratch, gap, preset, log):
     sid, duration = segment["id"], segment["duration"]
     rate = segment["params"][2]
@@ -495,6 +505,7 @@ def render_segment(segment, scratch, gap, preset, log):
         log,
     )
     actual = probe(video)
+    require_frames(actual, segment["frames"])
     if abs(float(actual["format"]["duration"]) - duration) > 0.04:
         raise ValueError(
             f"Segment {sid}: rendered video duration differs from narration plan"
@@ -650,6 +661,7 @@ def package_video(name, plan, rendered, scratch, dest, log):
         log,
     )
     info = probe(output)
+    require_frames(info, sum(plan["segments"][sid]["frames"] for sid in ids))
     actual = float(info["format"]["duration"])
     if abs(actual - offset) > 0.08 or max(cue["end"] for cue in cues) > actual + 0.001:
         raise ValueError(f"{name}: final duration/captions drift exceeds tolerance")
@@ -709,9 +721,25 @@ def build(manifest_path, output, preset="veryfast"):
         shutil.copyfile(plan["credits"], pending / "credits.txt")
         shutil.copyfile(plan["font_license"], pending / "font-license.txt")
         for kind, sid in (("opening", "00"), ("closing", "53")):
-            shutil.copyfile(
-                plan["segments"][sid]["visual"]["path"], pending / f"{kind}-slide.png"
-            )
+            visual = plan["segments"][sid]["visual"]
+            target = pending / f"{kind}-slide.png"
+            if visual["kind"] == "video":
+                ffmpeg(
+                    [
+                        "-ss",
+                        str(visual.get("offset", 0)),
+                        "-i",
+                        visual["path"],
+                        "-frames:v",
+                        "1",
+                        "-update",
+                        "1",
+                        target,
+                    ],
+                    log,
+                )
+            else:
+                shutil.copyfile(visual["path"], target)
         watch_page(plan, video, pending)
         report = {
             "synthetic_test": plan["manifest"].get("synthetic_test", False),

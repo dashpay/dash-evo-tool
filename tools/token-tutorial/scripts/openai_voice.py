@@ -98,7 +98,7 @@ def preflight(source, take, voice):
         raise ValueError("Unsupported voice")
     if not take.parent.is_dir():
         raise ValueError("Take parent directory must already exist")
-    script = source.read_text(encoding="utf-8")
+    script = source.read_bytes().decode("utf-8")
     if not script.strip():
         raise ValueError("Narration script is empty")
     return script
@@ -137,7 +137,10 @@ def normalize_wav(data):
 
 def validate_response(raw, script):
     result = json.loads(raw)
-    choice = result["choices"][0]
+    choices = result.get("choices") if isinstance(result, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ValueError("Audio response has no usable choice")
+    choice = choices[0]
     if choice["finish_reason"] != "stop":
         raise ValueError("Audio generation did not finish normally")
     audio = choice["message"]["audio"]

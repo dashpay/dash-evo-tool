@@ -132,7 +132,8 @@ their relative layout. The archive mapping describes those historical inputs;
 its source hash intentionally does not match the current dialogue.
 No external host is required. To inspect historical provenance, preserve an old
 JSON snapshot privately and point a private archive manifest at that snapshot,
-retaining the original `scenario_sha256`. Do not repoint the accepted archive to
+retaining the original `scenario_sha256`. Rebase relative paths in the copied
+manifest against its new directory so they still identify the restored files. Do not repoint the accepted archive to
 the refreshed dialogue or bypass a hash mismatch.
 
 ```sh
@@ -182,7 +183,12 @@ retries. An uncertain network result remains failed; inspect its saved response
 and account usage first. For a complete saved response, `openai_voice.py SOURCE
 NEW_TAKE --recover-from FAILED_TAKE --voice cedar` validates it offline. Recovery
 never changes the old attempt; explicitly map the newly validated take into the
-private media manifest after human listening. Only when another charge is
+private media manifest after human listening. Do not run `import-audio` again
+against the failed journal: it still marks that attempt failed. Run
+`python3 scripts/media/media.py plan local/media-with-audio.json`, then
+`python3 scripts/media/media.py build local/media-with-audio.json local/recovered-delivery`
+with the manually corrected manifest and a fresh output directory.
+Only when another charge is
 approved use `--retry-failed EXACT_FAILED_ID --execute
 --approved-script-sha256 APPROVED_SHA256`. A different directory is not permission
 to repeat an uncertain request. Retain all journals and raw responses privately.
@@ -266,8 +272,10 @@ python3 scripts/gui/gui.py --session local/evidence/session.json \
 
 `list`, `wait`, screenshots and scenes refuse a screen showing a password
 field or credential label (recovery or seed phrase, mnemonic, private key,
-password, passphrase), so recovery words or a WIF shown as labels are never
-printed or captured. Scene dry-run reads JSON without touching a GUI. Supported steps are exact-label
+password, passphrase) when detected by the helper's periodic sampling.
+The helper does not protect every frame or the interval between inspection and
+capture. Keep credential views closed throughout recording and inspection;
+review captures before publication. Scene dry-run reads JSON without touching a GUI. Supported steps are exact-label
 `wait`, `wait_absent`, `click`, `screenshot` and bounded `hold`. Capture uses real
 Full HD X11 frames. Missing/ambiguous accessibility state stops the action;
 absence cannot succeed after losing the app. The helper intentionally does not
@@ -275,15 +283,20 @@ automate secret entry. Prepare fields manually with recording stopped as needed.
 
 A recorded scene refuses to click controls that open credential prompts (for
 example `Unlock Wallet`): stop recording, unlock or import, then record the next
-scene. While recording, every wait, hold and step checks for visible password
+scene. While recording, waits, holds and step boundaries periodically check for visible password
 fields or credential labels without reading their values; the screen is checked
 again after capture stops, and an element that cannot be inspected counts as a
 password field. A detected prompt stops capture and deletes the clip. The clip is written as `NAME.incomplete.mkv`
 and appears at the requested path only after the whole scene passes; an
-interrupted clip keeps the `.incomplete` name and is never a media input.
+interrupted clip may keep the `.incomplete` name; media validation rejects that
+filename marker. Loss of readable accessibility state deletes the unverified clip.
 
 For a future separately authorized recording, use scenes 03–49 and 51–52 from
-the current JSON's screen/control plan. Use real
+the current JSON's screen/control plan. The default scene 50 mapping in
+`scripts/project.py` is an editorial slide, but its scenario calls for scrolling
+and comparing the reviewed policy. To fulfill that plan, record scene 50 as well
+and replace its manifest visual with that real video; the slide alone is not
+proof of the comparison. Use real
 completed-state evidence for scenes 08/09 and 51/52. **Never repeat token
 registration or any irreversible action merely to re-record it.** Preserve the
 original raw capture and registration journal; after an uncertain result verify

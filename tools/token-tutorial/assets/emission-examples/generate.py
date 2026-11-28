@@ -327,8 +327,12 @@ def render(example, number):
     )
     font_uri = FONT.as_uri()
     logo_uri = base64.b64encode(LOGO.read_bytes()).decode()
+    # TODO: Verify alternate-font raster output with Matplotlib and a browser installed.
+    font_family = font_manager.FontProperties(fname=FONT).get_name()
     embed = (
-        "<defs><style>@font-face{font-family:Montserrat;src:url("
+        "<defs><style>@font-face{font-family:"
+        + font_family
+        + ";src:url("
         + font_uri
         + ') format("truetype");font-weight:100 900}</style></defs>'
         '<image x="1180" y="14" width="145" height="85" preserveAspectRatio="xMidYMid meet" '

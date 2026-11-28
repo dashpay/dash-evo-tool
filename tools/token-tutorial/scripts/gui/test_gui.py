@@ -361,3 +361,29 @@ def test_inspection_never_prints_labels_of_a_credential_screen(
     with pytest.raises(RuntimeError, match="Sensitive"):
         module.main()
     assert "abandon" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_accessibility_loss_discards_recording(module, recording, monkeypatch, late):
+    gui, _, output = recording
+    output.parent.mkdir()
+    original = gui.guard
+
+    def guard():
+        if Recorder.started and (not late or recorder_stopped[0]):
+            raise RuntimeError("accessibility lost")
+        return original()
+
+    recorder_stopped = [False]
+
+    class LostRegistration(Recorder):
+        def send_signal(self, signal):
+            recorder_stopped[0] = True
+            super().send_signal(signal)
+
+    monkeypatch.setattr(module.subprocess, "Popen", LostRegistration)
+    monkeypatch.setattr(gui, "guard", guard)
+    with pytest.raises(RuntimeError, match="accessibility lost"):
+        gui.scene({"steps": [{"action": "hold", "seconds": 0}]}, output)
+    assert not output.exists()
+    assert not any(path.exists() for path in Recorder.started)

@@ -11,6 +11,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
 
@@ -72,12 +73,45 @@ def prepare_environment(environ, display, profile, xauthority):
         DASH_EVO_TOOL_ACCESSIBILITY="1",
     )
     # winit prefers Wayland whenever either variable is set.
-    for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "MCP_API_KEY"):
+    for name in (
+        "WAYLAND_DISPLAY",
+        "WAYLAND_SOCKET",
+        "MCP_API_KEY",
+        "AT_SPI_BUS_ADDRESS",
+    ):
         environ.pop(name, None)
 
 
 def run(*args):
     return subprocess.check_output(args, text=True).strip()
+
+
+def run_private_session(argv):
+    """dbus-run-session owns the bus lifetime, including abnormal child exit."""
+    env = dict(os.environ, TUTORIAL_PRIVATE_BUS="1")
+    for key in ("DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS"):
+        env.pop(key, None)
+    process = subprocess.Popen(
+        [
+            "dbus-run-session",
+            "--",
+            sys.executable,
+            str(Path(__file__).resolve()),
+            *argv,
+        ],
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        return process.wait()
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
 
 
 def main():
@@ -107,13 +141,15 @@ def main():
             raise ValueError("Binary hash differs from the reviewed build")
     if not args.config.is_file():
         raise ValueError("Supply an existing reviewed environment example")
+    if not args.display.startswith(":") or not args.display[1:].isdigit():
+        parser.error("Use a local display such as :100")
     if args.check:
         print("Launch preflight passed; no GUI or profile was opened")
         return
-    if not args.display.startswith(":") or not args.display[1:].isdigit():
-        parser.error("Use a local display such as :100")
     if Path(f"/tmp/.X11-unix/X{args.display[1:]}").exists():
         parser.error("Display is occupied; existing displays are never modified")
+    if os.environ.get("TUTORIAL_PRIVATE_BUS") != "1":
+        raise SystemExit(run_private_session(sys.argv[1:]))
     os.umask(0o077)
     profile.mkdir(parents=True, mode=0o700, exist_ok=True)
     profile.chmod(0o700)

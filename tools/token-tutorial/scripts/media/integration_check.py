@@ -19,6 +19,7 @@ import media
 
 
 def run():
+    # TODO: Run the full A/V proof on a host with ffmpeg and Pillow installed.
     root = Path(__file__).resolve().parents[2]
     fixture = Path(tempfile.mkdtemp(prefix="tutorial-media-synthetic-"))
     (fixture / "scenario").mkdir()
@@ -170,7 +171,7 @@ def run():
             "-i",
             str(ready / package["file"]),
             "-t",
-            "3",
+            "3.12",
             "-vn",
             "-f",
             "s16le",
@@ -182,9 +183,10 @@ def run():
         ]
     )
     samples = array.array("h", pcm)
-    assert len(samples) == 144000
+    assert len(samples) == round(3.12 * 48000)
     assert not any(samples[: round(2.98 * 48000)])
-    assert max(map(abs, samples)) <= 32
+    assert max(map(abs, samples[:144000])) <= 32
+    assert max(map(abs, samples[round(3.02 * 48000) : round(3.10 * 48000)])) > 500
     assert min(cue["start"] for cue in package["cues"]) >= 3
     embedded = subprocess.check_output(
         [

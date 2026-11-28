@@ -257,7 +257,10 @@ def test_import_rebases_both_manifests_relative_to_the_output(media, tmp_path):
     ).resolve() == source / "take/ready/audio.wav"
 
 
-def test_public_export_excludes_private_input_paths(media, tmp_path, monkeypatch):
+@pytest.mark.parametrize("closing_video", [False, True])
+def test_public_export_excludes_private_input_paths(
+    media, tmp_path, monkeypatch, closing_video
+):
     import json
     import wave
 
@@ -278,7 +281,8 @@ def test_public_export_excludes_private_input_paths(media, tmp_path, monkeypatch
         "title": "Public lesson",
         "duration": 0.1,
         "editorial_hold_seconds": 0,
-        "visual": {"path": slide},
+        "visual": {"path": slide, "kind": "video" if closing_video else "slide"},
+        "frames": 3,
         "turns": [{"speaker": "Teacher", "text": "Hello.", "path": private_marker}],
         "cues": [
             {"start": 0, "end": 0.1, "speaker": "Teacher", "text": "Hello.", "turn": 0}
@@ -301,13 +305,27 @@ def test_public_export_excludes_private_input_paths(media, tmp_path, monkeypatch
     monkeypatch.setattr(
         media,
         "ffmpeg",
-        lambda args, _: Path(args[-1]).write_bytes(b"public video fixture"),
+        lambda args, _: Path(args[-1]).write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            if str(args[-1]).endswith(".png")
+            else b"public video fixture"
+        ),
     )
     monkeypatch.setattr(
-        media, "probe", lambda _: {"format": {"duration": "0.3"}, "chapters": [{}] * 2}
+        media,
+        "probe",
+        lambda _: {
+            "format": {"duration": "0.3"},
+            "chapters": [{}] * 2,
+            "streams": [{"codec_type": "video", "nb_frames": "9"}],
+        },
     )
     output = tmp_path / "delivery"
     ready = media.build(manifest, output)
+    if closing_video:
+        assert (
+            (ready / "closing-slide.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        )
     assert not (ready / "input-manifest.json").exists()
     assert (output / "input-manifest.json").read_bytes() == manifest.read_bytes()
     assert {"delivery.json", "tutorial.timeline.json", "index.html"} <= {

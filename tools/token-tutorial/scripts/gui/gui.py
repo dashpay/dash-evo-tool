@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -58,7 +59,7 @@ class Gui:
             DBUS_SESSION_BUS_ADDRESS=session["dbus"],
             XAUTHORITY=session["xauthority"],
         )
-        for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+        for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "AT_SPI_BUS_ADDRESS"):
             os.environ.pop(name, None)
         import pyatspi
 
@@ -136,9 +137,12 @@ class Gui:
     def guard(self):
         """Return one snapshot's nodes, refusing a screen that may show a credential.
 
-        Field values are never read. Every inspection, wait and capture uses this check.
+        Field values are never read. Periodic sampling cannot protect every frame.
         """
-        nodes, secret_field = self.scan()
+        try:
+            nodes, secret_field = self.scan()
+        except Exception as error:
+            raise RuntimeError("Accessibility inspection failed") from error
         if secret_field or any(
             word in (data["name"] or "").lower()
             for _, data in nodes
@@ -171,7 +175,7 @@ class Gui:
                 if previous == data:
                     return node, data
                 previous = data
-            elif len(found) > 1:
+            elif not absent and len(found) > 1:
                 raise RuntimeError("Ambiguous target; specify an exact role")
             elif found or not absent:
                 previous = None
@@ -284,7 +288,7 @@ class Gui:
                     raise ValueError(f"Unknown action: {action}")
                 if recorder:
                     self.guard()
-        except SensitiveScreen:
+        except RuntimeError:
             sensitive = True
             raise
         finally:
@@ -309,11 +313,43 @@ class Gui:
             time.sleep(STOP_SETTLE_SECONDS)
             try:
                 self.guard()
-            except SensitiveScreen:
+            except RuntimeError:
                 partial.unlink(missing_ok=True)
                 raise
             os.link(partial, output)
             partial.unlink()
+
+
+def validate_scene(spec):
+    if not isinstance(spec, dict) or not isinstance(spec.get("steps"), list):
+        raise ValueError("Scene requires a steps list")
+    for step in spec["steps"]:
+        if not isinstance(step, dict):
+            raise ValueError("Each scene step must be an object")
+        action = step.get("action")
+        if action not in ("click", "wait", "wait_absent", "screenshot", "hold"):
+            raise ValueError("Scene contains an unsupported action")
+        if action in ("click", "wait", "wait_absent"):
+            target = step.get("target")
+            if not isinstance(target, dict) or not isinstance(target.get("name"), str):
+                raise ValueError("Semantic targets require an exact name")
+            if target.get("role") is not None and not isinstance(target["role"], str):
+                raise ValueError("Target role must be a string")
+        if action == "screenshot":
+            name = step.get("name")
+            if not isinstance(name, str) or not name or Path(name).name != name:
+                raise ValueError("Screenshot name must be a filename")
+        for key in (("seconds",) if action == "hold" else ()) + (
+            ("timeout",) if "timeout" in step else ()
+        ):
+            value = step.get(key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(f"{key} must be a finite nonnegative number")
 
 
 def main():
@@ -346,18 +382,7 @@ def main():
     args = parser.parse_args()
     if args.command == "scene":
         spec = json.loads(args.file.read_text())
-        for step in spec["steps"]:
-            if step["action"] not in (
-                "click",
-                "wait",
-                "wait_absent",
-                "screenshot",
-                "hold",
-            ):
-                parser.error("Scene contains an unsupported action")
-            if step["action"] in ("click", "wait", "wait_absent"):
-                if not isinstance(step.get("target", {}).get("name"), str):
-                    parser.error("Semantic targets require an exact name")
+        validate_scene(spec)
         if not args.execute:
             print(json.dumps(spec, indent=2))
             return

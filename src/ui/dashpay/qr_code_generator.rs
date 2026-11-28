@@ -98,8 +98,15 @@ impl QRCodeGeneratorScreen {
             .as_ref()
             .and_then(|identity| qr_wallet(&self.app_context, identity));
         self.wallet_open_attempted = false;
-        self.generated_qr_data = None;
+        self.clear_code();
         self.qr_request.clear();
+    }
+
+    /// Drop the shown code and the image drawn from it: the code carries a
+    /// key, so none is kept once it is off screen.
+    fn clear_code(&mut self) {
+        self.generated_qr_data = None;
+        self.qr_code = None;
     }
 
     /// Dispatch the auto-accept QR build to the backend, which resolves the key
@@ -115,14 +122,12 @@ impl QRCodeGeneratorScreen {
         };
 
         let identity_id = identity.identity.id();
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
+            identity: identity.clone(),
+        }));
         // The code shown may no longer be valid; only the new one is shown.
-        self.generated_qr_data = None;
-        self.qr_request.dispatch_with(
-            BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
-                identity: identity.clone(),
-            })),
-            identity_id,
-        )
+        self.clear_code();
+        self.qr_request.dispatch_with(task, identity_id)
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -230,7 +235,7 @@ impl QRCodeGeneratorScreen {
 
                         if self.generated_qr_data.is_some()
                             && ui.button("Clear").clicked() {
-                                self.generated_qr_data = None;
+                                self.clear_code();
                             }
                     });
                 }
@@ -476,6 +481,44 @@ mod tests {
         context.wallet_backend().unwrap().shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_removes_the_generated_code_and_cached_image() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let identity = bare_user_identity(Identifier::new([1; 32]), context.network);
+        context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+        let mut screen = QRCodeGeneratorScreen::new(context.clone());
+        screen.selected_identity = Some(identity);
+        let code = "dash:contact";
+        screen.generated_qr_data = Some(code.to_string());
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui_state(
+                |ui, screen: &mut QRCodeGeneratorScreen| {
+                    screen.render(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .qr_code
+                .as_ref()
+                .and_then(QrCodeImage::value),
+            Some(code)
+        );
+        harness.get_by_label("Clear").click();
+        harness.run();
+        assert!(harness.state().generated_qr_data.is_none());
+        assert!(harness.state().qr_code.is_none());
+        drop(harness);
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// Regression: a QR code generated for one identity arrived after the user
     /// had picked another and was shown under it, handing out the first
     /// identity's contact code as if it were the second's.
@@ -529,6 +572,35 @@ mod tests {
         screen.display_backend_task_error(&again, &refused);
 
         assert_eq!(screen.generated_qr_data, None);
+    }
+
+    /// The image keeps the code it last drew, a bearer key, so dropping the
+    /// shown code on regeneration or an identity change drops the image too.
+    #[test]
+    fn a_dropped_code_leaves_no_cached_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = QRCodeGeneratorScreen::new(context);
+        screen.selected_identity = Some(bare_user_identity(
+            Identifier::new([1; 32]),
+            Network::Testnet,
+        ));
+        let drawn = || {
+            let mut image = QrCodeImage::new();
+            let mut output = egui::Context::default().run_ui(Default::default(), |ui| {
+                image.show(ui, "dash:?du=alice&dapk=key");
+            });
+            output.textures_delta.clear();
+            Some(image)
+        };
+
+        screen.qr_code = drawn();
+        let _ = screen.generate_qr_code();
+        assert_eq!(screen.qr_code.as_ref().and_then(QrCodeImage::value), None);
+
+        screen.qr_code = drawn();
+        screen.identity_changed();
+        assert_eq!(screen.qr_code.as_ref().and_then(QrCodeImage::value), None);
     }
 
     /// Regression: hydration lists every loaded wallet with an identity, and

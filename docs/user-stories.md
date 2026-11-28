@@ -1370,6 +1370,7 @@ As a user, I want token transactions to use the wallet that holds my identity, a
 - Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) of an identity that a wallet in this app holds are sent through that wallet.
 - An identity that no wallet in this app holds (masternode, evonode and key-only identities) sends them signed with its own keys; it needs no wallet.
 - When the identity's wallet is known but not loaded yet, My Tokens marks the identity "View only" with its transaction buttons disabled, and token action screens show the reason (unlock the wallet or wait for it to load) instead of the form.
+- Token action and direct purchase confirmations identify the signing key and its wallet when applicable, even with Advanced Options off; after a signer change closes a confirmation, the next prompt identifies the replacement.
 
 ## Contracts and Documents (DOC)
 
@@ -1446,6 +1447,14 @@ As a developer, I want to set a price on a document and allow others to purchase
 - Another identity can purchase at the set price.
 
 ---
+
+### DOC-011: Skip an optional token cost [Implemented]
+**Persona:** Alex, Priya
+
+As a user, when a document action's token cost is optional, I want to choose not to pay it, so that I can pay the network fee in credits instead.
+
+- A "Pay the token cost" option appears only when the token cost is optional.
+- Without it, the action carries no token payment and its network fee is paid from the identity's credits.
 
 ## Developer and Power Tools (DEV)
 

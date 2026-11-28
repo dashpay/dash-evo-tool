@@ -655,6 +655,8 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                     ui.add_space(5.0);
                 }
+                let previous_key = self.common.selected_key.as_ref().cloned();
+                let previous_wallet = self.common.selected_wallet.as_ref().map(Arc::as_ptr);
                 inner_action |= self.common.selected_key.show_chooser(
                     ui,
                     &self.common.app_context,
@@ -664,6 +666,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &mut self.common.selected_wallet,
                     &mut self.common.wallet_open_attempted,
                 );
+                if previous_key.as_ref() != self.common.selected_key.as_ref()
+                    || previous_wallet != self.common.selected_wallet.as_ref().map(Arc::as_ptr)
+                {
+                    self.common.confirmation_dialog = None;
+                }
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -739,6 +746,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                         self.common.wallet_unlock_popup.open();
                     } else {
                         let message = self.action.confirm_message(&self.ctx());
+                        let signer = self.common.selected_key.confirmation_signer(
+                            &self.common.app_context,
+                            self.common.selected_wallet.as_ref(),
+                        );
+                        let message = format!("{message}\n\n{signer}");
                         let mut dialog = ConfirmationDialog::new(A::CONFIRM_TITLE, message)
                             .confirm_text(Some(A::VERB))
                             .cancel_text(Some("Cancel"));
@@ -1220,6 +1232,168 @@ mod tests {
         let common = &harness.state().common;
         assert_eq!(common.selected_key.as_ref().map(|key| key.id()), Some(2));
         assert!(common.selected_wallet.is_none(), "key 2 needs no wallet");
+    }
+
+    /// A refresh that moves the automatic key off an expired one closes the
+    /// confirmation asked for with it, so the new key is never submitted
+    /// unseen.
+    #[test]
+    fn a_refresh_moving_the_key_closes_the_confirmation() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let expired = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1));
+        let live = auth_key(2, SecurityLevel::CRITICAL).with_limits(None, Some(u64::MAX));
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_holding(&[expired.clone(), live]),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.common.selected_key = super::super::TokenSigningKey::automatic(Some(expired));
+        screen.common.confirmation_dialog =
+            Some(ConfirmationDialog::new("Confirm Mint", "Mint the tokens?"));
+
+        screen.refresh();
+
+        assert_eq!(
+            screen.common.selected_key.as_ref().map(|key| key.id()),
+            Some(2)
+        );
+        assert!(screen.common.confirmation_dialog.is_none());
+    }
+
+    #[test]
+    fn a_refresh_moving_only_the_wallet_closes_the_confirmation() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let key = auth_key(1, SecurityLevel::CRITICAL);
+        let mut identity = identity_holding(std::slice::from_ref(&key));
+        let old_wallet_hash = store_identity_with_wallet_key(&context, identity.clone(), 1);
+        let mut info = token_info(&context, None, false);
+        info.identity = identity.clone();
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.refresh();
+        assert_eq!(screen.common.selected_key.as_ref(), Some(&key));
+        let old_wallet = screen.common.selected_wallet.clone().expect("old wallet");
+        assert_eq!(old_wallet.read().unwrap().seed_hash(), old_wallet_hash);
+        screen.common.confirmation_dialog =
+            Some(ConfirmationDialog::new("Confirm Mint", "Mint the tokens?"));
+
+        screen.refresh();
+
+        assert_eq!(screen.common.selected_key.as_ref(), Some(&key));
+        assert!(Arc::ptr_eq(
+            screen.common.selected_wallet.as_ref().unwrap(),
+            &old_wallet,
+        ));
+        assert!(
+            screen.common.confirmation_dialog.is_some(),
+            "unchanged key and wallet must keep the confirmation open"
+        );
+
+        let new_wallet = crate::model::wallet::test_support::open_wallet_on(
+            crate::test_support::keys::labelled_seed("token_confirmation_wallet_change", 0),
+        );
+        let new_wallet_hash = new_wallet.seed_hash();
+        context
+            .wallet_context()
+            .insert_test_wallet(new_wallet_hash, Arc::new(RwLock::new(new_wallet)));
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, new_wallet_hash);
+        context
+            .insert_local_qualified_identity(&identity, &Some((new_wallet_hash, 0)))
+            .expect("store changed wallet association");
+        assert_ne!(old_wallet_hash, new_wallet_hash);
+        screen.refresh();
+
+        assert_eq!(screen.common.selected_key.as_ref(), Some(&key));
+        let new_wallet = screen.common.selected_wallet.as_ref().expect("new wallet");
+        assert_eq!(new_wallet.read().unwrap().seed_hash(), new_wallet_hash);
+        assert!(!Arc::ptr_eq(new_wallet, &old_wallet));
+        assert!(
+            screen.common.confirmation_dialog.is_none(),
+            "a wallet-only change must close the confirmation"
+        );
+    }
+
+    #[test]
+    fn a_token_confirmation_shows_the_replacement_signer_without_advanced_options() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+        use egui_kittest::kittest::Queryable;
+
+        for replacement_id in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = test_app_context(dir.path());
+            let mut info = token_info(&context, Some(Identifier::from([5; 32])), false);
+            info.identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(1280.0, 1000.0))
+                .build_ui_state(
+                    |ui, screen: &mut MintTokensScreen| {
+                        screen.ui(ui);
+                    },
+                    MintTokensScreen::new(info, &context),
+                );
+            harness.run();
+            harness.get_by_label("Amount to Mint:").focus();
+            harness.run();
+            harness.get_by_label("Amount to Mint:").type_text("5");
+            harness.run();
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Mint")
+                .last()
+                .expect("Mint button")
+                .click();
+            harness.run_steps(3);
+            assert!(harness.state().common.confirmation_dialog.is_some());
+            assert!(!harness.state().common.show_advanced_options);
+
+            let replacement = auth_key(replacement_id, SecurityLevel::CRITICAL);
+            let wallet_hash = store_identity_with_wallet_key(
+                &context,
+                identity_holding(std::slice::from_ref(&replacement)),
+                replacement_id,
+            );
+            context
+                .wallet_context()
+                .rename_test_hd(wallet_hash, "Replacement wallet")
+                .unwrap();
+            harness.state_mut().refresh();
+            // This UI-only fixture has no running wallet backend.
+            harness.state_mut().common.token_action_availability =
+                crate::model::token::TokenActionAvailability::Available;
+            assert!(harness.state().common.confirmation_dialog.is_none());
+            assert_eq!(
+                harness.state().common.selected_key.as_ref(),
+                Some(&replacement)
+            );
+            harness.run_steps(3);
+            harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "Mint")
+                .last()
+                .expect("Mint button")
+                .click();
+            harness.run_steps(3);
+
+            assert!(!harness.state().common.show_advanced_options);
+            assert!(harness.state().common.confirmation_dialog.is_some());
+            harness.get_by_label_contains(&format!(
+                "This action will be signed with key {replacement_id}"
+            ));
+            harness.get_by_label_contains("from wallet \"Replacement wallet\".");
+        }
     }
 
     /// A co-signer whose key cannot sign for this contract still sees the
@@ -1927,5 +2101,59 @@ mod tests {
                 .query_by_label(super::super::CHOOSE_SIGNING_KEY)
                 .is_some()
         );
+    }
+    #[test]
+    fn manual_signer_change_closes_confirmation() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(dir.path());
+        let mut info = token_info(&context, None, false);
+        let replacement = auth_key(2, SecurityLevel::CRITICAL);
+        info.identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL), replacement.clone()]);
+        let mut screen =
+            crate::ui::tokens::burn_tokens_screen::BurnTokensScreen::new(info.clone(), &context);
+        screen.common.show_advanced_options = true;
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut crate::ui::tokens::burn_tokens_screen::BurnTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label("Amount:").focus();
+        harness.run();
+        harness.get_by_label("Amount:").type_text("5");
+        harness.run();
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Burn")
+            .last()
+            .unwrap()
+            .click();
+        harness.run_steps(3);
+        assert!(harness.state().common.confirmation_dialog.is_some());
+        harness.get_by_label_contains("This action will be signed with key 1");
+        harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+        harness.run();
+        harness
+            .get_by_label(&crate::ui::helpers::format_key_label(&replacement))
+            .click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().common.selected_key.as_ref(),
+            Some(&replacement)
+        );
+        assert!(harness.state().common.confirmation_dialog.is_none());
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Burn")
+            .last()
+            .unwrap()
+            .click();
+        harness.run_steps(3);
+        harness.get_by_label_contains("This action will be signed with key 2");
     }
 }

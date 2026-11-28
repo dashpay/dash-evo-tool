@@ -3359,6 +3359,27 @@ impl WalletBackend {
         self.refresh_token_balances().await;
     }
 
+    /// Observe the upstream slot and watch list in concurrency tests.
+    #[cfg(test)]
+    pub(crate) async fn token_sync_state_for_test(
+        &self,
+        identity: dash_sdk::platform::Identifier,
+    ) -> (bool, Vec<dash_sdk::platform::Identifier>) {
+        let sync = self.inner.pwm.identity_sync();
+        let tokens = sync
+            .state_for_identity(&identity)
+            .await
+            .map(|state| {
+                state
+                    .tokens
+                    .into_iter()
+                    .map(|token| token.token_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (sync.is_syncing(), tokens)
+    }
+
     /// Force one immediate upstream token-balance sync pass, then republish
     /// DET's snapshot. Reports when upstream skipped the request because
     /// another pass already owns its single-flight slot.
@@ -3373,6 +3394,21 @@ impl WalletBackend {
             self.refresh_token_balances().await;
         }
         outcome
+    }
+
+    /// Wait for a fresh upstream pass before publishing the updated balance snapshot.
+    pub(crate) async fn sync_token_balances_after_in_flight(&self) -> TokenBalanceSyncOutcome {
+        if !self
+            .inner
+            .pwm
+            .identity_sync()
+            .sync_now_after_in_flight()
+            .await
+        {
+            return TokenBalanceSyncOutcome::AlreadyInFlight;
+        }
+        self.refresh_token_balances().await;
+        TokenBalanceSyncOutcome::Performed
     }
 
     /// Republish the lock-free token-balance snapshot from the upstream

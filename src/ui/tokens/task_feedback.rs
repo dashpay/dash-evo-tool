@@ -21,6 +21,23 @@ impl DomainFeedback for TokensFeedback {
                 MessageType::Info,
             );
         }
+        if let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result
+            && outcome.record.network == feedback.active_network
+        {
+            use crate::model::token_creator::registration::RegistrationStatus;
+            let (text, kind) = if outcome.record.status == RegistrationStatus::Confirmed {
+                (
+                    "The token was created. Open Token Creator to view the saved receipt.",
+                    MessageType::Success,
+                )
+            } else {
+                (
+                    "Token creation is not yet confirmed. Open Token Creator and check its status before making another attempt.",
+                    MessageType::Info,
+                )
+            };
+            MessageBanner::set_global(feedback.ctx, text, kind).disable_auto_dismiss();
+        }
         if feedback.delivery.sender_gone
             && let BackendTaskSuccessResult::TransferredTokens(_) = result
         {
@@ -48,6 +65,7 @@ mod tests {
         let contexts = std::collections::BTreeMap::new();
         let feedback = Feedback {
             ctx,
+            active_network: dash_sdk::dpp::dashcore::Network::Testnet,
             contexts: &contexts,
             delivery: ResultDelivery {
                 sender_in_view: !sender_gone,

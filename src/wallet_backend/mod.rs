@@ -509,6 +509,7 @@ struct Inner {
     /// Guards [`WalletBackend::start`] so chain sync spawns exactly once.
     /// See [`StartLatch`].
     start_latch: StartLatch,
+    token_refresh_stopped: AtomicBool,
     /// Quorum-readiness gate for the Platform/identity sync coordinators.
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
@@ -791,6 +792,7 @@ impl WalletBackend {
                 app_kv,
                 secret_access,
                 start_latch: StartLatch::default(),
+                token_refresh_stopped: AtomicBool::new(false),
                 coordinator_gate,
                 protocol_refresh: protocol_refresh::ProtocolRefresh::default(),
                 app_context: Arc::downgrade(ctx),
@@ -2089,6 +2091,9 @@ impl WalletBackend {
                         self.inner.start_latch.reset_if_current(&flight);
                         return Err(StartFlightError::Superseded);
                     }
+                    self.inner
+                        .token_refresh_stopped
+                        .store(false, Ordering::Release);
                     flight.begun.store(true, Ordering::SeqCst);
                     match self.start_once().await {
                         Ok(()) => Ok(()),
@@ -2246,6 +2251,9 @@ impl WalletBackend {
     /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner
+            .token_refresh_stopped
+            .store(true, Ordering::Release);
         self.inner.protocol_refresh.stop().await;
         // Stop the SPV run-loop first: joins/aborts the background task so the
         // transitive Arc<SqlitePersister> it holds is released before the
@@ -2304,6 +2312,9 @@ impl WalletBackend {
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
         let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
+        self.inner
+            .token_refresh_stopped
+            .store(true, Ordering::Release);
         self.inner.protocol_refresh.stop().await;
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
@@ -3359,6 +3370,27 @@ impl WalletBackend {
         self.refresh_token_balances().await;
     }
 
+    /// Observe the upstream slot and watch list in concurrency tests.
+    #[cfg(test)]
+    pub(crate) async fn token_sync_state_for_test(
+        &self,
+        identity: dash_sdk::platform::Identifier,
+    ) -> (bool, Vec<dash_sdk::platform::Identifier>) {
+        let sync = self.inner.pwm.identity_sync();
+        let tokens = sync
+            .state_for_identity(&identity)
+            .await
+            .map(|state| {
+                state
+                    .tokens
+                    .into_iter()
+                    .map(|token| token.token_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (sync.is_syncing(), tokens)
+    }
+
     /// Force one immediate upstream token-balance sync pass, then republish
     /// DET's snapshot. Reports when upstream skipped the request because
     /// another pass already owns its single-flight slot.
@@ -3373,6 +3405,29 @@ impl WalletBackend {
             self.refresh_token_balances().await;
         }
         outcome
+    }
+
+    /// Wait for a fresh upstream pass before publishing the updated balance snapshot.
+    pub(crate) async fn sync_token_balances_after_in_flight(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> TokenBalanceSyncOutcome {
+        while tokio::time::Instant::now() < deadline
+            && !self.inner.token_refresh_stopped.load(Ordering::Acquire)
+        {
+            if self
+                .inner
+                .pwm
+                .identity_sync()
+                .sync_now_after_in_flight()
+                .await
+            {
+                self.refresh_token_balances().await;
+                return TokenBalanceSyncOutcome::Performed;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        TokenBalanceSyncOutcome::AlreadyInFlight
     }
 
     /// Republish the lock-free token-balance snapshot from the upstream

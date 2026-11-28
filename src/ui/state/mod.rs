@@ -24,6 +24,7 @@ pub mod own_receive_addresses;
 pub mod pending_request;
 pub mod send_form;
 pub mod spend_limit;
+pub mod token_creator;
 pub mod tracked_asset_lock_cache;
 
 pub use asset_lock_balance::AssetLockBalanceCache;

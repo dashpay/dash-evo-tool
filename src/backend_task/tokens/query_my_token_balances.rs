@@ -57,11 +57,58 @@ impl Drop for TokenBalanceRefreshGuard {
 }
 
 impl AppContext {
+    /// Refresh the newly cached token in the background without delaying the receipt.
+    pub(super) fn spawn_token_creation_balance_refresh(
+        self: &Arc<Self>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) {
+        let context = Arc::clone(self);
+        let shutdown = self.subtasks.cancellation_token.clone();
+        let refresh = async move {
+            // A refresh already running may have taken its watch sets before the token was cached.
+            let deadline = tokio::time::Instant::now() + TOKEN_BALANCE_REFRESH_MAX_LIFETIME;
+            loop {
+                match context
+                    .query_my_token_balances_with_wait(sender.clone(), Some(deadline))
+                    .await
+                {
+                    Err(TaskError::TokenBalanceRefreshInProgress)
+                        if tokio::time::Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Err(error) => {
+                        tracing::debug!(?error, "Could not refresh balances after token creation");
+                        break;
+                    }
+                    Ok(_) => break,
+                }
+            }
+        };
+        let _ = self
+            .subtasks
+            .spawn_sync("token_creation_balance_refresh", async move {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {}
+                    () = refresh => {}
+                }
+            });
+    }
+
     pub async fn query_my_token_balances(
         self: &std::sync::Arc<Self>,
-        _sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.query_my_token_balances_with_wait(sender, None).await
+    }
+
+    async fn query_my_token_balances_with_wait(
+        self: &Arc<Self>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        wait_for_in_flight: Option<tokio::time::Instant>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let refresh_guard = self.begin_token_balance_refresh()?;
         let identities = self.load_local_qualified_identities()?;
 
         if identities.is_empty() {
@@ -71,7 +118,6 @@ impl AppContext {
         let identity_ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
         let watch_sets = self.token_watch_sets(identity_ids)?;
 
-        let refresh_guard = self.begin_token_balance_refresh()?;
         let context = Arc::clone(self);
         let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),
@@ -79,7 +125,9 @@ impl AppContext {
             NETWORK_REQUEST_TIMEOUT,
             async move {
                 let _refresh_guard = refresh_guard;
-                context.refresh_upstream_token_balances(watch_sets).await
+                context
+                    .refresh_upstream_token_balances(watch_sets, wait_for_in_flight)
+                    .await
             },
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
@@ -105,8 +153,8 @@ impl AppContext {
 
         // The upstream watch list is per-identity and replaced wholesale, so
         // register the identity's whole watch set rather than a single pair.
-        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
         let refresh_guard = self.begin_token_balance_refresh()?;
+        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
         let context = Arc::clone(self);
         let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),
@@ -114,7 +162,9 @@ impl AppContext {
             NETWORK_REQUEST_TIMEOUT,
             async move {
                 let _refresh_guard = refresh_guard;
-                context.refresh_upstream_token_balances(watch_sets).await
+                context
+                    .refresh_upstream_token_balances(watch_sets, None)
+                    .await
             },
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
@@ -224,6 +274,7 @@ impl AppContext {
     async fn refresh_upstream_token_balances(
         &self,
         watch_sets: Vec<(Identifier, Vec<Identifier>)>,
+        wait_for_in_flight: Option<tokio::time::Instant>,
     ) -> Result<TokenBalanceSyncOutcome, TaskError> {
         let backend = self.wallet_backend()?;
         for (identity_id, token_ids) in watch_sets {
@@ -231,7 +282,16 @@ impl AppContext {
                 .register_identity_tokens(identity_id, token_ids)
                 .await;
         }
-        Ok(backend.sync_token_balances_now().await)
+        Ok(if let Some(deadline) = wait_for_in_flight {
+            tokio::time::timeout_at(
+                deadline,
+                backend.sync_token_balances_after_in_flight(deadline),
+            )
+            .await
+            .map_err(|source| TaskError::TokenBalanceRefreshTimeout { source })?
+        } else {
+            backend.sync_token_balances_now().await
+        })
     }
 
     fn token_balance_sync_result(outcome: TokenBalanceSyncOutcome) -> BackendTaskSuccessResult {
@@ -268,6 +328,10 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
+        fixture_with_sdk(None).await
+    }
+
+    async fn fixture_with_sdk(sdk: Option<Sdk>) -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let data_dir = dir.path().to_path_buf();
         ensure_env_file(&data_dir).expect("write .env");
@@ -287,6 +351,9 @@ mod tests {
         )
         .expect("offline testnet AppContext");
 
+        if let Some(sdk) = sdk {
+            ctx.sdk.store(Arc::new(sdk));
+        }
         let (tx, rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
         ctx.ensure_wallet_backend(sender.clone())
@@ -339,6 +406,165 @@ mod tests {
             identity_id,
             token_id,
         }
+    }
+
+    async fn wait_for_creator(f: &Fixture) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while f.ctx.subtasks.is_active("token_creation_balance_refresh") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("creator refresh finishes");
+    }
+
+    fn counted_identity(
+        f: &Fixture,
+        identity: Identifier,
+    ) -> Arc<crate::wallet_backend::kv_test_support::FailingKv> {
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        f.ctx
+            .set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        let owner = crate::context::test_support::bare_user_identity(identity, f.ctx.network);
+        f.ctx
+            .insert_local_qualified_identity(&owner, &None)
+            .unwrap();
+        store
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn creation_balance_refresh_stops_after_disconnect_and_shutdown() {
+        for shutdown in [false, true] {
+            let f = fixture().await;
+            let backend = f.ctx.wallet_backend().unwrap();
+            if shutdown {
+                backend.shutdown().await;
+            } else {
+                backend.stop_in_place().await;
+            }
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                backend.sync_token_balances_after_in_flight(
+                    tokio::time::Instant::now() + Duration::from_secs(60),
+                ),
+            )
+            .await
+            .expect("closed backend must not retry");
+            assert_eq!(result, TokenBalanceSyncOutcome::AlreadyInFlight);
+        }
+    }
+
+    #[tokio::test]
+    async fn creation_balance_refresh_installs_watch_lists_once_while_upstream_is_busy() {
+        use dash_sdk::dpp::balances::credits::TokenAmount;
+        use dash_sdk::platform::tokens::identity_token_balances::{
+            IdentityTokenBalances, IdentityTokenBalancesQuery,
+        };
+        let identity = ident(10);
+        let old = ident(1);
+        let new = ident(2);
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(dash_sdk::dpp::version::PlatformVersion::latest())
+            .build()
+            .unwrap();
+        for token_ids in [vec![old], vec![old, new]] {
+            sdk.mock()
+                .expect_fetch_many::<Identifier, TokenAmount, _, IdentityTokenBalances>(
+                    IdentityTokenBalancesQuery {
+                        identity_id: identity,
+                        token_ids: token_ids.clone(),
+                    },
+                    Some(token_ids.into_iter().map(|id| (id, Some(1000))).collect()),
+                )
+                .await
+                .unwrap();
+        }
+        let f = fixture_with_sdk(Some(sdk.clone())).await;
+        let store = counted_identity(&f, identity);
+        register_token(&f.ctx, old, "Alpha");
+        let backend = f.ctx.wallet_backend().unwrap();
+        backend.register_identity_tokens(identity, vec![old]).await;
+        let held_response = sdk.mock();
+        let running = backend.clone();
+        let first = tokio::spawn(async move { running.sync_token_balances_now().await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !backend.token_sync_state_for_test(identity).await.0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("upstream owns its slot");
+        let manual = tokio::time::timeout(
+            Duration::from_secs(1),
+            f.ctx.query_my_token_balances(f.sender.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            manual,
+            BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
+        ));
+        register_token(&f.ctx, new, "Beta");
+        f.ctx.spawn_token_creation_balance_refresh(f.sender.clone());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !backend
+                .token_sync_state_for_test(identity)
+                .await
+                .1
+                .contains(&new)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("creator installs its new watch list");
+        let reads_after_install = store.read_count();
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        let reads_while_busy = store.read_count();
+        drop(held_response);
+        first.await.unwrap();
+        wait_for_creator(&f).await;
+        assert_eq!(
+            reads_while_busy, reads_after_install,
+            "waiting must not reload the identity roster"
+        );
+        assert_eq!(
+            f.ctx.identity_token_balances().unwrap()[&pair(identity, new)].balance,
+            1000,
+            "a fresh pass must read the new token after the old pass ends"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_balance_refresh_retries_local_admission_without_reloading() {
+        let f = fixture().await;
+        let store = counted_identity(&f, ident(10));
+        let guard = f.ctx.begin_token_balance_refresh().unwrap();
+        let before = store.read_count();
+        f.ctx.spawn_token_creation_balance_refresh(f.sender.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(store.read_count(), before);
+        assert!(f.ctx.subtasks.is_active("token_creation_balance_refresh"));
+        drop(guard);
+        wait_for_creator(&f).await;
+        assert!(
+            store.read_count() > before,
+            "the retry must eventually load the roster"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_balance_refresh_cancels_while_waiting_for_local_admission() {
+        let f = fixture().await;
+        let store = counted_identity(&f, ident(10));
+        let _guard = f.ctx.begin_token_balance_refresh().unwrap();
+        let before = store.read_count();
+        f.ctx.spawn_token_creation_balance_refresh(f.sender.clone());
+        tokio::task::yield_now().await;
+        f.ctx.subtasks.cancellation_token.cancel();
+        wait_for_creator(&f).await;
+        assert_eq!(store.read_count(), before);
     }
 
     #[tokio::test]

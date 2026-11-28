@@ -41,6 +41,7 @@ pub mod single_key;
 pub mod spend_limit;
 pub mod spv_status;
 pub mod token;
+pub mod token_creator;
 pub mod user_role;
 pub mod validation;
 pub mod wallet;

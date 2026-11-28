@@ -2229,6 +2229,7 @@ impl App for AppState {
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
             let feedback = Feedback {
                 ctx,
+                active_network: self.current_app_context().network,
                 contexts: &self.network_contexts,
                 delivery: ResultDelivery {
                     sender_in_view: owner_in_view,

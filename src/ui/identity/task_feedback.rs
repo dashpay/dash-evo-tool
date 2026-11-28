@@ -164,6 +164,7 @@ mod tests {
         };
         let feedback = Feedback {
             ctx: &ctx,
+            active_network: Network::Testnet,
             contexts: &Default::default(),
             delivery: ResultDelivery {
                 sender_in_view: true,

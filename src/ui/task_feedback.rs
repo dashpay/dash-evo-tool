@@ -21,6 +21,8 @@ pub(crate) struct ResultDelivery {
 /// What every domain is told about a result, beyond the result itself.
 pub(crate) struct Feedback<'a> {
     pub ctx: &'a egui::Context,
+    /// The network whose screens are active when the result is shown.
+    pub active_network: Network,
     /// Every network's context, for a result that names its network.
     pub contexts: &'a BTreeMap<Network, Arc<AppContext>>,
     pub delivery: ResultDelivery,

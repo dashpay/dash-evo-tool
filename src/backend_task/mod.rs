@@ -17,6 +17,7 @@ use crate::model::dpns_voting::{
 use crate::model::grovestark_prover::ProofDataOutput;
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token_creator::registration::RegistrationStatus;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
@@ -344,8 +345,12 @@ impl BackendTask {
     // Known limit: two overlapping paid tasks for the same payer can store
     // the older read last; there is no ordering guard until that migration.
     pub(crate) fn fee_payer(&self) -> Option<Identifier> {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
         let payer = match self {
             Self::TokenTask(task) => match task.as_ref() {
+                TokenTask::SubmitTokenCreation { prepared } => {
+                    return Some(prepared.contract.owner_id());
+                }
                 TokenTask::RegisterTokenContract { identity, .. }
                 | TokenTask::PurchaseTokens { identity, .. }
                 | TokenTask::SetDirectPurchasePrice { identity, .. } => identity,
@@ -366,7 +371,10 @@ impl BackendTask {
                     identity_token_info,
                     ..
                 } => &identity_token_info.identity,
-                TokenTask::QueryMyTokenBalances
+                TokenTask::PrepareTokenCreation { .. }
+                | TokenTask::CheckTokenCreation
+                | TokenTask::SaveConfirmedTokenCreation { .. }
+                | TokenTask::QueryMyTokenBalances
                 | TokenTask::QueryIdentityTokenBalance(_)
                 | TokenTask::StopTrackingTokenBalance(_)
                 | TokenTask::ClearOncePerIdentityClaimHint(_)
@@ -1399,6 +1407,8 @@ pub enum BackendTaskSuccessResult {
     FetchedNonce,
     RegisteredContract(FeeResult),
     RegisteredTokenContract,
+    TokenCreationPrepared(Box<crate::model::token_creator::registration::PreparedRegistration>),
+    TokenCreationOutcome(Box<crate::model::token_creator::registration::RegistrationOutcome>),
     SavedContract,
     ContractNotFound,
     TokenNotFound,
@@ -1608,6 +1618,13 @@ impl AppContext {
         let result = self
             .run_backend_task_inner(task, sender.clone(), task_sdk.as_ref())
             .await;
+        // Recovery confirms the payment even when the local token cache cannot be saved.
+        let fee_payer = match &result {
+            Ok(BackendTaskSuccessResult::TokenCreationOutcome(outcome)) => (outcome.record.status
+                == RegistrationStatus::Confirmed)
+                .then_some(outcome.record.owner),
+            _ => fee_payer,
+        };
         // The inner run has dropped every guard and claim the task held, so the
         // balance read below delays neither the result nor a retry of the action.
         if let (Ok(_), Some(payer)) = (&result, fee_payer) {

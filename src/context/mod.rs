@@ -9,6 +9,7 @@ mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
 mod network_context_error;
+pub(crate) mod token_registration;
 pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub use network_context_error::NetworkContextError;
@@ -270,6 +271,7 @@ pub struct AppContext {
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
     pub(crate) token_balance_refresh_in_flight: AtomicBool,
+    pub(crate) token_creation_acceptance: crate::backend_task::tokens::TokenCreationAcceptance,
     /// Tracks the connection status to currently active network
     pub(crate) connection_status: Arc<ConnectionStatus>,
     /// Tracks the legacy-data migration progress. Cheap to read each
@@ -635,6 +637,7 @@ impl AppContext {
             secret_store,
             subtasks,
             token_balance_refresh_in_flight: AtomicBool::new(false),
+            token_creation_acceptance: Default::default(),
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
             prepare_gate: tokio::sync::Mutex::new(()),

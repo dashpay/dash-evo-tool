@@ -370,6 +370,8 @@ pub enum TaskError {
     TokenCreatorInsufficientCredits { available:u64,required:u64 },
     #[error("A token creation is already running or awaiting confirmation. Check its status before starting another.")]
     TokenCreatorBusy,
+    #[error("The previous token still needs a local save. Restore its local receipt before creating another token.")]
+    TokenCreatorRepairRequired { #[source] source: Box<TaskError> },
     #[error("The token creation record could not be saved. Free space in the app's data folder and check the status before trying again.")]
     TokenCreatorJournal { #[source] source: crate::wallet_backend::KvAdapterError },
     #[error("The token creation could not be locked safely. Close other app instances and try again.")]

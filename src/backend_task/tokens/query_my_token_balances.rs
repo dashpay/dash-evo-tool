@@ -69,7 +69,7 @@ impl AppContext {
             let deadline = tokio::time::Instant::now() + TOKEN_BALANCE_REFRESH_MAX_LIFETIME;
             loop {
                 match context
-                    .query_my_token_balances_with_wait(sender.clone(), true)
+                    .query_my_token_balances_with_wait(sender.clone(), Some(deadline))
                     .await
                 {
                     Err(TaskError::TokenBalanceRefreshInProgress)
@@ -100,13 +100,13 @@ impl AppContext {
         self: &std::sync::Arc<Self>,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        self.query_my_token_balances_with_wait(sender, false).await
+        self.query_my_token_balances_with_wait(sender, None).await
     }
 
     async fn query_my_token_balances_with_wait(
         self: &Arc<Self>,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-        wait_for_in_flight: bool,
+        wait_for_in_flight: Option<tokio::time::Instant>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let refresh_guard = self.begin_token_balance_refresh()?;
         let identities = self.load_local_qualified_identities()?;
@@ -163,7 +163,7 @@ impl AppContext {
             async move {
                 let _refresh_guard = refresh_guard;
                 context
-                    .refresh_upstream_token_balances(watch_sets, false)
+                    .refresh_upstream_token_balances(watch_sets, None)
                     .await
             },
             |source| TaskError::TokenBalanceRefreshTimeout { source },
@@ -274,7 +274,7 @@ impl AppContext {
     async fn refresh_upstream_token_balances(
         &self,
         watch_sets: Vec<(Identifier, Vec<Identifier>)>,
-        wait_for_in_flight: bool,
+        wait_for_in_flight: Option<tokio::time::Instant>,
     ) -> Result<TokenBalanceSyncOutcome, TaskError> {
         let backend = self.wallet_backend()?;
         for (identity_id, token_ids) in watch_sets {
@@ -282,8 +282,13 @@ impl AppContext {
                 .register_identity_tokens(identity_id, token_ids)
                 .await;
         }
-        Ok(if wait_for_in_flight {
-            backend.sync_token_balances_after_in_flight().await
+        Ok(if let Some(deadline) = wait_for_in_flight {
+            tokio::time::timeout_at(
+                deadline,
+                backend.sync_token_balances_after_in_flight(deadline),
+            )
+            .await
+            .map_err(|source| TaskError::TokenBalanceRefreshTimeout { source })?
         } else {
             backend.sync_token_balances_now().await
         })
@@ -427,6 +432,28 @@ mod tests {
         store
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn creation_balance_refresh_stops_after_disconnect_and_shutdown() {
+        for shutdown in [false, true] {
+            let f = fixture().await;
+            let backend = f.ctx.wallet_backend().unwrap();
+            if shutdown {
+                backend.shutdown().await;
+            } else {
+                backend.stop_in_place().await;
+            }
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                backend.sync_token_balances_after_in_flight(
+                    tokio::time::Instant::now() + Duration::from_secs(60),
+                ),
+            )
+            .await
+            .expect("closed backend must not retry");
+            assert_eq!(result, TokenBalanceSyncOutcome::AlreadyInFlight);
+        }
+    }
+
     #[tokio::test]
     async fn creation_balance_refresh_installs_watch_lists_once_while_upstream_is_busy() {
         use dash_sdk::dpp::balances::credits::TokenAmount;
@@ -493,7 +520,7 @@ mod tests {
         .await
         .expect("creator installs its new watch list");
         let reads_after_install = store.read_count();
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        tokio::time::sleep(Duration::from_secs(12)).await;
         let reads_while_busy = store.read_count();
         drop(held_response);
         first.await.unwrap();

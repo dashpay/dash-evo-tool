@@ -234,6 +234,8 @@ impl AppContext {
                 required,
             });
         }
+        crate::backend_task::contract::prepare_contract_signing_key(sdk, &identity, &prepared.key)
+            .await?;
         let nonce = reserve_reviewed_nonce(sdk, owner, prepared.nonce).await?;
         let version = sdk.version();
         if version.protocol_version != prepared.protocol_version {
@@ -318,6 +320,8 @@ impl AppContext {
             .map_err(|source| TaskError::InvalidTokenDraft {
                 source: Box::new(source),
             })?;
+        crate::backend_task::contract::prepare_contract_signing_key(sdk, &identity, &prepared.key)
+            .await?;
         journal.claim(&record)?;
         if let Err(error) = transition.broadcast(sdk, settings()).await {
             return self.creator_broadcast_error(&journal, record, error);
@@ -412,6 +416,15 @@ impl AppContext {
                 journal_saved,
             },
         )))
+    }
+
+    /// Repairs local caches before a confirmed receipt can be replaced.
+    pub(crate) fn repair_token_creation_receipt(
+        &self,
+        record: &RegistrationRecord,
+    ) -> Result<(), TaskError> {
+        let contract = record.contract().map_err(protocol)?;
+        self.creator_cache_receipt(&contract, &record.alias)
     }
 
     /// Saves the accepted contract and its token only where nothing is cached yet: a later
@@ -945,6 +958,21 @@ mod tests {
                 .blocks_registration()
         );
     }
+    #[test]
+    fn confirmed_claim_preserves_receipt_when_local_repair_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (mut confirmed, _) = fixture(&context);
+        confirmed.status = RegistrationStatus::Confirmed;
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&confirmed).unwrap();
+        let mut next = confirmed.clone();
+        next.attempt_id = [99; 32];
+        next.status = RegistrationStatus::Submitted;
+        assert!(journal.claim(&next).is_err());
+        assert_eq!(journal.read().unwrap(), Some(confirmed));
+    }
+
     #[tokio::test]
     async fn token_registration_expired_review_schedule_returns_to_distribution_before_signing() {
         let dir = tempfile::tempdir().unwrap();
@@ -1090,6 +1118,59 @@ mod tests {
                 .await,
             Err(TaskError::TokenCreatorKeyUnavailable)
         ));
+    }
+
+    // TODO: Exercise protocol-14 expiry with verified metadata; SDK mock expectations are unverified.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn guided_submission_preflights_limited_key_before_claim() {
+        use dash_sdk::query_types::{IdentityBalance, IdentityNonceFetcher};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut owner = owner_holding(&context, 44, |key| {
+            *key = key.clone().with_limits(None, Some(1000))
+        });
+        let mut sdk = mock_sdk();
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        owner.identity.set_balance(100_000_000_000);
+        sdk.mock().set_response_time_ms(2000);
+        sdk.mock()
+            .expect_fetch::<Identity, _>(owner.identity.id(), Some(owner.identity.clone()))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch::<IdentityBalance, _>(owner.identity.id(), Some(owner.identity.balance()))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch::<IdentityNonceFetcher, _>(
+                owner.identity.id(),
+                Some(IdentityNonceFetcher(6)),
+            )
+            .await
+            .unwrap();
+        let prepared = context
+            .prepare_token_creation(
+                &sdk,
+                TokenDraft::example(false),
+                owner.identity.id(),
+                owner.identity.get_public_key_by_id(1).unwrap().clone(),
+            )
+            .await
+            .unwrap();
+        let BackendTaskSuccessResult::TokenCreationPrepared(prepared) = prepared else {
+            panic!("expected preparation")
+        };
+        let result = context.submit_token_creation(&sdk, *prepared).await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractSigningKeyUnavailable
+                    | TaskError::ContractSigningProtocolUnconfirmed
+                    | TaskError::ContractSigningKeyHasLimits)
+            ),
+            "{result:?}"
+        );
+        assert!(context.token_registration_record().unwrap().is_none());
     }
 
     /// The SDK's PutContract preflight refuses private document types whose
@@ -1302,10 +1383,10 @@ mod tests {
         assert!(!context.has_token_entry(&record.token_id).unwrap());
     }
 
-    #[test]
-    fn receipt_retry_cannot_reuse_acceptance_for_another_attempt() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn receipt_retry_cannot_reuse_acceptance_for_another_attempt() {
         let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::test_app_context(dir.path());
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let (record, contract) = fixture(&context);
         let journal = context.token_registration_journal().unwrap();
         journal.claim(&record).unwrap();

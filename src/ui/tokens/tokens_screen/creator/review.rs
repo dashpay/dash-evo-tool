@@ -59,8 +59,15 @@ impl TokensScreen {
                 }
                 if record.status == RegistrationStatus::Confirmed {
                     ui.label("These identifiers come from the accepted contract. A draft or a broadcast alone is not proof of creation.");
-                    if let Some(outcome) = &self.creator_workspace.outcome
-                        && (!outcome.local_cache_saved || !outcome.journal_saved)
+                    if self
+                        .creator_workspace
+                        .outcome
+                        .as_ref()
+                        .is_none_or(|outcome| {
+                            !outcome.local_cache_saved
+                                || !outcome.journal_saved
+                                || outcome.record != record
+                        })
                     {
                         ui.label("The token was created, but a local save did not finish. Restore the local receipt to save it and the token again; this does not create or pay for another token.");
                     }
@@ -79,7 +86,11 @@ impl TokensScreen {
                                     .creator_workspace
                                     .outcome
                                     .as_ref()
-                                    .is_none_or(|outcome| outcome.journal_saved),
+                                    .is_some_and(|outcome| {
+                                        outcome.journal_saved
+                                            && outcome.local_cache_saved
+                                            && outcome.record == record
+                                    }),
                             egui::Button::new("Create another token"),
                         )
                         .clicked()
@@ -764,6 +775,20 @@ mod tests {
             .journal_saved = true;
         harness.run_steps(2);
         assert!(
+            harness
+                .get_by_label("Create another token")
+                .accesskit_node()
+                .is_disabled()
+        );
+        harness
+            .state_mut()
+            .creator_workspace
+            .outcome
+            .as_mut()
+            .unwrap()
+            .local_cache_saved = true;
+        harness.run_steps(2);
+        assert!(
             !harness
                 .get_by_label("Create another token")
                 .accesskit_node()
@@ -772,6 +797,28 @@ mod tests {
         harness.get_by_label("Create another token").click();
         harness.run_steps(2);
         assert!(harness.state().creator_workspace.recovery.is_none());
+    }
+
+    #[test]
+    fn confirmed_receipt_after_restart_requires_restore() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (mut screen, _) = confirmed_but_unsaved(&context);
+        screen.creator_workspace.outcome = None;
+        let (harness, _) = render_review(screen);
+        assert!(
+            harness
+                .get_by_label("Create another token")
+                .accesskit_node()
+                .is_disabled()
+        );
+        assert!(
+            !harness
+                .get_by_label("Restore local receipt · no payment")
+                .accesskit_node()
+                .is_disabled()
+        );
     }
 
     /// A failed retry must not hide a creation Platform already confirmed.

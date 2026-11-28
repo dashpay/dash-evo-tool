@@ -1143,8 +1143,8 @@ impl KeyInfoScreen {
 
     /// The spending limit and expiry rows of the key details grid. A key
     /// without limits shows neither.
-    fn render_key_limits_rows(&self, ui: &mut egui::Ui, text_primary: Color32) {
-        let key = self.limits_key();
+    fn render_key_limits_rows(&mut self, ui: &mut egui::Ui, text_primary: Color32) {
+        let key = self.limits_key().clone();
         let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(total_budget) = key.total_budget() {
@@ -1168,7 +1168,7 @@ impl KeyInfoScreen {
                     total = format_credits_as_dash(total_budget)
                 ),
                 RemainingBudget::Known(None) | RemainingBudget::Unavailable => format!(
-                    "{total} in total. How much is left could not be read. Refresh to try again.",
+                    "{total} in total. How much is left could not be read. Select Retry to try again.",
                     total = format_credits_as_dash(total_budget)
                 ),
             };
@@ -1181,6 +1181,16 @@ impl KeyInfoScreen {
                 "This budget covers credits charged to the identity. The final processing fee can exceed the remaining budget. It does not limit token values.",
             );
             ui.end_row();
+            if matches!(
+                self.remaining_budget,
+                RemainingBudget::Known(None) | RemainingBudget::Unavailable
+            ) {
+                ui.label("");
+                if ui.button("Retry").clicked() {
+                    self.refresh();
+                }
+                ui.end_row();
+            }
         }
 
         if let Some(expires_at) = key.expires_at() {
@@ -3496,17 +3506,24 @@ mod tests {
         }
         screen.display_backend_task_error(&context, &error);
         assert_eq!(screen.remaining_budget, RemainingBudget::Unavailable);
-        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
-            egui::Grid::new("budget").show(ui, |ui| {
-                screen.render_key_limits_rows(ui, Color32::BLACK);
-            });
-        });
-        harness.run();
-        assert!(
-            harness
-                .query_by_label_contains("Refresh to try again.")
-                .is_some()
+        let mut harness = egui_kittest::Harness::builder().build_ui_state(
+            |ui, screen: &mut KeyInfoScreen| {
+                egui::Grid::new("budget").show(ui, |ui| {
+                    screen.render_key_limits_rows(ui, Color32::BLACK);
+                });
+            },
+            screen,
         );
+        harness.run();
+        harness.get_by_label("Retry").click();
+        harness.run();
+        assert_eq!(
+            harness.state().remaining_budget,
+            RemainingBudget::NotRequested
+        );
+        assert!(requests_budget(
+            &harness.state_mut().queued_requests(AppAction::None)
+        ));
         app_context.wallet_backend().unwrap().shutdown().await;
     }
 

@@ -112,6 +112,11 @@ impl AppContext {
                 }
                 Ok(())
             })?;
+            self.notify_cache_changed(
+                crate::backend_task::CacheDomain::Identities,
+                &self.frame_loop_sender(),
+            )
+            .await;
             return Err(refusal);
         }
 
@@ -141,14 +146,14 @@ impl AppContext {
             .await
             .map(|(balance, metadata)| balance.map(|credits| (credits, metadata.height)))
             .map_err(TaskError::from);
-        self.finish_raise(identity_id, updated, balance)
+        self.finish_raise(identity_id, updated, balance).await
     }
 }
 
 impl AppContext {
     /// Store the outcome of a raise the network accepted: `key` as rewritten,
     /// and `balance`, the identity's balance and block height read after the update.
-    fn finish_raise(
+    async fn finish_raise(
         &self,
         identity_id: Identifier,
         key: dash_sdk::dpp::identity::IdentityPublicKey,
@@ -160,6 +165,11 @@ impl AppContext {
             Err(error) => (None, Some(Some(Box::new(error)))),
         };
         self.persist_raised_key(&identity_id, key.clone(), balance)?;
+        self.notify_cache_changed(
+            crate::backend_task::CacheDomain::Identities,
+            &self.frame_loop_sender(),
+        )
+        .await;
         // The raise is made and its key stored; only the balance is stale.
         if let Some(source) = balance_error {
             return Err(TaskError::KeyLimitsRaisedButBalanceNotRefreshed { source });
@@ -280,8 +290,24 @@ mod tests {
         .with_limits(Some(9_000), None);
         let before = stored.identity.balance();
 
-        let result = ctx.finish_raise(staged.id, key.clone(), Ok(Some((before - 1_234, 11))));
+        let (tx, mut reports) = tokio::sync::mpsc::channel(8);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+        let result = ctx
+            .finish_raise(staged.id, key.clone(), Ok(Some((before - 1_234, 11))))
+            .await;
 
+        assert!(matches!(
+            reports.try_recv(),
+            Ok(crate::backend_task::TaskResult::CacheUpdated(
+                crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::Identities,
+                    ..
+                }
+            ))
+        ));
         assert!(
             matches!(
                 result,
@@ -306,6 +332,7 @@ mod tests {
         // Older and same-height replies cannot replace the post-fee observation.
         for height in [10, 11] {
             ctx.finish_raise(staged.id, key.clone(), Ok(Some((before, height))))
+                .await
                 .expect("store the raised key while keeping the newer balance");
         }
         ctx.set_identity_alias(&staged.id, Some("after raise"))
@@ -340,8 +367,22 @@ mod tests {
         )
         .with_limits(Some(9_000), None);
 
+        let (tx, mut reports) = tokio::sync::mpsc::channel(8);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
         for balance in [Err(TaskError::IdentityNotFoundLocally), Ok(None)] {
-            let result = ctx.finish_raise(staged.id, key.clone(), balance);
+            let result = ctx.finish_raise(staged.id, key.clone(), balance).await;
+            assert!(matches!(
+                reports.try_recv(),
+                Ok(crate::backend_task::TaskResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        domain: crate::backend_task::CacheDomain::Identities,
+                        ..
+                    }
+                ))
+            ));
             assert!(
                 matches!(
                     result,
@@ -350,6 +391,16 @@ mod tests {
                 "got {result:?}"
             );
         }
+        drop(reports);
+        assert!(
+            ctx.finish_raise(
+                staged.id,
+                key.clone(),
+                Ok(Some((stored.identity.balance(), 11)))
+            )
+            .await
+            .is_ok()
+        );
         let after = ctx
             .get_local_qualified_identity(&staged.id)
             .expect("read")
@@ -387,7 +438,8 @@ mod tests {
         ));
         let result = staged
             .ctx
-            .finish_raise(staged.id, key.clone(), Err(balance_error));
+            .finish_raise(staged.id, key.clone(), Err(balance_error))
+            .await;
         let error = contextualize_dapi_result(result, || DapiAddressAvailability {
             configured_total: 1,
             live_count: 0,
@@ -542,6 +594,7 @@ mod tests {
         staged
             .ctx
             .finish_raise(staged.id, old, Ok(Some((100, 11))))
+            .await
             .unwrap();
         let stored = staged
             .ctx

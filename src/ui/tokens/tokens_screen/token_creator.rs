@@ -1,3 +1,4 @@
+use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
@@ -15,10 +16,11 @@ use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::backend_task::tokens::TokenTask;
-use crate::context::feature_gate::FeatureGate;
+use crate::model::amount::Amount;
+use crate::model::identity_key_usability::KeyRequirements;
+use crate::model::qualified_identity::{QualifiedIdentity, encrypted_key_storage::same_key};
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
     distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
@@ -31,28 +33,47 @@ use crate::ui::components::Component;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::MessageBanner;
 use crate::ui::MessageType;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
+use crate::ui::helpers::{add_identity_key_chooser, signable_key_now, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::platform::IdentityPublicKey;
 use crate::ui::tokens::tokens_screen::{
     TokenPresetSelection, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
-    TokenNameLanguage, TokensScreen,
+    TokenNameLanguage, TokensScreen, offered_by_token_creator,
 };
 
+pub(super) struct PendingTokenRegistration {
+    args: TokenBuildArgs,
+    signing_key: IdentityPublicKey,
+    pub(super) dialog: ConfirmationDialog,
+}
+
 impl TokensScreen {
-    /// The creator waits for its registration, under a progress banner.
-    pub(super) fn mark_token_registration_started(&mut self) {
+    /// The creator waits for the registration sent under `context`, under a
+    /// progress banner.
+    pub(super) fn mark_token_registration_started(&mut self, context: BackendTaskContext) {
         self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        self.token_registration_context = Some(context);
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             "Creating token...",
             MessageType::Info,
         );
         handle.with_elapsed();
-        self.operation_banner = Some(handle);
+        self.registration_banner = Some(handle);
     }
 
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
+        // Invalidate the confirmation before the form can pick a replacement key.
+        self.cancel_invalid_token_registration();
+        if crate::ui::helpers::refresh_contract_signing_key(
+            &self.app_context,
+            self.selected_identity.as_ref(),
+            &mut self.selected_key,
+            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+        ) {
+            self.update_selected_wallet();
+        }
         let mut action = AppAction::None;
         self.reconcile_selected_preset();
 
@@ -94,8 +115,9 @@ impl TokensScreen {
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
-                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.is_empty()).collect::<Vec<_>>(),
+                            Ok(identities) => identities.into_iter().filter(offered_by_token_creator).collect::<Vec<_>>(),
                             Err(error) => {
+                                self.pending_token_registration = None;
                                 tracing::error!(?error, "Token-creator identity loading failed");
                                 ui.colored_label(
                                     Color32::DARK_RED,
@@ -105,6 +127,7 @@ impl TokensScreen {
                             }
                         };
                         if all_identities.is_empty() {
+                            self.pending_token_registration = None;
                             let dark_mode = ui.style().visuals.dark_mode;
                             Frame::group(ui.style())
                                 .fill(ui.visuals().extreme_bg_color)
@@ -183,27 +206,24 @@ impl TokensScreen {
                             // Auto-select the first eligible key when:
                             // 1. Identity changed, OR
                             // 2. Identity is selected but no key is selected yet (first load)
+                            // 3. The selected key belongs to another identity
+                            let key_of_another_identity = !self.selected_key_held_by_selected_identity();
                             let should_auto_select_key = response.changed()
+                                || key_of_another_identity
                                 || (self.selected_identity.is_some() && self.selected_key.is_none());
 
                             if should_auto_select_key {
-                                if response.changed() {
-                                    self.selected_key = None; // Clear previous key only on identity change
+                                if response.changed() || key_of_another_identity {
+                                    self.selected_key = None; // The key belongs to another identity
                                 }
                                 if let Some(ref identity) = self.selected_identity {
-                                    // Find first eligible key for RegisterContract
-                                    // Requires Authentication purpose with High or Critical security level
                                     let first_eligible_key = identity
-                                        .private_keys
-                                        .identity_public_keys()
-                                        .iter()
-                                        .find(|key_ref| {
-                                            let key = &key_ref.1.identity_public_key;
-                                            key.purpose() == Purpose::AUTHENTICATION
-                                                && (key.security_level() == SecurityLevel::CRITICAL
-                                                    || key.security_level() == SecurityLevel::HIGH)
-                                        })
-                                        .map(|key_ref| key_ref.1.identity_public_key.clone());
+                                        .signing_key_now(KeyRequirements::new(
+                                            Purpose::AUTHENTICATION,
+                                            &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                                            self.app_context.contract_signing_scope(),
+                                        ))
+                                        .cloned();
 
                                     if first_eligible_key.is_some() {
                                         self.selected_key = first_eligible_key;
@@ -216,9 +236,8 @@ impl TokensScreen {
                                 ui.add_space(5.0);
                                 ui.colored_label(
                                     egui::Color32::from_rgb(200, 100, 100),
-                                    "No eligible key found for this identity. Please use Advanced Options or add a suitable key.",
+                                    crate::ui::helpers::contract_signing_key_notice(&self.app_context, self.selected_identity.as_ref(), &[SecurityLevel::HIGH, SecurityLevel::CRITICAL]),
                                 );
-                                return;
                             }
 
                             if self.selected_identity.is_none() {
@@ -232,9 +251,7 @@ impl TokensScreen {
                             ui.separator();
 
                             // Wallet unlock check for simple mode
-                            if !self.ensure_wallet_unlocked(ui) {
-                                return;
-                            }
+                            self.ensure_wallet_unlocked(ui);
                         } else {
                             // =====================================================
                             // ADVANCED MODE - Full identity and key selection
@@ -248,19 +265,24 @@ impl TokensScreen {
                                 .selected_identity
                                 .as_ref()
                                 .map(|qi| qi.identity.id());
-                            add_identity_key_chooser(
+                            action |= add_identity_key_chooser(
                                 ui,
                                 &self.app_context,
                                 all_identities.iter(),
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
+                                self.app_context.contract_signing_scope(),
                             );
                             let after_id = self
                                 .selected_identity
                                 .as_ref()
                                 .map(|qi| qi.identity.id());
                             if before_id != after_id {
+                                // Simple mode's selector shows this string; keep it on the same identity.
+                                self.identity_id_string = after_id
+                                    .map(|id| id.to_string(Encoding::Base58))
+                                    .unwrap_or_default();
                                 self.app_context
                                     .set_selected_identity(after_id);
                             }
@@ -270,17 +292,12 @@ impl TokensScreen {
                             // If a key was selected, set the wallet reference
                             self.update_selected_wallet();
 
-                            if self.selected_key.is_none() {
-                                return;
-                            }
 
                             ui.add_space(10.0);
                             ui.separator();
 
                             // Wallet unlock check for advanced mode
-                            if !self.ensure_wallet_unlocked(ui) {
-                                return;
-                            }
+                            self.ensure_wallet_unlocked(ui);
                         }
 
                         // Continue with mode-specific content
@@ -420,7 +437,8 @@ impl TokensScreen {
                             ui.horizontal(|ui| {
                                 let mut response = ComponentStyles::add_primary_button_enabled(
                                     ui,
-                                    blocked_reason.is_none(),
+                                    blocked_reason.is_none() && self.selected_key.is_some()
+                                    && self.selected_wallet.as_ref().is_none_or(|wallet| !wallet_needs_unlock(wallet)),
                                     "Create Token",
                                 );
                                 if let Some(reason) = &blocked_reason {
@@ -434,16 +452,7 @@ impl TokensScreen {
                                         self.token_names_input[0].1 = format!("{singular}s");
                                     }
 
-                                    // Trigger the token creation confirmation
-                                    match self.parse_token_build_args() {
-                                        Ok(args) => {
-                                            self.cached_build_args = Some(args);
-                                            self.show_token_creator_confirmation_popup = true;
-                                        }
-                                        Err(err_msg) => {
-                                            MessageBanner::set_global(context, &err_msg, MessageType::Error);
-                                        }
-                                    }
+                                    self.open_token_registration_confirmation(context);
                                 }
                             });
 
@@ -465,8 +474,9 @@ impl TokensScreen {
                                 // Row 1: Token Name
                                 let mut token_to_remove: Option<u8> = None;
                                 for i in 0..self.token_names_input.len() {
-                                    ui.label("Token Name (singular)*:");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].0);
+                                    let singular_label = ui.label("Token Name (singular)*:");
+                                    ui.text_edit_singleline(&mut self.token_names_input[i].0)
+                                        .labelled_by(singular_label.id);
                                     ui.horizontal(|ui| {
                                         let allow_all_languages = i != 0;
                                         ui.push_id(format!("combo_{i}"), |ui| {
@@ -502,8 +512,9 @@ impl TokensScreen {
                                     ui.end_row();
 
                                     // Plural name
-                                    ui.label("Token Name (plural)*:");
-                                    ui.text_edit_singleline(&mut self.token_names_input[i].1);
+                                    let plural_label = ui.label("Token Name (plural)*:");
+                                    ui.text_edit_singleline(&mut self.token_names_input[i].1)
+                                        .labelled_by(plural_label.id);
                                     ui.end_row();
 
                                 }
@@ -525,10 +536,11 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 4: Contract Keywords
-                                ui.horizontal(|ui| {
-                                    ui.label("Contract Keywords (comma separated):");
-                                });
-                                ui.text_edit_singleline(&mut self.contract_keywords_input);
+                                let keywords_label = ui
+                                    .horizontal(|ui| ui.label("Contract Keywords (comma separated):"))
+                                    .inner;
+                                ui.text_edit_singleline(&mut self.contract_keywords_input)
+                                    .labelled_by(keywords_label.id);
                                 let response = crate::ui::helpers::info_icon_button(ui, "Each searchable keyword costs 0.1 Dash");
                                     if response.clicked() {
                                         self.show_pop_up_info = Some("Each searchable keyword costs 0.1 Dash".to_string());
@@ -552,8 +564,9 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 5: Token Description
-                                ui.label("Token Description (3–100 chars):");
-                                ui.text_edit_singleline(&mut self.token_description_input);
+                                let description_label = ui.label("Token Description (3–100 chars):");
+                                ui.text_edit_singleline(&mut self.token_description_input)
+                                    .labelled_by(description_label.id);
                                 ui.end_row();
                             });
 
@@ -826,7 +839,9 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            let blocked_reason = self.advanced_mode_blocked_reason();
+                            let blocked_reason = self
+                                .signing_blocked_reason()
+                                .or_else(|| self.advanced_mode_blocked_reason());
                             let mut register = ComponentStyles::add_primary_button_enabled(
                                 ui,
                                 blocked_reason.is_none(),
@@ -837,25 +852,12 @@ impl TokensScreen {
                                 Self::render_blocked_hint(ui, reason);
                             }
                             if register.clicked() {
-                                match self.parse_token_build_args() {
-                                    Ok(args) => {
-                                        // If success, show the "confirmation popup"
-                                        // Or skip the popup entirely and dispatch tasks right now
-                                        self.cached_build_args = Some(args);
-                                        self.show_token_creator_confirmation_popup = true;
-                                    },
-                                    Err(err) => {
-                                        MessageBanner::set_global(context, &err, MessageType::Error);
-                                    }
-                                }
+                                self.open_token_registration_confirmation(context);
                             }
 
                             if ComponentStyles::add_primary_button(ui, "View JSON").clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
-                                        // We have the parsed token creation arguments
-                                        // We can now call build_data_contract_v1_with_one_token using `args`
-                                        self.cached_build_args = Some(args.clone());
                                         let owner_id = args.identity_id;
                                         let data_contract = match self.app_context.build_data_contract_v1_with_one_token(
                                             owner_id,
@@ -895,10 +897,7 @@ impl TokensScreen {
 
                         } // Close advanced mode else block
 
-        // 7) If the user pressed "Register Token Contract," show a popup confirmation
-        if self.show_token_creator_confirmation_popup {
-            action |= self.render_token_creator_confirmation_popup(ui);
-        }
+        action |= self.render_token_creator_confirmation_popup(ui);
 
         if self.show_json_popup {
             self.render_data_contract_json_popup(ui);
@@ -919,22 +918,27 @@ impl TokensScreen {
     }
 
     fn update_selected_wallet(&mut self) {
-        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
-            let wallet_changed = match (&self.selected_wallet, &new_wallet) {
-                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
-                (None, None) => false,
-                _ => true,
-            };
-            if wallet_changed {
-                self.wallet_open_attempted = false;
-            }
-            self.selected_wallet = new_wallet;
+        if crate::ui::identity::sync_signing_wallet(
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        ) {
+            self.pending_token_registration = None;
         }
+    }
+
+    /// Whether the selected identity holds the selected key; no key counts as held.
+    fn selected_key_held_by_selected_identity(&self) -> bool {
+        let (Some(identity), Some(selected)) = (&self.selected_identity, &self.selected_key) else {
+            return true;
+        };
+        identity
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .map(|key_ref| &key_ref.1.identity_public_key)
+            .any(|key| key.id() == selected.id() && key.data() == selected.data())
     }
 
     fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {
@@ -998,7 +1002,9 @@ impl TokensScreen {
                     }
                     ui.selectable_value(current_language, language, language.ui_label());
                 }
-            });
+            })
+            .response
+            .accessible_name("Token name language");
     }
 
     fn reset_token_creator_collapsing_states(&mut self) {
@@ -1145,69 +1151,29 @@ impl TokensScreen {
             document_schemas: self.parsed_document_schemas.clone(),
             marketplace_rules,
             change_direct_purchase_pricing_rules,
-            transferable: self.parse_transferable()?,
+            transferable: self.transferable_input,
         })
     }
 
-    /// The once-per-identity amount, when that distribution is enabled. It
-    /// needs protocol version 14, so a network that does not accept it yet is
-    /// refused here rather than by Platform after the fee is paid.
+    /// Validate the once-per-identity amount when that distribution is enabled.
     fn parse_once_per_identity_amount(&self) -> Result<Option<TokenAmount>, String> {
         if !self.enable_once_per_identity_distribution {
             return Ok(None);
-        }
-        if !FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context) {
-            return Err(TaskError::TokenOncePerIdentityNotSupported.to_string());
         }
         parse_once_per_identity_amount(&self.once_per_identity_amount_input)
             .map(Some)
             .map_err(|error| error.to_string())
     }
 
-    /// Whether holders may transfer the token. A token that cannot be
-    /// transferred needs protocol version 14, so a network that does not
-    /// accept it yet is refused here rather than by Platform after the fee is
-    /// paid.
-    fn parse_transferable(&self) -> Result<bool, String> {
-        if !self.transferable_input
-            && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
-        {
-            return Err(TRANSFERS_OFF_HINT.to_owned());
-        }
-        Ok(self.transferable_input)
-    }
-
-    /// The "holders can send this token" option, offered only in Advanced
-    /// mode's Advanced section. Turning transfers off needs a network that
-    /// accepts such tokens; a choice already made is kept (never silently
-    /// flipped back), but creating is blocked until the network supports it or
-    /// transfers are allowed again. Both create buttons show that reason, so it
-    /// stays visible while this row is hidden.
+    /// Configure transferability in the Advanced section on every supported network.
     pub(super) fn transferable_row(&mut self, ui: &mut egui::Ui) {
-        let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
-        // Allowing transfers again always works; only turning them off needs support.
-        let editable = available || !self.transferable_input;
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(editable, |ui| {
-                StyledCheckbox::new(
-                    &mut self.transferable_input,
-                    "Holders can send this token to other identities",
-                )
-                .show(ui)
-                .disabled_tooltip(TaskError::NonTransferableTokenNotSupported.to_string());
-            });
+            StyledCheckbox::new(
+                &mut self.transferable_input,
+                "Holders can send this token to other identities",
+            ).show(ui);
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });
-        if let Some(reason) = self.creation_blocked_reason() {
-            Self::render_blocked_hint(ui, &reason);
-        }
-    }
-
-    /// Why the token cannot be created as configured, if a setting the
-    /// connected network does not accept was chosen. The backend refuses it too
-    /// (`TaskError::NonTransferableTokenNotSupported`).
-    pub(super) fn creation_blocked_reason(&self) -> Option<String> {
-        self.parse_transferable().err()
     }
 
     /// The confirmation's sentence about whether holders can send the token.
@@ -1491,27 +1457,46 @@ impl TokensScreen {
     }
 
     /// Why Simple mode's "Create Token" is blocked, shown next to the button:
-    /// missing inputs first, then the preset, then a setting the network does
-    /// not accept.
+    /// a registration in flight first, then missing inputs, then the preset.
     pub(super) fn simple_mode_blocked_reason(&self) -> Option<String> {
-        if self.token_names_input[0].0.trim().is_empty() {
+        if self.awaits_token_registration() {
+            Some(REGISTRATION_IN_FLIGHT_HINT.to_owned())
+        } else if self.token_names_input[0].0.trim().is_empty() {
             Some("Enter a token name to continue.".to_owned())
         } else if self.base_supply_amount.is_none() {
             Some("Enter an initial supply to continue.".to_owned())
         } else if !self.preset_chosen() {
             Some(SIMPLE_PRESET_HINT.to_owned())
         } else {
-            self.creation_blocked_reason()
+            None
         }
     }
 
     /// Why Advanced mode's "Register Token Contract" is blocked, shown next to
-    /// the button: the preset first, then a setting the network does not accept.
+    /// the button: a registration in flight first, then the preset.
     pub(super) fn advanced_mode_blocked_reason(&self) -> Option<String> {
-        if !self.preset_chosen() {
+        if self.awaits_token_registration() {
+            Some(REGISTRATION_IN_FLIGHT_HINT.to_owned())
+        } else if !self.preset_chosen() {
             Some(ADVANCED_PRESET_HINT.to_owned())
         } else {
-            self.creation_blocked_reason()
+            None
+        }
+    }
+
+    /// Why the registration cannot be signed yet: no signing key, or its
+    /// wallet is locked.
+    fn signing_blocked_reason(&self) -> Option<String> {
+        if self.selected_key.is_none() {
+            Some(crate::ui::tokens::CHOOSE_SIGNING_KEY.to_owned())
+        } else if self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(wallet_needs_unlock)
+        {
+            Some("Unlock the wallet to continue.".to_owned())
+        } else {
+            None
         }
     }
 
@@ -1542,53 +1527,78 @@ impl TokensScreen {
         }
     }
 
-    fn close_token_creator_confirmation_popup(&mut self) {
-        self.show_token_creator_confirmation_popup = false;
-        self.token_creator_confirmation_dialog = None;
+    fn selected_registration_signer(&self) -> Option<(&QualifiedIdentity, &IdentityPublicKey)> {
+        if self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(wallet_needs_unlock)
+        {
+            return None;
+        }
+        let identity = self.selected_identity.as_ref()?;
+        let signing_key = signable_key_now(
+            identity,
+            self.selected_key.as_ref()?,
+            self.app_context.contract_signing_scope(),
+        )?;
+        Some((identity, signing_key))
     }
 
-    /// Shows a popup "Are you sure?" for creating the token contract
-    fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+    fn pending_registration_signer(
+        &self,
+        pending: &PendingTokenRegistration,
+    ) -> Option<(&QualifiedIdentity, &IdentityPublicKey)> {
+        self.selected_registration_signer()
+            .filter(|(identity, key)| {
+                identity.identity.id() == pending.args.identity_id
+                    && same_key(&pending.signing_key, key)
+            })
+    }
 
-        let base_supply_display = self
-            .base_supply_amount
+    pub(super) fn cancel_invalid_token_registration(&mut self) {
+        if self
+            .pending_token_registration
             .as_ref()
-            .map(|amount| amount.to_string_opts(true, false))
-            .unwrap_or_else(|| "0".to_string());
-        let max_supply_display = self
-            .max_supply_amount
-            .as_ref()
-            .filter(|amount| amount.value() > 0)
-            .map(|amount| amount.to_string_opts(true, false))
+            .is_some_and(|pending| self.pending_registration_signer(pending).is_none())
+        {
+            self.pending_token_registration = None;
+        }
+    }
+
+    pub(super) fn open_token_registration_confirmation(&mut self, context: &Context) {
+        let Some((_, signing_key)) = self.selected_registration_signer() else {
+            return;
+        };
+        let signing_key = signing_key.clone();
+        let args = match self.parse_token_build_args() {
+            Ok(args) => args,
+            Err(error) => {
+                MessageBanner::set_global(context, &error, MessageType::Error);
+                return;
+            }
+        };
+        let base_supply_display =
+            Amount::new(args.base_supply, args.decimals).to_string_opts(false, false);
+        let max_supply_display = args
+            .max_supply
+            .map(|amount| Amount::new(amount, args.decimals).to_string_opts(false, false))
             .unwrap_or_else(|| "None".to_string());
 
         // Tokens are created closed to the marketplace; warn if that can never change.
-        let is_danger_mode = self.cached_build_args.as_ref().is_some_and(|args| {
-            matches!(
-                args.marketplace_rules,
-                ChangeControlRules::V0(ChangeControlRulesV0 {
-                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                    admin_action_takers: AuthorizedActionTakers::NoOne,
-                    ..
-                })
-            )
-        });
-        let name = &self.token_names_input[0].0;
-        let cost = self.estimate_registration_cost() as f64 / 100_000_000_000.0;
-        // State what gets signed, not what the form shows now.
-        let transferability = Self::transferability_summary(
-            self.cached_build_args
-                .as_ref()
-                .map_or(self.transferable_input, |args| args.transferable),
-            self.show_advanced_token_creator,
+        let is_danger_mode = matches!(
+            args.marketplace_rules,
+            ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::NoOne,
+                admin_action_takers: AuthorizedActionTakers::NoOne,
+                ..
+            })
         );
-        let once_per_identity_amount = match &self.cached_build_args {
-            Some(args) => once_per_identity_amount_in_rules(&args.distribution_rules),
-            None => self.parse_once_per_identity_amount().ok().flatten(),
-        };
+        let cost = self.estimate_registration_cost() as f64 / 100_000_000_000.0;
+        let transferability =
+            Self::transferability_summary(args.transferable, self.show_advanced_token_creator);
+        let once_per_identity_amount = once_per_identity_amount_in_rules(&args.distribution_rules);
         let confirmation_message = Self::registration_confirmation_message(
-            name,
+            &args.token_names[0].0,
             &base_supply_display,
             &max_supply_display,
             transferability,
@@ -1597,73 +1607,53 @@ impl TokensScreen {
             is_danger_mode,
         );
 
-        let confirmation_dialog = self
-            .token_creator_confirmation_dialog
-            .get_or_insert_with(|| {
-                ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
-                    .confirm_text(Some("Confirm"))
-                    .cancel_text(Some("Cancel"))
-                    .danger_mode(is_danger_mode)
-            });
+        let dialog =
+            ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(is_danger_mode)
+                .blocks_input(true);
+        self.pending_token_registration = Some(PendingTokenRegistration {
+            args,
+            signing_key,
+            dialog,
+        });
+    }
 
-        // Show the dialog and handle the response
-        let response = confirmation_dialog.show(ui).inner;
-
-        if let Some(status) = response.dialog_response {
-            match status {
-                ConfirmationStatus::Confirmed => {
-                    let args = match &self.cached_build_args {
-                        Some(args) => args.clone(),
-                        None => {
-                            // fallback if we didn't store them
-                            match self.parse_token_build_args() {
-                                Ok(a) => a,
-                                Err(err) => {
-                                    MessageBanner::set_global(ui.ctx(), &err, MessageType::Error);
-                                    self.close_token_creator_confirmation_popup();
-                                    return AppAction::None;
-                                }
-                            }
-                        }
-                    };
-
-                    // Validate identity and key are selected
-                    let (identity, signing_key) =
-                        match (&self.selected_identity, &self.selected_key) {
-                            (Some(id), Some(key)) => (id.clone(), key.clone()),
-                            _ => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Please select an identity and signing key.",
-                                    MessageType::Error,
-                                );
-                                self.close_token_creator_confirmation_popup();
-                                return AppAction::None;
-                            }
-                        };
-
-                    // Now create your tasks
-                    let tasks = vec![
-                        BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
-                            identity,
-                            signing_key: Box::new(signing_key),
-                            params: Box::new(args.into_contract_params()),
-                        })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-                    ];
-
-                    action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    self.mark_token_registration_started();
-                    self.close_token_creator_confirmation_popup();
-                }
-                ConfirmationStatus::Canceled => {
-                    self.close_token_creator_confirmation_popup();
-                    action = AppAction::None;
-                }
+    pub(super) fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(mut pending) = self.pending_token_registration.take() else {
+            return AppAction::None;
+        };
+        if self.pending_registration_signer(&pending).is_none() {
+            return AppAction::None;
+        }
+        match pending.dialog.show(ui).inner.dialog_response {
+            None => {
+                self.pending_token_registration = Some(pending);
+                return AppAction::None;
             }
+            Some(ConfirmationStatus::Canceled) => return AppAction::None,
+            Some(ConfirmationStatus::Confirmed) => {}
         }
 
-        action
+        let Some((identity, signing_key)) = self.pending_registration_signer(&pending) else {
+            return AppAction::None;
+        };
+        let register = BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
+            identity: identity.clone(),
+            signing_key: Box::new(signing_key.clone()),
+            params: Box::new(pending.args.into_contract_params()),
+        }));
+        let network = self.app_context.network;
+        let register_context = BackendTaskContext::for_dispatch_on(&register, network);
+        let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        let refresh_context = BackendTaskContext::for_dispatch_on(&refresh, network);
+        let tasks = vec![
+            (register, register_context.clone()),
+            (refresh, refresh_context),
+        ];
+        self.mark_token_registration_started(register_context);
+        AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Sequential)
     }
 
     /// Render the document schemas collapsible section
@@ -1801,10 +1791,10 @@ impl TokensScreen {
     }
 }
 
-/// Why creating is blocked while transfers are off on a network that does not
-/// accept such tokens. Names where the option is, since it is offered only under
-/// Advanced and may be hidden.
-const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
+/// Why creating is blocked while a registration is in flight: a second one
+/// would pay a second fee.
+const REGISTRATION_IN_FLIGHT_HINT: &str =
+    "Your token is being created. Wait for the result before creating another token.";
 
 /// Why Simple mode's "Create Token" is blocked until a preset is chosen.
 const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";

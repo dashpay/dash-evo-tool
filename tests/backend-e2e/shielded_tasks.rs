@@ -18,7 +18,7 @@
 //! `shielded_balance_get`, `shielded_address_get`). Here we verify each op
 //! dispatches and confirms through the upstream coordinator.
 
-use crate::framework::harness::ctx;
+use crate::framework::harness::{ctx, e2e_network};
 use crate::framework::shielded_helpers;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::shielded::ShieldedTask;
@@ -26,7 +26,6 @@ use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::dashcore::Network;
 
 // ---------------------------------------------------------------------------
 // Lifecycle test — shield → transfer → unshield → withdraw, with balance checks
@@ -102,8 +101,8 @@ async fn tc_074_shielded_lifecycle() {
          {increase_credits} < {entered_credits} ({baseline} -> {after_shield})"
     );
     // The reported figure is the entered amount plus what rounding the fee up
-    // to whole duffs adds (800 credits under protocols 12 and 13), and it is
-    // what arrived. The equality holds because the suite runs serially and
+    // to whole duffs adds, and it is what arrived.
+    // The equality holds because the suite runs serially and
     // nothing else pays this wallet's shielded address between the two syncs;
     // a payment from outside in that window would show up here as a surplus.
     if let Some(reported_credits) = reported_credits {
@@ -158,7 +157,7 @@ async fn tc_074_shielded_lifecycle() {
             .get(&seed_hash)
             .expect("framework wallet must exist");
         let wallet = wallet_arc.read().expect("wallet lock");
-        let addrs = wallet.platform_addresses(Network::Testnet);
+        let addrs = wallet.platform_addresses(e2e_network());
         assert!(
             !addrs.is_empty(),
             "wallet must have at least one platform address"
@@ -262,7 +261,7 @@ async fn tc_079_shield_from_balance() {
             .get(&seed_hash)
             .expect("framework wallet must exist");
         let wallet = wallet_arc.read().expect("wallet lock");
-        let addrs = wallet.platform_addresses(Network::Testnet);
+        let addrs = wallet.platform_addresses(e2e_network());
         assert!(
             !addrs.is_empty(),
             "Wallet must have at least one platform address"

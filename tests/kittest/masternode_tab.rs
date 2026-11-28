@@ -1680,6 +1680,49 @@ fn remove_is_unreachable_while_the_danger_zone_is_collapsed() {
     });
 }
 
+fn assert_vote_rows_fill_content_width(size: egui::Vec2) {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let harness = open_detail_with_vote_rows(0xBF, "mn-full-width", 30, size);
+        let content_left = harness.get_by_label("‹ All masternodes").rect().left();
+        let content_right = harness.get_by_label("Refresh").rect().right();
+        let content_width = content_right - content_left;
+        let row = harness.get_by_label("row01.dash").rect();
+        // Measure the painted row, not the scroll viewport or the name label.
+        let stripe = harness
+            .output()
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.contains(row.center()) && rect.rect.height() < 40.0 =>
+                {
+                    Some(rect.rect.intersect(clipped.clip_rect))
+                }
+                _ => None,
+            })
+            .expect("the second vote row has a painted stripe");
+        assert!(
+            (stripe.left() - content_left).abs() <= 8.0
+                && (stripe.width() - content_width).abs() <= 24.0,
+            "vote rows must fill the content width, allowing scrollbar and margins: \
+             window={size:?}, row_width={}, content_width={content_width}, stripe={stripe:?}",
+            stripe.width()
+        );
+    });
+}
+
+#[test]
+fn vote_rows_fill_content_width_in_a_large_window() {
+    assert_vote_rows_fill_content_width(egui::vec2(1280.0, 800.0));
+}
+
+#[test]
+fn vote_rows_fill_content_width_in_a_small_window() {
+    assert_vote_rows_fill_content_width(egui::vec2(800.0, 520.0));
+}
+
 /// Only the vote rows scroll: the wheel over them moves the rows while the
 /// back row, the actions and the votes heading stay where they are.
 #[test]

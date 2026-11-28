@@ -1080,8 +1080,12 @@ impl MasternodeDetailView {
                 }
                 Some(rows) => {
                     let now = now_ms();
+                    let column_width =
+                        ((ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0).max(0.0);
                     egui::Grid::new(("node_votes", node))
                         .num_columns(4)
+                        .min_col_width(column_width)
+                        .max_col_width(column_width)
                         .striped(true)
                         .show(ui, |ui| {
                             for row in rows {

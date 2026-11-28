@@ -413,6 +413,12 @@ pub struct AppContext {
     /// newest addresses. Held across the whole rebuild, which never awaits;
     /// taken before any other lock of this context, never under one.
     connection_rebuild: Mutex<()>,
+    /// Identities with a contract registration being sent right now.
+    pub(crate) contract_registrations_in_flight: Mutex<HashSet<Identifier>>,
+    /// Each identity's contract registration sent but not settled, so a
+    /// retry reuses its nonce. In memory only: a restart forgets it.
+    pub(crate) pending_contract_registrations:
+        Mutex<HashMap<Identifier, crate::backend_task::register_contract::PendingContractAttempts>>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via
@@ -673,6 +679,8 @@ impl AppContext {
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
             connection_rebuild: Mutex::new(()),
+            contract_registrations_in_flight: Mutex::new(HashSet::new()),
+            pending_contract_registrations: Mutex::new(HashMap::new()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
@@ -1376,6 +1384,31 @@ impl AppContext {
         sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         persist: impl FnOnce(&Self, &DataContract),
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
+        let task_error =
+            self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
+
+        // A lookup that fails tells nothing, so the proof error stands.
+        if let Ok((Some(contract), _)) = self
+            .refetch_contract_after_unread_result(sdk, contract_id, sender)
+            .await
+        {
+            persist(self, &contract);
+            return Ok(crate::backend_task::BackendTaskSuccessResult::ContractSavedAfterProofError);
+        }
+
+        Err(task_error)
+    }
+
+    /// Notifies the UI that a contract transition's result is being checked,
+    /// waits for the block to propagate, then fetches the contract by id:
+    /// returns the contract (or `None`) with the proof's read height, or an
+    /// error when the fetch fails.
+    pub(crate) async fn refetch_contract_after_unread_result(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
+    ) -> Result<(Option<DataContract>, u64), TaskError> {
         use crate::backend_task::BackendTaskSuccessResult;
         use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
@@ -1383,9 +1416,6 @@ impl AppContext {
         // Give the network time to propagate the block before re-fetching.
         const REFETCH_DELAY_REGTEST: std::time::Duration = std::time::Duration::from_secs(3);
         const REFETCH_DELAY_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
-
-        let task_error =
-            self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
             .send(TaskResult::interim_success(
@@ -1401,12 +1431,9 @@ impl AppContext {
         };
         tokio::time::sleep(delay).await;
 
-        if let Ok(Some(contract)) = DataContract::fetch(sdk, contract_id).await {
-            persist(self, &contract);
-            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
-        }
-
-        Err(task_error)
+        let (contract, metadata) =
+            DataContract::fetch_with_metadata(sdk, contract_id, None).await?;
+        Ok((contract, metadata.height))
     }
 
     /// Lazily build the wallet seam, idempotently.

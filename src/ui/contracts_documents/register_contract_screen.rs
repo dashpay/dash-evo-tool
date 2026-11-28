@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::CacheUpdate;
 use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::KeyRequirements;
@@ -38,6 +39,12 @@ enum BroadcastStatus {
     Broadcasting,
     ProofError,
     BroadcastError(String),
+    /// The registration was refused before it ran, or the network has not
+    /// confirmed it; the message says what to do.
+    NotRegistered(String),
+    /// The registration was refused before it ran; the contract can be sent
+    /// again.
+    Refused(String, Box<DataContract>),
     Done,
 }
 
@@ -174,15 +181,50 @@ impl RegisterDataContractScreen {
         }
     }
 
-    /// Renders an error message at the top of the screen with a styled bubble
-    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
-        let error_msg = match &self.broadcast_status {
+    /// The contract the Register button would send now, if any.
+    #[cfg(test)]
+    fn registrable_contract(&self) -> Option<&DataContract> {
+        match &self.broadcast_status {
+            BroadcastStatus::ValidContract(contract) | BroadcastStatus::Refused(_, contract) => {
+                Some(contract)
+            }
+            _ => None,
+        }
+    }
+
+    /// The text of the error bubble for the current status, if any.
+    fn error_bubble_text(&self) -> Option<String> {
+        match &self.broadcast_status {
             BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
             BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
+            BroadcastStatus::NotRegistered(msg) | BroadcastStatus::Refused(msg, _) => {
+                Some(msg.clone())
+            }
             _ => None,
-        };
+        }
+    }
 
-        if let Some(msg) = error_msg {
+    /// Dismisses the error bubble. A refusal leaves its contract ready to
+    /// send again; any other error leaves the form idle, unless the fields
+    /// hold JSON that does not parse, whose error is shown instead.
+    fn dismiss_error(&mut self) {
+        self.broadcast_status =
+            match std::mem::replace(&mut self.broadcast_status, BroadcastStatus::Idle) {
+                BroadcastStatus::Refused(_, contract) => BroadcastStatus::ValidContract(contract),
+                BroadcastStatus::NotRegistered(_) => {
+                    self.parse_contract();
+                    match std::mem::replace(&mut self.broadcast_status, BroadcastStatus::Idle) {
+                        parse_error @ BroadcastStatus::ParsingError(_) => parse_error,
+                        _ => BroadcastStatus::Idle,
+                    }
+                }
+                _ => BroadcastStatus::Idle,
+            };
+    }
+
+    /// Renders an error message at the top of the screen with a styled bubble
+    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
+        if let Some(msg) = self.error_bubble_text() {
             let dark_mode = ui.style().visuals.dark_mode;
             let error_color = DashColors::error_color(dark_mode);
             Frame::new()
@@ -195,7 +237,7 @@ impl RegisterDataContractScreen {
                         ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
                         ui.add_space(8.0);
                         if ui.small_button("Dismiss").clicked() {
-                            self.broadcast_status = BroadcastStatus::Idle;
+                            self.dismiss_error();
                         }
                     });
                 });
@@ -212,10 +254,12 @@ impl RegisterDataContractScreen {
             BroadcastStatus::Idle => {
                 ui.label("No contract parsed yet or empty input.");
             }
-            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError(_) => {
+            BroadcastStatus::ParsingError(_)
+            | BroadcastStatus::BroadcastError(_)
+            | BroadcastStatus::NotRegistered(_) => {
                 // Errors are now shown at the top via render_error_bubble
             }
-            BroadcastStatus::ValidContract(contract) => {
+            BroadcastStatus::ValidContract(contract) | BroadcastStatus::Refused(_, contract) => {
                 // Display estimated fee using SDK's registration_cost method
                 // This accounts for document types, indexes, tokens, and keywords
                 let platform_version = self.app_context.platform_version();
@@ -389,12 +433,40 @@ impl ScreenLike for RegisterDataContractScreen {
         }
     }
 
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        let refused_before_it_ran = match error {
+            TaskError::ContractRegistrationUnconfirmed { .. }
+            | TaskError::ContractRegistrationModifiedSince { .. }
+            | TaskError::ContractRegistrationIdentityChanged { .. } => false,
+            TaskError::ContractRegistrationInProgress
+            | TaskError::RegistrationNonceRefused { .. }
+            | TaskError::ContractRegistrationPreempted { .. }
+            | TaskError::ContractRegistrationReplacedByEarlier { .. } => true,
+            _ => return false,
+        };
+        self.refresh_banner.take_and_clear();
+        // Only a refused registration is offered again, as the fields show it
+        // now; one that may have run keeps its guidance to check the contract
+        // ID first.
+        if refused_before_it_ran {
+            self.parse_contract();
+        }
+        self.broadcast_status =
+            match std::mem::replace(&mut self.broadcast_status, BroadcastStatus::Idle) {
+                BroadcastStatus::ValidContract(contract) if refused_before_it_ran => {
+                    BroadcastStatus::Refused(error.to_string(), contract)
+                }
+                _ => BroadcastStatus::NotRegistered(error.to_string()),
+            };
+        true
+    }
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             BackendTaskSuccessResult::FetchedNonce => {
                 self.broadcast_status = BroadcastStatus::Broadcasting;
             }
-            BackendTaskSuccessResult::RegisteredContract(fee_result) => {
+            BackendTaskSuccessResult::RegisteredContract { fee_result, .. } => {
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
@@ -626,6 +698,160 @@ mod tests {
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use egui_kittest::kittest::Queryable;
 
+    /// A registration the network has not confirmed is shown by the screen
+    /// in its own words, not as a broadcast error, and needs no extra
+    /// banner; other errors keep the generic handling.
+    #[test]
+    fn an_unconfirmed_registration_is_not_shown_as_a_broadcast_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = RegisterDataContractScreen::new(&app_context);
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+
+        assert!(!screen.display_task_error(&TaskError::TaskManagerShuttingDown));
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
+
+        let error = TaskError::ContractRegistrationUnconfirmed {
+            contract_id: dash_sdk::platform::Identifier::from([0x42; 32]),
+            source_error: Box::new(dash_sdk::Error::Generic("wait failed".to_string())),
+        };
+        assert!(screen.display_task_error(&error));
+        assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
+    }
+
+    /// A registration refused before it could run, or whose place another
+    /// registration took, is shown in its own words, not as a broadcast error.
+    #[test]
+    fn a_refused_registration_is_not_shown_as_a_broadcast_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = RegisterDataContractScreen::new(&app_context);
+
+        for error in [
+            TaskError::ContractRegistrationInProgress,
+            TaskError::RegistrationNonceRefused {
+                source_error: Box::new(dash_sdk::Error::Generic("refused".to_string())),
+            },
+            TaskError::ContractRegistrationPreempted {
+                contract_id: dash_sdk::platform::Identifier::from([0x42; 32]),
+                source_error: Box::new(dash_sdk::Error::Generic("taken".to_string())),
+            },
+        ] {
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            assert!(screen.display_task_error(&error), "{error:?}");
+            assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
+        }
+    }
+
+    /// The JSON text of `contract`, as a user would paste it.
+    fn contract_json(app_context: &AppContext, contract: &DataContract) -> String {
+        use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
+        use dash_sdk::dpp::version::TryFromPlatformVersioned;
+
+        let format = DataContractInSerializationFormat::try_from_platform_versioned(
+            contract,
+            app_context.platform_version(),
+        )
+        .expect("contract in its serialization format");
+        serde_json::to_string(&format).expect("contract to JSON")
+    }
+
+    /// After a definite refusal the contract the fields show can be sent
+    /// again with an explicit click, next to the refusal, even when the JSON
+    /// was edited while the refused one was being sent; an unconfirmed
+    /// registration, or one found changed since its creation, keeps only its
+    /// guidance to check the contract ID.
+    #[test]
+    fn a_refused_registration_can_be_registered_again() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = RegisterDataContractScreen::new(&app_context);
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        let source = || Box::new(dash_sdk::Error::Generic("refused".to_string()));
+        let sent = contract_json(&app_context, &app_context.dashpay_contract());
+        let edited = contract_json(&app_context, &app_context.dpns_contract());
+
+        for error in [
+            TaskError::RegistrationNonceRefused {
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationInProgress,
+            TaskError::ContractRegistrationPreempted {
+                contract_id,
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationReplacedByEarlier {
+                contract_id,
+                unsaved: None,
+            },
+        ] {
+            screen.contract_json_input = sent.clone();
+            screen.parse_contract();
+            assert!(
+                screen.registrable_contract().is_some(),
+                "the sent JSON parses"
+            );
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            screen.contract_json_input = edited.clone();
+
+            assert!(screen.display_task_error(&error), "{error:?}");
+            assert_eq!(screen.error_bubble_text(), Some(error.to_string()));
+            let retry = screen
+                .registrable_contract()
+                .unwrap_or_else(|| panic!("{error:?}: the contract is offered again"));
+            assert!(
+                dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters::has_document_type_for_name(retry, "domain"),
+                "{error:?}: the retry sends the edited contract"
+            );
+        }
+
+        // An edit that does not parse is not offered again, and its parse
+        // error shows once the refusal is dismissed.
+        screen.contract_json_input = sent.clone();
+        screen.parse_contract();
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+        screen.contract_json_input = "{ not json".to_string();
+        let refused = TaskError::RegistrationNonceRefused {
+            source_error: source(),
+        };
+        assert!(screen.display_task_error(&refused));
+        assert_eq!(screen.error_bubble_text(), Some(refused.to_string()));
+        assert!(screen.registrable_contract().is_none());
+        screen.dismiss_error();
+        assert!(
+            matches!(screen.broadcast_status, BroadcastStatus::ParsingError(_)),
+            "{:?}",
+            screen.error_bubble_text()
+        );
+
+        screen.contract_json_input = sent;
+        for to_check in [
+            TaskError::ContractRegistrationUnconfirmed {
+                contract_id,
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationModifiedSince {
+                contract_id,
+                source_error: source(),
+            },
+            TaskError::ContractRegistrationIdentityChanged {
+                contract_id,
+                identity_id: contract_id,
+                network: dash_sdk::dpp::dashcore::Network::Testnet,
+                source_error: source(),
+            },
+        ] {
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            assert!(screen.display_task_error(&to_check), "{to_check:?}");
+            assert_eq!(screen.error_bubble_text(), Some(to_check.to_string()));
+            assert!(screen.registrable_contract().is_none(), "{to_check:?}");
+            screen.dismiss_error();
+            assert!(
+                matches!(screen.broadcast_status, BroadcastStatus::Idle),
+                "{to_check:?}: dismissing leaves nothing to send"
+            );
+        }
+    }
     #[test]
     fn interop_manual_contract_key_change_updates_the_unlock_wallet() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,5 +1,6 @@
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
+use crate::backend_task::register_contract::RegistrationKind;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::wallet_backend::{TokenActionCommon, TokenActor};
@@ -316,11 +317,11 @@ impl AppContext {
                     alias,
                     identity,
                     *signing_key,
+                    RegistrationKind::Token,
                     sdk,
                     sender,
                 )
                 .await
-                .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
             }
             TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
             TokenTask::MintTokens {

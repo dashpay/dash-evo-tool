@@ -1397,8 +1397,23 @@ pub enum BackendTaskSuccessResult {
     UpdatedContract(FeeResult),
     RemovedContract,
     FetchedNonce,
-    RegisteredContract(FeeResult),
-    RegisteredTokenContract,
+    RegisteredContract {
+        fee_result: FeeResult,
+        /// Set when Platform confirmed the registration but this device could
+        /// not save the contract.
+        save_warning: Option<error::ContractSaveWarning>,
+        /// Platform holds the contract as an earlier attempt sent it, not as
+        /// the user last submitted it.
+        earlier_version: bool,
+    },
+    RegisteredTokenContract {
+        /// Set when Platform confirmed the registration but this device could
+        /// not save the token's contract.
+        save_warning: Option<error::ContractSaveWarning>,
+        /// Platform holds the token's contract as an earlier attempt sent it,
+        /// not as the user last submitted it.
+        earlier_version: bool,
+    },
     SavedContract,
     ContractNotFound,
     TokenNotFound,
@@ -1610,7 +1625,15 @@ impl AppContext {
             .await;
         // The inner run has dropped every guard and claim the task held, so the
         // balance read below delays neither the result nor a retry of the action.
-        if let (Ok(_), Some(payer)) = (&result, fee_payer) {
+        // Recovering an earlier paid registration still fails the current form.
+        if let Some(payer) = fee_payer
+            && matches!(
+                &result,
+                Ok(_)
+                    | Err(TaskError::ContractRegistrationReplacedByEarlier { .. }
+                        | TaskError::TokenRegistrationReplacedByEarlier { .. })
+            )
+        {
             self.spawn_fee_payer_balance_refresh(Arc::clone(&task_sdk), payer, sender);
         }
 

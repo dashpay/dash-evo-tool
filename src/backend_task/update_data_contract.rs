@@ -140,6 +140,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::register_contract::RegistrationKind;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use dash_sdk::dpp::data_contract::conversion::value::v0::DataContractValueConversionMethodsV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -254,6 +255,7 @@ mod tests {
                 String::new(),
                 identity,
                 signing_key,
+                RegistrationKind::Contract,
                 &sdk,
                 sender,
             )

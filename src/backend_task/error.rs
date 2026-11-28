@@ -274,6 +274,38 @@ pub enum IdentitySaveWarning {
     },
 }
 
+/// A registration Platform confirmed whose contract could not be saved on
+/// this device. The registration stands, so the remedy is adding it here,
+/// never registering it again.
+#[derive(Debug, Clone, Error)]
+pub enum ContractSaveWarning {
+    #[error(
+        "Your contract was registered on the network, but it could not be saved on this device. You do not need to register it again. To add it here, open Contracts, choose Load Contracts and enter contract ID {contract_id}."
+    )]
+    Contract {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+    #[error(
+        "Your token was created on the network, but it could not be saved on this device. You do not need to create it again. To add it here, open Tokens, choose Import Token and enter contract ID {contract_id}."
+    )]
+    Token {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+}
+
+impl ContractSaveWarning {
+    /// The ID of the registered contract that could not be saved.
+    pub(crate) fn contract_id(&self) -> dash_sdk::platform::Identifier {
+        match self {
+            Self::Contract { contract_id, .. } | Self::Token { contract_id, .. } => *contract_id,
+        }
+    }
+}
+
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
 /// Shared, so one stopped task batch can report it for each of its tasks.
 #[derive(Clone)]
@@ -2375,6 +2407,139 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A contract registration whose result could not be read was not found
+    /// under its Platform-assigned ID. A retry before the app closes reuses the
+    /// same identity nonce, so it cannot register a second contract.
+    #[error(
+        "Your contract was sent, but the network has not confirmed it yet. It may still be registered: to check, open Contracts, choose Load Contracts and enter contract ID {contract_id}. If you register it again before closing the app, it cannot create a second contract."
+    )]
+    ContractRegistrationUnconfirmed {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationUnconfirmed`] for a token's contract.
+    #[error(
+        "Your token was sent, but the network has not confirmed it yet. It may still be created: to check, open Tokens, choose Import Token and enter contract ID {contract_id}. If you create it again before closing the app, it cannot create a second token."
+    )]
+    TokenRegistrationUnconfirmed {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract found under this registration's Platform-assigned ID was
+    /// changed after it was created, so whether it is this registration
+    /// cannot be told. Its ID comes from the identity and its nonce, so the
+    /// registration can never run again; it is settled and not saved here.
+    #[error(
+        "This registration's contract ID {contract_id} is already used by a contract that has been changed since it was created, so the app cannot tell whether it is yours. To check it, open Contracts, choose Load Contracts and enter that contract ID. If it is not your contract, register yours again."
+    )]
+    ContractRegistrationModifiedSince {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationModifiedSince`] for a token's contract.
+    #[error(
+        "This token's contract ID {contract_id} is already used by a contract that has been changed since it was created, so the app cannot tell whether it is your token. To check it, open Tokens, choose Import Token and enter that contract ID. If it is not your token, create yours again."
+    )]
+    TokenRegistrationModifiedSince {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The registration's nonce is consumed and its contract is proved absent
+    /// at or above that height. It is settled without attributing the nonce
+    /// consumption to a particular operation.
+    #[error(
+        "The app could not confirm your contract registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Contracts, choose Load Contracts and enter that contract ID on {}. If the contract is not there, register it again.",
+        crate::ui::theme::network_label(*network)
+    )]
+    ContractRegistrationIdentityChanged {
+        contract_id: dash_sdk::platform::Identifier,
+        identity_id: dash_sdk::platform::Identifier,
+        network: Network,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationIdentityChanged`] for a token's contract.
+    #[error(
+        "The app could not confirm your token registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Tokens, choose Import Token and enter that contract ID on {}. If the token is not there, create it again.",
+        crate::ui::theme::network_label(*network)
+    )]
+    TokenRegistrationIdentityChanged {
+        contract_id: dash_sdk::platform::Identifier,
+        identity_id: dash_sdk::platform::Identifier,
+        network: Network,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A different contract by the same identity, registered elsewhere, took
+    /// the place this registration was sent for, so it can never run. A new
+    /// registration gets a new place.
+    #[error(
+        "Another contract registered by this identity, for example from another device, took the place of yours, so your contract was not registered. Register it again."
+    )]
+    ContractRegistrationPreempted {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// [`Self::ContractRegistrationPreempted`] for a token's contract.
+    #[error(
+        "Another contract registered by this identity, for example from another device, took the place of your token, so your token was not created. Create it again."
+    )]
+    TokenRegistrationPreempted {
+        contract_id: dash_sdk::platform::Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract registration's place was taken by an earlier registration
+    /// from this identity in this app, of a different contract or token; that
+    /// one was completed and kept under its own name. The next registration
+    /// gets a new place.
+    #[error("{}", contract_replaced_by_earlier_message(*contract_id, unsaved.as_ref()))]
+    ContractRegistrationReplacedByEarlier {
+        contract_id: dash_sdk::platform::Identifier,
+        /// Set when the earlier registration could not be saved here.
+        #[source]
+        unsaved: Option<ContractSaveWarning>,
+    },
+
+    /// [`Self::ContractRegistrationReplacedByEarlier`] for a token.
+    #[error("{}", token_replaced_by_earlier_message(*contract_id, unsaved.as_ref()))]
+    TokenRegistrationReplacedByEarlier {
+        contract_id: dash_sdk::platform::Identifier,
+        /// Set when the earlier registration could not be saved here.
+        #[source]
+        unsaved: Option<ContractSaveWarning>,
+    },
+
+    /// Another contract or token registration by the same identity is still
+    /// being sent; running both at once could lose track of either.
+    #[error(
+        "Another contract or token registration for this identity is still being sent. Wait for it to finish, then try again."
+    )]
+    ContractRegistrationInProgress,
+
+    /// Platform refused a registration's identity nonce, and no earlier
+    /// attempt of this registration is known to have executed with it.
+    #[error(
+        "The network refused this registration because this identity was used for other changes in the meantime. Nothing was registered. Try again."
+    )]
+    RegistrationNonceRefused {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The SDK refused the request before sending it, or no node can answer
     /// it as asked: for example a document query no index of the contract
     /// covers. Every node answers alike and waiting changes nothing; the
@@ -4224,6 +4389,7 @@ impl TaskError {
     ) -> Self {
         if !availability.all_configured_addresses_are_exhausted()
             || self.is_dapi_availability_contextualized()
+            || self.is_registration_outcome()
             || !self.contains_dapi_reachability_failure()
         {
             return self;
@@ -4283,12 +4449,32 @@ impl TaskError {
     ) -> std::sync::Arc<Self> {
         if !availability.all_configured_addresses_are_exhausted()
             || self.is_dapi_availability_contextualized()
+            || self.is_registration_outcome()
             || !self.contains_dapi_reachability_failure()
         {
             return self;
         }
 
         std::sync::Arc::new(Self::DapiAllAddressesExhausted { source: self })
+    }
+
+    /// A sent registration's outcome keeps its own message, whatever the
+    /// network state: one that may have run, or found changed since its
+    /// creation, or sent while its identity changed, names the contract ID to
+    /// check before registering again; one another registration preempted
+    /// says to register again.
+    fn is_registration_outcome(&self) -> bool {
+        matches!(
+            self,
+            Self::ContractRegistrationUnconfirmed { .. }
+                | Self::TokenRegistrationUnconfirmed { .. }
+                | Self::ContractRegistrationPreempted { .. }
+                | Self::TokenRegistrationPreempted { .. }
+                | Self::ContractRegistrationModifiedSince { .. }
+                | Self::TokenRegistrationModifiedSince { .. }
+                | Self::ContractRegistrationIdentityChanged { .. }
+                | Self::TokenRegistrationIdentityChanged { .. }
+        )
     }
 
     fn is_dapi_availability_contextualized(&self) -> bool {
@@ -5619,6 +5805,45 @@ fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
     }
 }
 
+/// User-facing text for [`TaskError::ContractRegistrationReplacedByEarlier`]:
+/// when the earlier registration could not be saved here, how to add it, in
+/// the words of what it is.
+fn contract_replaced_by_earlier_message(
+    contract_id: dash_sdk::platform::Identifier,
+    unsaved: Option<&ContractSaveWarning>,
+) -> String {
+    match unsaved {
+        None => format!(
+            "Your earlier contract or token registration from this identity was completed instead of this contract. It has contract ID {contract_id}. Register this contract again."
+        ),
+        Some(ContractSaveWarning::Contract { contract_id, .. }) => format!(
+            "Your earlier contract registration from this identity was completed instead of this contract, but it could not be saved on this device. To add it here, open Contracts, choose Load Contracts and enter contract ID {contract_id}. Register this contract again."
+        ),
+        Some(ContractSaveWarning::Token { contract_id, .. }) => format!(
+            "Your earlier token from this identity was created instead of this contract, but it could not be saved on this device. To add it here, open Tokens, choose Import Token and enter contract ID {contract_id}. Register this contract again."
+        ),
+    }
+}
+
+/// [`contract_replaced_by_earlier_message`] for
+/// [`TaskError::TokenRegistrationReplacedByEarlier`].
+fn token_replaced_by_earlier_message(
+    contract_id: dash_sdk::platform::Identifier,
+    unsaved: Option<&ContractSaveWarning>,
+) -> String {
+    match unsaved {
+        None => format!(
+            "Your earlier contract or token registration from this identity was completed instead of this token. It has contract ID {contract_id}. Create this token again."
+        ),
+        Some(ContractSaveWarning::Contract { contract_id, .. }) => format!(
+            "Your earlier contract registration from this identity was completed instead of this token, but it could not be saved on this device. To add it here, open Contracts, choose Load Contracts and enter contract ID {contract_id}. Create this token again."
+        ),
+        Some(ContractSaveWarning::Token { contract_id, .. }) => format!(
+            "Your earlier token from this identity was created instead of this token, but it could not be saved on this device. To add it here, open Tokens, choose Import Token and enter contract ID {contract_id}. Create this token again."
+        ),
+    }
+}
+
 /// User-facing text for [`TaskError::WalletAlreadyImported`]: names the existing
 /// wallet so the user knows which one to open.
 fn wallet_already_imported_message(alias: Option<&str>) -> String {
@@ -6263,6 +6488,109 @@ mod tests {
                 matches!(*shared, TaskError::PlatformResultUnconfirmed { .. }),
                 "expected PlatformResultUnconfirmed, got {shared:?}"
             );
+        }
+    }
+
+    /// A contract or token registration whose result is unknown may have
+    /// run, and one found changed since its creation may be the user's, so
+    /// with every server unreachable each keeps its own message, which names
+    /// the contract ID to check before registering again.
+    #[test]
+    fn dapi_availability_context_keeps_an_unconfirmed_registration() {
+        let contract_id = Identifier::from([0x42; 32]);
+        let sources = || {
+            let mut sources = Vec::from(unconfirmed_result_errors());
+            sources.push(SdkError::DapiClientError(DapiClientError::Transport(
+                TransportError::Grpc(dash_sdk::dapi_grpc::tonic::Status::unavailable(
+                    "connection refused",
+                )),
+            )));
+            sources.push(SdkError::NoAvailableAddressesToRetry(Box::new(
+                SdkError::DapiClientError(DapiClientError::NoAvailableAddresses),
+            )));
+            sources
+        };
+        let registrations = sources()
+            .into_iter()
+            .map(|source_error| TaskError::ContractRegistrationUnconfirmed {
+                contract_id,
+                source_error: Box::new(source_error),
+            })
+            .chain(sources().into_iter().map(|source_error| {
+                TaskError::TokenRegistrationUnconfirmed {
+                    contract_id,
+                    source_error: Box::new(source_error),
+                }
+            }))
+            .chain(sources().into_iter().map(|source_error| {
+                TaskError::ContractRegistrationModifiedSince {
+                    contract_id,
+                    source_error: Box::new(source_error),
+                }
+            }))
+            .chain(sources().into_iter().map(|source_error| {
+                TaskError::TokenRegistrationModifiedSince {
+                    contract_id,
+                    source_error: Box::new(source_error),
+                }
+            }));
+
+        for error in registrations {
+            let message = error.to_string();
+            let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+            assert!(
+                matches!(
+                    contextualized,
+                    TaskError::ContractRegistrationUnconfirmed { .. }
+                        | TaskError::TokenRegistrationUnconfirmed { .. }
+                        | TaskError::ContractRegistrationModifiedSince { .. }
+                        | TaskError::TokenRegistrationModifiedSince { .. }
+                ),
+                "expected the registration outcome, got {contextualized:?}"
+            );
+            assert_eq!(contextualized.to_string(), message);
+
+            let shared = std::sync::Arc::new(contextualized)
+                .contextualize_shared_dapi_availability(availability(1, 0));
+            assert_eq!(shared.to_string(), message);
+        }
+    }
+
+    /// Recovery names the registration and where to check it without claiming
+    /// which operation consumed the nonce.
+    #[test]
+    fn a_registration_with_a_consumed_nonce_says_how_to_check_it() {
+        let contract_id = Identifier::from([0x42; 32]);
+        let identity_id = Identifier::from([0x21; 32]);
+        let source_error = || Box::new(SdkError::Generic("nonce already used".to_string()));
+        let contract = TaskError::ContractRegistrationIdentityChanged {
+            contract_id,
+            identity_id,
+            network: Network::Testnet,
+            source_error: source_error(),
+        };
+        let token = TaskError::TokenRegistrationIdentityChanged {
+            contract_id,
+            identity_id,
+            network: Network::Mainnet,
+            source_error: source_error(),
+        };
+
+        assert_eq!(
+            contract.to_string(),
+            format!(
+                "The app could not confirm your contract registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Contracts, choose Load Contracts and enter that contract ID on Testnet. If the contract is not there, register it again."
+            )
+        );
+        assert_eq!(
+            token.to_string(),
+            format!(
+                "The app could not confirm your token registration from identity {identity_id} under contract ID {contract_id}. Check again later: open Tokens, choose Import Token and enter that contract ID on Mainnet. If the token is not there, create it again."
+            )
+        );
+        for message in [contract.to_string(), token.to_string()] {
+            assert!(message.contains(&contract_id.to_string(Encoding::Base58)));
+            assert!(message.contains(&identity_id.to_string(Encoding::Base58)));
         }
     }
 

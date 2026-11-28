@@ -1,5 +1,6 @@
 //! User notifications for token task outcomes.
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, CacheUpdate};
+use crate::ui::contracts_documents::task_feedback::show_contract_save_warning;
 use crate::ui::task_feedback::{DomainFeedback, Feedback};
 use crate::ui::{MessageType, components::MessageBanner};
 
@@ -20,6 +21,36 @@ impl DomainFeedback for TokensFeedback {
                 "Token balances are already refreshing. Wait a moment before refreshing again.",
                 MessageType::Info,
             );
+        }
+        if let BackendTaskSuccessResult::RegisteredTokenContract {
+            save_warning,
+            earlier_version,
+        } = result
+        {
+            match (save_warning, earlier_version) {
+                (Some(warning), true) => {
+                    let contract_id = warning.contract_id();
+                    let banner = MessageBanner::set_global(
+                        feedback.ctx,
+                        format!(
+                            "Your token was created from your earlier attempt, so your latest changes are not in it, and it could not be saved on this device. To see it, open Tokens, choose Import Token and enter contract ID {contract_id}."
+                        ),
+                        MessageType::Warning,
+                    );
+                    banner.with_details(warning);
+                    banner.disable_auto_dismiss();
+                }
+                (Some(warning), false) => show_contract_save_warning(feedback.ctx, warning),
+                (None, true) => {
+                    MessageBanner::set_global(
+                        feedback.ctx,
+                        "Your token was created from your earlier attempt, so your latest changes are not in it. Open Tokens to see the token as it was created.",
+                        MessageType::Info,
+                    )
+                    .disable_auto_dismiss();
+                }
+                (None, false) => {}
+            }
         }
         if feedback.delivery.sender_gone
             && let BackendTaskSuccessResult::TransferredTokens(_) = result
@@ -69,6 +100,81 @@ mod tests {
         react_with(&ctx, true, &sent);
         let texts = global_banner_texts(&ctx);
         assert_eq!(texts, vec!["Tokens sent successfully.".to_string()]);
+    }
+
+    /// A token Platform created but this device could not save is reported
+    /// with how to import it, never as a failure to retry.
+    #[test]
+    fn an_unsaved_token_registration_is_reported_as_a_warning() {
+        use crate::backend_task::error::{ContractSaveWarning, TaskError};
+
+        let ctx = egui::Context::default();
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: None,
+                earlier_version: false,
+            },
+        );
+        assert!(global_banner_texts(&ctx).is_empty());
+
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: Some(ContractSaveWarning::Token {
+                    contract_id,
+                    source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
+                }),
+                earlier_version: false,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("was created on the network"), "{texts:?}");
+        assert!(texts[0].contains("Import Token"), "{texts:?}");
+        assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
+    }
+
+    /// A token Platform holds as an earlier attempt sent it says so.
+    #[test]
+    fn an_earlier_token_version_created_is_reported() {
+        let ctx = egui::Context::default();
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: None,
+                earlier_version: true,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("earlier attempt"), "{texts:?}");
+    }
+
+    /// A token in an earlier version that could not be saved here gets one
+    /// banner, saying how to import it.
+    #[test]
+    fn an_earlier_unsaved_token_version_gets_one_instruction() {
+        use crate::backend_task::error::{ContractSaveWarning, TaskError};
+
+        let ctx = egui::Context::default();
+        let contract_id = dash_sdk::platform::Identifier::from([0x42; 32]);
+        react(
+            &ctx,
+            &BackendTaskSuccessResult::RegisteredTokenContract {
+                save_warning: Some(ContractSaveWarning::Token {
+                    contract_id,
+                    source: std::sync::Arc::new(TaskError::WalletBackendNotYetWired),
+                }),
+                earlier_version: true,
+            },
+        );
+        let texts = global_banner_texts(&ctx);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("earlier attempt"), "{texts:?}");
+        assert!(texts[0].contains("Import Token"), "{texts:?}");
+        assert!(texts[0].contains(&format!("{contract_id}")), "{texts:?}");
     }
 
     #[test]

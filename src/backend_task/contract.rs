@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::BackendTaskSuccessResult;
 use crate::backend_task::TaskResult;
+use crate::backend_task::register_contract::RegistrationKind;
 use crate::context::AppContext;
 use crate::model::qualified_contract::InsertTokensToo;
 use crate::model::qualified_contract::InsertTokensToo::NoTokensShouldBeAdded;
@@ -196,6 +197,7 @@ impl AppContext {
                     alias,
                     identity,
                     signing_key,
+                    RegistrationKind::Contract,
                     sdk,
                     sender,
                 )

@@ -168,6 +168,8 @@ pub struct TokenActionCommon {
     app_context: Arc<AppContext>,
 }
 
+const UNRESOLVED_PROPOSAL_GROUP: &str = "This proposal can no longer be signed with the current token settings. Refresh the group actions and choose another proposal.";
+
 impl TokenActionCommon {
     fn group_info(&self) -> Option<GroupStateTransitionInfoStatus> {
         if let Some(action_id) = self.group_action_id {
@@ -403,6 +405,10 @@ impl<A: TokenAction> TokenActionScreen<A> {
         };
 
         let group_info = self.common.group_info();
+        if self.common.group_action_id.is_some() && group_info.is_none() {
+            super::set_error_banner(&self.common.app_context, UNRESOLVED_PROPOSAL_GROUP);
+            return AppAction::None;
+        }
         let public_note = if self.common.group_action_id.is_some() {
             None
         } else {
@@ -680,6 +686,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             ui.add_space(10.0);
             self.render_fee_estimate(ui);
 
+            let proposal_group_ready =
+                self.common.group_action_id.is_none() || self.common.group.is_some();
+            if !proposal_group_ready {
+                ui.label(UNRESOLVED_PROPOSAL_GROUP);
+            }
             let button_text = render_group_action_text(
                 ui,
                 &self.common.group,
@@ -689,6 +700,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             );
 
             if signing_available
+                && proposal_group_ready
                 && (self
                     .common
                     .app_context
@@ -731,6 +743,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             }
 
             if signing_available
+                && proposal_group_ready
                 && wallet_ready
                 && !wallet_locked
                 && self.common.confirmation_dialog.is_some()
@@ -1239,6 +1252,13 @@ mod tests {
         let recipient = Identifier::from([5; 32]).to_string(Encoding::Base58);
         let mut screen = MintTokensScreen::new(info, &context);
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.group = Some((
+            0,
+            Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
+                members: [(screen.common.identity_token_info.identity.identity.id(), 1)].into(),
+                required_power: 1,
+            }),
+        ));
         screen.action.amount = Some(amount.clone());
         screen.action.recipient_identity_id = recipient.clone();
 
@@ -1295,6 +1315,13 @@ mod tests {
             "the signing key's wallet is locked"
         );
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.group = Some((
+            0,
+            Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
+                members: [(screen.common.identity_token_info.identity.identity.id(), 1)].into(),
+                required_power: 1,
+            }),
+        ));
         let sent = Cell::new(false);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 900.0))
@@ -1395,6 +1422,13 @@ mod tests {
         let amount = Amount::from_token(&info, 5);
         let mut screen = MintTokensScreen::new(info, &context);
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.group = Some((
+            0,
+            Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
+                members: [(screen.common.identity_token_info.identity.identity.id(), 1)].into(),
+                required_power: 1,
+            }),
+        ));
         screen.action.amount = Some(amount.clone());
         let sent = Cell::new(false);
         let mut harness = egui_kittest::Harness::builder()
@@ -1509,6 +1543,13 @@ mod tests {
         let mut screen = MintTokensScreen::new(info, &context);
         screen.action.amount = Some(amount);
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.group = Some((
+            0,
+            Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
+                members: [(screen.common.identity_token_info.identity.identity.id(), 1)].into(),
+                required_power: 1,
+            }),
+        ));
         screen.common.show_advanced_options = true;
         let note = "A line of the public proposal note.\n".repeat(40);
         assert!(note.len() <= 2048);
@@ -1589,6 +1630,13 @@ mod tests {
             crate::ui::tokens::burn_tokens_screen::BurnTokensScreen::new(info, &context);
         screen.action.amount = Some(Amount::from_token(&screen.common.identity_token_info, 5));
         screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.common.group = Some((
+            0,
+            Group::V0(dash_sdk::dpp::data_contract::group::v0::GroupV0 {
+                members: [(screen.common.identity_token_info.identity.identity.id(), 1)].into(),
+                required_power: 1,
+            }),
+        ));
         screen.common.confirmation_dialog = Some(
             ConfirmationDialog::new("Confirm Burn", "Burn the tokens?")
                 .confirm_text(Some("Confirm pending burn")),
@@ -1652,6 +1700,36 @@ mod tests {
             harness
                 .query_by_label(super::LOCKED_PROPOSAL_NOTE)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn a_proposal_without_its_group_never_submits_an_independent_mint() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        let mut info = info;
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        let dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules::V0(rules) =
+            &mut config.manual_minting_rules;
+        rules.authorized_to_make_change = AuthorizedActionTakers::ContractOwner;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+        config
+            .distribution_rules
+            .set_new_tokens_destination_identity(Some(Identifier::from([5; 32])));
+        info.token_config = config.into();
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+        info.data_contract
+            .contract
+            .set_owner_id(info.identity.identity.id());
+        let mut screen = TokenActionScreen::<MintAction>::new(info.clone(), &context);
+        screen.common.selected_key = TokenSigningKey::automatic(Some(signing_key()));
+        screen.action.amount = Some(Amount::from_token(&info, 5));
+        screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        assert!(screen.common.group.is_none());
+        assert!(
+            matches!(screen.submit(), AppAction::None),
+            "a proposal must never be dispatched as an independent mint"
         );
     }
 

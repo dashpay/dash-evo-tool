@@ -208,6 +208,8 @@ impl ScreenLike for KeyInfoScreen {
             )
         {
             self.reload_identity();
+            self.remaining_budget = RemainingBudget::NotRequested;
+            self.budget_request.clear();
             self.protection_status = None;
         }
     }
@@ -3981,6 +3983,43 @@ mod tests {
         screen.display_task_result(BackendTaskSuccessResult::IdentityKeyLimitsRaised {
             identity_id: id,
             key,
+        });
+        let reply = |remaining| BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
+            identity_id: id,
+            budgets: BTreeMap::from([(1, Some(remaining))]),
+        };
+        screen.display_backend_task_result(&old, reply(0));
+        assert_eq!(screen.remaining_budget, RemainingBudget::NotRequested);
+        let AppAction::BackendTaskWithContext { context: new, .. } =
+            screen.queued_requests(AppAction::None)
+        else {
+            panic!("replacement read")
+        };
+        screen.display_backend_task_result(&new, reply(6_000));
+        screen.display_backend_task_result(&old, reply(0));
+        screen.display_backend_task_error(&old, &TaskError::IdentityNotFoundLocally);
+        assert_eq!(screen.remaining_budget, RemainingBudget::Known(Some(6_000)));
+        screen.refresh();
+        screen.display_backend_task_result(&new, reply(0));
+        assert_eq!(screen.remaining_budget, RemainingBudget::NotRequested);
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cache_reload_invalidates_budget_and_rejects_stale_results() {
+        let (ctx, _dir) = offline_ctx().await;
+        let key = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(0xBC, &[]);
+        let id = identity.identity.id();
+        let mut screen = KeyInfoScreen::new(identity, key.clone(), None, &ctx);
+        let AppAction::BackendTaskWithContext { context: old, .. } =
+            screen.queued_requests(AppAction::None)
+        else {
+            panic!("budget read")
+        };
+        screen.cached_data_changed(crate::backend_task::CacheUpdate {
+            network: ctx.network,
+            domain: crate::backend_task::CacheDomain::Identities,
         });
         let reply = |remaining| BackendTaskSuccessResult::IdentityKeyRemainingBudgets {
             identity_id: id,

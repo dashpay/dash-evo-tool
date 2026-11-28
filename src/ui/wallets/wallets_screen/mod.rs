@@ -1053,11 +1053,9 @@ impl WalletsBalancesScreen {
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
-    /// Platform-address balance in duffs, read from the coordinator-push snapshot.
-    ///
-    /// The snapshot is written by `on_platform_address_sync_completed` in `EventBridge`
-    /// and contains only OWNED addresses (no orphan inflation). Safe to call from the
-    /// egui frame loop — synchronous, no blocking I/O (Nagatha ruling).
+    /// Platform-address balance in duffs, from the wallet's owned per-address
+    /// figures. Takes the wallet's read lock: never call it while holding
+    /// that wallet's guard.
     fn platform_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
         self.app_context.platform_balance_duffs(seed_hash)
     }
@@ -1961,7 +1959,8 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.style().visuals.dark_mode;
         let seed_hash = wallet.seed_hash();
         let core_balance = self.core_balance_duffs(&seed_hash);
-        let platform_balance = self.platform_balance_duffs(&seed_hash);
+        // The caller holds this wallet's guard: read the total from it.
+        let platform_balance = wallet.platform_balance_duffs(self.app_context.network);
         let shielded_balance = self.shielded_balance_duffs(&seed_hash);
         let total = core_balance + platform_balance + shielded_balance;
 
@@ -1981,7 +1980,8 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.style().visuals.dark_mode;
         let seed_hash = wallet.seed_hash();
         let core_balance = self.core_balance_duffs(&seed_hash);
-        let platform_balance = self.platform_balance_duffs(&seed_hash);
+        // The caller holds this wallet's guard: read the total from it.
+        let platform_balance = wallet.platform_balance_duffs(self.app_context.network);
         let shielded_balance = self.shielded_balance_duffs(&seed_hash);
 
         let header = egui::CollapsingHeader::new(
@@ -2982,11 +2982,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 // Schedule a refresh of platform address balances to update the UI
                 self.pending_platform_balance_refresh = Some(seed_hash);
             }
-            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
-                seed_hash,
-                balances,
-                network,
-            } => {
+            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances { network, .. } => {
                 self.refreshing = false;
                 // Skip stale results from a different network
                 if network != self.app_context.network {
@@ -2997,17 +2993,9 @@ impl ScreenLike for WalletsBalancesScreen {
                     );
                     return;
                 }
-                // Update wallet's platform_address_info if this is for the selected wallet
-                if let Some(selected) = &self.selected_wallet
-                    && let Ok(mut wallet) = selected.write()
-                    && wallet.seed_hash() == seed_hash
-                {
-                    // Convert PlatformAddress back to Core Address for wallet storage
-                    for (platform_addr, (balance, nonce)) in balances {
-                        let core_addr = platform_addr.to_address_with_network(network);
-                        wallet.set_platform_address_info(core_addr, balance, nonce);
-                    }
-                }
+                // The backend task already applied the scan to the wallet, by
+                // height; replaying this unversioned copy could undo a spend
+                // that landed since.
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Successfully synced Platform balances",

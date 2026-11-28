@@ -334,9 +334,10 @@ impl AppContext {
         let network = self.network;
         let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
         let backend = self.wallet_backend()?;
+        let resolved = backend.resolve_paying_wallet(&wallet_seed_hash).await?;
 
         // Send to Platform using address funding and wait for response
-        let put_result = backend
+        let (prepared, put_result) = backend
             .secret_access()
             .with_secret_session(
                 &SecretScope::HdSeed {
@@ -345,8 +346,17 @@ impl AppContext {
                 async |session| {
                     let plaintext = session.plaintext();
                     let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                    let prepared = backend
+                        .prepare_platform_address_slots(
+                            &wallet_seed_hash,
+                            resolved,
+                            seed,
+                            &path_index,
+                            inputs.keys().copied(),
+                        )
+                        .await?;
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
-                    Ok(identity
+                    let put_result = identity
                         .put_with_address_funding(
                             &sdk,
                             inputs,
@@ -355,7 +365,8 @@ impl AppContext {
                             &signer,
                             None,
                         )
-                        .await)
+                        .await;
+                    Ok((prepared, put_result))
                 },
             )
             .await?;
@@ -365,12 +376,16 @@ impl AppContext {
                 qualified_identity.identity = updated_identity;
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 
-                // Update source address balances using proof-verified data from SDK response
-                if let Err(e) = self
-                    .update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
-                {
-                    tracing::warn!("Failed to update wallet platform address info: {}", e);
-                }
+                // Show the spent balances in platform-wallet, DET's view and
+                // the wallet total at once, pinned at the proof's height.
+                self.record_platform_address_spend_proof(
+                    wallet_seed_hash,
+                    &prepared,
+                    &address_infos,
+                    height,
+                    "identity registration",
+                )
+                .await;
 
                 // The creation proof's height orders this first balance, so a
                 // later fetch from a lagging node cannot replace it.
@@ -447,6 +462,103 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A funding address issued beyond platform-wallet's gap pool is made
+    /// reconcilable by the registration itself, before its broadcast, so the
+    /// proof afterwards debits it upstream (where Shield reads it) too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_prepares_its_funding_slots_before_broadcast() {
+        registration_settles_its_funding_slot_upstream(true).await;
+    }
+
+    /// A wallet DET holds that platform-wallet has not registered yet (fresh,
+    /// or a migrated protected wallet before unlock) is registered by the
+    /// identity registration itself, so its spend settles upstream too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_from_a_wallet_not_registered_upstream_registers_it() {
+        registration_settles_its_funding_slot_upstream(false).await;
+    }
+
+    async fn registration_settles_its_funding_slot_upstream(registered_upstream: bool) {
+        use crate::model::wallet::Wallet;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Nothing reaches a network: the SDK refuses the registration after
+        // the slots were prepared.
+        let ctx = crate::context::test_support::wired_mock_sdk_test_app_context(dir.path()).await;
+        let seed = crate::test_support::keys::seed();
+        let mut wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("payer".to_string()), None)
+                .expect("build wallet");
+        let mut issued = None;
+        for _ in 0..=20 {
+            issued = Some(
+                wallet
+                    .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+                    .expect("issued address"),
+            );
+        }
+        let funding = PlatformAddress::try_from(issued.expect("slot 20")).expect("p2pkh");
+        // DET holds the wallet and its seed; no upstream registration starts
+        // on its own.
+        let seed_hash = wallet.seed_hash();
+        let wallet_arc = std::sync::Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, std::sync::Arc::clone(&wallet_arc));
+        let backend = ctx.wallet_backend().expect("wired backend");
+        backend
+            .wallet_seeds()
+            .set_raw(&seed_hash, &seed)
+            .expect("seed in the vault");
+        if registered_upstream {
+            backend
+                .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+                .await
+                .expect("register wallet with the upstream manager");
+        }
+
+        let path_index = crate::wallet_backend::PlatformPathIndex::from_wallet(
+            &wallet_arc.read().expect("wallet lock"),
+            Network::Testnet,
+        );
+        let registered = ctx
+            .register_identity_from_platform_addresses(
+                crate::backend_task::identity::IdentityKeySpecs::empty(),
+                wallet_arc,
+                0,
+                BTreeMap::from([(funding, (1, 1_000_000))]),
+                seed_hash,
+            )
+            .await;
+        assert!(
+            registered.is_err(),
+            "the SDK refuses the registration after the slots were prepared"
+        );
+
+        let proof: dash_sdk::query_types::AddressInfos = [(
+            funding,
+            Some(AddressInfo {
+                address: funding,
+                balance: 750_000,
+                nonce: 1,
+            }),
+        )]
+        .into_iter()
+        .collect();
+        // Preparing nothing more returns the registration's handle as is.
+        let resolved = backend
+            .resolve_paying_wallet(&seed_hash)
+            .await
+            .expect("wallet map");
+        assert!(resolved.is_some(), "platform-wallet holds the wallet");
+        let entries = backend
+            .prepare_platform_address_slots(&seed_hash, resolved, &seed, &path_index, [])
+            .await
+            .expect("platform-wallet holds the wallet")
+            .reconcile(&proof, 600, "test registration")
+            .await;
+        assert_eq!(entries.len(), 1, "the funding slot must be reconcilable");
+    }
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 

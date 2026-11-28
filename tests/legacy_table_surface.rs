@@ -107,7 +107,14 @@ fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
 fn live_matches(text: &str, pat: &str) -> Vec<(usize, String)> {
     text.lines()
         .enumerate()
-        .filter(|(_, line)| line.contains(pat))
+        .filter(|(_, line)| {
+            line.match_indices(pat).any(|(start, matched)| {
+                line[start + matched.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            })
+        })
         .map(|(idx, line)| (idx + 1, line.to_string()))
         .collect()
 }
@@ -209,4 +216,18 @@ fn tc_dev_003_no_live_readers_or_writers_of_single_key_wallet_table() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
+}
+
+#[test]
+fn table_guard_matches_whole_wallet_identifier() {
+    for sql in [
+        "SELECT * FROM wallet",
+        "SELECT * FROM wallet;",
+        "SELECT * FROM wallet WHERE id = 1",
+    ] {
+        assert_eq!(live_matches(sql, "FROM wallet").len(), 1, "{sql}");
+    }
+    for sql in ["SELECT * FROM wallets", "SELECT * FROM wallet_backup"] {
+        assert!(live_matches(sql, "FROM wallet").is_empty(), "{sql}");
+    }
 }

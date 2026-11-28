@@ -1424,7 +1424,7 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
                 let bytes = hex::decode(pinned.trim()).expect("hex fixture");
 
-                for read_at in written_at..=*PINNED_CONTRACT_PROTOCOLS.end() {
+                for read_at in written_at..=PlatformVersion::latest().protocol_version {
                     crate::context::test_support::set_sdk_protocol_version(&ctx, read_at);
                     let decoded = ctx
                         .decode_stored_contract(StoredContract {

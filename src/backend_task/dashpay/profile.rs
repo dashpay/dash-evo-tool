@@ -139,8 +139,8 @@ fn non_empty(s: &str) -> Option<String> {
 /// are kept. The raw form values in [`ProfileSnapshot`] are not affected.
 fn cached_profile(
     f: BackendProfileFields,
-) -> platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
-    platform_wallet::normalize_persisted_profile(
+) -> Option<platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile> {
+    let profile = platform_wallet::normalize_persisted_profile(
         platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
             display_name: f.display_name,
             public_message: f.bio.clone(),
@@ -152,7 +152,8 @@ fn cached_profile(
             platform_payment_address: f.platform_payment_address,
             shielded_address: f.shielded_address,
         },
-    )
+    );
+    (profile != Default::default()).then_some(profile)
 }
 
 /// Cache a fetched profile; a mirror failure leaves the next refresh to retry.
@@ -169,8 +170,8 @@ async fn mirror_profile_to_backend(
         return;
     };
 
-    let has_profile = fields.is_some();
-    let profile = fields.map(cached_profile);
+    let profile = fields.and_then(cached_profile);
+    let has_profile = profile.is_some();
 
     if let Err(e) = backend.dashpay_set_profile(owner, profile).await {
         tracing::debug!(
@@ -441,6 +442,19 @@ pub async fn search_profiles(
 mod tests {
     use super::*;
 
+    #[test]
+    fn profile_mirror_clears_normalized_empty_profile() {
+        let mut fields = fetched_fields("http://example.com/a.png");
+        fields.display_name = None;
+        fields.bio = None;
+        fields.avatar_hash = None;
+        fields.avatar_fingerprint = None;
+        fields.core_payment_address = None;
+        fields.platform_payment_address = None;
+        fields.shielded_address = None;
+        assert!(cached_profile(fields).is_none());
+    }
+
     /// A name found by prefix is listed under the identity its record points
     /// at, which after a transfer is not the document's owner.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -600,7 +614,7 @@ mod tests {
             fields.platform_payment_address.clone(),
             fields.shielded_address.clone(),
         );
-        let cached = cached_profile(fields);
+        let cached = cached_profile(fields).expect("nonempty profile");
         assert_eq!(cached.core_payment_address, core);
         assert_eq!(cached.platform_payment_address, platform);
         assert_eq!(cached.shielded_address, shielded);
@@ -628,7 +642,7 @@ mod tests {
                 1 => fields.platform_payment_address = Some(vec![0x00; 20]),
                 _ => fields.shielded_address = Some(vec![0xFF; 43]),
             }
-            let cached = cached_profile(fields);
+            let cached = cached_profile(fields).expect("nonempty profile");
             let keep =
                 |index, value: Option<Vec<u8>>| (malformed != index).then_some(value).flatten();
             assert_eq!(
@@ -654,7 +668,7 @@ mod tests {
     #[test]
     fn profile_mirror_normalizes_the_avatar_url_like_upstream() {
         for url in ["http://example.com/a.png", "https://example.com/a.png"] {
-            let cached = cached_profile(fetched_fields(url));
+            let cached = cached_profile(fetched_fields(url)).expect("nonempty profile");
             let upstream = platform_wallet::normalize_persisted_profile(
                 platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile {
                     avatar_url: Some(url.into()),
@@ -665,6 +679,7 @@ mod tests {
         }
         assert!(
             cached_profile(fetched_fields("http://example.com/a.png"))
+                .expect("nonempty profile")
                 .avatar_url
                 .is_none()
         );

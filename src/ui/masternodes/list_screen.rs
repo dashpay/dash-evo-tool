@@ -42,7 +42,7 @@ use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_it
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
-/// Throttle arrival refreshes against both completed and dispatched requests.
+/// Minimum time since a completed refresh, also since dispatch for background arrivals.
 const ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
@@ -117,7 +117,7 @@ pub struct MasternodesScreen {
     /// The single voting workspace (Masternodes ▸ Votes). Receives every vote
     /// result whether or not its segment is showing.
     votes: DPNSScreen,
-    /// Arrival arms a silent contest refresh on the next idle frame.
+    /// Arrival arms a contest refresh on the next idle frame.
     contests_arrival_refresh: bool,
     last_arrival_refresh_ms: Option<u64>,
     /// The segment to persist through the backend once no user action is out.
@@ -856,23 +856,35 @@ impl ScreenLike for MasternodesScreen {
         // Never displace a user action; a refresh deferred here runs next frame.
         if action == AppAction::None
             && std::mem::take(&mut self.contests_arrival_refresh)
-            && !self.app_context.dpns_contest_refresh_running()
+            && (self.segment == MasternodesSegment::Votes
+                || !self.app_context.dpns_contest_refresh_running())
             && background_refresh_due(
                 self.app_context.dpns_contests_refreshed_at_ms(),
-                self.last_arrival_refresh_ms,
+                if self.segment == MasternodesSegment::Votes {
+                    None
+                } else {
+                    self.last_arrival_refresh_ms
+                },
                 crate::utils::time::now_ms(),
                 ARRIVAL_REFRESH_MIN_GAP,
             )
         {
-            self.last_arrival_refresh_ms = Some(crate::utils::time::now_ms());
-            action = AppAction::BackendTaskWithContext {
-                task: BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::RefreshContestsInBackground,
-                ),
-                context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh {
-                    network: self.app_context.network,
-                },
-            };
+            if self.segment == MasternodesSegment::Votes {
+                // Votes arrival keeps user-visible failures and completion-only throttling.
+                action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContests,
+                ));
+            } else {
+                self.last_arrival_refresh_ms = Some(crate::utils::time::now_ms());
+                action = AppAction::BackendTaskWithContext {
+                    task: BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::RefreshContestsInBackground,
+                    ),
+                    context: crate::backend_task::BackendTaskContext::DpnsBackgroundRefresh {
+                        network: self.app_context.network,
+                    },
+                };
+            }
         }
         if self.votes.take_load_node_request() {
             self.select_segment(MasternodesSegment::Nodes);
@@ -1077,6 +1089,54 @@ mod tests {
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode with voter");
         node_id
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn votes_arrivals_keep_visible_refresh_and_completion_only_throttle() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_ui_state(
+                |ui, state: &mut (MasternodesScreen, usize)| {
+                    if matches!(
+                        state.0.ui(ui),
+                        AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContests
+                        ))
+                    ) {
+                        state.1 += 1;
+                    }
+                },
+                (MasternodesScreen::new(&ctx), 0),
+            );
+        // A recent background attempt must not throttle the visible Votes refresh.
+        harness.state_mut().0.last_arrival_refresh_ms = Some(crate::utils::time::now_ms());
+        harness
+            .state_mut()
+            .0
+            .select_segment(MasternodesSegment::Votes);
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().1,
+            1,
+            "switching to Votes must dispatch a visible refresh"
+        );
+        harness.state_mut().0.refresh_on_arrival();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().1,
+            2,
+            "screen arrival must retain the base retry semantics"
+        );
+        ctx.mark_dpns_contests_refreshed();
+        harness.state_mut().0.refresh_on_arrival();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().1,
+            2,
+            "a recent completion must throttle Votes arrivals"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

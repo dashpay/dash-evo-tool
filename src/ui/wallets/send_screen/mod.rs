@@ -292,6 +292,8 @@ pub struct WalletSendScreen {
     address_input_identity_signature: Option<u64>,
     #[cfg(test)]
     identity_load_count: std::cell::Cell<usize>,
+    #[cfg(test)]
+    ownership_load_count: std::cell::Cell<usize>,
     validated_destination: Option<ValidatedAddress>,
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
@@ -491,6 +493,8 @@ impl WalletSendScreen {
             address_input_identity_signature: None,
             #[cfg(test)]
             identity_load_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            ownership_load_count: std::cell::Cell::new(0),
             validated_destination: None,
             amount: None,
             amount_input: None,
@@ -1335,36 +1339,80 @@ impl WalletSendScreen {
         self.recipient_description(&self.destination_address_string())
     }
 
+    fn confirmation_ownership(&self) -> BTreeMap<String, String> {
+        use crate::model::wallet::DerivationPathHelpers;
+        let mut owners = BTreeMap::new();
+        for (wallet, _, paths, _) in self.address_input_wallets() {
+            let Ok(seed_hash) = wallet.read().map(|wallet| wallet.seed_hash()) else {
+                continue;
+            };
+            let name = self.wallet_name(&seed_hash);
+            for (address, path) in paths {
+                owners.insert(address.to_string(), name.clone());
+                if path.is_platform_payment(self.app_context.network)
+                    && let Ok(platform) = PlatformAddress::try_from(address)
+                {
+                    owners.insert(
+                        platform.to_bech32m_string(self.app_context.network),
+                        name.clone(),
+                    );
+                }
+            }
+            if let Some(address) = self.app_context.shielded_receive_address(&seed_hash) {
+                owners.insert(address.to_ascii_lowercase(), name);
+            }
+        }
+        owners
+    }
+
     fn recipient_description(&self, address: &str) -> String {
+        self.recipient_description_with_ownership(address, &self.confirmation_ownership())
+    }
+
+    fn recipient_description_with_ownership(
+        &self,
+        address: &str,
+        owners: &BTreeMap<String, String>,
+    ) -> String {
         let mut labels = Vec::new();
-        let input =
-            AddressInput::new(self.app_context.network).with_wallets(&self.address_input_wallets());
-        if let Some(wallet) = input.wallet_name_for(address) {
-            labels.push(wallet.to_string());
+        let key = match self.row_address(address) {
+            Some(ValidatedAddress::Platform { address, .. }) => {
+                address.to_bech32m_string(self.app_context.network)
+            }
+            _ if parse_shielded_recipient(address).is_some() => address.to_ascii_lowercase(),
+            _ => address.to_string(),
+        };
+        if let Some(wallet) = owners.get(&key) {
+            labels.push(wallet.clone());
         } else if address == self.destination_address_string()
             && self.form.to_mode() == ToMode::MyWallets
             && let Some(wallet) = self.form.to_wallet()
         {
             labels.push(self.wallet_name(&wallet));
         }
-        if let Some(identity) = self
-            .app_context
-            .load_local_qualified_identities()
-            .ok()
-            .and_then(|identities| {
-                identities
-                    .into_iter()
-                    .find(|identity| format!("{}", identity.identity.id()) == address)
-            })
-        {
-            if let Some(owner) = self.app_context.identity_owner_wallet(&identity) {
-                let wallet = self.wallet_name(&owner);
-                if !labels.contains(&wallet) {
-                    labels.push(wallet);
+        if self.row_address(address).is_none() && parse_shielded_recipient(address).is_none() {
+            #[cfg(test)]
+            self.identity_load_count
+                .set(self.identity_load_count.get() + 1);
+            if let Some(identity) = self
+                .app_context
+                .load_local_qualified_identities()
+                .ok()
+                .and_then(|identities| {
+                    identities
+                        .into_iter()
+                        .find(|identity| format!("{}", identity.identity.id()) == address)
+                })
+            {
+                if let Some(owner) = self.app_context.identity_owner_wallet(&identity) {
+                    let wallet = self.wallet_name(&owner);
+                    if !labels.contains(&wallet) {
+                        labels.push(wallet);
+                    }
                 }
-            }
-            if let Some(name) = self.app_context.identity_name(&identity) {
-                labels.push(name);
+                if let Some(name) = self.app_context.identity_name(&identity) {
+                    labels.push(name);
+                }
             }
         }
         if address == self.destination_address_string()
@@ -2539,6 +2587,9 @@ impl WalletSendScreen {
     }
 
     fn address_input_wallets(&self) -> Vec<WalletWithSnapshot> {
+        #[cfg(test)]
+        self.ownership_load_count
+            .set(self.ownership_load_count.get() + 1);
         self.app_context
             .wallet_context()
             .wallets()
@@ -3340,8 +3391,9 @@ impl WalletSendScreen {
             rows: vec![("From", self.source_label())],
             notes: Vec::new(),
         };
+        let owners = self.confirmation_ownership();
         for (address, credits) in &recipients {
-            let destination = self.recipient_description(address);
+            let destination = self.recipient_description_with_ownership(address, &owners);
             summary.rows.push((
                 "To",
                 if several {
@@ -7068,6 +7120,49 @@ mod tests {
     }
 
     #[test]
+    fn batch_confirmation_reads_ownership_once() {
+        let (mut screen, _dir) = send_screen();
+        for count in [1, 40] {
+            screen.advanced_outputs = (0..count)
+                .map(|_| AdvancedOutput {
+                    address: testnet_core_address(20).to_string(),
+                    amount: "1".to_string(),
+                })
+                .collect();
+            screen.ownership_load_count.set(0);
+            screen.identity_load_count.set(0);
+            let summary = screen.advanced_send_confirmation_message();
+            assert_eq!(
+                summary
+                    .rows
+                    .iter()
+                    .filter(|(label, _)| *label == "To")
+                    .count(),
+                count
+            );
+            assert_eq!(screen.ownership_load_count.get(), 1);
+            assert_eq!(screen.identity_load_count.get(), 0);
+        }
+    }
+
+    #[test]
+    fn confirmation_names_pasted_private_address() {
+        let address = testnet_shielded_address(7);
+        let (mut screen, _dir) = send_screen_with_own_shielded_address(&address);
+        screen.app_context.wallet_context().insert_test_wallet(
+            screen.selected_wallet_seed_hash.expect("selected wallet"),
+            screen.selected_wallet.clone().expect("selected wallet"),
+        );
+        screen.validated_destination = Some(ValidatedAddress::Shielded(address.clone()));
+        assert_eq!(
+            screen.confirmation_recipient(),
+            format!("Test wallet\n{address}")
+        );
+        let foreign = testnet_shielded_address(9);
+        assert_eq!(screen.recipient_description(&foreign), foreign);
+    }
+
+    #[test]
     fn confirmation_names_the_receiving_wallet() {
         let (mut screen, _temp_dir) = send_screen();
         let address = testnet_core_address(19);
@@ -7128,6 +7223,26 @@ mod tests {
             .expect("To row")
             .1;
         assert_eq!(to, &format!("Savings\n{owned}"));
+        let platform_core = ctx
+            .snapshot_address_paths(&seed_hash)
+            .into_iter()
+            .find_map(|(address, path)| {
+                path.is_platform_payment(Network::Testnet)
+                    .then_some(address)
+            })
+            .expect("owned Platform address");
+        assert_eq!(
+            screen.recipient_description(&platform_core.to_string()),
+            format!("Savings\n{platform_core}")
+        );
+        let platform = PlatformAddress::try_from(platform_core)
+            .expect("Platform address")
+            .to_bech32m_string(Network::Testnet)
+            .to_uppercase();
+        assert_eq!(
+            screen.recipient_description(&platform),
+            format!("Savings\n{platform}")
+        );
         let external = testnet_core_address(20).to_string();
         assert_eq!(screen.recipient_description(&external), external);
     }

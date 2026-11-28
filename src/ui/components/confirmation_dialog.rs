@@ -250,23 +250,37 @@ impl ConfirmationDialog {
                 // Message content with bold text and proper color
                 ui.add_space(10.0);
                 if let Some(summary) = &self.summary {
-                    egui::Grid::new("confirmation_summary")
-                        .num_columns(2)
-                        .spacing([Spacing::LG, Spacing::MD])
+                    let render_rows = |ui: &mut Ui, rows: &[(&str, String)], id: &str| {
+                        egui::Grid::new(id)
+                            .num_columns(2)
+                            .spacing([Spacing::LG, Spacing::MD])
+                            .show(ui, |ui| {
+                                for (label, value) in rows {
+                                    ui.label(
+                                        egui::RichText::new(*label)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(value).monospace())
+                                            .wrap()
+                                            .selectable(true),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    };
+                    let split = summary
+                        .rows
+                        .iter()
+                        .rposition(|(label, _)| *label == "To")
+                        .map_or(summary.rows.len(), |index| index + 1);
+                    egui::ScrollArea::vertical()
+                        .id_salt("confirmation_recipients")
+                        .max_height((ui.ctx().content_rect().height() - 300.0).max(60.0))
                         .show(ui, |ui| {
-                            for (label, value) in &summary.rows {
-                                ui.label(
-                                    egui::RichText::new(*label)
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(value).monospace())
-                                        .wrap()
-                                        .selectable(true),
-                                );
-                                ui.end_row();
-                            }
+                            render_rows(ui, &summary.rows[..split], "confirmation_summary")
                         });
+                    render_rows(ui, &summary.rows[split..], "confirmation_totals");
                     ui.add_space(Spacing::MD);
                     ui.separator();
                     for note in &summary.notes {
@@ -513,6 +527,41 @@ mod tests {
             status, None,
             "the click that opens a dialog must not also dismiss it",
         );
+    }
+
+    #[test]
+    fn batch_confirmation_keeps_actions_visible_in_short_window() {
+        use egui_kittest::kittest::Queryable;
+        let mut rows = vec![("From", "Savings".to_string())];
+        rows.extend((0..40).map(|i| ("To", format!("Recipient {i}"))));
+        rows.push(("Total", "40 DASH".to_string()));
+        let summary = ConfirmationSummary {
+            rows,
+            notes: vec![],
+        };
+        let mut dialog = ConfirmationDialog::new("Send batch?", summary.to_string())
+            .with_summary(summary)
+            .confirm_text(Some("Send"))
+            .cancel_text(Some("Cancel"));
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(640.0, 480.0))
+            .build_ui(move |ui| {
+                let _ = dialog.show(ui);
+            });
+        harness.run();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+        for label in ["Send", "Cancel", "Total"] {
+            assert!(
+                viewport.contains_rect(harness.get_by_label(label).rect()),
+                "{label} must remain visible"
+            );
+        }
+        harness.get_by_label("Recipient 39").scroll_to_me();
+        harness.run();
+        assert!(viewport.contains_rect(harness.get_by_label("Recipient 39").rect()));
+        for label in ["Send", "Cancel", "Total"] {
+            assert!(viewport.contains_rect(harness.get_by_label(label).rect()));
+        }
     }
 
     /// A private (Orchard) address is 83 characters on testnet. The whole

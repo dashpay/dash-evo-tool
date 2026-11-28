@@ -33,7 +33,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SigningKeyStatus};
 use crate::model::wallet::Wallet;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -121,11 +121,22 @@ impl ClaimTokensScreen {
         let rules = token_configuration.distribution_rules();
         let offered: Vec<TokenDistributionType> = [
             (
-                rules.perpetual_distribution().is_some(),
+                rules.perpetual_distribution().is_some_and(|dist| {
+                    identity.as_ref().is_some_and(|identity| {
+                        crate::model::token::identity_token::is_perpetual_distribution_recipient(
+                            Some(token_contract.contract.owner_id()),
+                            dist.distribution_recipient(),
+                            identity,
+                        )
+                    })
+                }),
                 TokenDistributionType::Perpetual,
             ),
             (
-                rules.pre_programmed_distribution().is_some(),
+                crate::model::token::identity_token::is_pre_programmed_recipient(
+                    &token_configuration,
+                    &identity_token_basic_info.identity_id,
+                ),
                 TokenDistributionType::PreProgrammed,
             ),
             (
@@ -183,16 +194,17 @@ impl ClaimTokensScreen {
                     self.token_contract.contract.owner_id() == identity.identity.id()
                 }
                 TokenDistributionRecipient::Identity(id) => identity.identity.id() == id,
-                TokenDistributionRecipient::EvonodesByParticipation => true,
+                TokenDistributionRecipient::EvonodesByParticipation => {
+                    identity.identity_type == IdentityType::Evonode
+                }
             }
         } else {
             false
         };
-        let show_pre_programmed = self
-            .token_configuration
-            .distribution_rules()
-            .pre_programmed_distribution()
-            .is_some();
+        let show_pre_programmed = crate::model::token::identity_token::is_pre_programmed_recipient(
+            &self.token_configuration,
+            &self.identity_token_basic_info.identity_id,
+        );
         let show_once_per_identity = once_per_identity_amount(&self.token_configuration).is_some();
         ui.horizontal(|ui| {
             let type_label = ui.label("Select Distribution Type:");
@@ -965,6 +977,32 @@ mod tests {
             vec![2; 33],
         ));
         (screen, dir)
+    }
+
+    #[test]
+    fn claim_form_preselects_once_when_schedule_pays_another_identity() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Setters;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::{
+            TokenPreProgrammedDistribution, v0::TokenPreProgrammedDistributionV0,
+        };
+        let mut config = once_per_identity_token(10);
+        let TokenDistributionRules::V1(mut rules) = config.distribution_rules().clone() else {
+            panic!("once rules");
+        };
+        rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+            TokenPreProgrammedDistributionV0 {
+                distributions: std::collections::BTreeMap::from([(
+                    1000,
+                    std::collections::BTreeMap::from([(Identifier::new([99; 32]), 500)]),
+                )]),
+            },
+        ));
+        config.set_distribution_rules(TokenDistributionRules::V1(rules));
+        let (screen, _dir) = screen_for(config);
+        assert_eq!(
+            screen.distribution_type,
+            Some(TokenDistributionType::OncePerIdentity)
+        );
     }
 
     /// Regression: the confirmation asked only whether to "claim tokens for

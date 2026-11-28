@@ -96,10 +96,8 @@ impl AppContext {
             &data_contract,
         )?;
 
-        // insert_token uses upsert (ON CONFLICT DO UPDATE), so a separate
-        // remove_token is not needed and avoids a window where the token is
-        // missing if insert_token were to fail after remove_token.
-        self.insert_token(
+        // Refresh configuration without persisting the screen’s display label as an alias.
+        self.refresh_token_configuration(
             &identity_token_info.token_id,
             &identity_token_info.token_alias,
             token.clone(),

@@ -118,7 +118,13 @@ impl AddTokenByIdScreen {
         match self.status.clone() {
             // clone → no borrow
             AddTokenStatus::FoundSingle(token) => {
-                ui.label(format!("Found token: {}", token.token_name));
+                ui.label(format!(
+                    "Found token: {}",
+                    crate::model::token::identity_token::token_display_name(
+                        &token.token_name,
+                        &token.token_id
+                    )
+                ));
                 self.selected_token = Some(*token);
             }
             AddTokenStatus::FoundMultiple(tokens) => {
@@ -130,7 +136,14 @@ impl AddTokenByIdScreen {
                         .selectable_value(
                             &mut self.selected_token,
                             Some(tok.clone()),
-                            format!("{} ({})", tok.token_name, tok.token_id),
+                            format!(
+                                "{} ({})",
+                                crate::model::token::identity_token::token_display_name(
+                                    &tok.token_name,
+                                    &tok.token_id
+                                ),
+                                tok.token_id
+                            ),
                         )
                         .clicked()
                     {
@@ -455,6 +468,33 @@ mod tests {
         let mut screen = AddTokenByIdScreen::new(ctx);
         screen.status = status;
         screen
+    }
+
+    #[test]
+    fn imported_token_results_display_clean_names_without_changing_aliases() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use egui_kittest::{Harness, kittest::Queryable};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let token = TokenInfo {
+            token_id: Identifier::new([8; 32]),
+            token_name: "\u{200b}Apple".into(),
+            data_contract_id: Identifier::new([9; 32]),
+            token_position: 0,
+            token_configuration: TokenConfigurationV0::default_most_restrictive().into(),
+            description: None,
+        };
+        let screen = screen_with(&ctx, AddTokenStatus::FoundSingle(Box::new(token)));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut AddTokenByIdScreen| screen.render_search_results(ui),
+            screen,
+        );
+        harness.run();
+        assert!(harness.query_by_label("Found token: Apple").is_some());
+        assert_eq!(
+            harness.state().selected_token.as_ref().unwrap().token_name,
+            "\u{200b}Apple"
+        );
     }
 
     #[test]

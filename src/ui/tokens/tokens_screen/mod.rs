@@ -106,39 +106,6 @@ pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
 }
 
-pub fn validate_perpetual_distribution_recipient(
-    contract_owner_id: Identifier,
-    recipient: TokenDistributionRecipient,
-    identity: &QualifiedIdentity,
-) -> Result<(), String> {
-    match recipient {
-        TokenDistributionRecipient::ContractOwner => {
-            if contract_owner_id != identity.identity.id() {
-                Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::Identity(identifier) => {
-            if identifier != identity.identity.id() {
-                Err(
-                    "This identity is not a valid distribution recipient for this token"
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::EvonodesByParticipation => {
-            if identity.identity_type != IdentityType::Evonode {
-                Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContractDescriptionInfo {
     pub data_contract_id: Identifier,

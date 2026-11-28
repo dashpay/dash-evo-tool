@@ -1,9 +1,10 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::address::AddressKind;
-use crate::model::identity_discovery::validate_search_index;
+use crate::model::identity_discovery::{DiscoveryReadiness, validate_search_index};
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::balance_summary::WalletChoice;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -544,6 +545,17 @@ impl AddExistingIdentityScreen {
             ui.label("Select a wallet to search for linked identities.");
             return action;
         };
+
+        let readiness_error = match self.app_context.wallet_identity_discovery_readiness() {
+            DiscoveryReadiness::Ready => None,
+            DiscoveryReadiness::Syncing => Some(TaskError::WalletIdentityDiscoveryNotReady),
+            DiscoveryReadiness::SyncStopped => Some(TaskError::WalletIdentityDiscoverySyncStopped),
+        };
+        if let Some(error) = readiness_error {
+            self.wallet_unlock_popup.close();
+            ui.colored_label(DashColors::WARNING, error.to_string());
+            return action;
+        }
 
         let wallet = self
             .selected_wallet
@@ -1087,6 +1099,119 @@ impl ScreenLike for AddExistingIdentityScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod wallet_search_readiness_tests {
+    use super::*;
+    use crate::backend_task::TaskResult;
+    use crate::context::test_support::test_app_context;
+    use crate::model::secret::Secret;
+    use crate::model::spv_status::SpvStatus;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    async fn locked_wallet_waits_for_readiness(status: SpvStatus, guidance: &str) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = test_app_context(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(256);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, ctx.egui_ctx().clone()))
+            .await
+            .expect("offline backend");
+        ctx.connection_status().set_spv_status(status);
+        let seed = crate::test_support::keys::seed();
+        let password = Secret::new(hex::encode(crate::test_support::keys::seed()));
+        let mut wallet = Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Main".to_string()),
+            Some(&password),
+        )
+        .expect("protected wallet");
+        wallet.wallet_seed.close();
+        let wallet = Arc::new(RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(wallet.read_recover().seed_hash(), wallet.clone());
+        let screen = AddExistingIdentityScreen::new(&ctx);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut AddExistingIdentityScreen| {
+                    assert!(matches!(screen.ui(ui), AppAction::None));
+                },
+                screen,
+            );
+        harness.run_steps(2);
+        harness.get_by_label("From my wallet").click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label_contains(guidance).is_some(),
+            "the wallet form must explain readiness before asking for a password"
+        );
+        assert!(harness.query_by_label("Unlock Wallet").is_none());
+        assert!(
+            harness
+                .query_by_label("Search Wallet for Identities")
+                .is_none()
+        );
+        assert!(wallet_needs_unlock(&wallet));
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .mark_quorum_keys_ready_for_test();
+        harness.run_steps(3);
+        assert!(harness.query_by_label_contains(guidance).is_none());
+        harness.get_by_label("Unlock Wallet").click();
+        harness.run_steps(3);
+        assert!(harness.state().wallet_unlock_popup.is_open());
+        harness.get_by_label("Unlock");
+        assert!(wallet_needs_unlock(&wallet));
+
+        // Disconnect re-arms the backend's quorum-key gate, not just SPV status.
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .stop_in_place()
+            .await;
+        ctx.connection_status().set_spv_status(status);
+        assert_ne!(
+            ctx.wallet_identity_discovery_readiness(),
+            DiscoveryReadiness::Ready
+        );
+        harness.run_steps(3);
+        assert!(
+            !harness.state().wallet_unlock_popup.is_open(),
+            "losing search readiness must close the open password prompt"
+        );
+        assert!(harness.query_by_label_contains(guidance).is_some());
+        assert!(harness.query_by_label("Unlock").is_none());
+        assert!(harness.query_by_label("Unlock Wallet").is_none());
+        drop(harness);
+        assert!(wallet_needs_unlock(&wallet));
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnected_wallet_form_gates_unlock_and_closes_popup_on_readiness_loss() {
+        locked_wallet_waits_for_readiness(
+            SpvStatus::Stopped,
+            "Make sure you are connected to the wallet's network",
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn syncing_wallet_form_gates_unlock_and_closes_popup_on_readiness_loss() {
+        locked_wallet_waits_for_readiness(
+            SpvStatus::Syncing,
+            "Connect to the wallet's network if needed",
+        )
+        .await;
     }
 }
 

@@ -2076,3 +2076,82 @@ fn vote_with_list_scrolls_when_it_outgrows_the_window() {
         );
     });
 }
+
+#[test]
+fn evonode_load_inputs_keep_geometry_on_hover() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.set_size(egui::vec2(1280.0, 1200.0));
+        harness.get_by_label("Load a masternode").click();
+        harness.run_steps(3);
+        harness.get_by_label("Evonode").click();
+        harness.run_steps(3);
+        let fields = [
+            ("Voting private key", "Owner private key"),
+            ("Owner private key", "Payout address private key"),
+            (
+                "Payout address private key",
+                "Encryption password (optional)",
+            ),
+            (
+                "Encryption password (optional)",
+                "Set a password to encrypt these keys on this device. Leave it blank to store them unencrypted and add protection later.",
+            ),
+        ];
+        let mut differences = Vec::new();
+        use dash_evo_tool::ui::theme::{ThemeMode, apply_theme};
+        for theme in [ThemeMode::Light, ThemeMode::Dark] {
+            apply_theme(&harness.ctx, theme);
+            for (index, (label, next)) in fields.into_iter().enumerate() {
+                harness.hover_at(egui::pos2(1.0, 1.0));
+                harness.run_steps(5);
+                let before = harness
+                    .query_all_by_role(Role::PasswordInput)
+                    .nth(index)
+                    .expect("password input")
+                    .rect();
+                let next_before = harness.get_by_label(next).rect().top();
+                for (phase, pointer) in [
+                    ("hover", before.center()),
+                    ("hover-out", egui::pos2(1.0, 1.0)),
+                ] {
+                    harness.hover_at(pointer);
+                    for frame in 1..=5 {
+                        harness.step();
+                        let after = harness
+                            .query_all_by_role(Role::PasswordInput)
+                            .nth(index)
+                            .expect("password input")
+                            .rect();
+                        let next_after = harness.get_by_label(next).rect().top();
+                        eprintln!(
+                            "{theme:?} {label} {phase} frame {frame}: height {} -> {}; next top {next_before} -> {next_after}",
+                            before.height(),
+                            after.height()
+                        );
+                        if (before.height(), next_before) != (after.height(), next_after) {
+                            differences.push((
+                                theme,
+                                label,
+                                phase,
+                                frame,
+                                before.height(),
+                                after.height(),
+                                next_before,
+                                next_after,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            differences.is_empty(),
+            "Hover must preserve input height and next widget top: {differences:?}"
+        );
+    });
+}

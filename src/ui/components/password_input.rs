@@ -176,13 +176,23 @@ impl PasswordInput {
         // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
         let intrinsic_width_char_limit = self.intrinsic_width_char_limit();
+        let frame = ui
+            .widget_style::<egui::widget_style::TextEditStyle>(
+                ui.next_auto_id(),
+                &Default::default(),
+            )
+            .atom_layout
+            .frame;
         let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)
-            .margin(egui::Margin {
-                right: PASSWORD_INPUT_REVEAL_ICON_WIDTH as i8,
-                ..egui::Margin::same(4)
-            });
+            // Custom margins replace egui's inner margin; retain its expansion compensation.
+            .margin(
+                egui::Margin {
+                    right: PASSWORD_INPUT_REVEAL_ICON_WIDTH as i8,
+                    ..egui::Margin::same(4)
+                } - frame.outer_margin,
+            );
 
         if self.monospace {
             text_edit = text_edit.font(egui::TextStyle::Monospace);

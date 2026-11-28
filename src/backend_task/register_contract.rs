@@ -245,18 +245,19 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let signing_time =
-            super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
         let alias = (!alias.is_empty()).then_some(alias);
         ensure_private_document_entries_fit(&data_contract, None)?;
         let owner_id = data_contract.owner_id();
+        let identity = &identity;
+        let signing_key = &signing_key;
         self.register_signed_contract(
             data_contract,
+            || super::contract::prepare_contract_signing_key(sdk, identity, signing_key),
             || async move { sdk.get_identity_nonce(owner_id, true, None).await },
-            |contract, nonce| async move {
+            |contract, nonce, signing_time| async move {
                 super::contract::validate_contract_signing_key(
-                    &identity,
-                    &signing_key,
+                    identity,
+                    signing_key,
                     sdk.protocol_version_info().verified_version,
                     signing_time,
                 )?;
@@ -264,12 +265,12 @@ impl AppContext {
                     contract,
                     nonce,
                     signing_key.clone(),
-                    &identity,
+                    identity,
                     sdk.version(),
                 )
                 .await?;
                 // Unlocking can outlive an expiry or activation; recheck before sending.
-                super::contract::prepare_contract_signing_key(sdk, &identity, &signing_key).await?;
+                super::contract::prepare_contract_signing_key(sdk, identity, signing_key).await?;
                 Ok(prepared)
             },
             sdk.version(),
@@ -301,11 +302,20 @@ impl AppContext {
         clippy::too_many_arguments,
         reason = "the registration's inputs plus preparation and network steps"
     )]
-    async fn register_signed_contract<Nonce, Prepared, Submitted, Found, Checked>(
+    async fn register_signed_contract<
+        Preflight,
+        Ready,
+        Nonce,
+        Prepared,
+        Submitted,
+        Found,
+        Checked,
+    >(
         &self,
         data_contract: DataContract,
+        preflight: impl FnOnce() -> Preflight,
         fresh_nonce: impl FnOnce() -> Nonce,
-        prepare: impl FnOnce(DataContract, IdentityNonce) -> Prepared,
+        prepare: impl FnOnce(DataContract, IdentityNonce, Ready) -> Prepared,
         platform_version: &PlatformVersion,
         alias: Option<&str>,
         kind: RegistrationKind,
@@ -314,6 +324,7 @@ impl AppContext {
         check_outcome: impl FnOnce(StateTransition) -> Checked,
     ) -> Result<BackendTaskSuccessResult, TaskError>
     where
+        Preflight: Future<Output = Result<Ready, TaskError>>,
         Nonce: Future<Output = Result<IdentityNonce, SdkError>>,
         Prepared: Future<Output = Result<(StateTransition, Identifier), TaskError>>,
         Submitted: Future<Output = Result<DataContract, SdkError>>,
@@ -324,6 +335,7 @@ impl AppContext {
             FeeResult::estimated_only(self.fee_estimator().estimate_contract_create_base());
         let owner_id = data_contract.owner_id();
         let _sending = self.begin_contract_registration(owner_id)?;
+        let ready = preflight().await?;
         let submitted = data_contract.clone();
         let reused = self.pending_contract_registration(&owner_id);
         let identity_nonce = match reused {
@@ -337,7 +349,7 @@ impl AppContext {
             }
             None => fresh_nonce().await?,
         };
-        let (transition, contract_id) = prepare(data_contract, identity_nonce).await?;
+        let (transition, contract_id) = prepare(data_contract, identity_nonce, ready).await?;
         let pending = PendingContractRegistration {
             identity_nonce,
             contract_id,
@@ -372,6 +384,12 @@ impl AppContext {
         let earlier_may_run = self.forget_last_attempt_unless(owner_id, pending, this_may_run);
         let look_up = may_have_registered(&error) || earlier_may_run;
         if look_up {
+            // Read absence after the nonce proof so a new block cannot stale it.
+            let outcome = if refusal == Some(NonceRefusal::AlreadyUsed) {
+                Some(check_outcome(transition).await)
+            } else {
+                None
+            };
             match find(contract_id).await {
                 // Updated since it was created, so what it was created as is
                 // unknown: it may be this registration, changed later. Its ID
@@ -432,10 +450,10 @@ impl AppContext {
                     };
                 }
                 Ok((None, read_height)) if refusal == Some(NonceRefusal::AlreadyUsed) => {
-                    match check_outcome(transition).await {
-                        Ok(TransitionOutcome::ExecutedOrSuperseded { consumed_by_height })
-                            if read_height >= consumed_by_height =>
-                        {
+                    match outcome {
+                        Some(Ok(TransitionOutcome::ExecutedOrSuperseded {
+                            consumed_by_height,
+                        })) if read_height >= consumed_by_height => {
                             self.settle_pending_contract_registration(owner_id, pending);
                             return Err(kind.identity_changed(
                                 contract_id,
@@ -444,7 +462,7 @@ impl AppContext {
                                 error,
                             ));
                         }
-                        Err(outcome_error) => tracing::warn!(
+                        Some(Err(outcome_error)) => tracing::warn!(
                             ?outcome_error, %contract_id,
                             "Could not prove nonce consumption for an absent contract registration"
                         ),
@@ -981,11 +999,12 @@ mod tests {
         let outcome = ctx
             .register_signed_contract(
                 contract,
+                || std::future::ready(Ok(())),
                 || {
                     fresh_nonce_read.set(true);
                     std::future::ready(Ok(fresh_nonce))
                 },
-                |contract, nonce| {
+                |contract, nonce, ()| {
                     contract_create_transition(
                         contract,
                         nonce,
@@ -1833,6 +1852,114 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn delayed_preflight_cannot_submit_after_first_confirmation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let submits = std::cell::Cell::new(0);
+        let (confirmed_tx, confirmed_rx) = tokio::sync::oneshot::channel();
+        let run = |wait, release| {
+            let submits = &submits;
+            let ctx = &ctx;
+            async move {
+                ctx.register_signed_contract(
+                    as_created(&ctx.dpns_contract()),
+                    || async move {
+                        if let Some(wait) = wait {
+                            let _: Result<(), _> = wait.await;
+                        } else {
+                            tokio::task::yield_now().await;
+                        }
+                        Ok(())
+                    },
+                    || std::future::ready(Ok(5)),
+                    |contract, nonce, ()| {
+                        contract_create_transition(
+                            contract,
+                            nonce,
+                            signing_key(),
+                            &FixedSigner,
+                            ctx.platform_version(),
+                        )
+                    },
+                    ctx.platform_version(),
+                    None,
+                    RegistrationKind::Contract,
+                    |_| async move {
+                        submits.set(submits.get() + 1);
+                        Ok(as_created(&ctx.dpns_contract()))
+                    },
+                    |_| std::future::ready(Ok((None, 10))),
+                    |_| std::future::ready(Err(unread())),
+                )
+                .await
+                .inspect(|_| {
+                    if let Some(release) = release {
+                        let _: Result<(), _> = tokio::sync::oneshot::Sender::send(release, ());
+                    }
+                })
+            }
+        };
+        let (first, second) =
+            tokio::join!(run(None, Some(confirmed_tx)), run(Some(confirmed_rx), None));
+        assert!(first.is_ok(), "{first:?}");
+        assert!(
+            matches!(second, Err(TaskError::ContractRegistrationInProgress)),
+            "{second:?}"
+        );
+        assert_eq!(submits.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn absence_is_read_after_nonce_consumption_proof() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        attempt(&ctx, RegistrationKind::Contract, 5, Err(unread()), None).await;
+        let height = std::cell::Cell::new(10);
+        let result = ctx
+            .register_signed_contract(
+                as_created(&ctx.dpns_contract()),
+                || std::future::ready(Ok(())),
+                || std::future::ready(Ok(6)),
+                |contract, nonce, ()| {
+                    contract_create_transition(
+                        contract,
+                        nonce,
+                        signing_key(),
+                        &FixedSigner,
+                        ctx.platform_version(),
+                    )
+                },
+                ctx.platform_version(),
+                None,
+                RegistrationKind::Contract,
+                |_| {
+                    std::future::ready(Err(nonce_refused(
+                        MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+                    )))
+                },
+                |_| std::future::ready(Ok((None, height.get()))),
+                |_| {
+                    height.set(11);
+                    std::future::ready(Ok(TransitionOutcome::ExecutedOrSuperseded {
+                        consumed_by_height: 11,
+                    }))
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractRegistrationIdentityChanged { .. })
+            ),
+            "{result:?}"
+        );
+        assert!(
+            ctx.pending_contract_registration(&ctx.dpns_contract().owner_id())
+                .is_none()
+        );
+    }
+
     /// While one registration by an identity is being sent, a second one by
     /// the same identity is refused before it reads or reuses a nonce, so it
     /// cannot replace or share the first one's pending nonce.
@@ -1846,8 +1973,9 @@ mod tests {
 
         let first = ctx.register_signed_contract(
             as_created(&ctx.dpns_contract()),
+            || std::future::ready(Ok(())),
             || std::future::ready(Ok(5)),
-            |contract, nonce| {
+            |contract, nonce, ()| {
                 contract_create_transition(
                     contract,
                     nonce,

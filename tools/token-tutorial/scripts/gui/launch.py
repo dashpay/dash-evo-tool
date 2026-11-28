@@ -88,7 +88,7 @@ def run(*args):
 
 def run_private_session(argv):
     """dbus-run-session owns the bus lifetime, including abnormal child exit."""
-    env = dict(os.environ, TUTORIAL_PRIVATE_BUS="1")
+    env = dict(os.environ)
     for key in ("DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS"):
         env.pop(key, None)
     process = subprocess.Popen(
@@ -96,6 +96,11 @@ def run_private_session(argv):
             "dbus-run-session",
             "--",
             sys.executable,
+            "-c",
+            "import runpy, sys; "
+            "launch = runpy.run_path(sys.argv[1]); "
+            "del sys.argv[1]; "
+            "launch['main'](private_session=True)",
             str(Path(__file__).resolve()),
             *argv,
         ],
@@ -114,7 +119,8 @@ def run_private_session(argv):
                 process.wait()
 
 
-def main():
+def main(*, private_session=False):
+    signal.signal(signal.SIGTERM, lambda *_: exit(0))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--display", default=":100")
     parser.add_argument("--binary", type=Path, required=True)
@@ -148,7 +154,7 @@ def main():
         return
     if Path(f"/tmp/.X11-unix/X{args.display[1:]}").exists():
         parser.error("Display is occupied; existing displays are never modified")
-    if os.environ.get("TUTORIAL_PRIVATE_BUS") != "1":
+    if not private_session:
         raise SystemExit(run_private_session(sys.argv[1:]))
     os.umask(0o077)
     profile.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -270,5 +276,4 @@ def main():
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, lambda *_: exit(0))
     main()

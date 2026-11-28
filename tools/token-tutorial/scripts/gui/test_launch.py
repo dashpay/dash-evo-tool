@@ -74,3 +74,63 @@ def test_session_cookie_is_private_fresh_and_never_overwritten(tmp_path):
         ).stdout.split()
         assert listing[0].endswith(":100") and listing[1] == "MIT-MAGIC-COOKIE-1"
         assert len(listing[2]) == 32
+
+
+def test_inherited_private_bus_marker_cannot_bypass_session(tmp_path, monkeypatch):
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"reviewed")
+    config = tmp_path / "example"
+    config.touch()
+    monkeypatch.setenv("TUTORIAL_PRIVATE_BUS", "1")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/shared")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "launch.py",
+            "--binary",
+            str(binary),
+            "--binary-sha256",
+            launch.hashlib.sha256(b"reviewed").hexdigest(),
+            "--profile",
+            str(tmp_path / "profile"),
+            "--config",
+            str(config),
+            "--evidence",
+            str(tmp_path / "evidence"),
+            "--display",
+            ":98765",
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(
+        launch, "run_private_session", lambda args: calls.append(args) or 0
+    )
+    monkeypatch.setattr(
+        launch,
+        "write_xauthority",
+        lambda *_: pytest.fail("Shared bus reached desktop setup"),
+    )
+    with pytest.raises(SystemExit) as result:
+        launch.main()
+    assert result.value.code == 0
+    assert len(calls) == 1
+
+
+def test_private_session_handoff_uses_fresh_bus(tmp_path, monkeypatch):
+    import json
+
+    child = tmp_path / "child.py"
+    result = tmp_path / "result.json"
+    child.write_text(
+        "import os, sys, json\n"
+        "def main(*, private_session=False):\n"
+        "    with open(sys.argv[1], 'w') as out:\n"
+        "        json.dump([private_session, os.environ.get('DBUS_SESSION_BUS_ADDRESS')], out)\n"
+    )
+    monkeypatch.setattr(launch, "__file__", str(child))
+    monkeypatch.setenv("TUTORIAL_PRIVATE_BUS", "1")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/shared")
+    assert launch.run_private_session([str(result)]) == 0
+    private, address = json.loads(result.read_text())
+    assert private
+    assert address and address != "unix:path=/shared"

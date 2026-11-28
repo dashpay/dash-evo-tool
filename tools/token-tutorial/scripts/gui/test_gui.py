@@ -367,7 +367,7 @@ def test_inspection_never_prints_labels_of_a_credential_screen(
 def test_accessibility_loss_discards_recording(module, recording, monkeypatch, late):
     gui, _, output = recording
     output.parent.mkdir()
-    original = gui.guard
+    original = gui.scan
 
     def guard():
         if Recorder.started and (not late or recorder_stopped[0]):
@@ -382,8 +382,18 @@ def test_accessibility_loss_discards_recording(module, recording, monkeypatch, l
             super().send_signal(signal)
 
     monkeypatch.setattr(module.subprocess, "Popen", LostRegistration)
-    monkeypatch.setattr(gui, "guard", guard)
-    with pytest.raises(RuntimeError, match="accessibility lost"):
+    monkeypatch.setattr(gui, "scan", guard)
+    with pytest.raises(RuntimeError, match="Accessibility inspection failed"):
         gui.scene({"steps": [{"action": "hold", "seconds": 0}]}, output)
     assert not output.exists()
     assert not any(path.exists() for path in Recorder.started)
+
+
+def test_ambiguous_scene_error_preserves_incomplete_clip(recording):
+    gui, tree, output = recording
+    output.parent.mkdir()
+    tree.children[0].children.append(Element("Ready", "label"))
+    with pytest.raises(RuntimeError, match="Ambiguous"):
+        gui.scene({"steps": [{"action": "wait", "target": {"name": "Ready"}}]}, output)
+    assert not output.exists()
+    assert Recorder.started[0].read_bytes() == b"synthetic frames"

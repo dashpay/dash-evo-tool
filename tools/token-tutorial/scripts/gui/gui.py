@@ -142,7 +142,7 @@ class Gui:
         try:
             nodes, secret_field = self.scan()
         except Exception as error:
-            raise RuntimeError("Accessibility inspection failed") from error
+            raise SensitiveScreen("Accessibility inspection failed") from error
         if secret_field or any(
             word in (data["name"] or "").lower()
             for _, data in nodes
@@ -288,7 +288,7 @@ class Gui:
                     raise ValueError(f"Unknown action: {action}")
                 if recorder:
                     self.guard()
-        except RuntimeError:
+        except SensitiveScreen:
             sensitive = True
             raise
         finally:
@@ -313,7 +313,7 @@ class Gui:
             time.sleep(STOP_SETTLE_SECONDS)
             try:
                 self.guard()
-            except RuntimeError:
+            except SensitiveScreen:
                 partial.unlink(missing_ok=True)
                 raise
             os.link(partial, output)

@@ -631,6 +631,8 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     ui.label(super::CONTRACT_GROUP_KEY_NOTE);
                     ui.add_space(5.0);
                 }
+                let previous_key = self.common.selected_key.as_ref().cloned();
+                let previous_wallet = self.common.selected_wallet.as_ref().map(Arc::as_ptr);
                 inner_action |= self.common.selected_key.show_chooser(
                     ui,
                     &self.common.app_context,
@@ -640,6 +642,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &mut self.common.selected_wallet,
                     &mut self.common.wallet_open_attempted,
                 );
+                if previous_key.as_ref() != self.common.selected_key.as_ref()
+                    || previous_wallet != self.common.selected_wallet.as_ref().map(Arc::as_ptr)
+                {
+                    self.common.confirmation_dialog = None;
+                }
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -1541,5 +1548,59 @@ mod tests {
                 .query_by_label(super::super::CHOOSE_SIGNING_KEY)
                 .is_some()
         );
+    }
+    #[test]
+    fn manual_signer_change_closes_confirmation() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let context = test_app_context(dir.path());
+        let mut info = token_info(&context, None, false);
+        let replacement = auth_key(2, SecurityLevel::CRITICAL);
+        info.identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL), replacement.clone()]);
+        let mut screen =
+            crate::ui::tokens::burn_tokens_screen::BurnTokensScreen::new(info.clone(), &context);
+        screen.common.show_advanced_options = true;
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(1280.0, 1000.0))
+            .build_ui_state(
+                |ui, screen: &mut crate::ui::tokens::burn_tokens_screen::BurnTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label("Amount:").focus();
+        harness.run();
+        harness.get_by_label("Amount:").type_text("5");
+        harness.run();
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Burn")
+            .last()
+            .unwrap()
+            .click();
+        harness.run_steps(3);
+        assert!(harness.state().common.confirmation_dialog.is_some());
+        harness.get_by_label_contains("This action will be signed with key 1");
+        harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+        harness.run();
+        harness
+            .get_by_label(&crate::ui::helpers::format_key_label(&replacement))
+            .click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().common.selected_key.as_ref(),
+            Some(&replacement)
+        );
+        assert!(harness.state().common.confirmation_dialog.is_none());
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Burn")
+            .last()
+            .unwrap()
+            .click();
+        harness.run_steps(3);
+        harness.get_by_label_contains("This action will be signed with key 2");
     }
 }

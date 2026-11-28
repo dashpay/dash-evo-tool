@@ -301,6 +301,7 @@ impl WithdrawalScreen {
                         address = message_address
                     ),
                 )
+                .blocks_input(true)
                 .danger_mode(true), // Withdrawal is a destructive operation
             );
         }
@@ -688,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_confirmation_submits_displayed_amount() {
+    fn withdrawal_confirmation_blocks_background_and_submits_displayed_amount() {
         use crate::context::test_support::identity_across_two_wallets_of;
         use egui_kittest::{Harness, kittest::Queryable};
         let dir = tempfile::tempdir().unwrap();
@@ -713,6 +714,16 @@ mod tests {
             (screen, AppAction::None),
         );
         harness.run_steps(2);
+        assert!(
+            harness
+                .state()
+                .0
+                .confirmation_dialog
+                .as_ref()
+                .unwrap()
+                .is_input_blocking(),
+            "withdrawal confirmation must block changes to the signing key behind it",
+        );
         harness.state_mut().0.withdrawal_amount = Some(Amount::new(54321, 11));
         harness.state_mut().0.withdrawal_address.clear();
         harness.get_by_label("Confirm").click();

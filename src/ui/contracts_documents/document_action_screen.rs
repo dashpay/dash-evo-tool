@@ -10,7 +10,7 @@ use crate::model::document::new_document_for_creation;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::fee_estimation::{
     ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT, DocumentActionFeeQuote,
-    document_action_fee_quote,
+    document_action_fee_quote_for_payer,
 };
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_contract::QualifiedContract;
@@ -192,6 +192,8 @@ pub struct DocumentActionScreen {
     action_fee_confirmation: Option<PendingActionFeeConfirmation>,
     /// The action fee agreement the next built action carries.
     agreed_action_fee: Option<DocumentActionFeeAgreement>,
+    fee_needs_refresh: bool,
+    pending_fee_refresh: PendingRequest,
     // The document fetch whose result the form waits for
     pending_fetch: PendingRequest,
 
@@ -268,6 +270,8 @@ impl DocumentActionScreen {
             refresh_banner: None,
             action_fee_confirmation: None,
             agreed_action_fee: None,
+            fee_needs_refresh: false,
+            pending_fee_refresh: PendingRequest::default(),
             pending_fetch: PendingRequest::default(),
             pending_broadcast: PendingRequest::default(),
         }
@@ -1093,10 +1097,18 @@ impl DocumentActionScreen {
     /// the current fee multiplier, `None` when it charges none.
     fn action_fee_quote(&self) -> Option<DocumentActionFeeQuote> {
         let doc_type = self.selected_document_type.as_ref()?;
-        document_action_fee_quote(
+        let payer_is_owner = self
+            .selected_contract
+            .as_ref()
+            .zip(self.selected_identity.as_ref())
+            .is_some_and(|(contract, identity)| {
+                contract.contract.owner_id() == identity.identity.id()
+            });
+        document_action_fee_quote_for_payer(
             doc_type.as_ref(),
             self.action_type.transition_action(),
             self.app_context.fee_multiplier_permille(),
+            payer_is_owner,
         )
     }
 
@@ -1138,7 +1150,7 @@ impl DocumentActionScreen {
                 if let Some(quote) = &action_fee {
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("Contract fee:")
+                            RichText::new("Contract fee if the selected identity pays:")
                                 .color(DashColors::text_secondary(dark_mode))
                                 .size(14.0),
                         );
@@ -1162,7 +1174,8 @@ impl DocumentActionScreen {
         };
 
         // A second click while the first action is being sent would pay for it twice.
-        let idle = self.broadcast_status != BroadcastStatus::Broadcasting
+        let idle = !self.pending_fee_refresh.is_pending()
+            && self.broadcast_status != BroadcastStatus::Broadcasting
             && self.selected_identity.is_some()
             && self.selected_key.is_some()
             && self
@@ -1172,6 +1185,11 @@ impl DocumentActionScreen {
         if ComponentStyles::add_primary_button_enabled(ui, idle, button_text).clicked()
             && self.can_broadcast()
         {
+            if self.fee_needs_refresh {
+                return self.pending_fee_refresh.dispatch(BackendTask::PlatformInfo(
+                    crate::backend_task::platform_info::PlatformInfoTaskRequestType::RefreshDocumentActionFee,
+                ));
+            }
             match action_fee {
                 // A contract fee is paid only with the user's explicit
                 // agreement to the amount shown.
@@ -2066,6 +2084,10 @@ impl ScreenLike for DocumentActionScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
+        if self.pending_fee_refresh.settle(context).is_some() {
+            self.fee_needs_refresh = false;
+            return;
+        }
         // Only the fetch and the broadcast this screen waits on change the
         // form: fetched documents belong to the selection that requested
         // them, and another task's result must not end a running broadcast.
@@ -2079,11 +2101,24 @@ impl ScreenLike for DocumentActionScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if self.pending_fee_refresh.settle(context).is_some() {
+            return;
+        }
         let own_fetch = self.pending_fetch.settle(context).is_some()
             && self.broadcast_status == BroadcastStatus::Fetching;
         let own_broadcast = self.pending_broadcast.settle(context).is_some()
             && self.broadcast_status == BroadcastStatus::Broadcasting;
+        if own_broadcast
+            && matches!(
+                error,
+                TaskError::DocumentActionFeeMultiplierRose { .. }
+                    | TaskError::DocumentActionFeeMultiplierNotRefreshed { .. }
+            )
+        {
+            self.fee_needs_refresh = true;
+            self.action_fee_confirmation = None;
+        }
         if own_fetch || own_broadcast {
             self.refresh_banner.take_and_clear();
             self.broadcast_status = BroadcastStatus::NotBroadcasted;
@@ -2333,6 +2368,7 @@ fn signing_scope<'a>(
 fn action_fee_summary(quote: &DocumentActionFeeQuote) -> String {
     let total = format_credits_as_dash(quote.total);
     match (quote.owner, quote.moderators) {
+        (0, 0) => "No contract fee is payable by the selected identity".to_string(),
         (_, 0) => format!("{total} to the contract owner"),
         (0, _) => format!("{total} to the contract's moderators"),
         (owner, moderators) => format!(
@@ -2351,6 +2387,7 @@ fn action_fee_summary(quote: &DocumentActionFeeQuote) -> String {
 fn action_fee_confirmation_text(quote: &DocumentActionFeeQuote) -> String {
     let fee = format_credits_as_dash(quote.total);
     let recipients = match (quote.owner, quote.moderators) {
+        (0, 0) => "No contract fee is payable by the selected identity.".to_string(),
         (_, 0) => format!(
             "This contract charges a fee of {fee} for this action, paid to the contract owner."
         ),
@@ -2373,7 +2410,7 @@ fn action_fee_confirmation_text(quote: &DocumentActionFeeQuote) -> String {
         "The fee is fixed and does not change with network fees.".to_string()
     };
     format!(
-        "{recipients} {pricing} It is charged on top of the network fee. Do you want to continue?"
+        "{recipients} {pricing} These amounts apply if the selected identity pays. If a sponsor pays instead, the charge depends on that payer and may be lower. The full declared fee remains in the signed agreement. The contract fee is separate from the network fee. Do you want to continue?"
     )
 }
 
@@ -2384,6 +2421,161 @@ mod tests {
     use dash_sdk::dpp::data_contract::document_type::action_fees::{
         ActionFeePricing, DocumentActionFee,
     };
+
+    fn fee_delete_screen(
+        context: Arc<AppContext>,
+        owner_pays: bool,
+        moderators: u64,
+    ) -> DocumentActionScreen {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use dash_sdk::dpp::version::PlatformVersion;
+        let pv = PlatformVersion::latest();
+        let config = DataContractConfig::default_for_version(pv).unwrap();
+        let mut contract = dpns();
+        let doc = DocumentType::try_from_schema(
+            contract.contract.id(), 1, config.version(), "post",
+            platform_value!({"type": "object", "properties": {"text": {"type": "string", "position": 0_u32, "maxLength": 60_u32}}, "additionalProperties": false,
+                "actionFees": {"delete": {"owner": 1000_u64, "moderators": moderators}}}),
+            None, &BTreeMap::new(), &config, true, &mut Vec::new(), pv,
+        ).unwrap();
+        let key = auth_key(1, doc.security_level_requirement(), None);
+        let identity = identity_holding(std::slice::from_ref(&key));
+        if owner_pays {
+            contract.contract.set_owner_id(identity.identity.id());
+        }
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(doc);
+        screen.selected_identity = Some(identity);
+        screen.selected_key = Some(key);
+        screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+        screen
+    }
+
+    #[test]
+    fn owner_payer_fee_quotes_only_moderators_but_agrees_to_full_declaration() {
+        for moderators in [0, 500] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let screen = fee_delete_screen(context, true, moderators);
+            let quote = screen.action_fee_quote().unwrap();
+            assert_eq!(quote.owner, 0);
+            assert_eq!(quote.total, moderators);
+            assert_eq!(quote.max_total, moderators * 120 / 100);
+            assert_eq!(quote.agreement.owner(), 1000);
+            assert_eq!(quote.agreement.moderators(), moderators);
+        }
+    }
+
+    #[test]
+    fn rejected_fee_retries_read_before_confirmation_after_connection_recovers() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        use std::cell::RefCell;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = fee_delete_screen(context, false, 0);
+        let task = screen.create_document_action();
+        let request = dispatched_context(screen.start_broadcast(&egui::Context::default(), task));
+        let refusal = TaskError::DocumentActionFeeMultiplierNotRefreshed {
+            increase_tolerance_percent: 20,
+            source_error: Box::new(dash_sdk::Error::Generic("offline".into())),
+        };
+        screen.display_backend_task_error(&request, &refusal);
+        let actions = RefCell::new(Vec::new());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 840.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    let action = screen.render_broadcast_button(ui);
+                    if !matches!(action, AppAction::None) {
+                        actions.borrow_mut().push(action);
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        for fails in [true, false] {
+            harness.get_by_label("Delete document").click();
+            harness.run_steps(4);
+            assert!(harness.state().action_fee_confirmation.is_none());
+            let AppAction::BackendTaskWithContext { task, context } =
+                actions.borrow_mut().pop().expect("read before consent")
+            else {
+                panic!("contextual read")
+            };
+            assert!(
+                matches!(task, BackendTask::PlatformInfo(_)),
+                "must not mutate"
+            );
+            if fails {
+                harness
+                    .state_mut()
+                    .display_backend_task_error(&context, &refusal);
+            } else {
+                harness.state_mut().display_backend_task_result(
+                    &context,
+                    BackendTaskSuccessResult::Message("Fees checked.".into()),
+                );
+            }
+            harness.run_steps(4);
+        }
+        harness.get_by_label("Delete document").click();
+        harness.run_steps(4);
+        assert!(harness.state().action_fee_confirmation.is_some());
+        assert!(actions.borrow().is_empty());
+    }
+
+    #[test]
+    fn delete_fee_buttons_require_confirmation_before_dispatch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        use std::cell::RefCell;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let screen = fee_delete_screen(context, false, 0);
+        let expected = screen.action_fee_quote().unwrap().agreement;
+        let actions = RefCell::new(Vec::new());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 840.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    let action = screen.render_broadcast_button(ui);
+                    if !matches!(action, AppAction::None) {
+                        actions.borrow_mut().push(action);
+                    }
+                },
+                screen,
+            );
+        harness.run_steps(4);
+        harness.get_by_label("Delete document").click();
+        harness.run_steps(4);
+        assert!(actions.borrow().is_empty());
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(4);
+        assert!(actions.borrow().is_empty());
+        harness.get_by_label("Delete document").click();
+        harness.run_steps(4);
+        assert!(actions.borrow().is_empty());
+        harness.get_by_label("Confirm").click();
+        harness.run_steps(4);
+        assert_eq!(actions.borrow().len(), 1);
+        let AppAction::BackendTaskWithContext {
+            task: BackendTask::DocumentTask(task),
+            ..
+        } = actions.borrow_mut().pop().unwrap()
+        else {
+            panic!("document dispatch")
+        };
+        let DocumentTask::DeleteDocument {
+            action_fee_agreement,
+            ..
+        } = *task
+        else {
+            panic!("delete")
+        };
+        assert_eq!(action_fee_agreement, Some(expected));
+    }
 
     fn editor_document_type(array: bool) -> DocumentType {
         use dash_sdk::dpp::data_contract::config::DataContractConfig;

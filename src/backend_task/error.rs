@@ -3041,7 +3041,7 @@ pub enum TaskError {
     },
 
     /// The fee the transition agreed to differs from the one the document
-    /// type declares, typically because the contract changed meanwhile.
+    /// type declares.
     #[error("{}", crate::model::fee_estimation::ActionFeeAgreementError::Outdated)]
     DocumentActionFeeChanged {
         #[source]
@@ -3049,11 +3049,9 @@ pub enum TaskError {
     },
 
     /// Network fees rose past the increase the fee agreement tolerates.
-    /// Reported only after a proved epoch refresh updated the cached fee
-    /// multiplier; the node-reported multipliers here are unproven and are
-    /// never adopted (see `DocumentActionFeeMultiplierNotRefreshed`).
+    /// The node-reported multipliers are unproven and never enter the cache.
     #[error(
-        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The contract fee has been updated to the current network fees. Try again to see and confirm the new amount."
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. Create and confirm a new action after checking the current fee."
     )]
     DocumentActionFeeMultiplierRose {
         known_fee_multiplier_permille: u64,
@@ -8472,6 +8470,29 @@ mod tests {
             node_msg, generic_msg,
             "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
+    }
+
+    #[test]
+    fn raw_multiplier_refusal_mapping_requires_new_action() {
+        use dash_sdk::dpp::consensus::state::document::document_action_fee_multiplier_not_tolerated_error::DocumentActionFeeMultiplierNotToleratedError;
+        use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::AgreedFeeMultiplier;
+        let cause = DocumentActionFeeMultiplierNotToleratedError::new(
+            "post".into(),
+            "delete".into(),
+            AgreedFeeMultiplier {
+                known_permille: 1000,
+                increase_tolerance_percent: 20,
+            },
+            1500,
+        );
+        let error = TaskError::from(broadcast_rejection(cause.into()));
+        assert!(matches!(
+            error,
+            TaskError::DocumentActionFeeMultiplierRose { .. }
+        ));
+        let message = error.to_string();
+        assert!(!message.contains("has been updated"));
+        assert!(message.contains("new action"));
     }
 
     fn broadcast_rejection(cause: ConsensusError) -> SdkError {

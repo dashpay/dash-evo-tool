@@ -40,6 +40,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlatformInfoTaskRequestType {
     CurrentEpochInfo,
+    RefreshDocumentActionFee,
     TotalCreditsOnPlatform,
     CurrentVersionVotingState,
     CurrentValidatorSetInfo,
@@ -665,6 +666,18 @@ impl AppContext {
                     },
                 ))
             }
+            PlatformInfoTaskRequestType::RefreshDocumentActionFee => {
+                let before = self.fee_multiplier_permille();
+                self.refresh_current_epoch(sdk)
+                    .await
+                    .map_err(|error| TaskError::from(*error))?;
+                let message = if before == self.fee_multiplier_permille() {
+                    "The verified network fee is unchanged. Review and confirm the fee before trying again."
+                } else {
+                    "The verified network fee has been updated. Review and confirm the fee before trying again."
+                };
+                Ok(BackendTaskSuccessResult::Message(message.to_string()))
+            }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
                 match self.refresh_current_epoch(sdk).await {
                     Ok(epoch_info) => {
@@ -1198,6 +1211,62 @@ mod tests {
 
         ctx.set_fee_multiplier_from(&epoch(8, 2_500));
         assert_eq!(ctx.fee_multiplier_permille(), 2_500);
+    }
+
+    #[tokio::test]
+    async fn document_fee_refresh_distinguishes_unchanged_and_updated_quotes() {
+        use dash_sdk::dpp::block::epoch::EpochIndex;
+        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+        use dash_sdk::platform::{LimitQuery, types::epoch::EpochQuery};
+        use dash_sdk::query_types::ExtendedEpochInfos;
+        for previous in [1000, 1500] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = crate::context::test_support::test_app_context(dir.path());
+            ctx.set_epoch_fee_multiplier_permille(0, previous);
+            let mut sdk = dash_sdk::SdkBuilder::new_mock()
+                .with_initial_version(PlatformVersion::get(14).unwrap())
+                .build()
+                .unwrap();
+            let epoch = ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+                index: 0,
+                first_block_time: 0,
+                first_block_height: 0,
+                first_core_block_height: 0,
+                fee_multiplier_permille: 1500,
+                protocol_version: 14,
+            });
+            let query = |limit| LimitQuery {
+                query: EpochQuery::genesis(),
+                limit: Some(limit),
+                start_info: None,
+            };
+            sdk.mock()
+                .expect_fetch(query(1), Some(epoch.clone()))
+                .await
+                .unwrap();
+            let epochs: ExtendedEpochInfos = [(0, Some(epoch))].into_iter().collect();
+            sdk.mock()
+                .expect_fetch_many::<EpochIndex, ExtendedEpochInfo, _, ExtendedEpochInfos>(
+                    query(2),
+                    Some(epochs),
+                )
+                .await
+                .unwrap();
+            let result = ctx
+                .run_platform_info_task(PlatformInfoTaskRequestType::RefreshDocumentActionFee, &sdk)
+                .await
+                .unwrap();
+            let BackendTaskSuccessResult::Message(text) = result else {
+                panic!("fee report")
+            };
+            assert_eq!(ctx.fee_multiplier_permille(), 1500);
+            if previous == 1500 {
+                assert!(text.contains("unchanged"));
+                assert!(!text.contains("updated"));
+            } else {
+                assert!(text.contains("updated"));
+            }
+        }
     }
 
     /// The epoch report states the multiplier fee estimates use, which is the

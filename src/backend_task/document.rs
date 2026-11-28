@@ -607,6 +607,13 @@ fn fee_refusal_after_refresh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raw_fee_refusal_requires_a_new_action_without_claiming_refresh() {
+        let message = fee_refusal().to_string();
+        assert!(!message.contains("has been updated"));
+        assert!(message.contains("new action"));
+    }
+
     fn fee_refusal() -> TaskError {
         TaskError::DocumentActionFeeMultiplierRose {
             known_fee_multiplier_permille: 1000,
@@ -625,7 +632,7 @@ mod tests {
             error,
             TaskError::DocumentActionFeeMultiplierRose { .. }
         ));
-        assert!(error.to_string().contains("has been updated"));
+        assert!(!error.to_string().contains("has been updated"));
     }
 
     /// When the proved refresh fails, the user is told the contract fee

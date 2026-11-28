@@ -1609,6 +1609,16 @@ pub fn document_action_fee_quote(
     action: DocumentTransitionActionType,
     fee_multiplier_permille: u64,
 ) -> Option<DocumentActionFeeQuote> {
+    document_action_fee_quote_for_payer(document_type, action, fee_multiplier_permille, false)
+}
+
+/// Quote the payable amount while retaining the full declaration in the agreement.
+pub fn document_action_fee_quote_for_payer(
+    document_type: DocumentTypeRef<'_>,
+    action: DocumentTransitionActionType,
+    fee_multiplier_permille: u64,
+    payer_is_contract_owner: bool,
+) -> Option<DocumentActionFeeQuote> {
     let fees = document_type.action_fees()?;
     let declared = fees.action_fee(action)?;
     let pricing = fees.pricing();
@@ -1621,17 +1631,22 @@ pub fn document_action_fee_quote(
             increase_tolerance_percent: ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT,
         },
     );
+    let mut payable = declared;
+    if payer_is_contract_owner {
+        payable.owner = 0;
+    }
     // `charged` saturates at the maximum credits rather than overflowing, so
     // it cannot fail; a fee that large is refused by Platform as unaffordable.
-    let now = declared
-        .charged(pricing, known_permille)
-        .unwrap_or(declared);
-    let highest_permille = known_permille
-        .saturating_mul(100 + u64::from(ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT))
-        / 100;
-    let at_most = declared
+    let now = payable.charged(pricing, known_permille).unwrap_or(payable);
+    let highest_permille = u64::try_from(
+        u128::from(known_permille)
+            * (100 + u128::from(ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT))
+            / 100,
+    )
+    .unwrap_or(u64::MAX);
+    let at_most = payable
         .charged(pricing, highest_permille)
-        .unwrap_or(declared);
+        .unwrap_or(payable);
     Some(DocumentActionFeeQuote {
         agreement,
         owner: now.owner,
@@ -1645,22 +1660,18 @@ pub fn document_action_fee_quote(
 ///
 /// The network refuses the same two cases
 /// (`TaskError::DocumentActionFeeNotAgreed`, `TaskError::DocumentActionFeeChanged`)
-/// with this same text. Either way the app's copy of the contract may be
-/// out of date. Loading a contract that is already stored keeps the stored
-/// copy, so the instruction is to remove it on the Contracts screen and load
-/// it again.
+/// with this same text. A mismatch does not establish that the contract changed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActionFeeAgreementError {
     /// The document type charges a fee for the action and no agreement was
     /// given: the user never confirmed it.
     #[error(
-        "This contract charges a fee for this action that you have not agreed to. On the Contracts screen, remove the contract and load it again to see its current fee, then try again and confirm the fee when asked."
+        "This contract requires a fee agreement. Verify the selected contract and confirm its fee before trying again."
     )]
     NotConfirmed,
-    /// The agreement names another fee than the document type declares, so
-    /// the contract changed after the user confirmed.
+    /// The agreement differs from the document type's declaration.
     #[error(
-        "The contract fee for this action changed after you confirmed it. On the Contracts screen, remove the contract and load it again to see its current fee, then try again."
+        "The agreed fee does not match the selected document type. Verify the selected contract and fee, then create and confirm a new action."
     )]
     Outdated,
 }
@@ -1759,8 +1770,7 @@ mod action_fee_tests {
         );
     }
 
-    /// An agreement to another fee means the contract changed since the
-    /// user confirmed: refused before signing, not sent to be refused.
+    /// A mismatched agreement is refused before signing.
     #[test]
     fn an_agreement_to_another_fee_is_outdated() {
         let before = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
@@ -1816,6 +1826,33 @@ mod action_fee_tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn fee_mismatch_messages_do_not_invent_contract_changes() {
+        for error in [
+            ActionFeeAgreementError::Outdated,
+            ActionFeeAgreementError::NotConfirmed,
+        ] {
+            let text = error.to_string();
+            assert!(!text.contains("changed after"));
+            assert!(!text.contains("remove the contract"));
+        }
+    }
+
+    #[test]
+    fn action_fee_ceiling_covers_large_accepted_multiplier() {
+        let doc_type = document_type_with(Some(platform_value!({
+            "create": {"owner": 1_u64},
+        })));
+        let quote = document_action_fee_quote(
+            doc_type.as_ref(),
+            DocumentTransitionActionType::Create,
+            200_000_000_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(quote.max_total, 240_000_000_000_000);
+        assert!(quote.max_total >= quote.total);
     }
 
     #[test]

@@ -1211,6 +1211,62 @@ mod tests {
         assert!(screen.common.confirmation_dialog.is_none());
     }
 
+    #[test]
+    fn a_refresh_moving_only_the_wallet_closes_the_confirmation() {
+        use crate::context::test_support::{auth_key, identity_holding, test_app_context};
+        use crate::ui::tokens::tests::store_identity_with_wallet_key;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let key = auth_key(1, SecurityLevel::CRITICAL);
+        let mut identity = identity_holding(std::slice::from_ref(&key));
+        let old_wallet_hash = store_identity_with_wallet_key(&context, identity.clone(), 1);
+        let mut info = token_info(&context, None, false);
+        info.identity = identity.clone();
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.refresh();
+        assert_eq!(screen.common.selected_key.as_ref(), Some(&key));
+        let old_wallet = screen.common.selected_wallet.clone().expect("old wallet");
+        assert_eq!(old_wallet.read().unwrap().seed_hash(), old_wallet_hash);
+        screen.common.confirmation_dialog =
+            Some(ConfirmationDialog::new("Confirm Mint", "Mint the tokens?"));
+
+        screen.refresh();
+
+        assert_eq!(screen.common.selected_key.as_ref(), Some(&key));
+        assert!(Arc::ptr_eq(
+            screen.common.selected_wallet.as_ref().unwrap(),
+            &old_wallet,
+        ));
+        assert!(
+            screen.common.confirmation_dialog.is_some(),
+            "unchanged key and wallet must keep the confirmation open"
+        );
+
+        let new_wallet = crate::model::wallet::test_support::open_wallet_on(
+            crate::test_support::keys::labelled_seed("token_confirmation_wallet_change", 0),
+        );
+        let new_wallet_hash = new_wallet.seed_hash();
+        context
+            .wallet_context()
+            .insert_test_wallet(new_wallet_hash, Arc::new(RwLock::new(new_wallet)));
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, new_wallet_hash);
+        context
+            .insert_local_qualified_identity(&identity, &Some((new_wallet_hash, 0)))
+            .expect("store changed wallet association");
+        assert_ne!(old_wallet_hash, new_wallet_hash);
+        screen.refresh();
+
+        assert_eq!(screen.common.selected_key.as_ref(), Some(&key));
+        let new_wallet = screen.common.selected_wallet.as_ref().expect("new wallet");
+        assert_eq!(new_wallet.read().unwrap().seed_hash(), new_wallet_hash);
+        assert!(!Arc::ptr_eq(new_wallet, &old_wallet));
+        assert!(
+            screen.common.confirmation_dialog.is_none(),
+            "a wallet-only change must close the confirmation"
+        );
+    }
+
     /// A co-signer whose key cannot sign for this contract still sees the
     /// group mint it was asked to sign, read-only, but cannot confirm it.
     #[test]

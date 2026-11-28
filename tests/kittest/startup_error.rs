@@ -275,6 +275,42 @@ fn small_window_keeps_both_actions_reachable() {
         );
     }
 
+    harness.get_by_label("Ask AI").click();
+    harness.run();
+    for action in ["Send", "Cancel", "Send", "Confirm"] {
+        let dialog = harness.get_by_label("Ask an AI assistant");
+        assert!(
+            screen.contains_rect(dialog.rect()),
+            "dialog: {:?}",
+            dialog.rect()
+        );
+        let button = harness.get_by_label(action);
+        assert!(
+            screen.contains_rect(button.rect()),
+            "{action}: {:?}",
+            button.rect()
+        );
+        assert!(dialog.rect().contains_rect(button.rect()));
+        button.click();
+        harness.step();
+        if action == "Confirm" {
+            assert!(open_url(&harness).is_some());
+        } else {
+            assert!(open_url(&harness).is_none());
+        }
+        harness.run();
+        if action == "Send" {
+            assert!(
+                harness
+                    .query_by_label_contains("Inspect the question")
+                    .is_some()
+            );
+            for label in ["Confirm", "Cancel"] {
+                assert!(screen.contains_rect(harness.get_by_label(label).rect()));
+            }
+        }
+    }
+
     let quit_button = harness.get_by_label("Quit");
     assert!(
         screen.contains_rect(quit_button.rect()),

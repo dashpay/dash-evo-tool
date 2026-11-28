@@ -87,8 +87,15 @@ impl Component for AskAi {
                 inner_margin: Spacing::MD_I8,
             },
             |ui| {
-                ui.set_max_width(560.0);
+                let screen = ui.ctx().content_rect();
+                // Reserve the frame, title bar and action row outside the scrolling body.
+                ui.set_max_width(560.0_f32.min((screen.width() - 64.0).max(0.0)));
+                let body_height = (screen.height() - 160.0).max(0.0);
                 let dark = ui.visuals().dark_mode;
+                egui::ScrollArea::vertical()
+                    .id_salt("ask_ai_body")
+                    .max_height(body_height)
+                    .show(ui, |ui| {
                 ui.label(format!(
                     "Read the question before sending it to {name}.",
                     name = self.assistant.name()
@@ -100,6 +107,9 @@ impl Component for AskAi {
                     });
                 if self.confirming {
                     ui.label(format!("This sends the question and its technical details to {name} ({operator}) as soon as it opens in your browser. Inspect the question for private or sensitive information before confirming. Do not share recovery phrases, keys or passwords.", name = self.assistant.name(), operator = self.assistant.operator()));
+                }
+                    });
+                if self.confirming {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ComponentStyles::add_primary_button(ui, "Confirm").clicked() {
                             result.send = Some(self.assistant);

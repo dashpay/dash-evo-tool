@@ -60,6 +60,30 @@ class Case(unittest.TestCase):
         return os.path.join(self.root, *parts)
 
 
+class EvidenceContract(unittest.TestCase):
+    def test_old_evidence_requires_exact_revision(self):
+        text = Path(HERE, "../SKILL.md").read_text()
+        self.assertIn("exact OLD revision", text)
+        self.assertNotIn("report dated before it", text)
+
+    def test_unchanged_defects_and_banners_are_evidence(self):
+        text = Path(HERE, "../SKILL.md").read_text()
+        self.assertIn("including unchanged defects", text)
+        self.assertIn(
+            "banners only when they document a change or confirmed defect", text
+        )
+
+    def test_weekly_export_preserves_badge(self):
+        sys.path.insert(0, str(Path(HERE).parents[3] / "scripts/ci/release-qa"))
+        from passive_html import sanitize_html
+
+        result = sanitize_html(
+            '<span class="badge" onclick="bad()">⚠ Known issue</span>'
+        )
+        self.assertIn('<span class="badge">⚠ Known issue</span>', result)
+        self.assertNotIn("onclick", result)
+
+
 class RenderSelfCheck(Case):
     def render(self, old_patch, new_patch, pill=PILL, old=True, inset=None):
         image(self.path("old", "s.png"), *old_patch)
@@ -257,6 +281,56 @@ class RenderDefect(Case):
         changed = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": PILL}
         self.assertEqual(self.render_spec({"a": [changed]}, old=False)[0], 0)
         self.assertEqual(self.defects_json(), {"b": [entry]})
+
+    def test_full_refresh_drops_deleted_images(self):
+        self.assertEqual(self.render_spec({"a": [self.defect()]})[0], 0)
+        Path(self.path("spec.json")).write_text("{}")
+        code, out = run(
+            "render.py",
+            self.path("spec.json"),
+            "--new-dir",
+            self.path("new"),
+            "--out-dir",
+            self.path("out"),
+            "--full-refresh",
+        )
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.defects_json(), {})
+
+    def test_failed_render_preserves_outputs(self):
+        self.assertEqual(self.render(self.defect(), old=False)[0], 0)
+        files = [
+            Path(self.path("out", n)) for n in ("s.png", "clean/s.png", "defects.json")
+        ]
+        original = [p.read_bytes() for p in files]
+        for spec in (
+            {"s": [self.defect(pill=[470, 40])]},
+            {"s": [self.defect(label="Defect: modified")], "missing": []},
+        ):
+            Path(self.path("spec.json")).write_text(json.dumps(spec))
+            code, out = run(
+                "render.py",
+                self.path("spec.json"),
+                "--new-dir",
+                self.path("new"),
+                "--out-dir",
+                self.path("out"),
+            )
+            self.assertNotEqual(code, 0, out)
+            self.assertEqual([p.read_bytes() for p in files], original)
+
+    def test_clean_defect_has_noncolour_marker(self):
+        self.assertEqual(self.render(self.defect(), old=False)[0], 0)
+        img = Image.open(self.path("out", "clean", "s.png")).convert("RGB")
+        pixels = list(img.crop((70, 70, 130, 130)).getdata())
+        self.assertGreater(pixels.count(INK), 10)
+
+    def test_legend_overlap_warns(self):
+        code, out = self.render(
+            self.defect(pre_existing=True, pill=[150, 175]), old=False
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("pill overlaps legend", out)
 
     def test_an_image_without_a_defect_shows_no_amber(self):
         changed = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": PILL}

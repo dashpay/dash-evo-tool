@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -99,6 +100,7 @@ def build(name, els, a, labels):
             )
         img = Image.composite(base, dim, mask.filter(ImageFilter.GaussianBlur(1)))
     d = ImageDraw.Draw(img)
+    pills = []
     for e in els:
         k, r, lab = e["kind"], e["rect"], e["label"]
         c = COL["new" if k == "screen" else k]
@@ -129,8 +131,18 @@ def build(name, els, a, labels):
         w, h = w + 28 * s, (56 if note else 36) * s
         if px < 0 or py < 0 or px + w > img.width or py + h > img.height:
             BAD.append((name, lab, "pill outside image"))
+        if k == "defect":
+            d.text(
+                (box[0] + 6 * s, box[1] + 6 * s),
+                MARK.strip(),
+                font=font(20, s),
+                fill=INK,
+                stroke_width=s,
+                stroke_fill=c,
+            )
         if not labels:
             continue
+        pills.append((px, py, px + w, py + h, lab))
         cx = min(max(px + w / 2, box[0]), box[2])
         cy = min(max(py + h / 2, box[1]), box[3])
         side = px > box[2] or px + w < box[0]
@@ -179,6 +191,9 @@ def build(name, els, a, labels):
     kw = int(sum(d.textlength(t, font=f) + 60 * s for _, t in items)) + 10 * s
     kh = 34 * s
     kx, ky = img.width - kw - 16 * s, img.height - kh - 12 * s
+    for x0, y0, x1, y1, lab in pills:
+        if x0 < kx + kw and x1 > kx and y0 < ky + kh and y1 > ky:
+            WARN.append((name, lab, "pill overlaps legend"))
     rr(
         d,
         [kx, ky, kx + kw, ky + kh],
@@ -217,10 +232,10 @@ def validate(name, els):
             BAD.append((name, e["label"], "pre_existing applies only to a defect"))
 
 
-def defects(spec, path):
+def defects(spec, path, full_refresh=False):
     """defects.json with the images of `spec` replaced and the rest kept, so
     re-rendering some images does not drop the others' defects."""
-    known = json.load(open(path)) if os.path.exists(path) else {}
+    known = json.load(open(path)) if os.path.exists(path) and not full_refresh else {}
     for name, els in spec.items():
         found = [
             {"label": e["label"], "pre_existing": e.get("pre_existing") is True}
@@ -296,20 +311,36 @@ def main():
     p.add_argument("--old-dir", help="OLD captures; omit for NEW-only mode")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--scale", type=int, default=2)
+    p.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Replace the entire defects manifest",
+    )
     a = p.parse_args()
     spec = json.load(open(a.spec))
     os.makedirs(os.path.join(a.out_dir, "clean"), exist_ok=True)
     if a.old_dir is None:
         print("NEW-only mode: rect self-check skipped, check every rect by eye")
-    for name, els in spec.items():
-        validate(name, els)
-        selfcheck(name, els, a)
-        build(name, els, a, True).save(os.path.join(a.out_dir, name + ".png"))
-        build(name, els, a, False).save(os.path.join(a.out_dir, "clean", name + ".png"))
     path = os.path.join(a.out_dir, "defects.json")
-    merged = defects(spec, path)
-    with open(path, "w") as f:
-        json.dump(merged, f, indent=1)
+    with tempfile.TemporaryDirectory(dir=a.out_dir) as stage:
+        for name, els in spec.items():
+            validate(name, els)
+            selfcheck(name, els, a)
+            build(name, els, a, True).save(os.path.join(stage, name + ".png"))
+            build(name, els, a, False).save(os.path.join(stage, name + ".clean.png"))
+        merged = defects(spec, path, a.full_refresh)
+        if not BAD:
+            for name in spec:
+                os.replace(
+                    os.path.join(stage, name + ".png"),
+                    os.path.join(a.out_dir, name + ".png"),
+                )
+                os.replace(
+                    os.path.join(stage, name + ".clean.png"),
+                    os.path.join(a.out_dir, "clean", name + ".png"),
+                )
+            with open(path, "w") as f:
+                json.dump(merged, f, indent=1)
     if WARN:
         print("SELFCHECK WARNING (not a failure, check these rects by eye):")
         for w in sorted(set(WARN)):

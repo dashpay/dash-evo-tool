@@ -242,8 +242,9 @@ impl QuestionEnvironment {
 /// key material are removed, and the details are cut so that every
 /// [`AiAssistant::question_url`] stays within [`MAX_QUESTION_URL_LEN`].
 pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironment) -> String {
-    let message = redact_identity(report.message(), env);
-    let details = redact_key_material(&redact_identity(report.details(), env));
+    let redact = |text: &str| redact_identity(&redact_key_material(text), env);
+    let message = redact(report.message());
+    let details = redact(report.details());
     let compose = |details: &str| {
         format!(
             "I use Dash Evo Tool (desktop wallet for the Dash network) version {version} on {os} {arch}. {situation}\n\n\
@@ -668,6 +669,27 @@ mod tests {
         let last_words = phrase.split(' ').skip(6).collect::<Vec<_>>().join(" ");
         assert!(!question.contains(&last_words), "{question}");
         assert!(question.contains("Err { key: <redacted>"), "{question}");
+    }
+
+    #[test]
+    fn question_redacts_key_material_in_message() {
+        let key = hex::encode(crate::test_support::keys::secret_bytes());
+        let phrase = crate::test_support::keys::mnemonic(12).to_string();
+        let report = ErrorReport::new(format!("Key: {key}; phrase: {phrase}"), "Details.");
+        let question = ai_question(&report, STARTUP_SITUATION, &environment());
+        assert!(!question.contains(&key));
+        assert!(!question.contains(&phrase));
+        assert!(question.contains("Key: <redacted>; phrase: <redacted>"));
+    }
+
+    #[test]
+    fn question_redacts_phrase_before_login_name() {
+        let phrase = crate::test_support::keys::mnemonic(12).to_string();
+        let mut env = environment();
+        env.user_name = Some(phrase.split_whitespace().nth(5).unwrap().to_owned());
+        let report = ErrorReport::new("Message.", format!("Phrase: {phrase}"));
+        let question = ai_question(&report, STARTUP_SITUATION, &env);
+        assert!(question.contains("Phrase: <redacted>\n"));
     }
 
     /// A short run of ordinary numbers or words is not mistaken for key material.

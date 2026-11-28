@@ -1369,6 +1369,7 @@ pub enum BackendTaskSuccessResult {
     /// Both fee pots of a contract, as Platform holds them.
     ContractFeePots {
         contract_id: Identifier,
+        contract: Arc<dash_sdk::platform::DataContract>,
         pots: dash_sdk::platform::contract_fee_pots::ContractFeePots,
         /// The seated moderation team, which claims an elected contract's
         /// moderators pot instead of its interim team.

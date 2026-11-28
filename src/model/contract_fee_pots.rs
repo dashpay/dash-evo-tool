@@ -7,6 +7,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::config::v2::DataContractConfigGettersV2;
 use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
 use dash_sdk::platform::Identifier;
+use dash_sdk::platform::moderation_charters::ModerationTeam;
 
 /// The seated moderation team of an elected contract, read alongside its fee
 /// pots.
@@ -18,7 +19,7 @@ pub enum SeatedModerators {
     NotSeated,
     /// A charter is seated: its leader and active members claim the
     /// moderators pot, and the interim team no longer does.
-    Seated(BTreeSet<Identifier>),
+    Seated(Box<ModerationTeam>),
     /// The team could not be read, so who claims the moderators pot of an
     /// elected contract is not known on this device.
     Unknown,
@@ -29,24 +30,24 @@ pub enum SeatedModerators {
 pub enum PotClaimants {
     /// Exactly these identities. Empty when nobody may claim.
     Known(BTreeSet<Identifier>),
-    /// Not known on this device; Platform decides when the claim is sent.
+    /// Not known on this device; retry the read before claiming.
     Unknown,
 }
 
 impl PotClaimants {
-    /// Whether anyone may claim the pot. `true` when not known.
+    /// Whether anyone may claim the pot. `false` when not known.
     pub fn any(&self) -> bool {
         match self {
             PotClaimants::Known(ids) => !ids.is_empty(),
-            PotClaimants::Unknown => true,
+            PotClaimants::Unknown => false,
         }
     }
 
-    /// Whether `identity_id` may claim the pot. `true` when not known.
+    /// Whether `identity_id` may claim the pot. `false` when not known.
     pub fn includes(&self, identity_id: &Identifier) -> bool {
         match self {
             PotClaimants::Known(ids) => ids.contains(identity_id),
-            PotClaimants::Unknown => true,
+            PotClaimants::Unknown => false,
         }
     }
 }
@@ -67,35 +68,104 @@ pub fn pot_claimants(
     contract: &DataContract,
     seated: &SeatedModerators,
 ) -> PotClaimants {
-    let declared = pot.recipients(contract);
-    match pot {
-        ContractFeePot::Owner => PotClaimants::Known(declared),
-        ContractFeePot::Moderators => {
-            moderators_pot_claimants(declared, has_elected_moderation(contract), seated)
-        }
+    if pot == ContractFeePot::Moderators
+        && has_elected_moderation(contract)
+        && matches!(seated, SeatedModerators::Unknown)
+    {
+        return PotClaimants::Unknown;
     }
+    let team = match seated {
+        SeatedModerators::Seated(team) => Some(team.as_ref()),
+        _ => None,
+    };
+    let mut candidates = pot.recipients(contract);
+    if let Some(team) = team {
+        candidates.extend(team.members.iter().copied());
+        candidates.insert(team.leader_id);
+    }
+    let eligibility = platform_wallet::contract_fee_claim_eligibility(contract, team, candidates);
+    PotClaimants::Known(match pot {
+        ContractFeePot::Owner => eligibility.owner_pot_claimants,
+        ContractFeePot::Moderators => eligibility.moderators_pot_claimants,
+    })
 }
 
-/// Who may claim the moderators pot: the declared team, except that an
-/// elected contract's seated team replaces its interim team.
-fn moderators_pot_claimants(
-    declared: BTreeSet<Identifier>,
-    elected: bool,
-    seated: &SeatedModerators,
-) -> PotClaimants {
-    if !elected {
-        return PotClaimants::Known(declared);
-    }
-    match seated {
-        SeatedModerators::NotSeated => PotClaimants::Known(declared),
-        SeatedModerators::Seated(team) => PotClaimants::Known(team.clone()),
-        SeatedModerators::Unknown => PotClaimants::Unknown,
+/// Minimum credits required by the resolved payout split.
+pub fn minimum_claim_credits(claimants: &PotClaimants, seated: &SeatedModerators) -> u64 {
+    match (claimants, seated) {
+        (_, SeatedModerators::Seated(_)) | (PotClaimants::Unknown, _) => 1,
+        (PotClaimants::Known(ids), _) => (ids.len() as u64).max(1),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seated_team(ids: &[Identifier]) -> SeatedModerators {
+        SeatedModerators::Seated(Box::new(ModerationTeam {
+            elected_charter_id: Identifier::random(),
+            submitted_charter_id: Identifier::random(),
+            leader_id: ids[0],
+            members: ids.iter().copied().collect(),
+            elected_members: ids.to_vec(),
+        }))
+    }
+
+    fn moderators_pot_claimants(
+        declared: BTreeSet<Identifier>,
+        elected: bool,
+        seated: &SeatedModerators,
+    ) -> PotClaimants {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+        use dash_sdk::dpp::data_contract::config::{
+            DataContractConfig,
+            moderation::{
+                ContractModerationConfig, ContractModerators,
+                elected::{ElectedModerators, InterimModerators},
+            },
+        };
+        let mut contract = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .unwrap();
+        let moderators = if elected {
+            ContractModerators::Elected(Box::new(ElectedModerators {
+                join_window: 0,
+                vote_window: 0,
+                challenge_cool_down: None,
+                election_delay: None,
+                max_added_moderators: 2,
+                moderated_document_types: Default::default(),
+                interim: InterimModerators::AppointedModerators(declared),
+                owner_protected: false,
+            }))
+        } else {
+            ContractModerators::AppointedModerators(declared)
+        };
+        let config: DataContractConfig = contract.config().clone();
+        contract.set_config(config.with_moderation(Some(ContractModerationConfig {
+            banlist: true,
+            suspensions: false,
+            warnings: false,
+            moderators,
+        })));
+        pot_claimants(ContractFeePot::Moderators, &contract, seated)
+    }
+
+    #[test]
+    fn equal_split_remainder_waits_for_one_credit_per_recipient() {
+        let claimants = PotClaimants::Known(BTreeSet::from([id(1), id(2), id(3)]));
+        assert_eq!(
+            minimum_claim_credits(&claimants, &SeatedModerators::NotSeated),
+            3
+        );
+        assert_eq!(
+            minimum_claim_credits(&claimants, &seated_team(&[id(1), id(2), id(3)])),
+            1
+        );
+    }
 
     fn id(byte: u8) -> Identifier {
         Identifier::from([byte; 32])
@@ -106,7 +176,7 @@ mod tests {
     #[test]
     fn a_seated_team_replaces_the_interim_team() {
         let interim = BTreeSet::from([id(1)]);
-        let seated = SeatedModerators::Seated(BTreeSet::from([id(2), id(3)]));
+        let seated = seated_team(&[id(2), id(3)]);
 
         let claimants = moderators_pot_claimants(interim, true, &seated);
 
@@ -126,15 +196,15 @@ mod tests {
         assert_eq!(claimants, PotClaimants::Known(interim));
     }
 
-    /// When the team could not be read, nobody is ruled out: Platform decides.
+    /// A failed team lookup cannot authorize a claim.
     #[test]
-    fn an_unread_team_rules_nobody_out() {
+    fn an_unread_team_does_not_authorize_claims() {
         let claimants =
             moderators_pot_claimants(BTreeSet::from([id(1)]), true, &SeatedModerators::Unknown);
 
         assert_eq!(claimants, PotClaimants::Unknown);
-        assert!(claimants.any());
-        assert!(claimants.includes(&id(9)));
+        assert!(!claimants.any());
+        assert!(!claimants.includes(&id(9)));
     }
 
     /// A contract without elected moderation has no seated team: its declared
@@ -142,10 +212,7 @@ mod tests {
     #[test]
     fn a_seated_team_matters_only_for_elected_moderation() {
         let declared = BTreeSet::from([id(1)]);
-        for seated in [
-            SeatedModerators::Unknown,
-            SeatedModerators::Seated(BTreeSet::from([id(2)])),
-        ] {
+        for seated in [SeatedModerators::Unknown, seated_team(&[id(2)])] {
             assert_eq!(
                 moderators_pot_claimants(declared.clone(), false, &seated),
                 PotClaimants::Known(declared.clone()),

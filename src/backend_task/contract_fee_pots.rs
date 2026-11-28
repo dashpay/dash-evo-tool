@@ -40,13 +40,10 @@ impl AppContext {
         sdk: &Sdk,
         contract_id: Identifier,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // A contract saved here without elected moderation has no seated
-        // team, so its team is not read. One not saved here is read anyway.
-        let elected = self
-            .get_unqualified_contract_by_id(&contract_id)
-            .ok()
-            .flatten()
-            .is_none_or(|contract| has_elected_moderation(&contract));
+        let contract = dash_sdk::platform::DataContract::fetch(sdk, contract_id)
+            .await?
+            .ok_or(TaskError::DataContractNotFound)?;
+        let elected = has_elected_moderation(&contract);
         // Only the pots are proved. The response metadata's epoch is not
         // signed, so nothing is decided from it.
         let (pots, seated_moderators) =
@@ -59,6 +56,7 @@ impl AppContext {
             });
         Ok(BackendTaskSuccessResult::ContractFeePots {
             contract_id,
+            contract: Arc::new(contract),
             pots: pots?.unwrap_or_default(),
             seated_moderators,
         })
@@ -81,16 +79,25 @@ impl AppContext {
         let identity = qualified_identity.identity.clone();
         let signer = Arc::new(qualified_identity);
 
-        let (claimed, metadata) = identity
+        let claim_sdk = dash_sdk::SdkBuilder::new(sdk.address_list().clone())
+            .with_network(self.network)
+            .with_initial_version(sdk.version())
+            .with_settings(*sdk.query_settings().request_settings)
+            .with_context_provider(self.fee_claim_provider(contract_id)?)
+            .build()?;
+        let claim_result = identity
             .claim_contract_fees_with_metadata(
-                sdk,
+                &claim_sdk,
                 contract_id,
                 pot,
                 Some(&signing_key),
                 signer,
                 None,
             )
-            .await?;
+            .await;
+        // The payout SDK has a separate nonce cache; later tasks must read the network again.
+        sdk.refresh_identity_nonce(&identity_id).await;
+        let (claimed, metadata) = claim_result?;
 
         let claimant_balance = claimed.balances.get(&identity_id).copied();
         self.persist_paid_balances(
@@ -151,20 +158,16 @@ impl AppContext {
 /// members: who Platform lets claim an elected contract's moderators pot.
 ///
 /// A failed read is not an error of the pots read: the pots still show, and
-/// the claim is left to Platform to accept or refuse.
+/// moderator claims remain unavailable until membership can be checked.
 async fn read_seated_moderators(sdk: &Sdk, contract_id: Identifier) -> SeatedModerators {
     match sdk.fetch_moderation_team(contract_id).await {
         Ok(None) => SeatedModerators::NotSeated,
-        Ok(Some(team)) => {
-            let mut members = team.members;
-            members.insert(team.leader_id);
-            SeatedModerators::Seated(members)
-        }
+        Ok(Some(team)) => SeatedModerators::Seated(Box::new(team)),
         Err(error) => {
             tracing::debug!(
                 ?error,
                 %contract_id,
-                "Could not read the seated moderation team; leaving moderator claims to Platform"
+                "Could not read the seated moderation team; moderator claims remain unavailable"
             );
             SeatedModerators::Unknown
         }
@@ -174,6 +177,64 @@ async fn read_seated_moderators(sdk: &Sdk, contract_id: Identifier) -> SeatedMod
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fee_pots_refresh_uses_current_appointed_team() {
+        use crate::model::contract_fee_pots::pot_claimants;
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::{
+            accessors::v0::DataContractV0Setters,
+            config::{
+                DataContractConfig,
+                moderation::{ContractModerationConfig, ContractModerators},
+            },
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut saved = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            crate::sdk_wrapper::MIN_PLATFORM_VERSION,
+        )
+        .unwrap();
+        saved.set_id(Identifier::random());
+        let [a, b, c] = std::array::from_fn(|_| Identifier::random());
+        let team = |ids| ContractModerationConfig {
+            banlist: true,
+            suspensions: false,
+            warnings: false,
+            moderators: ContractModerators::AppointedModerators(std::collections::BTreeSet::from(
+                ids,
+            )),
+        };
+        let config: DataContractConfig = saved.config().clone();
+        saved.set_config(config.with_moderation(Some(team([a, b]))));
+        ctx.replace_contract(saved.id(), &saved).unwrap();
+        let mut current = saved.clone();
+        current.set_version(saved.version() + 1);
+        let config: DataContractConfig = current.config().clone();
+        current.set_config(config.with_moderation(Some(team([a, c]))));
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(saved.id(), Some(current))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(saved.id(), Some(ContractFeePots::default()))
+            .await
+            .unwrap();
+        let result = ctx.fetch_contract_fee_pots(&sdk, saved.id()).await.unwrap();
+        let BackendTaskSuccessResult::ContractFeePots {
+            contract,
+            seated_moderators,
+            ..
+        } = result
+        else {
+            panic!("fee pots result")
+        };
+        let claimants = pot_claimants(ContractFeePot::Moderators, &contract, &seated_moderators);
+        assert!(claimants.includes(&a));
+        assert!(claimants.includes(&c), "newly appointed member can claim");
+        assert!(!claimants.includes(&b), "removed member cannot claim");
+    }
 
     /// A claim the network paid out is reported as paid out, not as failed,
     /// when storing the claimant's new balance on this device fails.

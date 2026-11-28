@@ -214,3 +214,11 @@ pub fn island_central_panel<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) 
         })
         .inner
 }
+
+/// Scroll a newly keyboard-focused control into its enclosing viewport.
+pub(crate) fn reveal_on_focus(response: egui::Response) -> egui::Response {
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
+    response
+}

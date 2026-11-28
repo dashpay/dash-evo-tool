@@ -1,9 +1,11 @@
 //! Masternode/evonode detail view (FR-5).
 //!
-//! Section order (header, actions, keys, DPNS voting, remove) is fixed by
-//! design; each action pushes an existing screen — no parallel MN-specific
+//! Section order (header, actions, keys, danger zone, votes) is fixed by
+//! design; everything above the vote rows stays pinned and only the rows scroll.
+//! Each action pushes an existing screen — no parallel MN-specific
 //! reimplementation (NFR-1). See `docs/ai-design/2026-07-09-masternode-page-design/`.
 
+use crate::ui::components::styled::reveal_on_focus;
 use std::sync::Arc;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -11,6 +13,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+use eframe::egui::collapsing_header::paint_default_icon;
 use eframe::egui::{self, Color32, RichText, Ui};
 
 #[cfg(test)]
@@ -52,6 +55,16 @@ use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
 const REMOVE_MASTERNODE_CONFIRMATION: &str = "This removes the node and its voting identity, including their private keys, from this device. To load the node again, you need its ProTxHash and a backup of its private keys.";
+const DANGER_ZONE_NOTE: &str =
+    "This action affects this device only. The masternode stays on the network.";
+const MISSING_VOTING_KEY_SUMMARY: &str = "This node has no voting key loaded. Open Keys to add it.";
+const MISSING_VOTING_KEY: &str =
+    "This node has no voting key loaded. Add its voting private key to cast votes.";
+const PROTECTION_UNAVAILABLE: &str = "Key protection status is unavailable. Refresh to try again.";
+
+/// Share of the panel the pinned area may take when the votes below it need
+/// more than the rest; with fewer votes it may also take the room they leave.
+const PINNED_MAX_SHARE: f32 = 0.6;
 
 fn remove_node_action(identity_id: Identifier) -> AppAction {
     AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
@@ -59,7 +72,7 @@ fn remove_node_action(identity_id: Identifier) -> AppAction {
     }))
 }
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
-pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
+pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "Danger zone", "Votes"];
 
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
 /// view needs: the tier label and whether an `Add password protection…` action
@@ -77,10 +90,10 @@ enum ProtectionTier {
 impl ProtectionTier {
     fn label(self) -> &'static str {
         match self {
-            ProtectionTier::Protected => "Keys: password-protected",
-            // A read-only node has nothing sealed either — "unprotected" is the
-            // accurate, non-alarming description of its at-rest posture.
-            _ => "Keys: unprotected",
+            ProtectionTier::Protected => "Password protected",
+            // A read-only node has nothing sealed either — "not password
+            // protected" is the accurate, non-alarming description of it.
+            _ => "Not password protected",
         }
     }
 
@@ -116,6 +129,12 @@ pub struct MasternodeDetailView {
     node_id_short: String,
     key_presence: MasternodeKeyPresence,
     remove_dialog: Option<ConfirmationDialog>,
+    /// Never remembered beyond this view, so every visit to the node starts with
+    /// Remove out of reach.
+    danger_zone_open: bool,
+    /// Height the votes section (heading and rows) needed last frame, which
+    /// decides how much room the pinned area above it may take.
+    votes_height: Option<f32>,
     voter_key_prompt: Option<PasswordInput>,
     /// The `Add voting key` merge this view dispatched and has not yet seen
     /// finish. Gates Save so a re-click cannot discard the key typed into a
@@ -191,6 +210,126 @@ impl MasternodeDetailView {
     }
 }
 
+/// A bordered section, open while `open` holds. Its header toggles it;
+/// `summary` renders beside the header while collapsed. A `danger` section turns
+/// its border and title red while open. Returns the body's output when open.
+fn collapsible_section<R>(
+    ui: &mut Ui,
+    open: &mut bool,
+    title: &str,
+    danger: bool,
+    summary: impl FnOnce(&mut Ui),
+    body: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let dark_mode = ui.style().visuals.dark_mode;
+    let (stroke, title_color) = if danger && *open {
+        (DashColors::ERROR, DashColors::error_color(dark_mode))
+    } else {
+        (
+            DashColors::border(dark_mode),
+            DashColors::text_primary(dark_mode),
+        )
+    };
+    egui::Frame::group(ui.style())
+        .fill(DashColors::surface(dark_mode))
+        .stroke(egui::Stroke::new(1.0, stroke))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                section_header(ui, title, title_color, open);
+                if !*open {
+                    summary(ui);
+                }
+            });
+            open.then(|| {
+                ui.add_space(4.0);
+                body(ui)
+            })
+        })
+        .inner
+}
+
+/// A section header: arrow and title as one control — one keyboard stop, named
+/// by the title, reporting whether the section is expanded.
+fn section_header(ui: &mut Ui, title: &str, color: Color32, open: &mut bool) {
+    let galley = egui::WidgetText::from(RichText::new(title).strong().color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let padding = ui.spacing().button_padding;
+    let indent = ui.spacing().indent;
+    let size = egui::vec2(
+        indent + galley.size().x + padding.x,
+        galley.size().y + 2.0 * padding.y,
+    )
+    .max(ui.spacing().interact_size);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let response = reveal_on_focus(response.on_hover_cursor(egui::CursorIcon::PointingHand));
+    if response.clicked() {
+        *open = !*open;
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::DisclosureTriangle,
+            ui.is_enabled(),
+            galley.text(),
+        )
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_expanded(*open));
+    if ui.is_rect_visible(rect) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                egui::CornerRadius::same(4),
+                ComponentStyles::focus_stroke(dark_mode),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let (mut icon_rect, _) = ui.spacing().icon_rectangles(rect);
+        icon_rect.set_center(egui::pos2(rect.left() + indent / 2.0, rect.center().y));
+        let openness = if *open { 1.0 } else { 0.0 };
+        paint_default_icon(ui, openness, &response.clone().with_new_rect(icon_rect));
+        let text_pos = egui::pos2(
+            rect.left() + indent,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(text_pos, galley, color);
+    }
+}
+
+/// `Roles:` and the V/O/P presence letters (glyph, not colour-only — NFR-6).
+fn render_roles(ui: &mut Ui, presence: MasternodeKeyPresence, dark_mode: bool) {
+    ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)))
+        .info_tooltip(
+            "Shows which of this node's keys are loaded: V is the voting key, O is the \
+             owner key, and P is the payout address key.",
+        );
+    // Each letter explains its own role on hover, so a user who hovers `V` is
+    // told about the voting key rather than having to read the whole legend.
+    for token in key_status_tokens(presence) {
+        let text = if token.present {
+            RichText::new(token.letter)
+                .strong()
+                .color(DashColors::text_primary(dark_mode))
+        } else {
+            RichText::new("·").color(DashColors::text_secondary(dark_mode))
+        };
+        ui.label(text).info_tooltip(token.tooltip);
+    }
+}
+
+/// The protection tier, or why it is unknown.
+fn render_protection_tier(ui: &mut Ui, tier: Option<ProtectionTier>, dark_mode: bool) {
+    let text = tier.map_or(PROTECTION_UNAVAILABLE, ProtectionTier::label);
+    ui.label(RichText::new(text).color(DashColors::text_secondary(dark_mode)));
+}
+
 /// The choice cell of a node vote row.
 fn node_vote_choice_label(row: &NodeVoteRow) -> String {
     match (row.state_known, row.choice) {
@@ -225,6 +364,8 @@ impl MasternodeDetailView {
             node_id_short,
             key_presence,
             remove_dialog: None,
+            danger_zone_open: false,
+            votes_height: None,
             voter_key_prompt: None,
             pending_voter_key_load: None,
             recovery,
@@ -389,25 +530,63 @@ impl MasternodeDetailView {
         });
         ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.render_header(ui, dark_mode);
-            ui.add_space(12.0);
-            if let Some(action) = self.render_actions_row(ui, dark_mode) {
-                outcome = DetailOutcome::Forward(Box::new(action));
-            }
-            ui.add_space(12.0);
-            if let Some(action) = self.render_keys_section(ui, dark_mode) {
-                outcome = DetailOutcome::Forward(Box::new(action));
-            }
-            ui.add_space(12.0);
-            if let Some(node) = self.render_dpns_section(ui, dark_mode) {
-                outcome = DetailOutcome::VoteWithNode(node);
-            }
-            ui.add_space(12.0);
-            if let Some(action) = self.render_remove_section(ui, dark_mode) {
-                outcome = DetailOutcome::Forward(Box::new(action));
-            }
-        });
+        // Pinned above the vote rows, taking the height its content needs. The
+        // votes keep what they need up to the share the pinned area leaves
+        // them; beyond its limit the pinned area scrolls on its own.
+        let available = ui.available_height();
+        let votes_reserve = self
+            .votes_height
+            .unwrap_or(f32::INFINITY)
+            .min(available * (1.0 - PINNED_MAX_SHARE))
+            .max(0.0);
+        let pinned = egui::ScrollArea::vertical()
+            .id_salt("masternode_detail_pinned")
+            .max_height((available - votes_reserve).max(0.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                self.render_header(ui, dark_mode);
+                ui.add_space(12.0);
+                if let Some(action) = self.render_actions_row(ui, dark_mode) {
+                    outcome = DetailOutcome::Forward(Box::new(action));
+                }
+                ui.add_space(12.0);
+                if let Some(action) = self.render_keys_section(ui, dark_mode) {
+                    outcome = DetailOutcome::Forward(Box::new(action));
+                }
+                // Outside the collapsible Keys section, so an offer to restore
+                // keys is never hidden behind it.
+                if let Some(approved) = self.render_recovery_section(ui)
+                    && let Some((task, context)) = self.recovery.restore(approved)
+                {
+                    outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTaskWithContext {
+                        task,
+                        context,
+                    }));
+                }
+                ui.add_space(8.0);
+                self.render_danger_zone(ui, dark_mode);
+            });
+        // From the auto-shrunk edge, so the spacing after it counts too.
+        let votes_top =
+            pinned.inner_rect.top() + pinned.inner_rect.height().min(pinned.content_size.y);
+        ui.add_space(12.0);
+        if let Some(node) = self.render_votes_heading(ui, dark_mode) {
+            outcome = DetailOutcome::VoteWithNode(node);
+        }
+        ui.add_space(6.0);
+        let rows_top = ui.cursor().top();
+        let votes_height = rows_top - votes_top + self.render_vote_rows(ui);
+        if self
+            .votes_height
+            .is_none_or(|last| (last - votes_height).abs() > 0.5)
+        {
+            // The pinned area was sized from the previous measurement.
+            self.votes_height = Some(votes_height);
+            ui.ctx().request_repaint();
+        }
+        if let Some(action) = self.show_remove_dialog(ui) {
+            outcome = DetailOutcome::Forward(Box::new(action));
+        }
 
         // Passive detection, dispatched once per opened view. It never competes
         // with a click made this frame: the click already owns the outcome, and
@@ -448,8 +627,7 @@ impl MasternodeDetailView {
             // Copy the FULL ProTxHash, not the shortened display string (TC-FR5-03).
             // `small_button` is text-height, so it stays vertically centered with
             // the monospace hash and the badge; a full-size button towers over them.
-            if ui
-                .small_button("Copy")
+            if reveal_on_focus(ui.small_button("Copy"))
                 .on_hover_text("Copy ProTxHash")
                 .clicked()
             {
@@ -494,14 +672,13 @@ impl MasternodeDetailView {
         );
         ui.horizontal_wrapped(|ui| {
             // The withdrawal screen is reused, scoped to THIS node (FR-9).
-            if ui.button("Withdraw").clicked() {
+            if reveal_on_focus(ui.button("Withdraw")).clicked() {
                 action = Some(self.push(ScreenType::WithdrawalScreen(self.identity.clone())));
             }
             // Evonode-only token-rewards cross-link (FR-11); absent for a plain
             // masternode (TC-FR11-02).
             if self.is_evonode()
-                && ui
-                    .button("Claim token rewards ›")
+                && reveal_on_focus(ui.button("Claim token rewards ›"))
                     .on_hover_text("Claim this evonode's token rewards.")
                     .clicked()
             {
@@ -559,133 +736,132 @@ impl MasternodeDetailView {
         }
     }
 
+    /// The collapsible Keys section: a one-line summary while collapsed, the key
+    /// details and the per-key Manage keys buttons when open.
     fn render_keys_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
-        let mut action = None;
-        ui.label(
-            RichText::new("Keys")
-                .strong()
-                .color(DashColors::text_primary(dark_mode)),
-        );
-
-        // Compact V/O/P presence (glyph, not colour-only — NFR-6).
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)))
-                .info_tooltip(
-                    "Shows which of this node's keys are loaded: V is the voting key, O is the \
-                     owner key, and P is the payout address key.",
-                );
-            // Each letter explains its own role on hover, so a user who hovers `V`
-            // is told about the voting key rather than having to read the whole
-            // legend on the `Roles:` label.
-            for token in key_status_tokens(self.key_presence) {
-                let text = if token.present {
-                    RichText::new(token.letter)
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode))
-                } else {
-                    RichText::new("·").color(DashColors::text_secondary(dark_mode))
-                };
-                ui.label(text).info_tooltip(token.tooltip);
+        let tier = match self.protection_tier() {
+            Ok(tier) => Some(tier),
+            Err(error) => {
+                MessageBanner::set_global(ui.ctx(), PROTECTION_UNAVAILABLE, MessageType::Warning)
+                    .with_details(error);
+                None
             }
-        });
+        };
+        let missing_voter = !self.identity.can_cast_masternode_vote();
+        let presence = MasternodeKeyPresence {
+            voting: !missing_voter,
+            ..self.key_presence
+        };
+        // Remembered per node, unlike the Danger zone: an open Keys section
+        // exposes nothing destructive.
+        let id = egui::Id::unique("masternode_detail_keys").with(self.identity.identity.id());
+        let mut open = ui.data_mut(|data| data.get_persisted::<bool>(id).unwrap_or(false));
+        let action = collapsible_section(
+            ui,
+            &mut open,
+            "Keys",
+            false,
+            |ui| {
+                render_roles(ui, presence, dark_mode);
+                ui.separator();
+                render_protection_tier(ui, tier, dark_mode);
+                if missing_voter {
+                    ui.separator();
+                    ui.label(
+                        RichText::new(MISSING_VOTING_KEY_SUMMARY)
+                            .color(DashColors::warning_color(dark_mode)),
+                    );
+                }
+            },
+            |ui| self.render_keys_body(ui, dark_mode, tier),
+        )
+        .flatten();
+        ui.data_mut(|data| data.insert_persisted(id, open));
+        action
+    }
 
-        // Copyable voter-identity id, when a voter identity is loaded.
-        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
-            let voter_full = voter.id().to_string(Encoding::Base58);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "Voter identity: {voter}",
-                        voter = shorten_id(&voter_full)
-                    ))
-                    .color(DashColors::text_secondary(dark_mode)),
-                );
-                // `small_button` keeps the copy affordance text-height and
-                // vertically centered with the voter-identity label.
-                if ui
-                    .small_button("Copy")
-                    .on_hover_text("Copy voter identity ID")
-                    .clicked()
-                {
-                    ui.ctx().copy_text(voter_full.clone());
+    fn render_keys_body(
+        &mut self,
+        ui: &mut Ui,
+        dark_mode: bool,
+        tier: Option<ProtectionTier>,
+    ) -> Option<AppAction> {
+        let mut action = None;
+        ui.columns_const(|[details, manage]| {
+            details.horizontal(|ui| render_roles(ui, self.key_presence, dark_mode));
+            // Copyable voter-identity id, when a voter identity is loaded.
+            if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
+                let voter_full = voter.id().to_string(Encoding::Base58);
+                details.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Voter identity: {voter}",
+                            voter = shorten_id(&voter_full)
+                        ))
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    // `small_button` keeps the copy affordance text-height and
+                    // vertically centered with the voter-identity label.
+                    if reveal_on_focus(ui.small_button("Copy"))
+                        .clickable_tooltip("Copy voter identity ID")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(voter_full.clone());
+                    }
+                });
+            }
+            // Protection tier + conditional Add-protection (FR-8 / NFR-4). The
+            // seal form (password entry → `IdentityTask::ProtectIdentityKeys`,
+            // which seals the whole identity) lives inside `KeyInfoScreen`; open
+            // the first held key so the user lands directly on it.
+            render_protection_tier(details, tier, dark_mode);
+            if tier.is_some_and(ProtectionTier::offers_add_protection)
+                && let Some(key) = self.first_protectable_key()
+                && reveal_on_focus(details.button("Add password protection…")).clicked()
+            {
+                action = Some(self.open_key_info_with_protection_prompt(&key));
+            }
+
+            // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
+            // the interactive per-key screen with view/sign/seal actions. This
+            // mirrors `identities_screen.rs` and the identity keys list: one
+            // button per key, each pushing `Screen::KeyInfoScreen` with the
+            // target the row found the material at.
+            manage.label(
+                RichText::new("Manage keys")
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+            let keys = identity_keys(&self.identity);
+            // This page only ever shows masternode and evonode identities.
+            let labels =
+                manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
+            manage.horizontal_wrapped(|ui| {
+                for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
+                    let button = reveal_on_focus(ui.button(format!("{label} ›")));
+                    let button = match tip {
+                        Some(tip) => button.clickable_tooltip(tip),
+                        None => button,
+                    };
+                    if button.clicked() {
+                        action = Some(self.open_key_info(&key));
+                    }
                 }
             });
-        }
-
-        // Protection tier + conditional Add-protection (FR-8 / NFR-4).
-        let tier = self.protection_tier();
-        match &tier {
-            Ok(tier) => {
-                ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
-            }
-            Err(error) => {
-                ui.label("Key protection status is unavailable. Refresh to try again.");
-                MessageBanner::set_global(
-                    ui.ctx(),
-                    "Key protection status is unavailable. Refresh to try again.",
-                    MessageType::Warning,
-                )
-                .with_details(error);
-            }
-        }
-
-        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
-        // the interactive per-key screen with view/sign/seal actions. This
-        // mirrors `identities_screen.rs` and the identity keys list: one button
-        // per key, each pushing `Screen::KeyInfoScreen` with the target the row
-        // found the material at.
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("Manage keys")
-                .strong()
-                .color(DashColors::text_primary(dark_mode)),
-        );
-        let keys = identity_keys(&self.identity);
-        // This page only ever shows masternode and evonode identities.
-        let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
-        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let button = ui.button(format!("{label} ›"));
-            let button = match tip {
-                Some(tip) => button.clickable_tooltip(tip),
-                None => button,
-            };
-            if button.clicked() {
-                action = Some(self.open_key_info(&key));
-            }
-        }
-
-        // Add-protection CTA (FR-8): the seal form (password entry →
-        // `IdentityTask::ProtectIdentityKeys`, which seals the whole identity)
-        // lives inside `KeyInfoScreen`. Open the first held key so the user
-        // lands directly on the interactive seal flow.
-        if tier.is_ok_and(ProtectionTier::offers_add_protection)
-            && let Some(key) = self.first_protectable_key()
-            && ui.button("Add password protection…").clicked()
-        {
-            action = Some(self.open_key_info_with_protection_prompt(&key));
-        }
+        });
 
         if !self.identity.can_cast_masternode_vote()
             && let Some(key_action) = self.render_missing_voter(ui, dark_mode)
         {
             action = Some(key_action);
         }
-        if let Some(approved) = self.render_recovery_section(ui)
-            && let Some((task, context)) = self.recovery.restore(approved)
-        {
-            action = Some(AppAction::BackendTaskWithContext { task, context });
-        }
         action
     }
 
     fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
         let mut action = None;
-        ui.label(
-            RichText::new(
-                "This node has no voting key loaded. Add its voting private key to cast votes.",
-            )
-            .color(DashColors::warning_color(dark_mode)),
-        );
+        ui.add_space(8.0);
+        ui.label(RichText::new(MISSING_VOTING_KEY).color(DashColors::warning_color(dark_mode)));
 
         self.reconcile_voter_key_load();
         if self.pending_voter_key_load.is_some() {
@@ -700,7 +876,7 @@ impl MasternodeDetailView {
 
         match self.voter_key_prompt.as_mut() {
             None => {
-                if ui.button("Add voting key").clicked() {
+                if reveal_on_focus(ui.button("Add voting key")).clicked() {
                     // Node context is already bound (`self.identity`) — the
                     // prompt only asks for the voting key, no ProTxHash re-entry.
                     self.voter_key_prompt = Some(
@@ -713,7 +889,7 @@ impl MasternodeDetailView {
             Some(prompt) => {
                 prompt.show(ui);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if reveal_on_focus(ui.button("Cancel")).clicked() {
                         self.voter_key_prompt = None;
                     }
                     let has_key = !self
@@ -721,7 +897,8 @@ impl MasternodeDetailView {
                         .as_ref()
                         .map(PasswordInput::is_empty)
                         .unwrap_or(true);
-                    if ui.add_enabled(has_key, egui::Button::new("Save")).clicked() {
+                    if reveal_on_focus(ui.add_enabled(has_key, egui::Button::new("Save"))).clicked()
+                    {
                         action = self.submit_voter_key();
                     }
                 });
@@ -768,8 +945,8 @@ impl MasternodeDetailView {
         )))
     }
 
-    /// Render the offer at the foot of the keys section, returning the items the
-    /// user approved this frame.
+    /// Render the offer below the keys section, returning the items the user
+    /// approved this frame.
     fn render_recovery_section(&self, ui: &mut Ui) -> Option<Vec<RecoveryItem>> {
         if !self.recovery.has_offer() {
             return None;
@@ -849,69 +1026,116 @@ impl MasternodeDetailView {
     }
 
     /// `This node's votes`, its masternode-list status and `Vote with this
-    /// node` (VOTE-FR-076). Returns the node to vote with when clicked.
-    fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<Identifier> {
+    /// node` (VOTE-FR-076) — the pinned heading of the vote rows. Returns the
+    /// node to vote with when clicked.
+    fn render_votes_heading(&self, ui: &mut Ui, dark_mode: bool) -> Option<Identifier> {
         let node = self.identity.identity.id();
-        ui.label(RichText::new("This node's votes").strong());
         let membership = match self.app_context.masternode_list_membership(node) {
             ListMembership::Listed => "In the masternode list.",
             ListMembership::NotListed => NOT_IN_MASTERNODE_LIST,
             ListMembership::Unknown => "Masternode list membership unknown.",
         };
-        ui.label(RichText::new(membership).color(DashColors::text_secondary(dark_mode)));
-        match &self.node_votes {
-            None => {
-                ui.label("This node's votes could not be read. Refresh to try again.");
-            }
-            Some(rows) if rows.is_empty() => {
-                ui.label("There are no open name contests right now.");
-            }
-            Some(rows) => {
-                let now = now_ms();
-                egui::Grid::new(("node_votes", node))
-                    .num_columns(4)
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for row in rows {
-                            ui.label(format!("{name}.dash", name = row.contested_name));
-                            ui.label(node_vote_choice_label(row));
-                            ui.label(if row.choice.is_some() {
-                                changes_left_label(row.changes)
-                            } else {
-                                String::new()
-                            });
-                            ui.label(match row.end_time {
-                                Some(end) => ends_in_label(time_left(end, now)),
-                                None => String::new(),
-                            });
-                            ui.end_row();
-                        }
-                    });
-            }
-        }
-        ui.add_space(6.0);
         let can_vote = self.identity.can_cast_masternode_vote();
-        ui.add_enabled(
-            can_vote,
-            ComponentStyles::secondary_button("Vote with this node", dark_mode),
-        )
-        .disabled_tooltip("Add a voting key to vote with this node.")
-        .clicked()
-        .then_some(node)
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new("This node's votes").strong());
+                ui.label(RichText::new(membership).color(DashColors::text_secondary(dark_mode)));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled(
+                    can_vote,
+                    ComponentStyles::secondary_button("Vote with this node", dark_mode),
+                )
+                .disabled_tooltip("Add a voting key to vote with this node.")
+                .clicked()
+                .then_some(node)
+            })
+            .inner
+        })
+        .inner
     }
 
-    fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {
+    /// The node's vote rows, in their own scroll area below the pinned heading.
+    /// Returns the height the rows need.
+    fn render_vote_rows(&self, ui: &mut Ui) -> f32 {
+        let node = self.identity.identity.id();
+        egui::ScrollArea::vertical()
+            .id_salt("masternode_detail_vote_rows")
+            .min_scrolled_height(0.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| match &self.node_votes {
+                None => {
+                    ui.label("This node's votes could not be read. Refresh to try again.");
+                }
+                Some(rows) if rows.is_empty() => {
+                    ui.label("There are no open name contests right now.");
+                }
+                Some(rows) => {
+                    let now = now_ms();
+                    let column_width =
+                        ((ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0).max(0.0);
+                    egui::Grid::new(("node_votes", node))
+                        .num_columns(4)
+                        .min_col_width(column_width)
+                        .max_col_width(column_width)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for row in rows {
+                                ui.label(format!("{name}.dash", name = row.contested_name));
+                                ui.label(node_vote_choice_label(row));
+                                ui.label(if row.choice.is_some() {
+                                    changes_left_label(row.changes)
+                                } else {
+                                    String::new()
+                                });
+                                ui.label(match row.end_time {
+                                    Some(end) => ends_in_label(time_left(end, now)),
+                                    None => String::new(),
+                                });
+                                ui.end_row();
+                            }
+                        });
+                }
+            })
+            .content_size
+            .y
+    }
+
+    /// Hide destructive controls when leaving the Nodes segment.
+    pub(super) fn collapse_danger_zone(&mut self) {
+        self.danger_zone_open = false;
+    }
+
+    /// The collapsible Danger zone holding `Remove masternode`, which opens the
+    /// removal confirmation.
+    fn render_danger_zone(&mut self, ui: &mut Ui, dark_mode: bool) {
         let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
-        if ui
-            .add_enabled(
-                !migration_in_progress,
-                egui::Button::new("Remove masternode"),
-            )
-            .on_disabled_hover_text(
-                "Wait for the storage update to finish before removing this masternode.",
-            )
-            .clicked()
-        {
+        let remove_clicked = collapsible_section(
+            ui,
+            &mut self.danger_zone_open,
+            "Danger zone",
+            true,
+            |ui| {
+                ui.label(
+                    RichText::new("Remove masternode").color(DashColors::text_secondary(dark_mode)),
+                );
+            },
+            |ui| {
+                ui.label(
+                    RichText::new(DANGER_ZONE_NOTE).color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                reveal_on_focus(ui.add_enabled(
+                    !migration_in_progress,
+                    ComponentStyles::danger_button("Remove masternode"),
+                ))
+                .disabled_tooltip(
+                    "Wait for the storage update to finish before removing this masternode.",
+                )
+                .clicked()
+            },
+        );
+        if remove_clicked == Some(true) {
             self.remove_dialog = Some(
                 ConfirmationDialog::new("Remove masternode", REMOVE_MASTERNODE_CONFIRMATION)
                     .danger_mode(true)
@@ -919,18 +1143,16 @@ impl MasternodeDetailView {
                     .confirm_text(Some("Remove masternode")),
             );
         }
+    }
 
-        let mut action = None;
-        if let Some(dialog) = self.remove_dialog.as_mut() {
-            let response = dialog.show(ui);
-            if let Some(status) = response.inner.dialog_response {
-                self.remove_dialog = None;
-                if status == ConfirmationStatus::Confirmed {
-                    action = Some(remove_node_action(self.identity.identity.id()));
-                }
-            }
-        }
-        action
+    /// The open removal confirmation, kept outside the Danger zone so closing
+    /// that section never hides a pending answer.
+    fn show_remove_dialog(&mut self, ui: &mut Ui) -> Option<AppAction> {
+        let dialog = self.remove_dialog.as_mut()?;
+        let status = dialog.show(ui).inner.dialog_response?;
+        self.remove_dialog = None;
+        (status == ConfirmationStatus::Confirmed)
+            .then(|| remove_node_action(self.identity.identity.id()))
     }
 }
 
@@ -1184,21 +1406,24 @@ mod tests {
     }
 
     #[test]
-    fn section_order_is_header_actions_keys_dpns_remove() {
+    fn section_order_is_header_actions_keys_danger_zone_votes() {
         assert_eq!(
             SECTION_ORDER,
-            ["Header", "Actions", "Keys", "DPNS", "Remove"]
+            ["Header", "Actions", "Keys", "Danger zone", "Votes"]
         );
     }
 
     #[test]
     fn protection_tier_label_and_add_gate() {
-        assert_eq!(ProtectionTier::Unprotected.label(), "Keys: unprotected");
         assert_eq!(
-            ProtectionTier::Protected.label(),
-            "Keys: password-protected"
+            ProtectionTier::Unprotected.label(),
+            "Not password protected"
         );
-        assert_eq!(ProtectionTier::NoVaultKeys.label(), "Keys: unprotected");
+        assert_eq!(ProtectionTier::Protected.label(), "Password protected");
+        assert_eq!(
+            ProtectionTier::NoVaultKeys.label(),
+            "Not password protected"
+        );
         assert!(ProtectionTier::Unprotected.offers_add_protection());
         assert!(!ProtectionTier::Protected.offers_add_protection());
         assert!(!ProtectionTier::NoVaultKeys.offers_add_protection());
@@ -1207,7 +1432,7 @@ mod tests {
     /// TC-FR8-07 — a load-time / after-load Tier-2 seal is reflected by
     /// `protection_tier()`: an unsealed keyed node reports `Unprotected`, and
     /// once its keys are sealed under a password it reports `Protected` (so the
-    /// detail view shows "Keys: password-protected" and stops offering
+    /// detail view shows "Password protected" and stops offering
     /// Add-protection). Drives the real `IdentityKeyView` scheme path on an
     /// offline wired `AppContext` — no network I/O.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

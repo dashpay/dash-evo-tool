@@ -183,6 +183,11 @@ impl MasternodesScreen {
             self.votes_arrival_refresh = true;
         }
         if segment != self.segment {
+            if self.segment == MasternodesSegment::Nodes
+                && let MasternodesView::Detail(detail) = &mut self.view
+            {
+                detail.collapse_danger_zone();
+            }
             self.votes.release_list_focus();
         }
         self.segment = segment;
@@ -1251,6 +1256,34 @@ mod tests {
         screen.view = MasternodesView::List;
         assert_eq!(screen.selected_node_id(), None);
 
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn segment_round_trip_keeps_the_pending_voter_key_load() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0x23, Some("pending-node"));
+        let node = Identifier::from([0x23; 32]);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        let token = ctx
+            .mark_identity_load_submitted(node)
+            .expect("pending load");
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("node detail");
+        };
+        detail.adopt_pending_voter_key_load(Some(token));
+        screen.select_segment(MasternodesSegment::Votes);
+        screen.select_segment(MasternodesSegment::Nodes);
+        assert_eq!(screen.selected_node_id(), Some(node));
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("keep the detail");
+        };
+        assert_eq!(detail.pending_voter_key_load(), Some(token));
+        assert_eq!(
+            ctx.identity_load_phase(&node, token),
+            Some(IdentityLoadPhase::Submitted)
+        );
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 

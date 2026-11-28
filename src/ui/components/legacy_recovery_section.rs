@@ -14,6 +14,7 @@ use crate::model::legacy_recovery::{
     ExclusionReason, RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
 };
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::styled::reveal_on_focus;
 use crate::ui::masternodes::{KeyVocabulary, disambiguate_role_labels, role_label_and_tip};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
@@ -269,8 +270,7 @@ impl Component for LegacyRecoverySection<'_> {
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
                         });
-                    } else if ui
-                        .button(RESTORE_LABEL)
+                    } else if reveal_on_focus(ui.button(RESTORE_LABEL))
                         .on_hover_text(RESTORE_TOOLTIP)
                         .clicked()
                     {

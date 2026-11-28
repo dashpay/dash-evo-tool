@@ -5,6 +5,7 @@
 //! Each action pushes an existing screen — no parallel MN-specific
 //! reimplementation (NFR-1). See `docs/ai-design/2026-07-09-masternode-page-design/`.
 
+use crate::ui::components::styled::reveal_on_focus;
 use std::sync::Arc;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -300,13 +301,6 @@ fn section_header(ui: &mut Ui, title: &str, color: Color32, open: &mut bool) {
         );
         ui.painter().galley(text_pos, galley, color);
     }
-}
-
-fn reveal_on_focus(response: egui::Response) -> egui::Response {
-    if response.gained_focus() {
-        response.scroll_to_me(None);
-    }
-    response
 }
 
 /// `Roles:` and the V/O/P presence letters (glyph, not colour-only — NFR-6).
@@ -633,8 +627,7 @@ impl MasternodeDetailView {
             // Copy the FULL ProTxHash, not the shortened display string (TC-FR5-03).
             // `small_button` is text-height, so it stays vertically centered with
             // the monospace hash and the badge; a full-size button towers over them.
-            if ui
-                .small_button("Copy")
+            if reveal_on_focus(ui.small_button("Copy"))
                 .on_hover_text("Copy ProTxHash")
                 .clicked()
             {

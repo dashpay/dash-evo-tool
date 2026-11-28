@@ -1429,6 +1429,30 @@ fn assert_tab_reveals_pinned_action(label: &str, backwards: bool) {
         activate_masternodes_tab(&mut harness, &app_context);
         harness.get_by_label("Open evo-action-focus").click();
         harness.run_steps(3);
+        if label == "Restore keys" {
+            use dash_evo_tool::model::legacy_recovery::{
+                RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
+            };
+            harness
+                .state_mut()
+                .main_screens
+                .get_mut(&RootScreenType::RootScreenMasternodes)
+                .expect("masternodes")
+                .display_task_result(BackendTaskSuccessResult::LegacyRecoveryCandidates {
+                    identity_id: Identifier::from([0xC0; 32]),
+                    plan: RecoveryPlan {
+                        items: vec![RecoveryItemDescriptor {
+                            item: RecoveryItem::Key {
+                                target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                                key_id: 0,
+                            },
+                            purpose: Some(dash_sdk::dpp::identity::Purpose::AUTHENTICATION),
+                        }],
+                        excluded: vec![],
+                    },
+                });
+            harness.run_steps(3);
+        }
         for section in ["Keys", "Danger zone"] {
             tab_to_detail_control(&mut harness, section);
             harness.key_press(egui::Key::Enter);
@@ -1455,6 +1479,16 @@ fn assert_tab_reveals_pinned_action(label: &str, backwards: bool) {
         );
         assert_detail_label_unclipped(&harness, label);
     });
+}
+
+#[test]
+fn tab_reveals_pinned_header_copy_button() {
+    assert_tab_reveals_pinned_action("Copy", true);
+}
+
+#[test]
+fn tab_reveals_pinned_restore_keys_button() {
+    assert_tab_reveals_pinned_action("Restore keys", false);
 }
 
 #[test]

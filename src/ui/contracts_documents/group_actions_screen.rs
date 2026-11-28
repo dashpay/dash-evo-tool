@@ -30,9 +30,7 @@ use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
 use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokenInfo,
-};
+use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
@@ -40,6 +38,8 @@ use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::action_event::GroupActionEvent;
@@ -78,7 +78,6 @@ pub struct GroupActionsScreen {
     >,
     contract_search: String,
     qualified_identities: Vec<QualifiedIdentity>,
-    identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
     /// Whether `selected_identity` can send token transactions, read once per
@@ -133,21 +132,12 @@ impl GroupActionsScreen {
             }
         }).collect();
 
-        let identity_token_balances = match app_context.identity_token_balances() {
-            Ok(identity_token_balances) => identity_token_balances,
-            Err(e) => {
-                tracing::error!("Failed to load identity token balances: {}", e);
-                IndexMap::new()
-            }
-        };
-
         Self {
             // Contract and identity selectors
             selected_contract: None,
             contracts_with_group_actions,
             contract_search: String::new(),
             qualified_identities,
-            identity_token_balances,
             selected_identity: None,
             selected_identity_str: String::new(),
             selected_identity_token_actions: None,
@@ -280,44 +270,25 @@ impl GroupActionsScreen {
                                     )
                                     .clicked()
                                     {
-                                        let token_contract_position = group_action.token_contract_position();
-                                        let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
-                                        let identity_token_balance = match self
-                                            .identity_token_balances
-                                            .get(&IdentityTokenIdentifier {
-                                                token_id,
-                                                identity_id: self.selected_identity
-                                                    .as_ref()
-                                                    .unwrap()
-                                                    .identity
-                                                    .id()
-                                            })
-                                            .cloned() {
-                                            Some(identity_token_balance) => identity_token_balance,
-                                            None => {
-                                                self.fetch_group_actions_status =
-                                                    FetchGroupActionsStatus::Error;
-                                                MessageBanner::set_global(
-                                                    ui.ctx(),
-                                                    "No identity token balance found",
-                                                    MessageType::Error,
-                                                );
-                                                return;
-                                            }
+                                        let token_position = group_action.token_contract_position();
+                                        let Some((data_contract, identity)) = self.selected_contract.as_ref().zip(self.selected_identity.as_ref()) else {
+                                            return;
                                         };
-                                        let identity_token_info = match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(&identity_token_balance, &self.app_context) {
-                                            Ok(identity_token_info) => identity_token_info,
-                                            Err(error) => {
-                                                self.fetch_group_actions_status =
-                                                    FetchGroupActionsStatus::Error;
-                                                MessageBanner::set_global(
-                                                    ui.ctx(),
-                                                    "Token information for this identity could not be loaded. Refresh and try again.",
-                                                    MessageType::Error,
-                                                )
-                                                .with_details(error);
-                                                return;
-                                            }
+                                        let Some((token_id, token_config)) = data_contract.contract.token_id(token_position).zip(data_contract.contract.tokens().get(&token_position)) else {
+                                            MessageBanner::set_global(
+                                                ui.ctx(),
+                                                "Token information could not be loaded. Refresh and try again.",
+                                                MessageType::Error,
+                                            );
+                                            return;
+                                        };
+                                        let identity_token_info = IdentityTokenInfo {
+                                            token_id,
+                                            token_alias: token_config.conventions().localizations().get("en").map(|name| name.singular_form().to_string()).unwrap_or_else(|| token_id.to_string(Encoding::Base58)),
+                                            identity: identity.clone(),
+                                            data_contract: data_contract.clone(),
+                                            token_config: token_config.clone(),
+                                            token_position,
                                         };
 
                                         self.handle_token_event_action(token_event, *id, identity_token_info, &mut action);
@@ -868,23 +839,10 @@ mod sdk_adapter_tests {
             InsertTokensToo::NoTokensShouldBeAdded,
         )
         .unwrap();
-        let token_id = info.data_contract.contract.token_id(0).unwrap();
-        let balance = IdentityTokenBalance {
-            token_id,
-            token_alias: info.token_alias,
-            token_config: info.token_config,
-            identity_id: identity.identity.id(),
-            balance: 0,
-            estimated_unclaimed_rewards: None,
-            data_contract_id: info.data_contract.contract.id(),
-            token_position: 0,
-        };
         let mut screen = GroupActionsScreen::new(&ctx);
         screen.selected_contract = Some(info.data_contract.clone());
         screen.selected_identity = Some(identity);
-        screen
-            .identity_token_balances
-            .insert(IdentityTokenIdentifier::from(balance.clone()), balance);
+        assert!(ctx.identity_token_balances().unwrap().is_empty());
         let proposals = IndexMap::from([(
             Identifier::from([8; 32]),
             GroupAction::V0(GroupActionV0 {

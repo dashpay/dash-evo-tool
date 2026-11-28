@@ -12,6 +12,8 @@ use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -114,6 +116,12 @@ pub struct ContractFeePotsScreen {
     pending_claim: PendingRequest,
     /// The pot a claim is in flight for; claiming is disabled meanwhile.
     claim_in_flight: Option<ContractFeePot>,
+    confirmation: Option<(
+        ConfirmationDialog,
+        Identifier,
+        ContractFeePot,
+        QualifiedIdentity,
+    )>,
     progress_banner: Option<BannerHandle>,
     /// Set while the last contract read failed; the banner says why.
     contracts_load_banner: Option<BannerHandle>,
@@ -135,6 +143,7 @@ impl ContractFeePotsScreen {
             pending_read: PendingRequest::default(),
             pending_claim: PendingRequest::default(),
             claim_in_flight: None,
+            confirmation: None,
             progress_banner: None,
             contracts_load_banner: None,
             identities_load_banner: None,
@@ -221,13 +230,87 @@ impl ContractFeePotsScreen {
 
     fn start_claim(
         &mut self,
-        ctx: &egui::Context,
+        _ctx: &egui::Context,
         contract_id: Identifier,
         pot: ContractFeePot,
     ) -> AppAction {
         let Some(identity) = self.selected_identity.clone() else {
             return AppAction::None;
         };
+        if self.claim_in_flight.is_some() || self.confirmation.is_some() {
+            return AppAction::None;
+        }
+        let FeePotsState::Loaded {
+            contract,
+            pots,
+            seated_moderators,
+            ..
+        } = &self.pots
+        else {
+            return AppAction::None;
+        };
+        let claimants = pot_claimants(pot, contract, seated_moderators);
+        let crate::model::contract_fee_pots::PotClaimants::Known(ids) = claimants else {
+            return AppAction::None;
+        };
+        if !ids.contains(&identity.identity.id()) || contract.id() != contract_id {
+            return AppAction::None;
+        }
+        let credits = match pot {
+            ContractFeePot::Owner => pots.owner.credits,
+            ContractFeePot::Moderators => pots.moderators.credits,
+        };
+        let fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_contract_fee_claim(ids.len());
+        // TODO: Show the exact seated-team payout when its reward split is available.
+        let payout = if pot == ContractFeePot::Moderators
+            && matches!(seated_moderators, SeatedModerators::Seated(_))
+        {
+            None
+        } else {
+            Some(credits / ids.len() as u64)
+        };
+        let net = match payout {
+            Some(payout) if payout >= fee => format!(
+                "Expected net change for your identity: +{amount}.",
+                amount = format_credits_as_dash(payout - fee)
+            ),
+            Some(payout) => format!(
+                "Expected net change for your identity: -{amount}. The estimated fee exceeds your payout.",
+                amount = format_credits_as_dash(fee - payout)
+            ),
+            None => format!(
+                "Your payout depends on the elected team's reward split. The estimated cost before any payout is {fee}. Your balance may decrease. The exact net change is unavailable.",
+                fee = format_credits_as_dash(fee)
+            ),
+        };
+        let message = format!(
+            "Pot amount: {amount}.\nEstimated fee paid by your identity: {fee}.\n{net}\nActual fees and payouts may change before the claim completes.",
+            amount = format_credits_as_dash(credits),
+            fee = format_credits_as_dash(fee)
+        );
+        self.confirmation = Some((
+            ConfirmationDialog::new("Claim contract fees?", message).blocks_input(true),
+            contract_id,
+            pot,
+            identity,
+        ));
+        AppAction::None
+    }
+
+    fn finish_confirmation(
+        &mut self,
+        ctx: &egui::Context,
+        status: ConfirmationStatus,
+    ) -> AppAction {
+        let Some((_, contract_id, pot, identity)) = self.confirmation.take() else {
+            return AppAction::None;
+        };
+        if status == ConfirmationStatus::Canceled || self.claim_in_flight.is_some() {
+            return AppAction::None;
+        }
         self.claim_in_flight = Some(pot);
         self.progress_banner.take_and_clear();
         let handle = MessageBanner::set_global(ctx, "Claiming the fees...", MessageType::Info);
@@ -330,6 +413,7 @@ impl Drop for ContractFeePotsScreen {
 
 impl ScreenLike for ContractFeePotsScreen {
     fn refresh(&mut self) {
+        self.confirmation = None;
         self.reload_local_data();
         self.pending_read.clear();
         self.pots = FeePotsState::NotLoaded;
@@ -569,6 +653,13 @@ impl ScreenLike for ContractFeePotsScreen {
             }
             inner_action
         });
+        let status = self
+            .confirmation
+            .as_mut()
+            .and_then(|(dialog, ..)| dialog.show(ui).inner.dialog_response);
+        if let Some(status) = status {
+            action |= self.finish_confirmation(ui.ctx(), status);
+        }
         action
     }
 }
@@ -576,6 +667,77 @@ impl ScreenLike for ContractFeePotsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fee_claim_requires_confirmation_before_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ContractFeePotsScreen::new(&ctx);
+        screen.selected_identity = Some(crate::context::test_support::bare_user_identity(
+            Identifier::random(),
+            ctx.network,
+        ));
+        let action =
+            screen.start_claim(ctx.egui_ctx(), Identifier::random(), ContractFeePot::Owner);
+        assert!(
+            matches!(action, AppAction::None),
+            "Claim must ask before dispatch: {action:?}"
+        );
+        assert!(screen.claim_in_flight.is_none());
+    }
+
+    #[test]
+    fn fee_claim_tiny_pot_warns_and_confirmation_dispatches_once() {
+        for confirmed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = crate::context::test_support::test_app_context(dir.path());
+            let mut screen = ContractFeePotsScreen::new(&ctx);
+            let contract = test_contract();
+            let id = contract.id();
+            screen.selected_identity = Some(crate::context::test_support::bare_user_identity(
+                contract.owner_id(),
+                ctx.network,
+            ));
+            let mut pots = ContractFeePots::default();
+            pots.owner.credits = 1;
+            screen.pots = FeePotsState::Loaded {
+                contract_id: id,
+                contract,
+                pots,
+                seated_moderators: SeatedModerators::NotSeated,
+            };
+            assert!(matches!(
+                screen.start_claim(ctx.egui_ctx(), id, ContractFeePot::Owner),
+                AppAction::None
+            ));
+            let dialog = &screen.confirmation.as_ref().unwrap().0;
+            assert!(dialog.is_input_blocking());
+            assert!(
+                dialog
+                    .message_text()
+                    .contains("Estimated fee paid by your identity:")
+            );
+            assert!(
+                dialog
+                    .message_text()
+                    .contains("Expected net change for your identity: -")
+            );
+            let status = if confirmed {
+                ConfirmationStatus::Confirmed
+            } else {
+                ConfirmationStatus::Canceled
+            };
+            let action = screen.finish_confirmation(ctx.egui_ctx(), status);
+            assert_eq!(
+                matches!(action, AppAction::BackendTaskWithContext { .. }),
+                confirmed
+            );
+            assert!(matches!(
+                screen.finish_confirmation(ctx.egui_ctx(), ConfirmationStatus::Confirmed),
+                AppAction::None
+            ));
+        }
+    }
+
     mod allocations {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;

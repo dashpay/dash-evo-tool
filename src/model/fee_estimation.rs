@@ -310,6 +310,16 @@ impl PlatformFeeEstimator {
         u64::try_from(scaled).unwrap_or(u64::MAX)
     }
 
+    /// Estimate a fee-pot claim using the transfer reserve and per-recipient writes.
+    /// Claims reuse the protocol's credit-transfer fee floor.
+    pub fn estimate_contract_fee_claim(&self, recipients: usize) -> u64 {
+        self.estimate_credit_transfer()
+            .saturating_add(self.estimate_storage_based_fee(
+                recipients.saturating_mul(32),
+                recipients.saturating_mul(2),
+            ))
+    }
+
     /// Get the current fee multiplier permille
     pub fn fee_multiplier_permille(&self) -> u64 {
         self.fee_multiplier_permille
@@ -1569,6 +1579,18 @@ fn shield_fee_reserve(platform_version: &PlatformVersion) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contract_fee_claim_estimate_scales_with_multiplier_and_recipients() {
+        let base = PlatformFeeEstimator::latest_with_fee_multiplier(1000);
+        let doubled = PlatformFeeEstimator::latest_with_fee_multiplier(2000);
+        assert!(base.estimate_contract_fee_claim(1) > 1);
+        assert!(base.estimate_contract_fee_claim(3) > base.estimate_contract_fee_claim(1));
+        assert_eq!(
+            doubled.estimate_contract_fee_claim(3),
+            2 * base.estimate_contract_fee_claim(3)
+        );
+    }
 
     /// Scaling a fee never lowers it once the product overflows `u64`: the
     /// multiply runs wide and only the final result is clamped, so a higher

@@ -179,6 +179,16 @@ pub fn wallet_for_signing_key(
         .flatten()
 }
 
+/// Follows the chosen key's wallet, retrying its no-password open only on change.
+pub fn follow_signing_key_wallet(
+    qualified_identity: &QualifiedIdentity,
+    key: Option<&IdentityPublicKey>,
+    wallet: &mut Option<Arc<RwLock<Wallet>>>,
+    open_attempted: &mut bool,
+) {
+    sync_signing_wallet(Some(qualified_identity), key, wallet, open_attempted);
+}
+
 /// Follow the selected signing key and return whether its wallet changed.
 pub(crate) fn sync_signing_wallet(
     identity: Option<&QualifiedIdentity>,
@@ -295,6 +305,31 @@ mod tests {
 
     use super::*;
     use crate::ui::MessageType;
+
+    /// Regression: screens fixed the wallet to unlock when the identity was
+    /// chosen, so a key picked under Advanced from another wallet still
+    /// prompted for the first wallet. The wallet follows the chosen key.
+    #[test]
+    fn the_wallet_to_unlock_follows_the_chosen_key() {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let (identity, wallet_a, wallet_b) =
+            crate::context::test_support::identity_across_two_wallets();
+        let key = |id| identity.identity.public_keys()[&id].clone();
+        let mut wallet = Some(Arc::clone(&wallet_a));
+        let mut open_attempted = true;
+
+        follow_signing_key_wallet(&identity, Some(&key(2)), &mut wallet, &mut open_attempted);
+        assert!(wallet.as_ref().is_some_and(|w| Arc::ptr_eq(w, &wallet_b)));
+        assert!(!open_attempted, "the new wallet gets its no-password open");
+
+        open_attempted = true;
+        follow_signing_key_wallet(&identity, Some(&key(2)), &mut wallet, &mut open_attempted);
+        assert!(wallet.as_ref().is_some_and(|w| Arc::ptr_eq(w, &wallet_b)));
+        assert!(open_attempted, "the same wallet is not opened again");
+
+        follow_signing_key_wallet(&identity, None, &mut wallet, &mut open_attempted);
+        assert!(wallet.is_none(), "no key, no wallet to unlock");
+    }
 
     /// The one case a naive if/else-if chain gets wrong: when the associated
     /// voter identity's cleanup failed *and* the primary or voter's own

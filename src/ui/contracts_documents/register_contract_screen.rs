@@ -894,3 +894,62 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod wallet_unlock_tests {
+    use super::*;
+    use crate::context::test_support::{identity_across_two_wallets, test_app_context};
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// Regression: the wallet to unlock was fixed when the identity was
+    /// chosen, so a key picked under Advanced from another wallet still
+    /// prompted for the first wallet.
+    #[test]
+    fn a_key_chosen_from_another_wallet_brings_its_wallet_to_unlock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let (identity, wallet_a, wallet_b) = identity_across_two_wallets();
+        assert_ne!(
+            wallet_a.read().unwrap().seed_hash(),
+            wallet_b.read().unwrap().seed_hash()
+        );
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        let label_a = crate::ui::helpers::format_key_label(&identity.identity.public_keys()[&1]);
+        let label_b = crate::ui::helpers::format_key_label(&identity.identity.public_keys()[&2]);
+        for (wallet, alias) in [(&wallet_a, "Wallet A"), (&wallet_b, "Wallet B")] {
+            wallet.write().unwrap().initial_alias = Some(alias.to_string());
+            crate::context::test_support::lock_with_password(wallet);
+            let hash = wallet.read().unwrap().seed_hash();
+            ctx.wallet_context()
+                .insert_test_wallet(hash, wallet.clone());
+        }
+        screen.selected_key = Some(identity.identity.public_keys()[&1].clone());
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_wallet = Some(wallet_a);
+        screen.show_advanced_options = true;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value(&label_a).click();
+        harness.run_steps(2);
+        harness.get_by_label(&label_b).click();
+        harness.run_steps(2);
+        harness.get_by_label("Unlock Wallet").click();
+        harness.run_steps(2);
+        harness.get_by_label("Enter password to unlock \"Wallet B\":");
+        drop(harness);
+
+        assert!(
+            screen
+                .selected_wallet
+                .as_ref()
+                .is_some_and(|wallet| Arc::ptr_eq(wallet, &wallet_b))
+        );
+    }
+}

@@ -18,7 +18,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+    WalletUnlockPopup, WalletUnlockResult, show_wallet_lock_gate,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::TransactionType;
@@ -1068,33 +1068,8 @@ impl ScreenLike for SetTokenPriceScreen {
                 }
             }
 
-            let wallet_locked = if signing_available && let Some(wallet) = &self.selected_wallet {
-                if !self.wallet_open_attempted {
-                    if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                            .disable_auto_dismiss();
-                    }
-                    self.wallet_open_attempted = true;
-                }
-                let locked = wallet_needs_unlock(wallet);
-                if locked {
-                    ui.add_space(10.0);
-                    ui.colored_label(
-                        Color32::from_rgb(200, 150, 50),
-                        "Wallet is locked. Please unlock to continue.",
-                    );
-                    ui.add_space(8.0);
-                    if ui.button("Unlock Wallet").clicked() {
-                        self.wallet_unlock_popup.open();
-                    }
-                }
-                locked
-            } else {
-                false
-            };
-            let signing_controls_visible = signing_available && !wallet_locked;
-            if self.group_action_id.is_some() || signing_controls_visible {
-                let key_chooser_visible = signing_controls_visible && self.show_advanced_options;
+            if self.group_action_id.is_some() || signing_available {
+                let key_chooser_visible = signing_available && self.show_advanced_options;
                 if key_chooser_visible {
                     ui.heading("1. Select the key to sign the Set Price transaction");
                     ui.add_space(10.0);
@@ -1113,6 +1088,18 @@ impl ScreenLike for SetTokenPriceScreen {
                     );
                     ui.add_space(10.0);
                     ui.separator();
+                }
+                let wallet_locked = signing_available && show_wallet_lock_gate(
+                    ui,
+                    &self.app_context,
+                    self.selected_wallet.as_ref(),
+                    &mut self.wallet_open_attempted,
+                    &mut self.wallet_unlock_popup,
+                );
+                let signing_controls_visible = signing_available && !wallet_locked;
+                if wallet_locked && self.group_action_id.is_none() {
+                    self.confirmation_cancel();
+                    return;
                 }
                 ui.add_space(10.0);
                 self.render_pricing_fields(ui, key_chooser_visible);

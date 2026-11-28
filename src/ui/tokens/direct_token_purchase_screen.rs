@@ -28,7 +28,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+    WalletUnlockPopup, WalletUnlockResult, show_wallet_lock_gate, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
@@ -569,28 +569,6 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
             }
             {
-                // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if let Some(wallet) = &self.selected_wallet {
-                    if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                .disable_auto_dismiss();
-                        }
-                        self.wallet_open_attempted = true;
-                    }
-                    if wallet_needs_unlock(wallet) {
-                        ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
-                        }
-                    }
-                }
-
                 // Key selection (only in advanced mode)
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Purchase transaction");
@@ -611,6 +589,13 @@ impl ScreenLike for PurchaseTokenScreen {
                     ui.add_space(10.0);
                     ui.separator();
                 }
+                show_wallet_lock_gate(
+                    ui,
+                    &self.app_context,
+                    self.selected_wallet.as_ref(),
+                    &mut self.wallet_open_attempted,
+                    &mut self.wallet_unlock_popup,
+                );
                 ui.add_space(10.0);
 
                 crate::ui::identity::sync_signing_wallet(

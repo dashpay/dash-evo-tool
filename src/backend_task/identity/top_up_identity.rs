@@ -6,6 +6,7 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::identity_topup_min_funding_duffs;
 use crate::model::identity_balance::BalanceProvenance;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
@@ -197,20 +198,53 @@ impl AppContext {
             actual_fee,
         );
 
-        if let Some(amount) = amount_duffs_for_fee {
-            qualified_identity.top_ups.insert(top_up_index, amount);
-            self.save_top_ups(
-                &qualified_identity.identity.id(),
-                &qualified_identity.top_ups,
-            )?;
-        }
-        self.update_local_qualified_identity_observed(&mut qualified_identity, provenance)?;
+        let qualified_identity = self.store_finished_top_up(
+            qualified_identity,
+            amount_duffs_for_fee.map(|amount| (top_up_index, amount)),
+            provenance,
+        );
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,
             fee_result,
         ))
+    }
+
+    /// Store what a finished top-up changed: its `(index, duffs)` history
+    /// entry, when it has one, and the balance `topped_up` carries. The top-up
+    /// already happened, so a failed save is only logged; it never reads as a
+    /// failed top-up the user might repeat. An identity removed meanwhile gets
+    /// no history entry, as its record gets no write.
+    fn store_finished_top_up(
+        &self,
+        mut topped_up: QualifiedIdentity,
+        entry: Option<(u32, u64)>,
+        provenance: BalanceProvenance,
+    ) -> QualifiedIdentity {
+        if let Some((index, amount)) = entry {
+            topped_up.top_ups.insert(index, amount);
+            let id = topped_up.identity.id();
+            let entry = std::collections::BTreeMap::from([(index, amount)]);
+            // Under the record guard, so a removal cannot land between the
+            // roster check and the save.
+            let lock = self.identity_record_lock(id);
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let saved = match self.is_identity_listed(&id) {
+                Ok(false) => {
+                    tracing::debug!(identity_id = %id, "Top-up history not stored: the identity was removed while its top-up ran");
+                    Ok(())
+                }
+                Ok(true) => self.save_top_ups(&id, &entry),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = saved {
+                tracing::warn!(identity_id = %id, ?error, "Top-up history could not be stored locally after a finished top-up");
+            }
+        }
+        self.store_topped_up_identity(topped_up, provenance)
     }
 
     /// Top up an identity that belongs to another wallet, paying from this one.
@@ -282,6 +316,103 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The top-up already happened: a failed save of its history entry must
+    /// not stop the new balance from being stored.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_top_up_history_save_still_stores_the_balance() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let mut topped_up = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        topped_up.identity.set_balance(777);
+        crate::context::test_staging::fail_next_top_up_save(&staged.ctx);
+
+        let returned = staged.ctx.store_finished_top_up(
+            topped_up,
+            Some((3, 50_000)),
+            BalanceProvenance::ObservedAt(7),
+        );
+
+        assert_eq!(returned.top_ups.get(&3), Some(&50_000));
+        let stored = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+        assert_eq!(stored.identity.balance(), 777);
+        assert_eq!(
+            stored.top_ups.get(&3),
+            None,
+            "the history save must have failed"
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A listed identity's finished top-up adds its entry to the stored history.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_top_up_adds_its_entry_to_a_listed_identitys_history() {
+        use crate::context::test_staging::stored_top_ups;
+        use std::collections::BTreeMap;
+
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        staged
+            .ctx
+            .save_top_ups(&staged.id, &BTreeMap::from([(1, 10_000)]))
+            .unwrap();
+        let topped_up = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+
+        staged.ctx.store_finished_top_up(
+            topped_up,
+            Some((3, 50_000)),
+            BalanceProvenance::ObservedAt(7),
+        );
+
+        assert_eq!(
+            stored_top_ups(&staged.ctx, &staged.id),
+            Some(BTreeMap::from([(1, 10_000), (3, 50_000)]))
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity removed while its top-up ran gets no history back: neither
+    /// the entries its removal deleted nor the finished top-up's own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_top_up_stores_no_history_for_a_removed_identity() {
+        use crate::context::test_staging::stored_top_ups;
+        use std::collections::BTreeMap;
+
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let old = BTreeMap::from([(1, 10_000), (2, 20_000)]);
+        staged.ctx.save_top_ups(&staged.id, &old).unwrap();
+        let mut topped_up = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+        assert_eq!(topped_up.top_ups, old);
+        topped_up.identity.set_balance(777);
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        assert_eq!(stored_top_ups(&staged.ctx, &staged.id), None);
+
+        staged.ctx.store_finished_top_up(
+            topped_up,
+            Some((3, 50_000)),
+            BalanceProvenance::ObservedAt(7),
+        );
+
+        assert_eq!(stored_top_ups(&staged.ctx, &staged.id), None);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
 
     /// The reported case: 5 237 duffs is far below the fee the network takes
     /// from a top-up, so it is refused with the amount that would be accepted.

@@ -20,6 +20,7 @@ on:
       - "scripts/ci/**"
       - ".github/workflows/tests.yml"
       - ".github/workflows/weekly-build.yml"
+      - ".github/workflows/release-qa.yml"
       # Its permissions are checked against the weekly job that calls it.
       - ".github/workflows/migration-fixture-capture.yml"
   pull_request:

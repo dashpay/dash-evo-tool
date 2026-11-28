@@ -239,13 +239,13 @@ impl QuestionEnvironment {
 /// A question for an AI assistant about `report`, introduced by `situation`.
 ///
 /// The home folder becomes `~`, the login name and anything that looks like
-/// key material are removed, and the details are cut so that every
+/// key material are removed, and oversized content is cut so that every
 /// [`AiAssistant::question_url`] stays within [`MAX_QUESTION_URL_LEN`].
 pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironment) -> String {
     let redact = |text: &str| redact_identity(&redact_key_material(text), env);
     let message = redact(report.message());
     let details = redact(report.details());
-    let compose = |details: &str| {
+    let compose = |message: &str, details: &str| {
         format!(
             "I use Dash Evo Tool (desktop wallet for the Dash network) version {version} on {os} {arch}. {situation}\n\n\
              \"{message}\"\n\n\
@@ -271,26 +271,45 @@ pub fn ai_question(report: &ErrorReport, situation: &str, env: &QuestionEnvironm
         .unwrap_or(0);
     let fits =
         |question: &str| prefix + urlencoding::encode(question).len() <= MAX_QUESTION_URL_LEN;
-    let full = compose(&details);
+    let full = compose(&message, &details);
     if fits(&full) {
         return full;
     }
-    // Keep the longest prefix of the details that still fits.
-    let boundaries: Vec<usize> = details.char_indices().map(|(index, _)| index).collect();
-    if boundaries.is_empty() {
-        return full;
+    // Preserve the message and guidance before spending space on details.
+    if let Some(details) = truncated_prefix(&details, |text| fits(&compose(&message, text))) {
+        return compose(&message, &details);
     }
-    let cut = |kept: usize| format!("{}{TRUNCATED}", &details[..boundaries[kept]]);
-    let (mut low, mut high) = (0, boundaries.len() - 1);
+    let details = if details.is_empty() { "" } else { TRUNCATED };
+    if let Some(message) = truncated_prefix(&message, |text| fits(&compose(text, details))) {
+        let question = compose(&message, details);
+        if fits(&question) {
+            return question;
+        }
+    }
+    // Caller-supplied context can itself exceed the budget.
+    truncated_prefix(&full, fits).unwrap_or_default()
+}
+
+fn truncated_prefix(text: &str, fits: impl Fn(&str) -> bool) -> Option<String> {
+    if !fits(TRUNCATED) {
+        return None;
+    }
+    let boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
+    let cut = |kept: usize| {
+        let end = boundaries.get(kept).copied().unwrap_or(text.len());
+        format!("{}{TRUNCATED}", &text[..end])
+    };
+    let (mut low, mut high) = (0, boundaries.len());
     while low < high {
         let middle = (low + high).div_ceil(2);
-        if fits(&compose(&cut(middle))) {
+        if fits(&cut(middle)) {
             low = middle;
         } else {
             high = middle - 1;
         }
     }
-    compose(&cut(low))
+    let result = cut(low);
+    fits(&result).then_some(result)
 }
 
 /// `text` with the home folder shown as `~` and the login and profile folder
@@ -797,6 +816,41 @@ mod tests {
         assert!(question.contains("Short message."));
         assert!(question.contains("(truncated)"));
         assert!(question.contains("https://github.com/dashpay/dash-evo-tool"));
+    }
+
+    #[test]
+    fn question_url_limits_long_message_with_empty_details() {
+        assert_long_message_fits("");
+    }
+
+    #[test]
+    fn question_url_limits_long_message_with_details() {
+        assert_long_message_fits("Technical details.");
+    }
+
+    fn assert_long_message_fits(details: &str) {
+        for message in ["Error! ".repeat(1_000), "Błąd! 🔐 ".repeat(1_000)] {
+            let report = ErrorReport::new(message, details);
+            let question = ai_question(&report, STARTUP_SITUATION, &environment());
+            for assistant in AiAssistant::ALL {
+                assert!(assistant.question_url(&question).len() <= MAX_QUESTION_URL_LEN);
+            }
+            assert!(question.contains(TRUNCATED));
+            assert!(question.contains("Never ask me for my recovery phrase"));
+            assert!(question.contains("https://github.com/dashpay/dash-evo-tool"));
+        }
+    }
+
+    #[test]
+    fn question_url_limits_oversized_environment_and_situation() {
+        let mut env = environment();
+        env.version = "version ".repeat(1_000);
+        let report = ErrorReport::new("Message.", "Details.");
+        let question = ai_question(&report, &"Situation! ".repeat(1_000), &env);
+        for assistant in AiAssistant::ALL {
+            assert!(assistant.question_url(&question).len() <= MAX_QUESTION_URL_LEN);
+        }
+        assert!(question.contains(TRUNCATED));
     }
 
     /// The URL carries the question percent-encoded after the assistant's prefix.

@@ -22,6 +22,7 @@ pub enum TechnicalDetailsAction {
 pub struct TechnicalDetails<'a> {
     id_salt: egui::IdSalt,
     details: &'a str,
+    copy_text: Option<String>,
     max_height: f32,
 }
 
@@ -31,6 +32,7 @@ impl<'a> TechnicalDetails<'a> {
         Self {
             id_salt: egui::IdSalt::new(id_salt),
             details,
+            copy_text: None,
             max_height: DETAILS_MAX_HEIGHT,
         }
     }
@@ -38,6 +40,13 @@ impl<'a> TechnicalDetails<'a> {
     /// Height of the scroll area holding the text.
     pub fn max_height(mut self, max_height: f32) -> Self {
         self.max_height = max_height;
+        self
+    }
+
+    /// Text Copy details puts on the clipboard instead of the shown details,
+    /// e.g. with personal folder names removed.
+    pub fn copy_text(mut self, text: String) -> Self {
+        self.copy_text = Some(text);
         self
     }
 
@@ -77,7 +86,8 @@ impl<'a> TechnicalDetails<'a> {
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if copy.clicked() {
-            ui.ctx().copy_text(self.details.to_owned());
+            let text = self.copy_text.as_deref().unwrap_or(self.details);
+            ui.ctx().copy_text(text.to_owned());
             return TechnicalDetailsAction::Copied;
         }
         TechnicalDetailsAction::None

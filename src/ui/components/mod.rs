@@ -2,6 +2,7 @@ pub(crate) mod action_menu;
 pub mod address_input;
 pub mod alias_input;
 pub mod amount_input;
+pub mod ask_ai;
 pub mod avatar;
 pub mod breadcrumb_pill;
 pub mod choice_chips;

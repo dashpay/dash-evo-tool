@@ -1,9 +1,14 @@
 //! Fatal startup failure window: what happened, where to get help, and the
 //! technical details to send.
 
+use super::ask_ai::AskAi;
+use super::component_trait::Component;
+
 use egui::{RichText, Ui};
 
-use crate::model::error_report::StartupFailure;
+use crate::model::error_report::{
+    QuestionEnvironment, STARTUP_SITUATION, StartupFailure, ai_question, redact_identity,
+};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::technical_details::TechnicalDetails;
 use crate::ui::theme::{ComponentStyles, DashColors, Spacing, Typography};
@@ -30,7 +35,8 @@ pub enum StartupErrorDialogAction {
     Quit,
 }
 
-/// Renders a [`StartupFailure`] with its technical details and a Quit action.
+/// Renders a [`StartupFailure`] with its technical details, actions to ask an
+/// AI assistant about it, and Quit.
 ///
 /// The only content of the app window after a fatal startup failure; nothing
 /// else is built behind it.
@@ -77,11 +83,26 @@ impl<'a> StartupErrorDialog<'a> {
                         self.details(ui, dark_mode);
                     });
                 ui.add_space(Spacing::MD);
-                action = self.actions(ui);
+                action = self.actions(ui, dark_mode);
             },
         );
         if chrome.closed_via_x {
             action = StartupErrorDialogAction::Quit;
+        }
+        let id = egui::Id::unique("startup_ask_ai");
+        let dialog = ui.ctx().data_mut(|data| data.get_temp::<AskAi>(id));
+        if let Some(mut dialog) = dialog {
+            let response = dialog.show(ui).inner;
+            if let Some(assistant) = response.send {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(
+                    assistant.question_url(dialog.prompt()),
+                ));
+            }
+            if response.closed {
+                ui.ctx().data_mut(|data| data.remove::<AskAi>(id));
+            } else {
+                ui.ctx().data_mut(|data| data.insert_temp(id, dialog));
+            }
         }
         action
     }
@@ -113,7 +134,9 @@ impl<'a> StartupErrorDialog<'a> {
             crate::VERSION,
             self.failure.report().details()
         );
+        let copy_text = redact_identity(&details, &QuestionEnvironment::current());
         TechnicalDetails::new("startup_error_details", &details)
+            .copy_text(copy_text)
             .max_height(DETAILS_HEIGHT)
             .show(ui);
         if let Some(log_file) = self.failure.log_file() {
@@ -128,13 +151,36 @@ impl<'a> StartupErrorDialog<'a> {
         }
     }
 
-    fn actions(&self, ui: &mut Ui) -> StartupErrorDialogAction {
+    fn actions(&self, ui: &mut Ui, dark_mode: bool) -> StartupErrorDialogAction {
         let mut action = StartupErrorDialogAction::None;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ComponentStyles::add_primary_button(ui, "Quit").clicked() {
                 action = StartupErrorDialogAction::Quit;
             }
+            if ComponentStyles::add_secondary_button(ui, "Copy question", dark_mode)
+                .on_hover_text("Copies the question so you can paste it into any AI assistant.")
+                .clicked()
+            {
+                ui.ctx().copy_text(self.question());
+            }
+            if ComponentStyles::add_secondary_button(ui, "Ask AI", dark_mode).clicked() {
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::unique("startup_ask_ai"),
+                        AskAi::new(self.question()),
+                    )
+                });
+            }
         });
         action
+    }
+
+    /// The redacted question about this failure for an AI assistant.
+    fn question(&self) -> String {
+        ai_question(
+            self.failure.report(),
+            STARTUP_SITUATION,
+            &QuestionEnvironment::current(),
+        )
     }
 }

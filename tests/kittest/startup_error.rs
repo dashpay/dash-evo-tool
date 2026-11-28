@@ -7,7 +7,7 @@ use dash_evo_tool::ui::components::startup_error_dialog::{
     STARTUP_ERROR_TITLE, StartupErrorDialog, StartupErrorDialogAction,
 };
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -306,5 +306,63 @@ fn pinned_pr_app_database_shows_upgrade_release_message() {
             before,
             "the refused database must be left unchanged"
         );
+    });
+}
+
+#[test]
+fn pinned_lineage_locked_store_shows_quit_only_startup_failure() {
+    with_isolated_data_dir(|| {
+        let data_dir = dash_evo_tool::app_dir::app_user_data_dir_path().expect("data dir");
+        dash_evo_tool::app_dir::ensure_data_dir_exists(&data_dir).expect("data dir");
+        let store = data_dir.join("det-testnet.sqlite");
+        let app_db = data_dir.join("det-app.sqlite");
+        let writer = rusqlite::Connection::open(&store).expect("open store");
+        writer
+            .execute_batch(
+                "CREATE TABLE sample (id INTEGER);
+                 BEGIN EXCLUSIVE;
+                 INSERT INTO sample VALUES (1);",
+            )
+            .expect("hold a write lock and create a rollback journal");
+        assert!(store.with_extension("sqlite-journal").exists());
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let outcome = StartupOutcome::default();
+        let shared = outcome.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_eframe(move |cc| BootApp::new(cc.egui_ctx.clone(), shared));
+        harness.run_steps(3);
+
+        assert!(outcome.failed());
+        assert!(
+            !app_db.exists(),
+            "the blocked boot must not open det-app.sqlite"
+        );
+        assert!(harness.query_by_label(STARTUP_ERROR_TITLE).is_some());
+        assert!(harness.query_by_label("Quit").is_some());
+        assert!(harness.query_by_label("Copy details").is_some());
+        assert!(
+            !harness
+                .query_all_by_role(egui::accesskit::Role::Button)
+                .filter_map(|button| button.accesskit_node().label())
+                .any(|label| label.eq_ignore_ascii_case("try again")),
+            "startup must offer no retry button"
+        );
+        let BootApp::Failed(failure) = harness.state() else {
+            panic!("a locked store must fail the boot");
+        };
+        let message = failure.report().message();
+        assert!(message.contains(store.to_str().expect("UTF-8 store path")));
+        assert!(
+            message.contains("Another program is using the file."),
+            "{message}"
+        );
+        assert!(
+            message.contains("Close the other program, such as another copy of Dash Evo Tool, then start Dash Evo Tool again."),
+            "{message}"
+        );
+        assert!(harness.query_by_label(message).is_some());
     });
 }

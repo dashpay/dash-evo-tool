@@ -331,6 +331,46 @@ impl fmt::Display for UpgradeReleaseNetworks {
     }
 }
 
+/// Why the startup probe could not determine a database's lineage.
+#[derive(Debug, Error)]
+pub enum WalletDataCheckError {
+    /// The database or one of its recovery files could not be inspected.
+    #[error("Could not read metadata for {path:?}.")]
+    Metadata {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// SQLite could not open the database or read its migration history.
+    #[error("Could not read the database migration history.")]
+    Sqlite(#[from] rusqlite::Error),
+    /// The history read still failed on the connection allowed to recover the journal.
+    #[error("Could not read the database migration history after attempting journal recovery.")]
+    JournalRecovery(#[source] rusqlite::Error),
+}
+
+impl WalletDataCheckError {
+    fn startup_recovery_advice(&self) -> &'static str {
+        match StorageFailure::in_chain(self) {
+            Some(StorageFailure::InUse) => {
+                "Another program is using the file. Close the other program, such as another copy of Dash Evo Tool, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::Full) => {
+                "Free up space on the disk that contains the file, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::Unavailable) => {
+                "Make sure the drive that contains the file is connected and available, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::OutOfMemory) => {
+                "Close other programs to free up memory, then start Dash Evo Tool again."
+            }
+            Some(StorageFailure::AccessDenied) | None => {
+                "Make sure your account has permission to open this file, then start Dash Evo Tool again."
+            }
+        }
+    }
+}
+
 /// Lets `?` on a joined task keep the panic message out of the error.
 impl From<tokio::task::JoinError> for TaskError {
     fn from(source: tokio::task::JoinError) -> Self {
@@ -867,6 +907,61 @@ pub enum TaskError {
         "Your app data was created by an older test version of Dash Evo Tool and must be upgraded before this version can open it. Install Dash Evo Tool v1.0.0-weekly.20261117 from https://github.com/dashpay/dash-evo-tool/releases/tag/v1.0.0-weekly.20261117, start it once, and then return to this version."
     )]
     AppDataNeedsUpgradeRelease { database: std::path::PathBuf },
+
+    /// The check for data only an earlier release can upgrade could not read
+    /// this database, so nothing is opened: if it is on that layout, opening
+    /// the app database would leave it unconvertible.
+    #[error(
+        "Dash Evo Tool could not read your saved data in {database}. {advice}",
+        database = .database.display(),
+        advice = .source.startup_recovery_advice()
+    )]
+    WalletDataCheckFailed {
+        database: std::path::PathBuf,
+        #[source]
+        source: WalletDataCheckError,
+    },
+
+    /// SQLite confirmed damage in a per-network wallet store.
+    #[error(
+        "The wallet data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
+         If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
+         Dash Evo Tool may also have saved older copies of this file before an upgrade, in the backups/auto folder of the data folder or next to the file with names that start with the file's name. Such a copy may be out of date or unusable. \
+         If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have copies of every identity private key you entered or generated yourself, including keys you added later to identities created from your wallets. Identities that belong to your wallets can be found again with their recovery phrases, but keys you entered or generated yourself must be added again from your copies. If you accept losing records kept only on this device, such as pending payments, delete the damaged file manually along with its matching files, then start the app again. \
+         Dash Evo Tool creates an empty file when you open that network. You may need to restore your wallets and sync again. Syncing cannot bring back records saved only on this device.",
+        database = .database.display()
+    )]
+    WalletDataCheckCorrupt {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// SQLite confirmed damage in the shared app database.
+    #[error(
+        "The app data file at \"{database}\" is damaged. Close all copies of Dash Evo Tool and back up the file together with any matching files ending in -wal, -shm, or -journal. \
+         If you have a working backup, move the damaged file and its matching files out of the data folder. Restore the working backup to the original file name and location, with its own matching files, then start the app again. \
+         Dash Evo Tool may also have saved older copies of this file before an upgrade, in the backups/auto folder of the data folder or next to the file with names that start with the file's name. Such a copy may be out of date or unusable. \
+         If you have no working backup, first wait until the recipients of payments you sent recently have confirmed that they arrived. Before deleting this file, make sure you have the recovery phrases for your wallets and copies of any private keys you imported. You may need them to regain access to your funds. \
+         If you accept losing app settings, wallet names and other details that the network cannot restore, delete the damaged file manually along with its matching files, then start the app again. Dash Evo Tool creates a new file, and you may need to add your wallets and keys again.",
+        database = .database.display()
+    )]
+    AppDataCheckCorrupt {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// A database needed recovery before its history could be read.
+    #[error(
+        "Dash Evo Tool could not finish checking the file at \"{database}\" after an interrupted write. Leave the file and its matching files together. Make sure the disk has free space and that you can change the file and its folder, then restart the app.",
+        database = .database.display()
+    )]
+    WalletDataJournalRecoveryFailed {
+        database: std::path::PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
 
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.
@@ -4160,6 +4255,15 @@ pub enum TaskError {
 const DATA_FOLDER_ACCESS_DENIED: &str = "Dash Evo Tool is not allowed to change its data folder. Make sure the folder is not on a read-only disk and that you have permission to change it, then restart the application.";
 
 impl TaskError {
+    /// Whether another SQLite connection is blocking the lineage check.
+    pub(crate) fn is_wallet_data_check_in_use(&self) -> bool {
+        matches!(
+            self,
+            Self::WalletDataCheckFailed { source, .. }
+                if StorageFailure::in_chain(source) == Some(StorageFailure::InUse)
+        )
+    }
+
     /// A failure to open or prepare the app database at `path`: read-only,
     /// permission and access-refused codes get [`Self::DatabaseAccessDenied`],
     /// the rest, and a directory in the file's place, [`Self::Database`].
@@ -5648,6 +5752,57 @@ fn wallet_identity_discovery_cancelled_message(stored: u32, unconfirmed_saves: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each cause of a failed lineage check gets advice for that cause, and
+    /// every advice ends by starting the app again.
+    #[test]
+    fn wallet_data_check_failure_advice_matches_its_cause() {
+        let sqlite = |code| {
+            WalletDataCheckError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None,
+            ))
+        };
+        let cases = [
+            (
+                sqlite(rusqlite::ffi::SQLITE_BUSY),
+                "Another program is using the file.",
+            ),
+            (
+                sqlite(rusqlite::ffi::SQLITE_FULL),
+                "Free up space on the disk",
+            ),
+            (
+                sqlite(rusqlite::ffi::SQLITE_IOERR),
+                "drive that contains the file is connected",
+            ),
+            (sqlite(rusqlite::ffi::SQLITE_NOMEM), "free up memory"),
+            (
+                sqlite(rusqlite::ffi::SQLITE_PERM),
+                "permission to open this file",
+            ),
+            (
+                sqlite(rusqlite::ffi::SQLITE_CANTOPEN),
+                "permission to open this file",
+            ),
+            (
+                WalletDataCheckError::Metadata {
+                    path: "det-testnet.sqlite-wal".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                },
+                "permission to open this file",
+            ),
+        ];
+        for (source, advice) in cases {
+            let message = TaskError::WalletDataCheckFailed {
+                database: "det-testnet.sqlite".into(),
+                source,
+            }
+            .to_string();
+            assert!(message.contains(advice), "{advice}: {message}");
+            assert!(message.ends_with("start Dash Evo Tool again."), "{message}");
+        }
+    }
 
     /// A data folder the app may not write to gets its own advice; any other
     /// file failure keeps the general one.

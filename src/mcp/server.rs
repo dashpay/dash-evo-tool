@@ -395,8 +395,7 @@ async fn init_app_context_in(
         db
     };
 
-    let app_kv = AppContext::open_app_kv(&data_dir)
-        .map_err(|e| McpToolError::Internal(format!("app k/v open: {e}")))?;
+    let app_kv = AppContext::open_app_kv(&data_dir).map_err(McpToolError::StartupFailed)?;
     let secret_store = AppContext::open_secret_store(&data_dir).map_err(|e| {
         // A legacy passphrase-protected vault can only be unlocked through the
         // GUI's boot prompt — name the real cause and the path forward instead
@@ -577,6 +576,35 @@ mod tests {
             secret_cached: AtomicBool::new(true),
             shutdown_calls: AtomicUsize::new(0),
         })
+    }
+
+    #[tokio::test]
+    async fn standalone_startup_reports_unreadable_wallet_store() {
+        use crate::backend_task::error::TaskError;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::wallet_backend::wallet_database_path(dir.path(), Network::Testnet);
+        std::fs::write(&store, b"not a database").expect("write the store");
+
+        let Err(error) = init_app_context_in(dir.path().to_path_buf()).await else {
+            panic!("an unreadable store must stop standalone startup");
+        };
+        let McpToolError::StartupFailed(task_error) = &error else {
+            panic!("expected a typed startup error, got {error:?}");
+        };
+        assert!(
+            matches!(task_error, TaskError::WalletDataCheckCorrupt { database, source }
+                if database == &store && source.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase)),
+            "{task_error:?}"
+        );
+        let expected_message = task_error.to_string();
+        let expected_details = serde_json::Value::String(format!("{task_error:?}"));
+
+        let wire_error = McpError::from(error);
+        assert_eq!(wire_error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(wire_error.message.as_ref(), expected_message);
+        assert_eq!(wire_error.data, Some(expected_details));
     }
 
     #[tokio::test]

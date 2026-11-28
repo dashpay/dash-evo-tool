@@ -1342,11 +1342,16 @@ impl WalletSendScreen {
     fn confirmation_ownership(&self) -> BTreeMap<String, String> {
         use crate::model::wallet::DerivationPathHelpers;
         let mut owners = BTreeMap::new();
-        for (wallet, _, paths, _) in self.address_input_wallets() {
+        for (wallet, _, _, _) in self.address_input_wallets() {
             let Ok(seed_hash) = wallet.read().map(|wallet| wallet.seed_hash()) else {
                 continue;
             };
             let name = self.wallet_name(&seed_hash);
+            let paths = self
+                .app_context
+                .wallet_backend()
+                .map(|backend| backend.owned_address_paths(&seed_hash))
+                .unwrap_or_default();
             for (address, path) in paths {
                 owners.insert(address.to_string(), name.clone());
                 if path.is_platform_payment(self.app_context.network)

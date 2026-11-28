@@ -3169,6 +3169,21 @@ impl WalletBackend {
             .clone()
     }
 
+    /// Address paths belonging to this wallet, excluding contact accounts.
+    pub fn owned_address_paths(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<
+        dash_sdk::dpp::dashcore::Address,
+        dash_sdk::dpp::key_wallet::bip32::DerivationPath,
+    > {
+        self.inner
+            .snapshots
+            .snapshot(seed_hash)
+            .owned_address_paths
+            .clone()
+    }
+
     /// The SPV-watched BIP-44 external (receive) addresses from the lock-free
     /// display snapshot, as strings.
     ///

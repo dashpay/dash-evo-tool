@@ -181,6 +181,8 @@ pub struct WalletSnapshot {
     /// bookkeeping has not indexed yet, so no funded address is dropped from the
     /// per-category tab totals.
     pub address_paths: BTreeMap<Address, DerivationPath>,
+    /// Generated addresses owned by this wallet, excluding contact accounts.
+    pub owned_address_paths: BTreeMap<Address, DerivationPath>,
     /// Whether persisted transaction history was fully restored at startup.
     pub transaction_history_status: TransactionHistoryStatus,
 }
@@ -242,6 +244,7 @@ struct SnapshotState {
     address_balances: BTreeMap<Address, u64>,
     monitored_receive_addresses: Vec<String>,
     address_paths: BTreeMap<Address, DerivationPath>,
+    owned_address_paths: BTreeMap<Address, DerivationPath>,
 }
 
 #[cfg(test)]
@@ -553,13 +556,28 @@ fn external_addresses_from_info(
         .unwrap_or_default()
 }
 
+fn owned_address_paths_from_info(
+    info: &dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+) -> BTreeMap<Address, DerivationPath> {
+    let mut paths = address_paths_from_info(info);
+    for account in info.accounts.all_accounts() {
+        if account.managed_account_type().is_contact_owned() {
+            for pool in account.managed_account_type().address_pools() {
+                for entry in pool.addresses.values() {
+                    paths.remove(&entry.address);
+                }
+            }
+        }
+    }
+    paths
+}
+
 /// The derivation path of every address the wallet has generated, across all
 /// accounts and every pool (external and internal), including the DIP-17
 /// platform-payment pool.
 ///
 /// Read straight off each pool's [`AddressInfo`](dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressInfo)
-/// (`address → path`). This is the authoritative set of addresses the wallet
-/// owns: the account-summary view categorizes funded addresses through it, and
+/// (`address → path`). This includes contact-owned addresses: the account-summary view categorizes funded addresses through it, and
 /// the send-autocomplete offers only addresses that appear here.
 ///
 /// Platform-payment accounts hold credits rather than Core UTXOs, so upstream
@@ -627,6 +645,7 @@ fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
         address_balances: prior.address_balances.clone(),
         monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
         address_paths: prior.address_paths.clone(),
+        owned_address_paths: prior.owned_address_paths.clone(),
     }
 }
 
@@ -1041,6 +1060,7 @@ impl SnapshotStore {
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
                     address_paths: address_paths_from_info(&state.core_wallet),
+                    owned_address_paths: owned_address_paths_from_info(&state.core_wallet),
                 }
             }
             // Accepted, self-healing edge case: if this is the very first
@@ -1095,6 +1115,7 @@ impl SnapshotStore {
             address_balances: state.address_balances,
             monitored_receive_addresses: state.monitored_receive_addresses,
             address_paths: state.address_paths,
+            owned_address_paths: state.owned_address_paths,
             transaction_history_status: self
                 .transaction_history_status
                 .lock()
@@ -1179,6 +1200,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
     }
@@ -1224,6 +1246,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
 
@@ -1266,6 +1289,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
         assert_eq!(
@@ -1292,6 +1316,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
         assert_eq!(
@@ -1325,6 +1350,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
         assert_eq!(
@@ -1392,6 +1418,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
 
@@ -1428,6 +1455,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: watched.clone(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
 
@@ -1743,6 +1771,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
         let initial_revision = store.snapshot(&seed(0x51)).asset_lock_input_revision;
@@ -1786,6 +1815,7 @@ mod tests {
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
+                owned_address_paths: BTreeMap::new(),
             },
         );
         assert!(
@@ -2446,6 +2476,7 @@ mod tests {
             }],
             address_balances,
             monitored_receive_addresses: vec!["yWatched".to_string()],
+            owned_address_paths: address_paths.clone(),
             address_paths,
             transaction_history_status: TransactionHistoryStatus::Complete,
         }
@@ -2764,6 +2795,7 @@ mod tests {
                 address_balances: address_balances.clone(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: address_paths.clone(),
+                owned_address_paths: address_paths.clone(),
             },
         );
 
@@ -2802,6 +2834,69 @@ mod tests {
             .find(|s| s.category == AccountCategory::Other(DerivationPathReference::Unknown))
             .expect("stray funded address surfaced as Other");
         assert_eq!(other.confirmed_balance, 7_000_000);
+    }
+
+    #[test]
+    fn owned_address_paths_exclude_contact_payment_addresses() {
+        use dash_sdk::dpp::key_wallet::{
+            managed_account::{
+                managed_account_type::ManagedAccountType,
+                managed_core_funds_account::ManagedCoreFundsAccount,
+            },
+            wallet::{
+                Wallet as UpstreamWallet, initialization::WalletAccountCreationOptions,
+                managed_wallet_info::ManagedWalletInfo,
+            },
+        };
+        let network = Network::Testnet;
+        let wallet = UpstreamWallet::from_seed_bytes(
+            crate::test_support::keys::seed(),
+            network,
+            WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, 1);
+        let own = address_paths_from_info(&info);
+        let pool = info
+            .accounts
+            .all_accounts()
+            .into_iter()
+            .next()
+            .unwrap()
+            .managed_account_type()
+            .address_pools()[0]
+            .clone();
+        let contact_addresses: Vec<_> = pool
+            .addresses
+            .values()
+            .map(|entry| entry.address.clone())
+            .collect();
+        info.accounts = Default::default();
+        info.accounts.dashpay_external_accounts.insert(
+            dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey {
+                index: 0,
+                user_identity_id: [1; 32],
+                friend_identity_id: [2; 32],
+            },
+            ManagedCoreFundsAccount::new(
+                ManagedAccountType::DashpayExternalAccount {
+                    index: 0,
+                    user_identity_id: [1; 32],
+                    friend_identity_id: [2; 32],
+                    addresses: pool,
+                },
+                network,
+            ),
+        );
+        assert!(!contact_addresses.is_empty());
+        let paths = owned_address_paths_from_info(&info);
+        assert!(
+            contact_addresses
+                .iter()
+                .all(|address| !paths.contains_key(address))
+        );
+        let owned_info = ManagedWalletInfo::from_wallet(&wallet, 1);
+        assert_eq!(owned_address_paths_from_info(&owned_info), own);
     }
 
     /// The DIP-17 platform-payment pool must reach the snapshot. Upstream keys

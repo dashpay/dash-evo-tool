@@ -269,24 +269,18 @@ impl ConfirmationDialog {
                                 }
                             });
                     };
-                    let split = summary
-                        .rows
-                        .iter()
-                        .rposition(|(label, _)| *label == "To")
-                        .map_or(summary.rows.len(), |index| index + 1);
                     egui::ScrollArea::vertical()
                         .id_salt("confirmation_recipients")
-                        .max_height((ui.ctx().content_rect().height() - 300.0).max(60.0))
+                        .max_height((ui.ctx().content_rect().height() - 220.0).max(60.0))
                         .show(ui, |ui| {
-                            render_rows(ui, &summary.rows[..split], "confirmation_summary")
+                            render_rows(ui, &summary.rows, "confirmation_summary");
+                            ui.add_space(Spacing::MD);
+                            ui.separator();
+                            for note in &summary.notes {
+                                ui.add_space(Spacing::SM);
+                                ui.label(note);
+                            }
                         });
-                    render_rows(ui, &summary.rows[split..], "confirmation_totals");
-                    ui.add_space(Spacing::MD);
-                    ui.separator();
-                    for note in &summary.notes {
-                        ui.add_space(Spacing::SM);
-                        ui.label(note);
-                    }
                 } else {
                     ui.label(
                         egui::RichText::new(self.message.text())
@@ -534,10 +528,19 @@ mod tests {
         use egui_kittest::kittest::Queryable;
         let mut rows = vec![("From", "Savings".to_string())];
         rows.extend((0..40).map(|i| ("To", format!("Recipient {i}"))));
-        rows.push(("Total", "40 DASH".to_string()));
+        rows.extend([
+            ("Total", "40 DASH".to_string()),
+            ("Network fee", "0.00001 DASH".to_string()),
+            ("Total deducted", "40.00001 DASH".to_string()),
+        ]);
         let summary = ConfirmationSummary {
             rows,
-            notes: vec![],
+            notes: vec![
+                "The Core network fee is estimated and may change.".into(),
+                "The Platform processing fee is deducted from the credited amount.".into(),
+                "Funds will move from Core to Platform before reaching the recipients.".into(),
+                "Check the recipients. Payments cannot be undone.".into(),
+            ],
         };
         let mut dialog = ConfirmationDialog::new("Send batch?", summary.to_string())
             .with_summary(summary)
@@ -550,7 +553,7 @@ mod tests {
             });
         harness.run();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
-        for label in ["Send", "Cancel", "Total"] {
+        for label in ["Send", "Cancel"] {
             assert!(
                 viewport.contains_rect(harness.get_by_label(label).rect()),
                 "{label} must remain visible"
@@ -559,7 +562,7 @@ mod tests {
         harness.get_by_label("Recipient 39").scroll_to_me();
         harness.run();
         assert!(viewport.contains_rect(harness.get_by_label("Recipient 39").rect()));
-        for label in ["Send", "Cancel", "Total"] {
+        for label in ["Send", "Cancel"] {
             assert!(viewport.contains_rect(harness.get_by_label(label).rect()));
         }
     }

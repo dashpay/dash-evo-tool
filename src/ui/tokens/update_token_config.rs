@@ -77,6 +77,7 @@ pub struct UpdateTokenConfigScreen {
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+    pub proposal_group_position: Option<GroupContractPosition>,
 
     // Input state fields
     authorized_identity_input: Option<String>,
@@ -147,6 +148,7 @@ impl UpdateTokenConfigScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
+            proposal_group_position: None,
             completed_fee_result: None,
             completed_outcome: None,
             refresh_banner: None,
@@ -751,6 +753,18 @@ impl UpdateTokenConfigScreen {
                 .clicked()
                 && !in_flight
             {
+                if self.group_action_id.is_some()
+                    && (self.group.is_none()
+                        || self.proposal_group_position
+                            != self.group.as_ref().map(|(position, _)| *position))
+                {
+                    super::set_error_banner(
+                        &self.app_context,
+                        super::token_action_screen::UNRESOLVED_PROPOSAL_GROUP,
+                    );
+                    return AppAction::None;
+                }
+
                 let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(

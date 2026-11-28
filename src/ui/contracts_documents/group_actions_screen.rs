@@ -30,16 +30,16 @@ use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
 use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokenInfo,
-};
+use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
-use dash_sdk::dpp::data_contract::TokenContractPosition;
+use dash_sdk::dpp::data_contract::{GroupContractPosition, TokenContractPosition};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::action_event::GroupActionEvent;
@@ -60,7 +60,7 @@ use std::sync::Arc;
 enum FetchGroupActionsStatus {
     NotStarted,
     WaitingForResult,
-    Complete(IndexMap<Identifier, GroupAction>),
+    Complete(IndexMap<Identifier, (GroupContractPosition, GroupAction)>),
     Error,
 }
 
@@ -78,7 +78,6 @@ pub struct GroupActionsScreen {
     >,
     contract_search: String,
     qualified_identities: Vec<QualifiedIdentity>,
-    identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
     /// Whether `selected_identity` can send token transactions, read once per
@@ -133,21 +132,12 @@ impl GroupActionsScreen {
             }
         }).collect();
 
-        let identity_token_balances = match app_context.identity_token_balances() {
-            Ok(identity_token_balances) => identity_token_balances,
-            Err(e) => {
-                tracing::error!("Failed to load identity token balances: {}", e);
-                IndexMap::new()
-            }
-        };
-
         Self {
             // Contract and identity selectors
             selected_contract: None,
             contracts_with_group_actions,
             contract_search: String::new(),
             qualified_identities,
-            identity_token_balances,
             selected_identity: None,
             selected_identity_str: String::new(),
             selected_identity_token_actions: None,
@@ -188,7 +178,7 @@ impl GroupActionsScreen {
     fn render_group_actions(
         &mut self,
         ui: &mut egui::Ui,
-        group_actions: &IndexMap<Identifier, GroupAction>,
+        group_actions: &IndexMap<Identifier, (GroupContractPosition, GroupAction)>,
     ) -> AppAction {
         let mut action = AppAction::None;
 
@@ -235,7 +225,7 @@ impl GroupActionsScreen {
                         });
                     })
                     .body(|mut body| {
-                        for (id, group_action) in group_actions {
+                        for (id, (group_position, group_action)) in group_actions {
                             let GroupActionEvent::TokenEvent(token_event) = group_action.event();
 
                             body.row(row_height, |mut row| {
@@ -274,58 +264,72 @@ impl GroupActionsScreen {
                                             .on_hover_text("The app cannot sign this action yet.");
                                         return;
                                     }
-                                    if let Some(reason) = blocked {
-                                        ui.add_enabled(false, egui::Button::new("Take Action"))
-                                            .on_disabled_hover_text(reason);
-                                        return;
-                                    }
                                     if ComponentStyles::add_primary_button(
                                         ui,
                                         "Take Action",
                                     )
                                     .clicked()
                                     {
-                                        let token_contract_position = group_action.token_contract_position();
-                                        let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
-                                        let identity_token_balance = match self
-                                            .identity_token_balances
-                                            .get(&IdentityTokenIdentifier {
-                                                token_id,
-                                                identity_id: self.selected_identity
-                                                    .as_ref()
-                                                    .unwrap()
-                                                    .identity
-                                                    .id()
-                                            })
-                                            .cloned() {
-                                            Some(identity_token_balance) => identity_token_balance,
-                                            None => {
-                                                self.fetch_group_actions_status =
-                                                    FetchGroupActionsStatus::Error;
+                                        let token_position = group_action.token_contract_position();
+                                        let Some((data_contract, identity)) = self.selected_contract.as_ref().zip(self.selected_identity.as_ref()) else {
+                                            return;
+                                        };
+                                        let data_contract = match self.app_context.get_contract_by_id(&data_contract.contract.id()) {
+                                            Ok(Some(contract)) => contract,
+                                            Ok(None) => {
                                                 MessageBanner::set_global(
                                                     ui.ctx(),
-                                                    "No identity token balance found",
+                                                    "This contract is no longer available. Refresh and select a contract again.",
                                                     MessageType::Error,
                                                 );
                                                 return;
                                             }
-                                        };
-                                        let identity_token_info = match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(&identity_token_balance, &self.app_context) {
-                                            Ok(identity_token_info) => identity_token_info,
                                             Err(error) => {
-                                                self.fetch_group_actions_status =
-                                                    FetchGroupActionsStatus::Error;
                                                 MessageBanner::set_global(
                                                     ui.ctx(),
-                                                    "Token information for this identity could not be loaded. Refresh and try again.",
+                                                    "The contract could not be loaded. Refresh and try again.",
                                                     MessageType::Error,
-                                                )
-                                                .with_details(error);
+                                                ).with_details(error);
                                                 return;
                                             }
                                         };
+                                        let Some((token_id, token_config)) = data_contract.contract.token_id(token_position).zip(data_contract.contract.tokens().get(&token_position)) else {
+                                            MessageBanner::set_global(
+                                                ui.ctx(),
+                                                "Token information could not be loaded. Refresh and try again.",
+                                                MessageType::Error,
+                                            );
+                                            return;
+                                        };
+                                        let identity = match self.app_context.get_identity_by_id(&identity.identity.id()) {
+                                            Ok(Some(identity)) => identity,
+                                            Ok(None) => {
+                                                MessageBanner::set_global(
+                                                    ui.ctx(),
+                                                    "This identity is no longer available. Refresh and select an identity again.",
+                                                    MessageType::Error,
+                                                );
+                                                return;
+                                            }
+                                            Err(error) => {
+                                                MessageBanner::set_global(
+                                                    ui.ctx(),
+                                                    "The identity could not be loaded. Refresh and try again.",
+                                                    MessageType::Error,
+                                                ).with_details(error);
+                                                return;
+                                            }
+                                        };
+                                        let identity_token_info = IdentityTokenInfo {
+                                            token_id,
+                                            token_alias: token_config.conventions().localizations().get("en").map(|name| name.singular_form().to_string()).unwrap_or_else(|| token_id.to_string(Encoding::Base58)),
+                                            identity,
+                                            data_contract: data_contract.clone(),
+                                            token_config: token_config.clone(),
+                                            token_position,
+                                        };
 
-                                        self.handle_token_event_action(token_event, *id, identity_token_info, &mut action);
+                                        self.handle_token_event_action(token_event, *id, *group_position, identity_token_info, &mut action);
                                     }
                                 });
                             });
@@ -438,6 +442,7 @@ impl GroupActionsScreen {
         &mut self,
         token_event: &TokenEvent,
         action_id: Identifier,
+        group_position: GroupContractPosition,
         identity_token_info: IdentityTokenInfo,
         action: &mut AppAction,
     ) {
@@ -445,6 +450,7 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, recipient, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.common.group_action_id = Some(action_id);
+                mint_screen.common.proposal_group_position = Some(group_position);
                 mint_screen.action.set_proposal_recipient(*recipient);
                 mint_screen.action.amount = Some(Amount::from_token(
                     &mint_screen.common.identity_token_info,
@@ -456,6 +462,7 @@ impl GroupActionsScreen {
             TokenEvent::Burn(amount, _burn_from, note_opt) => {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
                 burn_screen.common.group_action_id = Some(action_id);
+                burn_screen.common.proposal_group_position = Some(group_position);
                 // Convert amount to Amount struct using the token configuration
                 burn_screen.action.amount = Some(Amount::from_token(
                     &burn_screen.common.identity_token_info,
@@ -468,6 +475,7 @@ impl GroupActionsScreen {
                 let mut freeze_screen =
                     FreezeTokensScreen::new(identity_token_info, &self.app_context);
                 freeze_screen.common.group_action_id = Some(action_id);
+                freeze_screen.common.proposal_group_position = Some(group_position);
                 freeze_screen.action.freeze_identity_id = identifier.to_string(Encoding::Base58);
                 freeze_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::FreezeTokensScreen(freeze_screen));
@@ -476,6 +484,7 @@ impl GroupActionsScreen {
                 let mut unfreeze_screen =
                     UnfreezeTokensScreen::new(identity_token_info, &self.app_context);
                 unfreeze_screen.common.group_action_id = Some(action_id);
+                unfreeze_screen.common.proposal_group_position = Some(group_position);
                 unfreeze_screen.action.unfreeze_identity_id =
                     identifier.to_string(Encoding::Base58);
                 unfreeze_screen.common.public_note = note_opt.clone();
@@ -485,6 +494,7 @@ impl GroupActionsScreen {
                 let mut destroy_screen =
                     DestroyFrozenFundsScreen::new(identity_token_info, &self.app_context);
                 destroy_screen.common.group_action_id = Some(action_id);
+                destroy_screen.common.proposal_group_position = Some(group_position);
                 destroy_screen.action.frozen_identity_id = identifier.to_string(Encoding::Base58);
                 destroy_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(destroy_screen));
@@ -496,6 +506,7 @@ impl GroupActionsScreen {
                         let mut pause_screen =
                             PauseTokensScreen::new(identity_token_info, &self.app_context);
                         pause_screen.common.group_action_id = Some(action_id);
+                        pause_screen.common.proposal_group_position = Some(group_position);
                         pause_screen.common.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::PauseTokensScreen(pause_screen));
                     }
@@ -503,6 +514,7 @@ impl GroupActionsScreen {
                         let mut resume_screen =
                             ResumeTokensScreen::new(identity_token_info, &self.app_context);
                         resume_screen.common.group_action_id = Some(action_id);
+                        resume_screen.common.proposal_group_position = Some(group_position);
                         resume_screen.common.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::ResumeTokensScreen(resume_screen));
                     }
@@ -512,6 +524,7 @@ impl GroupActionsScreen {
                 let mut update_screen =
                     UpdateTokenConfigScreen::new(identity_token_info, &self.app_context);
                 update_screen.group_action_id = Some(action_id);
+                update_screen.proposal_group_position = Some(group_position);
                 update_screen.public_note = note_opt.clone();
                 update_screen.change_item = change_item.clone();
                 *action |=
@@ -523,6 +536,8 @@ impl GroupActionsScreen {
                         .with_schedule(schedule.clone());
 
                 change_price_screen.group_action_id = Some(action_id);
+
+                change_price_screen.proposal_group_position = Some(group_position);
                 change_price_screen.token_pricing_schedule = format!("{:?}", schedule);
                 change_price_screen.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::SetTokenPriceScreen(change_price_screen));
@@ -722,6 +737,7 @@ mod sdk_adapter_tests {
             screen.handle_token_event_action(
                 &TokenEvent::Mint(5, proposed, None),
                 Identifier::from([8; 32]),
+                0,
                 token_info(&ctx, Some(destination), false),
                 &mut action,
             );
@@ -834,6 +850,331 @@ mod sdk_adapter_tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_locked_unregistered_wallet_can_open_and_read_a_group_proposal() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference, identity_holding};
+        use crate::model::qualified_contract::InsertTokensToo;
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+        use dash_sdk::dpp::group::group_action::v0::GroupActionV0;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        use std::sync::RwLock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        wallet.uses_password = true;
+        wallet.wallet_seed.close();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .unwrap();
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .unwrap(),
+            TokenActionAvailability::WalletNotOpen
+        );
+
+        let recipient = Identifier::from([9; 32]);
+        let mut info = mint_token_info(&ctx, Some(recipient), false);
+        info.data_contract
+            .contract
+            .set_tokens(BTreeMap::from([(0, info.token_config.clone())]));
+        ctx.insert_contract_if_not_exists(
+            &info.data_contract.contract,
+            None,
+            InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .unwrap();
+        let mut screen = GroupActionsScreen::new(&ctx);
+        screen.selected_contract = Some(info.data_contract.clone());
+        screen.selected_identity = Some(identity);
+        assert!(ctx.identity_token_balances().unwrap().is_empty());
+        let proposals = IndexMap::from([(
+            Identifier::from([8; 32]),
+            (
+                0,
+                GroupAction::V0(GroupActionV0 {
+                    contract_id: info.data_contract.contract.id(),
+                    proposer_id: recipient,
+                    token_contract_position: 0,
+                    event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                        12,
+                        recipient,
+                        Some("Treasury proposal".into()),
+                    )),
+                }),
+            ),
+        )]);
+        let mut opened = None;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut GroupActionsScreen| {
+                    if let AppAction::AddScreen(Screen::MintTokensScreen(mint)) =
+                        screen.render_group_actions(ui, &proposals)
+                    {
+                        opened = Some(mint);
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        let take_action = harness.get_by_label("Take Action");
+        assert!(
+            !take_action.accesskit_node().is_disabled(),
+            "viewing a proposal does not require wallet registration"
+        );
+        take_action.click();
+        harness.run();
+        drop(harness);
+        let mint = opened.expect("Take Action opens the proposal");
+        assert_eq!(mint.common.proposal_group_position, Some(0));
+        let amount = mint.action.amount.as_ref().unwrap().clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                mint,
+            );
+        harness.run();
+        harness.get_by_label(&format!("Amount: {amount}"));
+        harness.get_by_label("Note: Treasury proposal");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopening_a_group_proposal_uses_the_newly_stored_key() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference, identity_holding};
+        use crate::model::qualified_contract::InsertTokensToo;
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+        use dash_sdk::dpp::group::group_action::v0::GroupActionV0;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        use std::sync::RwLock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        wallet.uses_password = true;
+        wallet.wallet_seed.close();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .unwrap();
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .unwrap(),
+            TokenActionAvailability::WalletNotOpen
+        );
+
+        let recipient = Identifier::from([9; 32]);
+        let mut info = mint_token_info(&ctx, Some(recipient), false);
+        info.data_contract
+            .contract
+            .set_tokens(BTreeMap::from([(0, info.token_config.clone())]));
+        ctx.insert_contract_if_not_exists(
+            &info.data_contract.contract,
+            None,
+            InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .unwrap();
+        let mut screen = GroupActionsScreen::new(&ctx);
+        screen.selected_contract = Some(info.data_contract.clone());
+        screen.selected_identity = Some(identity);
+        let updated = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ]);
+        ctx.insert_local_qualified_identity(&updated, &Some((seed_hash, 0)))
+            .unwrap();
+        assert!(ctx.identity_token_balances().unwrap().is_empty());
+        let proposals = IndexMap::from([(
+            Identifier::from([8; 32]),
+            (
+                0,
+                GroupAction::V0(GroupActionV0 {
+                    contract_id: info.data_contract.contract.id(),
+                    proposer_id: recipient,
+                    token_contract_position: 0,
+                    event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                        12,
+                        recipient,
+                        Some("Treasury proposal".into()),
+                    )),
+                }),
+            ),
+        )]);
+        let mut opened = None;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut GroupActionsScreen| {
+                    if let AppAction::AddScreen(Screen::MintTokensScreen(mint)) =
+                        screen.render_group_actions(ui, &proposals)
+                    {
+                        opened = Some(mint);
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        let take_action = harness.get_by_label("Take Action");
+        assert!(
+            !take_action.accesskit_node().is_disabled(),
+            "viewing a proposal does not require wallet registration"
+        );
+        take_action.click();
+        harness.run();
+        drop(harness);
+        let mint = opened.expect("Take Action opens the proposal");
+        assert_eq!(mint.common.proposal_group_position, Some(0));
+        assert_eq!(
+            mint.common.identity_token_info.identity.identity, updated.identity,
+            "reopening must include the key added after the list snapshot"
+        );
+        let amount = mint.action.amount.as_ref().unwrap().clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                mint,
+            );
+        harness.run();
+        harness.get_by_label(&format!("Amount: {amount}"));
+        harness.get_by_label("Note: Treasury proposal");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopening_a_group_proposal_uses_the_newly_stored_contract() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference, identity_holding};
+        use crate::model::qualified_contract::InsertTokensToo;
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+        use dash_sdk::dpp::group::group_action::v0::GroupActionV0;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        use std::sync::RwLock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        wallet.uses_password = true;
+        wallet.wallet_seed.close();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .unwrap();
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .unwrap(),
+            TokenActionAvailability::WalletNotOpen
+        );
+
+        let recipient = Identifier::from([9; 32]);
+        let mut info = mint_token_info(&ctx, Some(Identifier::from([7; 32])), false);
+        info.data_contract
+            .contract
+            .set_tokens(BTreeMap::from([(0, info.token_config.clone())]));
+        ctx.insert_contract_if_not_exists(
+            &info.data_contract.contract,
+            None,
+            InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .unwrap();
+        let mut screen = GroupActionsScreen::new(&ctx);
+        screen.selected_contract = Some(info.data_contract.clone());
+        screen.selected_identity = Some(identity);
+        let updated_config = mint_token_info(&ctx, Some(recipient), false).token_config;
+        info.data_contract
+            .contract
+            .set_tokens(BTreeMap::from([(0, updated_config.clone())]));
+        ctx.replace_contract(
+            info.data_contract.contract.id(),
+            &info.data_contract.contract,
+        )
+        .unwrap();
+
+        let updated = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ]);
+        ctx.insert_local_qualified_identity(&updated, &Some((seed_hash, 0)))
+            .unwrap();
+        assert!(ctx.identity_token_balances().unwrap().is_empty());
+        let proposals = IndexMap::from([(
+            Identifier::from([8; 32]),
+            (
+                0,
+                GroupAction::V0(GroupActionV0 {
+                    contract_id: info.data_contract.contract.id(),
+                    proposer_id: recipient,
+                    token_contract_position: 0,
+                    event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                        12,
+                        recipient,
+                        Some("Treasury proposal".into()),
+                    )),
+                }),
+            ),
+        )]);
+        let mut opened = None;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut GroupActionsScreen| {
+                    if let AppAction::AddScreen(Screen::MintTokensScreen(mint)) =
+                        screen.render_group_actions(ui, &proposals)
+                    {
+                        opened = Some(mint);
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        let take_action = harness.get_by_label("Take Action");
+        assert!(
+            !take_action.accesskit_node().is_disabled(),
+            "viewing a proposal does not require wallet registration"
+        );
+        take_action.click();
+        harness.run();
+        drop(harness);
+        let mint = opened.expect("Take Action opens the proposal");
+        assert_eq!(mint.common.proposal_group_position, Some(0));
+        assert_eq!(
+            mint.common.identity_token_info.identity.identity, updated.identity,
+            "reopening must include the key added after the list snapshot"
+        );
+        assert_eq!(
+            mint.common.identity_token_info.token_config, updated_config,
+            "opening must use the destination stored after the list snapshot"
+        );
+        let amount = mint.action.amount.as_ref().unwrap().clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                mint,
+            );
+        harness.run();
+        harness.get_by_label(&format!("Amount: {amount}"));
+        harness.get_by_label("Note: Treasury proposal");
+    }
+
     /// Co-signing a group Mint must reuse the proposer's recipient: the field
     /// is read-only while co-signing, so leaving it empty made the screen
     /// unable to sign at all.
@@ -869,6 +1210,7 @@ mod sdk_adapter_tests {
         screen.handle_token_event_action(
             &TokenEvent::Mint(12, recipient, None),
             Identifier::from([8; 32]),
+            0,
             info,
             &mut action,
         );
@@ -980,6 +1322,7 @@ mod sdk_adapter_tests {
         screen.handle_token_event_action(
             &TokenEvent::Mint(12, treasury, None),
             Identifier::from([8; 32]),
+            0,
             info,
             &mut action,
         );

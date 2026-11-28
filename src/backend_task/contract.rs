@@ -182,7 +182,7 @@ impl AppContext {
 
                     for group_action in group_actions {
                         if let Some(action) = &group_action.1 {
-                            actions.insert(group_action.0, action.clone());
+                            actions.insert(group_action.0, (*group_position, action.clone()));
                         }
                     }
                 }

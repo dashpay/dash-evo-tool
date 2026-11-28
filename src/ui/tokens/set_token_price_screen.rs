@@ -99,6 +99,7 @@ pub struct SetTokenPriceScreen {
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
+    pub proposal_group_position: Option<GroupContractPosition>,
 
     pub token_pricing_schedule: String,
     /// Token pricing schedule to use; if None, we will remove the pricing schedule
@@ -322,6 +323,7 @@ impl SetTokenPriceScreen {
             group,
             is_unilateral_group_member,
             group_action_id: None,
+            proposal_group_position: None,
             token_pricing_schedule: "".to_string(),
             pricing_type: PricingType::RemovePricing,
             single_price_amount: None,
@@ -768,6 +770,18 @@ impl SetTokenPriceScreen {
         self.show_confirmation_popup = false;
         self.confirmation_dialog = None; // Reset the dialog for next use
         if self.set_price_request.is_pending() {
+            return AppAction::None;
+        }
+
+        if self.group_action_id.is_some()
+            && (self.group.is_none()
+                || self.proposal_group_position
+                    != self.group.as_ref().map(|(position, _)| *position))
+        {
+            super::set_error_banner(
+                &self.app_context,
+                super::token_action_screen::UNRESOLVED_PROPOSAL_GROUP,
+            );
             return AppAction::None;
         }
 
@@ -1356,6 +1370,7 @@ mod tests {
         let mut screen = SetTokenPriceScreen::new(info, &context).with_schedule(schedule.clone());
         assert!(screen.group.is_some());
         screen.group_action_id = Some(Identifier::new([7; 32]));
+        screen.proposal_group_position = Some(0);
         screen.token_pricing_schedule = format!("{schedule:?}");
         screen.public_note = Some("New price for December".into());
         screen.show_confirmation_popup = true;

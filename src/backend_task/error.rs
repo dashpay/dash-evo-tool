@@ -4362,6 +4362,13 @@ impl TaskError {
             Self::IdentityKeyAddedButNotSaved { source } => Self::IdentityKeyAddedButNotSaved {
                 source: Box::new((*source).contextualize_dapi_availability(availability)),
             },
+            Self::KeyLimitsRaisedButBalanceNotRefreshed { source } => {
+                Self::KeyLimitsRaisedButBalanceNotRefreshed {
+                    source: source.map(|source| {
+                        Box::new((*source).contextualize_dapi_availability(availability))
+                    }),
+                }
+            }
             Self::DerivedIdentityKeyAddedButNotSaved { source } => {
                 Self::DerivedIdentityKeyAddedButNotSaved {
                     source: Box::new((*source).contextualize_dapi_availability(availability)),

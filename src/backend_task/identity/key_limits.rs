@@ -358,6 +358,58 @@ mod tests {
         assert_eq!(after.identity.balance(), stored.identity.balance());
     }
 
+    /// Dispatch must keep the completed-raise message when the balance read
+    /// exhausts DAPI addresses, so the user refreshes instead of paying again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dispatch_preserves_completed_raise_when_balance_read_exhausts_dapi() {
+        use crate::backend_task::contextualize_dapi_result;
+        use crate::backend_task::error::DapiAddressAvailability;
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+        let staged = stage_identity_with_vaulted_keys(secret_bytes(), secret_bytes()).await;
+        let key = dash_sdk::dpp::identity::IdentityPublicKey::random_key(
+            7,
+            Some(7),
+            PlatformVersion::latest(),
+        )
+        .with_limits(Some(9_000), None);
+        let balance_error = TaskError::from(dash_sdk::Error::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ));
+        let result = staged
+            .ctx
+            .finish_raise(staged.id, key.clone(), Err(balance_error));
+        let error = contextualize_dapi_result(result, || DapiAddressAvailability {
+            configured_total: 1,
+            live_count: 0,
+        })
+        .expect_err("the post-raise balance read failed");
+
+        let stored = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.identity.public_keys().get(&key.id()), Some(&key));
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+        assert_eq!(
+            error.to_string(),
+            "The key's new limits are set, but the identity's new balance could not be read. Refresh the identity to see its balance."
+        );
+        let TaskError::KeyLimitsRaisedButBalanceNotRefreshed {
+            source: Some(source),
+        } = error
+        else {
+            panic!("expected the completed-raise wrapper, got {error:?}");
+        };
+        let TaskError::DapiAllAddressesExhausted { source } = *source else {
+            panic!("expected address exhaustion in the source, got {source:?}");
+        };
+        assert!(matches!(source.as_ref(), TaskError::DapiNoAddresses { .. }));
+    }
+
     /// A raise the network accepted is reported as made, not as failed, when
     /// storing the raised key on this device fails afterward.
     #[test]

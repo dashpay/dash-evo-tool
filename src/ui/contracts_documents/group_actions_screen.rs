@@ -274,11 +274,6 @@ impl GroupActionsScreen {
                                             .on_hover_text("The app cannot sign this action yet.");
                                         return;
                                     }
-                                    if let Some(reason) = blocked {
-                                        ui.add_enabled(false, egui::Button::new("Take Action"))
-                                            .on_disabled_hover_text(reason);
-                                        return;
-                                    }
                                     if ComponentStyles::add_primary_button(
                                         ui,
                                         "Take Action",
@@ -832,6 +827,112 @@ mod sdk_adapter_tests {
             screen.selected_identity_token_action_block(),
             Some(crate::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_locked_unregistered_wallet_can_open_and_read_a_group_proposal() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference, identity_holding};
+        use crate::model::qualified_contract::InsertTokensToo;
+        use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Setters;
+        use dash_sdk::dpp::group::group_action::v0::GroupActionV0;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        use std::sync::RwLock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        wallet.uses_password = true;
+        wallet.wallet_seed.close();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .unwrap();
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .unwrap(),
+            TokenActionAvailability::WalletNotOpen
+        );
+
+        let recipient = Identifier::from([9; 32]);
+        let mut info = mint_token_info(&ctx, Some(recipient), false);
+        info.data_contract
+            .contract
+            .set_tokens(BTreeMap::from([(0, info.token_config.clone())]));
+        ctx.insert_contract_if_not_exists(
+            &info.data_contract.contract,
+            None,
+            InsertTokensToo::NoTokensShouldBeAdded,
+        )
+        .unwrap();
+        let token_id = info.data_contract.contract.token_id(0).unwrap();
+        let balance = IdentityTokenBalance {
+            token_id,
+            token_alias: info.token_alias,
+            token_config: info.token_config,
+            identity_id: identity.identity.id(),
+            balance: 0,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: info.data_contract.contract.id(),
+            token_position: 0,
+        };
+        let mut screen = GroupActionsScreen::new(&ctx);
+        screen.selected_contract = Some(info.data_contract.clone());
+        screen.selected_identity = Some(identity);
+        screen
+            .identity_token_balances
+            .insert(IdentityTokenIdentifier::from(balance.clone()), balance);
+        let proposals = IndexMap::from([(
+            Identifier::from([8; 32]),
+            GroupAction::V0(GroupActionV0 {
+                contract_id: info.data_contract.contract.id(),
+                proposer_id: recipient,
+                token_contract_position: 0,
+                event: GroupActionEvent::TokenEvent(TokenEvent::Mint(
+                    12,
+                    recipient,
+                    Some("Treasury proposal".into()),
+                )),
+            }),
+        )]);
+        let mut opened = None;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut GroupActionsScreen| {
+                    if let AppAction::AddScreen(Screen::MintTokensScreen(mint)) =
+                        screen.render_group_actions(ui, &proposals)
+                    {
+                        opened = Some(mint);
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        let take_action = harness.get_by_label("Take Action");
+        assert!(
+            !take_action.accesskit_node().is_disabled(),
+            "viewing a proposal does not require wallet registration"
+        );
+        take_action.click();
+        harness.run();
+        drop(harness);
+        let mint = opened.expect("Take Action opens the proposal");
+        let amount = mint.action.amount.as_ref().unwrap().clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    screen.ui(ui);
+                },
+                mint,
+            );
+        harness.run();
+        harness.get_by_label(&format!("Amount: {amount}"));
+        harness.get_by_label("Note: Treasury proposal");
     }
 
     /// Co-signing a group Mint must reuse the proposer's recipient: the field

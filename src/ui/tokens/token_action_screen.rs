@@ -532,19 +532,18 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return self.show_success_screen(ui);
             }
 
-            // An identity whose wallet is not loaded yet cannot send token
-            // transactions: explain that under the heading instead of the form.
+            // Registration gates signing; an existing proposal remains readable.
             super::recheck_token_action_availability(
                 &self.common.app_context,
                 &self.common.identity_token_info.identity.identity.id(),
                 &mut self.common.token_action_availability,
             );
-            if self
+            let wallet_ready = self
                 .common
                 .token_action_availability
                 .unavailable_reason()
-                .is_some()
-            {
+                .is_none();
+            if !wallet_ready && self.common.group_action_id.is_none() {
                 ui.heading(A::PAGE_HEADING);
                 ui.add_space(10.0);
                 super::show_token_actions_unavailable(ui, self.common.token_action_availability);
@@ -627,6 +626,9 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             if wallet_locked {
                 ui.colored_label(Color32::from_rgb(200, 150, 50), LOCKED_PROPOSAL_NOTE);
                 ui.add_space(10.0);
+            } else if !wallet_ready {
+                super::show_token_actions_unavailable(ui, self.common.token_action_availability);
+                ui.add_space(10.0);
             }
 
             if signing_available && self.common.show_advanced_options {
@@ -697,13 +699,17 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 ui.add_space(10.0);
                 let in_flight = self.common.request.is_pending();
                 let inputs_ready = self.action.inputs_ready();
-                let ready =
-                    inputs_ready && self.common.selected_key.as_ref().is_some() && !in_flight;
+                let ready = inputs_ready
+                    && self.common.selected_key.as_ref().is_some()
+                    && !in_flight
+                    && (wallet_locked || wallet_ready);
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
                     .disabled_tooltip(if in_flight {
                         "Wait for the current action to finish."
                     } else if !inputs_ready {
                         self.action.disabled_reason()
+                    } else if !wallet_ready {
+                        crate::model::token::TOKEN_ACTIONS_WAIT_FOR_WALLET
                     } else {
                         super::CHOOSE_SIGNING_KEY
                     })
@@ -724,7 +730,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 }
             }
 
-            if signing_available && !wallet_locked && self.common.confirmation_dialog.is_some() {
+            if signing_available
+                && wallet_ready
+                && !wallet_locked
+                && self.common.confirmation_dialog.is_some()
+            {
                 inner_action |= self.show_confirmation_popup(ui);
             }
 
@@ -1320,6 +1330,125 @@ mod tests {
         );
         assert!(common.confirmation_dialog.is_none());
         assert!(!sent.get(), "nothing is sent while the wallet is locked");
+    }
+
+    fn persist_locked_wallet_link(context: &AppContext, info: &IdentityTokenInfo) {
+        let (seed_hash, wallet) = info.identity.associated_wallets.iter().next().unwrap();
+        context
+            .wallet_context()
+            .insert_test_wallet(*seed_hash, wallet.clone());
+        context
+            .insert_local_qualified_identity(&info.identity, &Some((*seed_hash, 0)))
+            .expect("persist the identity-to-wallet link");
+        assert_eq!(
+            context
+                .token_action_availability(&info.identity.identity.id())
+                .unwrap(),
+            crate::model::token::TokenActionAvailability::WalletNotOpen,
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_locked_unregistered_wallet_can_read_a_group_proposal_and_unlock() {
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut info = token_info(&context, None, true);
+        hold_key_in_a_locked_wallet(&mut info);
+        persist_locked_wallet_link(&context, &info);
+        let amount = Amount::from_token(&info, 5);
+        let recipient = Identifier::from([5; 32]).to_string(Encoding::Base58);
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.action.recipient_identity_id = recipient.clone();
+        screen.action.amount = Some(amount.clone());
+        screen.common.public_note = Some("Treasury proposal".into());
+        assert_locked_co_signer_reads_then_unlocks(
+            screen,
+            &[
+                format!("Amount: {amount}"),
+                format!("Recipient: {recipient}"),
+                "Note: Treasury proposal".into(),
+            ],
+            "Sign Mint",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_group_proposal_cannot_submit_before_wallet_registration() {
+        use egui_kittest::kittest::Queryable;
+        use std::cell::Cell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut info = token_info(&context, Some(Identifier::from([5; 32])), false);
+        hold_key_in_a_locked_wallet(&mut info);
+        persist_locked_wallet_link(&context, &info);
+        let (seed_hash, wallet) = info.identity.associated_wallets.iter().next().unwrap();
+        let seed_hash = *seed_hash;
+        // Unlock has completed locally; upstream registration is still pending.
+        wallet
+            .write()
+            .unwrap()
+            .wallet_seed
+            .mark_open_after_verification();
+        assert!(!wallet_needs_unlock(wallet));
+        let amount = Amount::from_token(&info, 5);
+        let mut screen = MintTokensScreen::new(info, &context);
+        screen.common.group_action_id = Some(Identifier::from([7; 32]));
+        screen.action.amount = Some(amount.clone());
+        let sent = Cell::new(false);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut MintTokensScreen| {
+                    if matches!(screen.ui(ui), AppAction::BackendTasksWithContexts(..)) {
+                        sent.set(true);
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label(&format!("Amount: {amount}"));
+        harness.get_by_label("Sign Mint").click();
+        harness.run();
+        assert!(harness.state().common.confirmation_dialog.is_none());
+        assert!(!sent.get());
+
+        harness.state_mut().common.confirmation_dialog = Some(
+            ConfirmationDialog::new("Confirm Mint", "Mint the tokens?")
+                .confirm_text(Some("Confirm pending mint")),
+        );
+        harness.run();
+        assert!(harness.query_by_label("Confirm pending mint").is_none());
+        assert!(
+            !sent.get(),
+            "a stale confirmation cannot bypass registration"
+        );
+        harness.state_mut().common.confirmation_dialog = None;
+
+        context
+            .wallet_backend()
+            .unwrap()
+            .register_wallet_from_seed(
+                &seed_hash,
+                &crate::test_support::keys::labelled_seed("locked_token_wallet", 0),
+                None,
+            )
+            .await
+            .expect("register the unlocked wallet");
+        harness.run();
+        let sign = harness.get_by_label("Sign Mint");
+        sign.click();
+        harness.run();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::Window, "Confirm Mint")
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Mint")
+            .click();
+        harness.run();
+        assert!(
+            sent.get(),
+            "registration enables submission without reopening the screen"
+        );
     }
 
     /// A co-signer with a locked wallet reads a group mint's amount and

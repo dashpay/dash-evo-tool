@@ -594,6 +594,31 @@ impl AppContext {
             .map_err(token_err)
     }
 
+    /// Refresh a token configuration while retaining its saved alias.
+    pub fn refresh_token_configuration(
+        &self,
+        token_id: &Identifier,
+        fallback_name: &str,
+        token_configuration: TokenConfiguration,
+        contract_id: &Identifier,
+        token_position: u16,
+    ) -> std::result::Result<(), TaskError> {
+        let stored = self
+            .det_kv()?
+            .get::<StoredToken>(DetScope::Global, &token_key(token_id))
+            .map_err(token_err)?;
+        let alias = stored
+            .as_ref()
+            .map_or(fallback_name, |token| token.alias.as_str());
+        self.insert_token(
+            token_id,
+            alias,
+            token_configuration,
+            contract_id,
+            token_position,
+        )
+    }
+
     /// Reflect a proof-derived post-transaction balance for one
     /// `(identity, token)` pair in the upstream-fed snapshot immediately.
     /// Token mutation tasks (mint / transfer / burn / purchase / claim) call
@@ -685,7 +710,7 @@ impl AppContext {
             let cfg = decode_token_config(&stored.config_bytes)?;
             sorted.push((token_id, stored, cfg));
         }
-        sorted.sort_by(|a, b| a.1.alias.cmp(&b.1.alias));
+        sorted.sort_by_cached_key(|(id, stored, _)| token_display_name(&stored.alias, id));
         Ok(sorted)
     }
 
@@ -733,7 +758,7 @@ impl AppContext {
                 token_id,
                 TokenInfo {
                     token_id,
-                    token_name: stored.alias,
+                    token_name: token_display_name(&stored.alias, &token_id),
                     data_contract_id: Identifier::from(stored.data_contract_id),
                     token_position: stored.position,
                     token_configuration: token_config,
@@ -810,7 +835,9 @@ impl AppContext {
         prefs: &IdentityTokensViewPrefs,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.app_kv();
-        kv.put(DetScope::Global, IdentityTokensViewPrefs::KV_KEY, prefs)
+        let mut prefs = prefs.clone();
+        prefs.clamp_filter();
+        kv.put(DetScope::Global, IdentityTokensViewPrefs::KV_KEY, &prefs)
             .map_err(token_err)
     }
 
@@ -1682,6 +1709,94 @@ mod tests {
             .map(|token| token.token_name)
             .collect();
         assert_eq!(names, ["DashCoffee"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saved_token_filter_is_capped_at_unicode_character_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let prefs = IdentityTokensViewPrefs {
+            filter: "é".repeat(65),
+            ..Default::default()
+        };
+        ctx.save_identity_tokens_view_prefs(&prefs).unwrap();
+        assert_eq!(ctx.identity_tokens_view_prefs().filter, "é".repeat(64));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_list_order_uses_visible_names() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        for (id, name) in [(ident(8), "Banana"), (ident(9), "\u{200b}Apple")] {
+            ctx.insert_token(
+                &id,
+                name,
+                TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+                &ident(1),
+                0,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            ctx.get_all_known_tokens()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![ident(9), ident(8)]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lightweight_token_listing_uses_clean_names_and_id_fallback() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let contract = user_contract_at(PlatformVersion::latest(), None);
+        ctx.insert_contract_if_not_exists(&contract, None, InsertTokensToo::NoTokensShouldBeAdded)
+            .unwrap();
+        for (id, name) in [(ident(8), "\u{200b}Apple"), (ident(9), "")] {
+            ctx.insert_token(
+                &id,
+                name,
+                TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+                &contract.id(),
+                0,
+            )
+            .unwrap();
+        }
+        let light = ctx.get_all_known_tokens().unwrap();
+        let full = ctx.get_all_known_tokens_with_data_contract().unwrap();
+        for id in [ident(8), ident(9)] {
+            assert_eq!(light[&id].token_name, full[&id].token_name);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn configuration_refresh_preserves_raw_saved_alias() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let id = ident(9);
+        let config = TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive());
+        ctx.insert_token(&id, "\u{200b}Apple", config.clone(), &ident(1), 0)
+            .unwrap();
+        let TokenConfiguration::V0(mut updated) = config else {
+            panic!("version 0");
+        };
+        updated.max_supply = Some(1000);
+        let updated = TokenConfiguration::V0(updated);
+        ctx.refresh_token_configuration(&id, "Apple", updated.clone(), &ident(1), 0)
+            .unwrap();
+        let saved = ctx
+            .det_kv()
+            .unwrap()
+            .get::<StoredToken>(DetScope::Global, &token_key(&id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.alias, "\u{200b}Apple");
+        assert_eq!(decode_token_config(&saved.config_bytes).unwrap(), updated);
     }
 
     #[test]

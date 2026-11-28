@@ -369,7 +369,7 @@ pub fn token_amount(
 /// Whether `identity_id` is owed anything by the token's pre-programmed
 /// distribution. A schedule that names only other identities offers this one
 /// nothing to claim.
-fn is_pre_programmed_recipient(
+pub fn is_pre_programmed_recipient(
     token_configuration: &TokenConfiguration,
     identity_id: &Identifier,
 ) -> bool {
@@ -446,7 +446,6 @@ pub fn get_available_token_actions_for_identity(
     let can_claim_once_per_identity =
         super::once_per_identity_amount(token_configuration).is_some();
     let can_claim = can_claim_once_per_identity
-        || in_dev_mode
         || is_recurring_distribution_recipient(
             token_configuration,
             Some(contract_owner_id),
@@ -756,6 +755,26 @@ mod tests {
     }
 
     #[test]
+    fn expert_claim_requires_recipient_for_known_and_unknown_balances() {
+        let recipient = identity(2);
+        let bystander = identity(3);
+        let (contract, _) = owner_administered_contract(identity(1).identity.id());
+        let mut config = transferable();
+        config.set_distribution_rules(TokenDistributionRules::V0(pre_programmed_to(
+            &config,
+            recipient.identity.id(),
+        )));
+        for balance in [None, Some(0)] {
+            assert!(
+                !get_available_token_actions_for_identity(
+                    balance, &bystander, &config, &contract, true, None
+                )
+                .can_claim
+            );
+        }
+    }
+
+    #[test]
     fn a_pre_programmed_distribution_is_claimable_only_by_its_recipients() {
         let recipient = identity(2);
         let bystander = identity(3);
@@ -773,8 +792,8 @@ mod tests {
             "a schedule naming only others offers nothing to claim"
         );
         assert!(
-            actions(&bystander, true).can_claim,
-            "the developer display override still lights Claim"
+            !actions(&bystander, true).can_claim,
+            "Expert mode does not change claim eligibility"
         );
     }
 

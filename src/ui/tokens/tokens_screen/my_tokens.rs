@@ -609,13 +609,16 @@ impl TokensScreen {
                             ui.separator();
                             let decimal_places =
                                 token_info.token_configuration.conventions().decimals();
-                            let unit_name = token_info
-                                .token_configuration
-                                .conventions()
-                                .plural_form_by_language_code_or_default("en");
+                            let unit_name = token_display_name(
+                                token_info
+                                    .token_configuration
+                                    .conventions()
+                                    .plural_form_by_language_code_or_default("en"),
+                                &token_info.token_id,
+                            );
                             let reward_amount =
                                 Amount::new(explanation.total_amount, decimal_places)
-                                    .with_unit_name(unit_name);
+                                    .with_unit_name(&unit_name);
 
                             ui.label(format!("Total Estimated Rewards: {}", reward_amount));
                             ui.separator();

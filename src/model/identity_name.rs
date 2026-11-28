@@ -39,7 +39,14 @@ pub fn clean_display_text(text: &str) -> String {
         .chars()
         .filter(|c| is_safe_display_character(*c))
         .collect();
-    cleaned.trim().to_owned()
+    if cleaned
+        .chars()
+        .all(|c| c.is_whitespace() || matches!(c, '\u{200c}' | '\u{200d}'))
+    {
+        String::new()
+    } else {
+        cleaned.trim().to_owned()
+    }
 }
 
 /// Keep visible text and normal Unicode shaping while excluding controls
@@ -54,7 +61,7 @@ pub(super) fn is_safe_display_character(character: char) -> bool {
             | '\u{17b4}'..='\u{17b5}' | '\u{180b}'..='\u{180f}' | '\u{200b}'
             | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}'
             | '\u{2800}' | '\u{3164}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{ffa0}'
-            | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0000}'..='\u{e0fff}'
+            | '\u{fff0}'..='\u{fff8}' | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0000}'..='\u{e0fff}'
         )
 }
 
@@ -72,6 +79,14 @@ pub fn shorten_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joiner_only_names_fall_back_but_visible_sequences_keep_joiners() {
+        for name in ["\u{200c}", "\u{200d}", " \u{200c}\u{200d} ", "\u{fff0}"] {
+            assert_eq!(display_label(Some(name), None, "abcdefghijk"), "abcde…ijk");
+        }
+        assert_eq!(clean_display_text("👩\u{200d}💻"), "👩\u{200d}💻");
+    }
 
     #[test]
     fn labels_filter_controls_before_profile_username_id_fallback() {

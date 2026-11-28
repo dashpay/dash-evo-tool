@@ -104,7 +104,8 @@ impl AppContext {
             &identity_id,
             &claimed.balances,
             BalanceProvenance::ObservedAt(metadata.height),
-        )?;
+        )
+        .await?;
 
         Ok(BackendTaskSuccessResult::ContractFeesClaimed {
             contract_id,
@@ -120,7 +121,7 @@ impl AppContext {
     /// be kept here. The claim is already paid out, so a failure here is
     /// reported as [`TaskError::ContractFeesClaimedButBalanceNotSaved`], not
     /// as a failed claim.
-    fn persist_paid_balances(
+    async fn persist_paid_balances(
         &self,
         claimant: &Identifier,
         balances: &BTreeMap<Identifier, Credits>,
@@ -129,6 +130,7 @@ impl AppContext {
         // Every write is tried, so one failure does not leave the other
         // paid identities stale; the first failure is reported.
         let mut first_failure = None;
+        let mut saved_any = false;
         for (identity_id, balance) in balances {
             let saved =
                 self.edit_local_qualified_identity_observed(identity_id, observed, |fresh| {
@@ -136,7 +138,7 @@ impl AppContext {
                     Ok(())
                 });
             match saved {
-                Ok(_) => {}
+                Ok(_) => saved_any = true,
                 // A paid co-recipient not kept on this device has no record
                 // to update.
                 Err(TaskError::IdentityNotFoundLocally) if identity_id != claimant => {}
@@ -144,6 +146,13 @@ impl AppContext {
                     first_failure.get_or_insert(source);
                 }
             }
+        }
+        if saved_any {
+            self.notify_cache_changed(
+                crate::backend_task::CacheDomain::Identities,
+                &self.frame_loop_sender(),
+            )
+            .await;
         }
         match first_failure {
             None => Ok(()),
@@ -238,18 +247,20 @@ mod tests {
 
     /// A claim the network paid out is reported as paid out, not as failed,
     /// when storing the claimant's new balance on this device fails.
-    #[test]
-    fn a_claim_whose_balance_cannot_be_saved_is_reported_as_paid_out() {
+    #[tokio::test]
+    async fn a_claim_whose_balance_cannot_be_saved_is_reported_as_paid_out() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
 
         // Nothing is stored for this identity, so the write fails.
         let claimant = Identifier::random();
-        let result = ctx.persist_paid_balances(
-            &claimant,
-            &BTreeMap::from([(claimant, 1_000)]),
-            BalanceProvenance::ObservedAt(51),
-        );
+        let result = ctx
+            .persist_paid_balances(
+                &claimant,
+                &BTreeMap::from([(claimant, 1_000)]),
+                BalanceProvenance::ObservedAt(51),
+            )
+            .await;
 
         assert!(
             matches!(
@@ -281,9 +292,23 @@ mod tests {
         }
         let balances =
             BTreeMap::from([(claimant, 1_000), (co_moderator, 2_000), (stranger, 3_000)]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
 
         ctx.persist_paid_balances(&claimant, &balances, BalanceProvenance::ObservedAt(51))
+            .await
             .expect("balances saved");
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::backend_task::TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network,
+                domain: crate::backend_task::CacheDomain::Identities,
+            })) if network == ctx.network
+        ));
 
         let balance = |id| {
             ctx.get_local_qualified_identity(&id)
@@ -296,6 +321,70 @@ mod tests {
             balance(stranger),
             None,
             "an identity not kept here is not added"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partial_payout_save_notifies_and_a_closed_receiver_does_not_fail_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let paid = Identifier::new([1; 32]);
+        let missing_claimant = Identifier::new([2; 32]);
+        let mut identity = crate::context::test_support::bare_user_identity(paid, ctx.network);
+        ctx.insert_local_qualified_identity_observed(
+            &mut identity,
+            &None,
+            BalanceProvenance::ObservedAt(50),
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+        let result = ctx
+            .persist_paid_balances(
+                &missing_claimant,
+                &BTreeMap::from([(paid, 1_000), (missing_claimant, 2_000)]),
+                BalanceProvenance::ObservedAt(51),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(TaskError::ContractFeesClaimedButBalanceNotSaved { .. })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::backend_task::TaskResult::CacheUpdated(
+                crate::backend_task::CacheUpdate {
+                    domain: crate::backend_task::CacheDomain::Identities,
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(
+            ctx.get_local_qualified_identity(&paid)
+                .unwrap()
+                .unwrap()
+                .identity
+                .balance(),
+            1_000
+        );
+        drop(rx);
+        ctx.persist_paid_balances(
+            &paid,
+            &BTreeMap::from([(paid, 3_000)]),
+            BalanceProvenance::ObservedAt(52),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ctx.get_local_qualified_identity(&paid)
+                .unwrap()
+                .unwrap()
+                .identity
+                .balance(),
+            3_000
         );
     }
 

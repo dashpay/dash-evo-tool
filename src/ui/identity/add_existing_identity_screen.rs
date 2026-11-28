@@ -552,6 +552,7 @@ impl AddExistingIdentityScreen {
             DiscoveryReadiness::SyncStopped => Some(TaskError::WalletIdentityDiscoverySyncStopped),
         };
         if let Some(error) = readiness_error {
+            self.wallet_unlock_popup.close();
             ui.colored_label(DashColors::WARNING, error.to_string());
             return action;
         }
@@ -1133,12 +1134,15 @@ mod wallet_search_readiness_tests {
         let wallet = Arc::new(RwLock::new(wallet));
         ctx.wallet_context()
             .insert_test_wallet(wallet.read_recover().seed_hash(), wallet.clone());
-        let mut screen = AddExistingIdentityScreen::new(&ctx);
+        let screen = AddExistingIdentityScreen::new(&ctx);
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 900.0))
-            .build_ui(|ui| {
-                assert!(matches!(screen.ui(ui), AppAction::None));
-            });
+            .build_ui_state(
+                |ui, screen: &mut AddExistingIdentityScreen| {
+                    assert!(matches!(screen.ui(ui), AppAction::None));
+                },
+                screen,
+            );
         harness.run_steps(2);
         harness.get_by_label("From my wallet").click();
         harness.run_steps(3);
@@ -1162,8 +1166,29 @@ mod wallet_search_readiness_tests {
         assert!(harness.query_by_label_contains(guidance).is_none());
         harness.get_by_label("Unlock Wallet").click();
         harness.run_steps(3);
+        assert!(harness.state().wallet_unlock_popup.is_open());
+        harness.get_by_label("Unlock");
+        assert!(wallet_needs_unlock(&wallet));
+
+        // Disconnect re-arms the backend's quorum-key gate, not just SPV status.
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .stop_in_place()
+            .await;
+        ctx.connection_status().set_spv_status(status);
+        assert_ne!(
+            ctx.wallet_identity_discovery_readiness(),
+            DiscoveryReadiness::Ready
+        );
+        harness.run_steps(3);
+        assert!(
+            !harness.state().wallet_unlock_popup.is_open(),
+            "losing search readiness must close the open password prompt"
+        );
+        assert!(harness.query_by_label_contains(guidance).is_some());
+        assert!(harness.query_by_label("Unlock").is_none());
+        assert!(harness.query_by_label("Unlock Wallet").is_none());
         drop(harness);
-        assert!(screen.wallet_unlock_popup.is_open());
         assert!(wallet_needs_unlock(&wallet));
         ctx.wallet_backend()
             .expect("backend wired")
@@ -1172,7 +1197,7 @@ mod wallet_search_readiness_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn disconnected_wallet_form_explains_readiness_before_unlock() {
+    async fn disconnected_wallet_form_gates_unlock_and_closes_popup_on_readiness_loss() {
         locked_wallet_waits_for_readiness(
             SpvStatus::Stopped,
             "Make sure you are connected to the wallet's network",
@@ -1181,7 +1206,7 @@ mod wallet_search_readiness_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn syncing_wallet_form_explains_readiness_before_unlock() {
+    async fn syncing_wallet_form_gates_unlock_and_closes_popup_on_readiness_loss() {
         locked_wallet_waits_for_readiness(
             SpvStatus::Syncing,
             "Connect to the wallet's network if needed",

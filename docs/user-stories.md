@@ -1457,6 +1457,16 @@ As a user acting on a document whose contract charges a fee, I want to see that 
 - If network fees rise past that tolerance, the network refuses the action. Before another confirmation, the app requires a successful proved fee read. An unchanged multiplier is reported as unchanged; a failed read remains retryable without resubmitting the action.
 - A local agreement mismatch is refused before signing. A network mismatch is reported after submission: the contract fee is not collected, but rejection processed in a block can still incur gas. The user is asked to verify the selected contract and fee; a mismatch does not prove that the immutable fee declaration changed.
 
+---
+
+### DOC-011: Skip an optional token cost [Implemented]
+**Persona:** Alex, Priya
+
+As a user, when a document action's token cost is optional, I want to choose not to pay it, so that I can pay the network fee in credits instead.
+
+- A "Pay the token cost" option appears only when the token cost is optional.
+- Without it, the action carries no token payment and its network fee is paid from the identity's credits.
+
 ## Developer and Power Tools (DEV)
 
 ### DEV-001: Decode state transitions [Implemented]

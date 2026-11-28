@@ -2,7 +2,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, Spacing};
 use egui::{InnerResponse, Ui, WidgetText};
 
 pub use crate::ui::components::modal_chrome::NOTHING;
@@ -48,6 +48,27 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
         self.error_message.as_deref()
     }
 }
+/// Label/value rows and separate notes for a structured confirmation.
+#[derive(Debug, Clone, Default)]
+pub struct ConfirmationSummary {
+    /// Values remain selectable and wrap to fit without truncation.
+    pub rows: Vec<(&'static str, String)>,
+    /// Explanations shown below the summary, with normal wrapping.
+    pub notes: Vec<String>,
+}
+
+impl std::fmt::Display for ConfirmationSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut lines: Vec<String> = self
+            .rows
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"))
+            .collect();
+        lines.extend(self.notes.iter().cloned());
+        f.write_str(&lines.join("\n"))
+    }
+}
+
 /// A reusable confirmation dialog component that implements the Component trait
 ///
 /// This component provides a consistent modal dialog for confirming user actions
@@ -58,6 +79,7 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
 pub struct ConfirmationDialog {
     title: WidgetText,
     message: WidgetText,
+    summary: Option<ConfirmationSummary>,
     confirm_text: Option<WidgetText>,
     cancel_text: Option<WidgetText>,
     danger_mode: bool,
@@ -105,6 +127,7 @@ impl ConfirmationDialog {
         Self {
             title: title.into(),
             message: message.into(),
+            summary: None,
             confirm_text: Some("Confirm".into()),
             cancel_text: Some("Cancel".into()),
             danger_mode: false,
@@ -115,6 +138,12 @@ impl ConfirmationDialog {
             is_open: true,
             opening_guard: ModalOpeningGuard::armed(),
         }
+    }
+
+    /// Show aligned summary rows, keeping each value intact and notes separate.
+    pub fn with_summary(mut self, summary: ConfirmationSummary) -> Self {
+        self.summary = Some(summary);
+        self
     }
 
     /// Set the text for the confirm button, or None to hide it
@@ -208,18 +237,57 @@ impl ConfirmationDialog {
                 inner_margin: 16,
             },
             |ui| {
-                // Set minimum width for the dialog
-                ui.set_min_width(300.0);
+                if self.summary.is_some() {
+                    ui.set_width(
+                        760.0_f32.min((ui.ctx().content_rect().width() - 64.0).max(240.0)),
+                    );
+                } else {
+                    ui.set_min_width(300.0);
+                }
 
                 let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message content with bold text and proper color
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(self.message.text())
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
+                if let Some(summary) = &self.summary {
+                    let render_rows = |ui: &mut Ui, rows: &[(&str, String)], id: &str| {
+                        egui::Grid::new(id)
+                            .num_columns(2)
+                            .spacing([Spacing::LG, Spacing::MD])
+                            .show(ui, |ui| {
+                                for (label, value) in rows {
+                                    ui.label(
+                                        egui::RichText::new(*label)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(value).monospace())
+                                            .wrap()
+                                            .selectable(true),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    };
+                    egui::ScrollArea::vertical()
+                        .id_salt("confirmation_recipients")
+                        .max_height((ui.ctx().content_rect().height() - 220.0).max(60.0))
+                        .show(ui, |ui| {
+                            render_rows(ui, &summary.rows, "confirmation_summary");
+                            ui.add_space(Spacing::MD);
+                            ui.separator();
+                            for note in &summary.notes {
+                                ui.add_space(Spacing::SM);
+                                ui.label(note);
+                            }
+                        });
+                } else {
+                    ui.label(
+                        egui::RichText::new(self.message.text())
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                }
                 ui.add_space(20.0);
 
                 if let Some(prompt) = self.confirmation_prompt.clone() {
@@ -453,5 +521,123 @@ mod tests {
             status, None,
             "the click that opens a dialog must not also dismiss it",
         );
+    }
+
+    #[test]
+    fn batch_confirmation_keeps_actions_visible_in_short_window() {
+        use egui_kittest::kittest::Queryable;
+        let mut rows = vec![("From", "Savings".to_string())];
+        rows.extend((0..40).map(|i| ("To", format!("Recipient {i}"))));
+        rows.extend([
+            ("Total", "40 DASH".to_string()),
+            ("Network fee", "0.00001 DASH".to_string()),
+            ("Total deducted", "40.00001 DASH".to_string()),
+        ]);
+        let summary = ConfirmationSummary {
+            rows,
+            notes: vec![
+                "The Core network fee is estimated and may change.".into(),
+                "The Platform processing fee is deducted from the credited amount.".into(),
+                "Funds will move from Core to Platform before reaching the recipients.".into(),
+                "Check the recipients. Payments cannot be undone.".into(),
+            ],
+        };
+        let mut dialog = ConfirmationDialog::new("Send batch?", summary.to_string())
+            .with_summary(summary)
+            .confirm_text(Some("Send"))
+            .cancel_text(Some("Cancel"));
+        let mut harness = crate::test_support::harness_builder_with_app_fonts()
+            .with_size(egui::vec2(640.0, 480.0))
+            .build_ui(move |ui| {
+                let _ = dialog.show(ui);
+            });
+        harness.run();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+        for label in ["Send", "Cancel"] {
+            assert!(
+                viewport.contains_rect(harness.get_by_label(label).rect()),
+                "{label} must remain visible"
+            );
+        }
+        harness.get_by_label("Recipient 39").scroll_to_me();
+        harness.run();
+        assert!(viewport.contains_rect(harness.get_by_label("Recipient 39").rect()));
+        for label in ["Send", "Cancel"] {
+            assert!(viewport.contains_rect(harness.get_by_label(label).rect()));
+        }
+    }
+
+    /// A private (Orchard) address is 83 characters on testnet. The whole
+    /// recipient must be visible in the confirmation without scrolling.
+    #[test]
+    fn summary_shows_a_whole_private_address_without_scrolling() {
+        use egui_kittest::kittest::Queryable;
+        let address = format!("tdash1{}", "q".repeat(77));
+        assert_eq!(address.len(), 83);
+        for width in [1280.0, 640.0, 360.0] {
+            let summary = ConfirmationSummary {
+                rows: vec![
+                    ("From", "Main · Private".to_string()),
+                    ("To", address.clone()),
+                    ("Amount", "1 DASH".to_string()),
+                    ("Fee", "0.0001 DASH".to_string()),
+                    ("Total", "1.0001 DASH".to_string()),
+                ],
+                notes: vec!["Check the recipient. Payments can't be undone.".to_string()],
+            };
+            let mut dialog =
+                ConfirmationDialog::new("Send 1 DASH?", summary.to_string()).with_summary(summary);
+            let mut harness = crate::test_support::harness_builder_with_app_fonts()
+                .with_size(egui::vec2(width, 800.0))
+                .build_ui(move |ui| {
+                    let _ = dialog.show(ui);
+                });
+            harness.run();
+            let window = harness.get_by_role(egui::accesskit::Role::Window).rect();
+            let value = harness.get_by_label(&address).rect();
+            assert!(window.left() >= 0.0 && window.right() <= width);
+            assert!(
+                window.contains_rect(value),
+                "the address runs past the dialog edge: value {value:?}, window {window:?}"
+            );
+            if width == 1280.0 {
+                assert!(value.height() < 25.0, "the address fits on one line");
+            }
+            assert!(harness.get_by_label("Amount").rect().top() > value.bottom());
+
+            // Select through visual line wraps; copying must preserve the original address.
+            for event in [
+                egui::Event::PointerMoved(value.left_top()),
+                egui::Event::PointerButton {
+                    pos: value.left_top(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerMoved(value.right_bottom()),
+                egui::Event::PointerButton {
+                    pos: value.right_bottom(),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ] {
+                harness.event(event);
+                harness.step();
+            }
+            harness.event(egui::Event::Copy);
+            harness.step();
+            assert!(
+                harness
+                    .output()
+                    .platform_output
+                    .commands
+                    .iter()
+                    .any(|command| {
+                        matches!(command, egui::OutputCommand::CopyText(text) if text == &address)
+                    }),
+                "copy the whole address at width {width}"
+            );
+        }
     }
 }

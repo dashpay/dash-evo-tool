@@ -58,7 +58,7 @@ directory.
 
 | Component | File | DomainType | Description |
 |-----------|------|------------|-------------|
-| `ConfirmationDialog` | `confirmation_dialog.rs` | `ConfirmationStatus` | Modal confirm/cancel with danger mode |
+| `ConfirmationDialog` | `confirmation_dialog.rs` | `ConfirmationStatus` | Modal confirm/cancel with danger mode; `with_summary(ConfirmationSummary)` renders label/value rows and separate notes. Summary content is up to 760 px wide, capped to the viewport; full selectable values wrap on narrow windows without horizontal scrolling |
 | `SelectionDialog` | `selection_dialog.rs` | `SelectionStatus` | Modal with ComboBox selection |
 | `InfoPopup` | `info_popup.rs` | N/A | Info popup with optional markdown |
 | `WalletUnlockPopup` | `wallet_unlock_popup.rs` | `WalletUnlockResult` | Password-based wallet unlock (renders via shared `passphrase_modal`) |

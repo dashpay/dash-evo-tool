@@ -26,7 +26,9 @@ use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::choice_chips::ChoiceChips;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::confirmation_dialog::{
+    ConfirmationDialog, ConfirmationStatus, ConfirmationSummary,
+};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -290,6 +292,8 @@ pub struct WalletSendScreen {
     address_input_identity_signature: Option<u64>,
     #[cfg(test)]
     identity_load_count: std::cell::Cell<usize>,
+    #[cfg(test)]
+    ownership_load_count: std::cell::Cell<usize>,
     validated_destination: Option<ValidatedAddress>,
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
@@ -489,6 +493,8 @@ impl WalletSendScreen {
             address_input_identity_signature: None,
             #[cfg(test)]
             identity_load_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            ownership_load_count: std::cell::Cell::new(0),
             validated_destination: None,
             amount: None,
             amount_input: None,
@@ -1326,16 +1332,105 @@ impl WalletSendScreen {
     /// lookalike sharing only the first and last characters must not pass
     /// the last check before an irreversible payment (address poisoning).
     fn confirmation_recipient(&self) -> String {
-        match &self.validated_destination {
-            Some(ValidatedAddress::Shielded(address)) if address.is_empty() => {
-                self.destination_label()
+        if matches!(&self.validated_destination, Some(ValidatedAddress::Shielded(address)) if address.is_empty())
+        {
+            return self.destination_label();
+        }
+        self.recipient_description(&self.destination_address_string())
+    }
+
+    fn confirmation_ownership(&self) -> BTreeMap<String, String> {
+        use crate::model::wallet::DerivationPathHelpers;
+        let mut owners = BTreeMap::new();
+        for (wallet, _, _, _) in self.address_input_wallets() {
+            let Ok(seed_hash) = wallet.read().map(|wallet| wallet.seed_hash()) else {
+                continue;
+            };
+            let name = self.wallet_name(&seed_hash);
+            let paths = self
+                .app_context
+                .wallet_backend()
+                .map(|backend| backend.owned_address_paths(&seed_hash))
+                .unwrap_or_default();
+            for (address, path) in paths {
+                owners.insert(address.to_string(), name.clone());
+                if path.is_platform_payment(self.app_context.network)
+                    && let Ok(platform) = PlatformAddress::try_from(address)
+                {
+                    owners.insert(
+                        platform.to_bech32m_string(self.app_context.network),
+                        name.clone(),
+                    );
+                }
             }
-            Some(ValidatedAddress::Identity {
+            if let Some(address) = self.app_context.shielded_receive_address(&seed_hash) {
+                owners.insert(address.to_ascii_lowercase(), name);
+            }
+        }
+        owners
+    }
+
+    fn recipient_description(&self, address: &str) -> String {
+        self.recipient_description_with_ownership(address, &self.confirmation_ownership())
+    }
+
+    fn recipient_description_with_ownership(
+        &self,
+        address: &str,
+        owners: &BTreeMap<String, String>,
+    ) -> String {
+        let mut labels = Vec::new();
+        let key = match self.row_address(address) {
+            Some(ValidatedAddress::Platform { address, .. }) => {
+                address.to_bech32m_string(self.app_context.network)
+            }
+            _ if parse_shielded_recipient(address).is_some() => address.to_ascii_lowercase(),
+            _ => address.to_string(),
+        };
+        if let Some(wallet) = owners.get(&key) {
+            labels.push(wallet.clone());
+        } else if address == self.destination_address_string()
+            && self.form.to_mode() == ToMode::MyWallets
+            && let Some(wallet) = self.form.to_wallet()
+        {
+            labels.push(self.wallet_name(&wallet));
+        }
+        if self.row_address(address).is_none() && parse_shielded_recipient(address).is_none() {
+            #[cfg(test)]
+            self.identity_load_count
+                .set(self.identity_load_count.get() + 1);
+            if let Some(identity) = self
+                .app_context
+                .load_local_qualified_identities()
+                .ok()
+                .and_then(|identities| {
+                    identities
+                        .into_iter()
+                        .find(|identity| format!("{}", identity.identity.id()) == address)
+                })
+            {
+                if let Some(owner) = self.app_context.identity_owner_wallet(&identity) {
+                    let wallet = self.wallet_name(&owner);
+                    if !labels.contains(&wallet) {
+                        labels.push(wallet);
+                    }
+                }
+                if let Some(name) = self.app_context.identity_name(&identity) {
+                    labels.push(name);
+                }
+            }
+        }
+        if address == self.destination_address_string()
+            && let Some(ValidatedAddress::Identity {
                 dpns_name: Some(name),
                 ..
-            }) => format!("{name} ({id})", id = self.destination_address_string()),
-            _ => self.destination_address_string(),
+            }) = &self.validated_destination
+            && !labels.contains(name)
+        {
+            labels.push(name.clone());
         }
+        labels.push(address.to_string());
+        labels.join("\n")
     }
 
     /// Take a receiving address the backend generated, returning whether it
@@ -2445,6 +2540,7 @@ impl WalletSendScreen {
         };
         let mut builder = AddressInput::new(self.app_context.network)
             .with_label("Send to")
+            .with_desired_width(500.0)
             .with_hint_text(hint)
             .with_address_kinds(allowed_kinds)
             .with_exclude_change(true);
@@ -2498,6 +2594,9 @@ impl WalletSendScreen {
     }
 
     fn address_input_wallets(&self) -> Vec<WalletWithSnapshot> {
+        #[cfg(test)]
+        self.ownership_load_count
+            .set(self.ownership_load_count.get() + 1);
         self.app_context
             .wallet_context()
             .wallets()
@@ -2868,29 +2967,29 @@ impl WalletSendScreen {
         Ok(inputs)
     }
 
-    fn simple_send_confirmation_message(&self) -> String {
+    fn simple_send_confirmation_message(&self) -> ConfirmationSummary {
         let amount_credits = self.amount.as_ref().map(Amount::value).unwrap_or(0);
         let fee_preview = self.current_fee_preview();
-        let mut lines = vec![
-            format!("From: {source}", source = self.source_label()),
-            format!(
-                "To: {destination}",
-                destination = self.confirmation_recipient()
-            ),
-            format!(
-                "Amount: {amount}",
-                amount = format_credits_as_dash(amount_credits)
-            ),
-        ];
+        let mut summary = ConfirmationSummary {
+            rows: vec![
+                ("From", self.source_label()),
+                ("To", self.confirmation_recipient()),
+                ("Amount", format_credits_as_dash(amount_credits)),
+            ],
+            notes: Vec::new(),
+        };
         match fee_preview {
             Some(preview) => {
-                lines.push(format!(
-                    "Fee: ≈ {fee}",
-                    fee = format_credits_as_dash(preview.fee_credits)
+                summary.rows.push((
+                    "Fee",
+                    format!("≈ {fee}", fee = format_credits_as_dash(preview.fee_credits)),
                 ));
-                lines.push(format!(
-                    "Total: ≈ {total}",
-                    total = format_credits_as_dash(preview.total_debit_credits)
+                summary.rows.push((
+                    "Total",
+                    format!(
+                        "≈ {total}",
+                        total = format_credits_as_dash(preview.total_debit_credits)
+                    ),
                 ));
                 if let Some(receives) = preview.recipient_receives_credits {
                     let recipient_amount = format_credits_as_dash(receives);
@@ -2901,7 +3000,7 @@ impl WalletSendScreen {
                             Some(AddressKind::Platform)
                         )
                     );
-                    lines.push(if core_fee_on_top {
+                    summary.notes.push(if core_fee_on_top {
                         format!(
                             "The Platform fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. The Core transaction fee is paid on top of the amount."
                         )
@@ -2912,13 +3011,22 @@ impl WalletSendScreen {
                     });
                 }
             }
-            None => lines.push("Fee: calculated when you send".to_string()),
+            None => {
+                summary
+                    .rows
+                    .push(("Fee", "Calculated when you send".to_string()));
+                summary
+                    .rows
+                    .push(("Total", "Calculated when you send".to_string()));
+            }
         }
         if let Some(note) = self.route_note() {
-            lines.push(note.to_string());
+            summary.notes.push(note.to_string());
         }
-        lines.push("Check the recipient. Payments can't be undone.".to_string());
-        lines.join("\n")
+        summary
+            .notes
+            .push("Check the recipient. Payments can't be undone.".to_string());
+        summary
     }
 
     /// Whether the payment goes out with explicit inputs or several outputs,
@@ -3028,7 +3136,7 @@ impl WalletSendScreen {
     /// Build the payment Send would make, and what the confirmation says.
     /// The action is fixed here, so the confirmation shows exactly what will
     /// be sent even if Auto would choose differently later.
-    pub(super) fn prepare_send(&mut self) -> Result<(AppAction, String), String> {
+    pub(super) fn prepare_send(&mut self) -> Result<(AppAction, ConfirmationSummary), String> {
         if let Some(refusal) = self.route.refusal {
             return Err(match refusal {
                 crate::model::send_route::RouteRefusal::ShieldedNotOwnPool => {
@@ -3264,7 +3372,7 @@ impl WalletSendScreen {
 
     /// The confirmation for explicit inputs or several recipients, in the
     /// same From / To / Amount / Fee / Total lines as a single payment.
-    fn advanced_send_confirmation_message(&self) -> String {
+    fn advanced_send_confirmation_message(&self) -> ConfirmationSummary {
         let recipients: Vec<_> = self
             .advanced_outputs
             .iter()
@@ -3286,64 +3394,82 @@ impl WalletSendScreen {
             .iter()
             .map(|(_, credits)| *credits)
             .fold(0u64, u64::saturating_add);
-        let mut lines = vec![format!("From: {source}", source = self.source_label())];
+        let mut summary = ConfirmationSummary {
+            rows: vec![("From", self.source_label())],
+            notes: Vec::new(),
+        };
+        let owners = self.confirmation_ownership();
         for (address, credits) in &recipients {
-            let destination = address;
-            lines.push(if several {
-                format!(
-                    "To: {destination} · {amount}",
-                    amount = format_credits_as_dash(*credits)
-                )
-            } else {
-                format!("To: {destination}")
-            });
+            let destination = self.recipient_description_with_ownership(address, &owners);
+            summary.rows.push((
+                "To",
+                if several {
+                    format!(
+                        "{destination} · {amount}",
+                        amount = format_credits_as_dash(*credits)
+                    )
+                } else {
+                    destination
+                },
+            ));
         }
-        lines.push(format!(
-            "Amount: {amount}",
-            amount = format_credits_as_dash(total_credits)
-        ));
+        summary
+            .rows
+            .push(("Amount", format_credits_as_dash(total_credits)));
         let core_to_platform = self.explicit_core_to_platform();
         let reduces_output = self.explicit_fee_reduces_output();
         match self.advanced_fee_estimate_credits() {
             Some(fee) => {
-                lines.push(format!("Fee: ≈ {fee}", fee = format_credits_as_dash(fee)));
+                summary
+                    .rows
+                    .push(("Fee", format!("≈ {fee}", fee = format_credits_as_dash(fee))));
                 let total = if reduces_output {
                     total_credits
                 } else {
                     total_credits.saturating_add(fee)
                 };
-                lines.push(format!(
-                    "Total: ≈ {total}",
-                    total = format_credits_as_dash(total)
+                summary.rows.push((
+                    "Total",
+                    format!("≈ {total}", total = format_credits_as_dash(total)),
                 ));
             }
-            None => lines.push("Fee: calculated when you send".to_string()),
+            None => {
+                summary
+                    .rows
+                    .push(("Fee", "Calculated when you send".to_string()));
+                summary
+                    .rows
+                    .push(("Total", "Calculated when you send".to_string()));
+            }
         }
         if reduces_output {
-            lines.push("The Platform fee comes out of the amount you entered, so the recipient receives less than that amount.".to_string());
-            lines.push("The Core fee is charged on top, from your Core balance.".to_string());
+            summary.notes.push("The Platform fee comes out of the amount you entered, so the recipient receives less than that amount.".to_string());
+            summary
+                .notes
+                .push("The Core fee is charged on top, from your Core balance.".to_string());
         } else if core_to_platform {
-            lines.push("Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee.".to_string());
-            lines.push("The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance.".to_string());
+            summary.notes.push("Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee.".to_string());
+            summary.notes.push("The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance.".to_string());
         }
         if let Some(note) = self.route_note() {
-            lines.push(note.to_string());
+            summary.notes.push(note.to_string());
         }
-        lines.push(if several {
+        summary.notes.push(if several {
             "Check the recipients. Payments can't be undone.".to_string()
         } else {
             "Check the recipient. Payments can't be undone.".to_string()
         });
-        lines.join("\n")
+        summary
     }
 
-    fn open_send_confirmation(&mut self, action: AppAction, message: String) {
+    fn open_send_confirmation(&mut self, action: AppAction, message: ConfirmationSummary) {
         let title = match self.requested_credits() {
             Some(amount) => format!("Send {amount}?", amount = format_credits_as_dash(amount)),
             None => "Send this payment?".to_string(),
         };
         self.send_confirmation = Some(PendingSendConfirmation {
-            dialog: ConfirmationDialog::new(title, message)
+            dialog: ConfirmationDialog::new(title, message.to_string())
+                .with_summary(message)
                 .confirm_text(Some("Send"))
                 .cancel_text(Some("Cancel"))
                 .danger_mode(true)
@@ -4137,7 +4263,7 @@ impl ScreenLike for WalletSendScreen {
             let form_enabled = self.send_confirmation.is_none();
             ui.add_enabled_ui(form_enabled, |ui| {
                 egui::ScrollArea::vertical()
-                    .auto_shrink([true; 2])
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.heading(
                             RichText::new(self.heading())
@@ -7001,6 +7127,178 @@ mod tests {
     }
 
     #[test]
+    fn batch_confirmation_reads_ownership_once() {
+        let (mut screen, _dir) = send_screen();
+        for count in [1, 40] {
+            screen.advanced_outputs = (0..count)
+                .map(|_| AdvancedOutput {
+                    address: testnet_core_address(20).to_string(),
+                    amount: "1".to_string(),
+                })
+                .collect();
+            screen.ownership_load_count.set(0);
+            screen.identity_load_count.set(0);
+            let summary = screen.advanced_send_confirmation_message();
+            assert_eq!(
+                summary
+                    .rows
+                    .iter()
+                    .filter(|(label, _)| *label == "To")
+                    .count(),
+                count
+            );
+            assert_eq!(screen.ownership_load_count.get(), 1);
+            assert_eq!(screen.identity_load_count.get(), 0);
+        }
+    }
+
+    #[test]
+    fn confirmation_names_pasted_private_address() {
+        let address = testnet_shielded_address(7);
+        let (mut screen, _dir) = send_screen_with_own_shielded_address(&address);
+        screen.app_context.wallet_context().insert_test_wallet(
+            screen.selected_wallet_seed_hash.expect("selected wallet"),
+            screen.selected_wallet.clone().expect("selected wallet"),
+        );
+        screen.validated_destination = Some(ValidatedAddress::Shielded(address.clone()));
+        assert_eq!(
+            screen.confirmation_recipient(),
+            format!("Test wallet\n{address}")
+        );
+        let foreign = testnet_shielded_address(9);
+        assert_eq!(screen.recipient_description(&foreign), foreign);
+    }
+
+    #[test]
+    fn confirmation_names_the_receiving_wallet() {
+        let (mut screen, _temp_dir) = send_screen();
+        let address = testnet_core_address(19);
+        screen.form.choose_to_mode(
+            ToMode::MyWallets,
+            screen.selected_wallet_seed_hash,
+            crate::model::send_route::PayFromKind::Core,
+        );
+        screen.validated_destination = Some(ValidatedAddress::Core(address.clone()));
+        assert_eq!(
+            screen.confirmation_recipient(),
+            format!("Unnamed wallet\n{address}")
+        );
+        let other_address = testnet_core_address(20).to_string();
+        assert_eq!(screen.recipient_description(&other_address), other_address);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirmation_names_an_own_address_entered_under_someone_else() {
+        use crate::model::wallet::DerivationPathHelpers;
+        let (mut screen, _temp_dir) = send_screen();
+        let ctx = screen.app_context.clone();
+        let seed = crate::test_support::keys::seed();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("Savings".to_string()), None)
+                .expect("receiving wallet");
+        let (seed_hash, _) = ctx
+            .register_wallet(
+                wallet,
+                &seed,
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .expect("loaded receiving wallet");
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("offline wallet backend");
+        ctx.wallet_backend()
+            .expect("wallet backend")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("wallet addresses");
+        let owned = ctx
+            .snapshot_address_paths(&seed_hash)
+            .into_iter()
+            .find_map(|(address, path)| path.is_bip44_external(Network::Testnet).then_some(address))
+            .expect("owned receiving address");
+        assert_eq!(screen.form.to_mode(), ToMode::SomeoneElse);
+        screen.validated_destination = Some(ValidatedAddress::Core(owned.clone()));
+        let summary = screen.simple_send_confirmation_message();
+        let to = &summary
+            .rows
+            .iter()
+            .find(|(label, _)| *label == "To")
+            .expect("To row")
+            .1;
+        assert_eq!(to, &format!("Savings\n{owned}"));
+        let platform_core = ctx
+            .snapshot_address_paths(&seed_hash)
+            .into_iter()
+            .find_map(|(address, path)| {
+                path.is_platform_payment(Network::Testnet)
+                    .then_some(address)
+            })
+            .expect("owned Platform address");
+        assert_eq!(
+            screen.recipient_description(&platform_core.to_string()),
+            format!("Savings\n{platform_core}")
+        );
+        let platform = PlatformAddress::try_from(platform_core)
+            .expect("Platform address")
+            .to_bech32m_string(Network::Testnet)
+            .to_uppercase();
+        assert_eq!(
+            screen.recipient_description(&platform),
+            format!("Savings\n{platform}")
+        );
+        let external = testnet_core_address(20).to_string();
+        assert_eq!(screen.recipient_description(&external), external);
+    }
+
+    #[test]
+    fn confirmation_separates_username_from_the_full_identity_id() {
+        let (mut screen, _temp_dir) = send_screen();
+        let id = dash_sdk::platform::Identifier::from([7; 32]);
+        screen.validated_destination = Some(ValidatedAddress::Identity {
+            id,
+            dpns_name: Some("alice.dash".to_string()),
+        });
+        assert_eq!(screen.confirmation_recipient(), format!("alice.dash\n{id}"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirmation_names_a_known_identity_and_its_wallet() {
+        let (mut screen, _temp_dir) = send_screen();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        let ctx = screen.app_context.clone();
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let owner_hash = screen.selected_wallet_seed_hash.expect("owner hash");
+        let owner = screen.selected_wallet.clone().expect("owner wallet");
+        ctx.wallet_context().insert_test_wallet(owner_hash, owner);
+        let mut identity = bound_identity();
+        identity.alias = Some("Ignored legacy alias".to_string());
+        ctx.insert_local_qualified_identity(&identity, &Some((owner_hash, 0)))
+            .expect("store identity");
+        let id = identity.identity.id();
+        ctx.save_identity_profile_name(id, Some("Savings identity"));
+        screen.validated_destination = Some(ValidatedAddress::Identity {
+            id,
+            dpns_name: None,
+        });
+        assert_eq!(
+            screen.confirmation_recipient(),
+            format!(
+                "{}\nSavings identity\n{id}",
+                screen.wallet_name(&owner_hash)
+            )
+        );
+    }
+
+    #[test]
     fn simple_confirmation_reports_recipient_amount_when_fee_is_deducted() {
         let (mut screen, _temp_dir) = send_screen();
         let destination_address =
@@ -7024,7 +7322,7 @@ mod tests {
 
         let total = format_credits_as_dash(preview.total_debit_credits);
         assert_eq!(
-            screen.simple_send_confirmation_message(),
+            screen.simple_send_confirmation_message().to_string(),
             format!(
                 "From: Unnamed wallet · Core\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nThe Platform fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. The Core transaction fee is paid on top of the amount.\nYour Dash is moved to Platform first, so this takes a little longer than a regular payment.\nCheck the recipient. Payments can't be undone.",
                 short = destination
@@ -7103,7 +7401,7 @@ mod tests {
 
         let total = format_credits_as_dash(preview.total_debit_credits);
         assert_eq!(
-            screen.simple_send_confirmation_message(),
+            screen.simple_send_confirmation_message().to_string(),
             format!(
                 "From: Unnamed wallet · Platform\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nCheck the recipient. Payments can't be undone.",
                 short = destination
@@ -7243,7 +7541,7 @@ mod tests {
             amount: "1".to_string(),
         }];
 
-        let message = screen.advanced_send_confirmation_message();
+        let message = screen.advanced_send_confirmation_message().to_string();
 
         assert!(message.contains(
             "The Platform fee comes out of the amount you entered, so the recipient receives less than that amount."
@@ -7280,7 +7578,7 @@ mod tests {
             },
         ];
 
-        let message = screen.advanced_send_confirmation_message();
+        let message = screen.advanced_send_confirmation_message().to_string();
         let lines: Vec<&str> = message.lines().collect();
 
         assert_eq!(lines[0], "From: Unnamed wallet · Platform");
@@ -10090,7 +10388,7 @@ mod tests {
             fee >= estimate_core_l1_send_fee_duffs(100, 2) * CREDITS_PER_DUFF,
             "one address row must not hide 100 coins: {fee}"
         );
-        let message = screen.advanced_send_confirmation_message();
+        let message = screen.advanced_send_confirmation_message().to_string();
         assert!(
             message.contains(&format!("Fee: ≈ {}", format_credits_as_dash(fee))),
             "{message}"
@@ -10130,6 +10428,7 @@ mod tests {
         screen.sync_route();
 
         let (action, message) = screen.prepare_send().expect("the payment builds");
+        let message = message.to_string();
         let AppAction::BackendTask(BackendTask::WalletTask(WalletTask::TransferPlatformCredits {
             inputs,
             ..
@@ -10260,7 +10559,10 @@ mod tests {
         route(harness.state_mut());
         harness.run();
 
-        let message = harness.state().advanced_send_confirmation_message();
+        let message = harness
+            .state()
+            .advanced_send_confirmation_message()
+            .to_string();
         let total = message
             .lines()
             .find_map(|line| line.strip_prefix("Total: "))

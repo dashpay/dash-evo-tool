@@ -1847,6 +1847,7 @@ impl WalletSendScreen {
 
     /// The Send form: From, To, Amount, Summary and the actions.
     pub(super) fn render_form(&mut self, ui: &mut Ui) -> AppAction {
+        ui.set_min_width(ui.available_width());
         self.sync_route();
         self.sync_explicit_payment();
         let layout = FormLayout::for_width(ui.available_width());

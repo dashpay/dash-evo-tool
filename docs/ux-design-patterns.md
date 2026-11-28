@@ -93,6 +93,7 @@ Reference: `ConfirmationDialog` in `src/ui/components/confirmation_dialog.rs`.
 - **Button order**: right-to-left layout -- Confirm RIGHT, Cancel LEFT
 - Overlay: `modal_overlay()`
 - Layout constants (corner radius, margins, min width, button size) defined in `ConfirmationDialog`
+- Structured confirmations (`ConfirmationSummary`): content width 760 px, capped at viewport width minus 64 px (minimum 240 px); two columns with `Spacing::LG` between columns and `Spacing::MD` between rows. Selectable monospace values wrap without truncation or horizontal scrolling; notes follow a separator.
 - Escape = cancel. X button = cancel.
 - **Destructive actions**: `danger_mode(true)` -- red confirm button. Use specific verb labels ("Delete wallet" not "OK").
 - For critical/irreversible: require type-to-confirm

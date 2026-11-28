@@ -954,7 +954,18 @@ fn shield_confirmation_names_the_private_balance() {
         click_send(&mut harness);
 
         assert!(harness.state().has_send_confirmation_for_test());
-        assert!(has(&harness, "To: your private balance in "));
+        assert!(
+            harness
+                .get_by_role(egui::accesskit::Role::Window)
+                .query_by_label("To")
+                .is_some()
+        );
+        assert!(
+            harness
+                .get_by_role(egui::accesskit::Role::Window)
+                .query_by_label_contains("your private balance in ")
+                .is_some()
+        );
     });
 }
 
@@ -977,7 +988,13 @@ fn confirmation_shows_the_whole_recipient_address() {
         click_send(&mut harness);
 
         assert!(harness.state().has_send_confirmation_for_test());
-        assert!(has(&harness, &format!("To: {recipient}\n")));
+        assert!(
+            harness
+                .get_by_role(egui::accesskit::Role::Window)
+                .query_by_label("To")
+                .is_some()
+        );
+        assert!(harness.query_by_label(&recipient.to_string()).is_some());
     });
 }
 
@@ -1106,5 +1123,92 @@ fn auto_max_survives_a_failed_quote_and_its_retry() {
         harness.run();
 
         assert!(has(&harness, "Max uses the largest balance"));
+    });
+}
+
+#[test]
+fn send_recipient_input_has_a_sensible_width() {
+    for viewport_width in [640.0, 1000.0, 1600.0] {
+        with_isolated_data_dir(|| {
+            let fixture = fixture(None);
+            let (harness, _) = harness(fixture.screen, viewport_width);
+            let input = harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Send to");
+            assert!(
+                input.rect().width() <= 520.0,
+                "recipient field should not span the window"
+            );
+            assert!(input.rect().right() <= viewport_width);
+        });
+    }
+}
+
+#[test]
+fn send_form_width_stays_stable_between_recipient_modes() {
+    for viewport_width in [640.0, 1000.0, 1600.0] {
+        with_isolated_data_dir(|| {
+            let fixture = fixture(None);
+            let width = Rc::new(RefCell::new(0.0));
+            let measured = width.clone();
+            let mut harness = crate::support::builder_with_app_fonts()
+                .with_size(egui::vec2(viewport_width, 1200.0))
+                .build_ui_state(
+                    move |ui, screen: &mut WalletSendScreen| {
+                        let response =
+                            egui::Frame::new().show(ui, |ui| screen.render_form_for_test(ui));
+                        *measured.borrow_mut() = response.response.rect.width();
+                    },
+                    fixture.screen,
+                );
+            harness.run();
+            let someone_else = *width.borrow();
+            harness.get_by_label("My wallets").click();
+            harness.run();
+            assert!(
+                (someone_else - *width.borrow()).abs() < 1.0,
+                "switching recipient mode must not resize the form"
+            );
+            harness.get_by_label("Someone else").click();
+            harness.run();
+            assert!((someone_else - *width.borrow()).abs() < 1.0);
+        });
+    }
+}
+
+#[test]
+fn send_confirmation_keeps_full_recipient_on_its_own_row() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        let destination = platform_destination().to_address_string();
+        fixture.screen.open_core_to_platform_confirmation_for_test(
+            destination.clone(),
+            "1",
+            Default::default(),
+        );
+        let (harness, _) = harness(fixture.screen, 1000.0);
+        let dialog = harness.get_by_role(egui::accesskit::Role::Window);
+        assert!(
+            dialog.rect().width() >= 600.0,
+            "confirmation needs room for its summary"
+        );
+        assert!(dialog.rect().left() >= 0.0 && dialog.rect().right() <= 1000.0);
+        let recipient = dialog.get_by_label(&destination).rect();
+        assert!(
+            recipient.height() < 25.0,
+            "the recipient must not wrap mid-token"
+        );
+        let labels: Vec<_> = ["From", "To", "Amount", "Fee", "Total"]
+            .into_iter()
+            .map(|label| dialog.get_by_label(label).rect())
+            .collect();
+        for pair in labels.windows(2) {
+            assert!((pair[0].left() - pair[1].left()).abs() < 1.0);
+            assert!(
+                pair[1].top() - pair[0].bottom() >= 8.0,
+                "rows need breathing room"
+            );
+        }
+        assert!((labels[1].top() - recipient.top()).abs() < 1.0);
+        assert!(recipient.left() > labels[1].right());
+        assert!(has(&harness, "Check the recipient."));
     });
 }
